@@ -101,7 +101,7 @@ async fn deploy_recall(app: &Router) -> String {
     let (status, body) = upload(app, package_files(recall_tasks(), &[])).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(body["admission"]["revoked"], false, "{body}");
-    let digest = body["digest"].as_str().unwrap().to_string();
+    let digest = body["package"]["digest"].as_str().unwrap().to_string();
 
     let (_, _, cache_digest) = deploy::create_connection(
         app,
@@ -277,11 +277,12 @@ fn assert_recalled(status: StatusCode, body: &Value) {
 
 async fn workflow_providers(app: &Router) -> Vec<String> {
     let (_, caps) = send(app, "GET", "/api/v2/admin/runtime-capabilities", None).await;
-    caps["registered_workflow_providers"]
+    caps["provider_backends"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|v| v.as_str().map(str::to_string))
+        .filter(|b| b["kind"] == "workflow")
+        .filter_map(|b| b["driver_id"].as_str().map(str::to_string))
         .collect()
 }
 

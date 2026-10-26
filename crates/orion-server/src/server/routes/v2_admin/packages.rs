@@ -5,8 +5,8 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use orion_api::v2::{
     AdmitPackageRequest, AdmitPackageResponse, ConnectorPackageResponse, ConnectorPackageSummary,
-    ConnectorPackagesListResponse, ProviderAdmissionDto, RevokePackageRequest,
-    RevokePackageResponse, UploadPackageRequest, UploadPackageResponse,
+    ConnectorPackagesListResponse, EditionTier, PackageArtifactState, ProviderAdmissionDto,
+    RevokePackageRequest, RevokePackageResponse, UploadPackageRequest, UploadPackageResponse,
 };
 use serde_json::Value;
 
@@ -29,11 +29,11 @@ fn admission_dto(adm: &ProviderAdmissionRow) -> ProviderAdmissionDto {
     }
 }
 
-fn artifact_state_name(state: Option<&ArtifactState>) -> &'static str {
+fn artifact_state_name(state: Option<&ArtifactState>) -> PackageArtifactState {
     match state {
-        Some(ArtifactState::Draining) => "draining",
-        Some(ArtifactState::Deleted) => "deleted",
-        _ => "active",
+        Some(ArtifactState::Draining) => PackageArtifactState::Draining,
+        Some(ArtifactState::Deleted) => PackageArtifactState::Deleted,
+        Some(ArtifactState::Active) | None => PackageArtifactState::Active,
     }
 }
 
@@ -47,25 +47,25 @@ fn package_row_to_summary(
     row: &ProviderPackageRow,
     admitted: bool,
     revoked: bool,
-    artifact_state: &str,
+    artifact_state: PackageArtifactState,
 ) -> ConnectorPackageSummary {
+    // Admission refuses a tier that is not one, so a stored package's is.
     let tier = row
         .distribution_json
         .get("tier")
         .and_then(Value::as_str)
-        .unwrap_or("community")
-        .to_string();
+        .and_then(EditionTier::parse)
+        .unwrap_or(EditionTier::Community);
     ConnectorPackageSummary {
         publisher: row.publisher.clone(),
         provider_id: row.provider_id.to_string(),
         version: row.version.clone(),
         digest: row.package_digest.to_string(),
-        package_digest: row.package_digest.to_string(),
-        implementation: row.implementation.as_str().to_string(),
+        implementation: row.implementation,
         tier,
         admitted,
         revoked,
-        artifact_state: artifact_state.to_string(),
+        artifact_state,
         manifest: row.manifest_json.clone(),
         distribution: row.distribution_json.clone(),
         inventory: row.inventory_json.clone(),
@@ -182,8 +182,7 @@ pub(crate) async fn upload_connector_package(
     principal: Option<Extension<AdminPrincipal>>,
     OrionJson(req): OrionJson<UploadPackageRequest>,
 ) -> V2Result<(StatusCode, Json<UploadPackageResponse>)> {
-    let raw_files = req.merged_files();
-    let mut files = decode_files_map(&raw_files)?;
+    let mut files = decode_files_map(&req.files)?;
     // A workflow package is held to the hermetic rules before anything is
     // stored.
     let problems = crate::runtime::workflow_providers::upload_problems(&state, &files);
@@ -239,12 +238,15 @@ pub(crate) async fn upload_connector_package(
         &row.package_digest,
     );
 
-    let summary = package_row_to_summary(&row, admission.is_some(), false, "active");
+    let summary = package_row_to_summary(
+        &row,
+        admission.is_some(),
+        false,
+        PackageArtifactState::Active,
+    );
     Ok((
         StatusCode::CREATED,
         Json(UploadPackageResponse {
-            status: "uploaded".to_string(),
-            digest: row.package_digest.to_string(),
             package: summary,
             admission,
         }),
@@ -298,7 +300,6 @@ pub(crate) async fn admit_connector_package(
         &digest,
     );
     Ok(Json(AdmitPackageResponse {
-        status: "admitted".to_string(),
         admission: admission_dto(&adm),
     }))
 }
@@ -349,9 +350,7 @@ pub(crate) async fn revoke_connector_package(
     Ok((
         StatusCode::CREATED,
         Json(RevokePackageResponse {
-            status: "revoked".to_string(),
             package_digest: digest,
-            revoked: true,
             reason,
         }),
     ))

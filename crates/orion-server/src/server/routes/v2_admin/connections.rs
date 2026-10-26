@@ -8,9 +8,9 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use orion_api::v2::{
     ConnectionProbeResponse, ConnectionRevisionResponse, ConnectionsListResponse,
-    CreateConnectionRevisionRequest, CreateConnectionRevisionResponse,
+    ConnectorErrorClass, CreateConnectionRevisionRequest, CreateConnectionRevisionResponse,
+    EffectStatus, ProbeDetails,
 };
-use serde_json::json;
 
 use super::{V2Error, V2Result};
 use crate::errors::{FieldError, OrionError};
@@ -31,14 +31,9 @@ fn connection_row_to_dto(row: &ConnectionRevisionRow) -> ConnectionRevisionRespo
         connection_id: row.connection_id.to_string(),
         revision: row.revision.get(),
         provider_digest: row.provider_digest.to_string(),
-        provider_ref: json!({
-            "package_digest": row.provider_digest,
-        }),
-        config: row.public_config.clone(),
         public_config: row.public_config.clone(),
         secret_locators: row.secret_locators.clone(),
         bindings: row.bindings.clone(),
-        config_fingerprint: row.configuration_digest.to_string(),
         configuration_digest: row.configuration_digest.to_string(),
     }
 }
@@ -209,7 +204,6 @@ pub(crate) async fn create_connection_revision(
     Ok((
         StatusCode::CREATED,
         Json(CreateConnectionRevisionResponse {
-            status: "created".to_string(),
             connection: connection_row_to_dto(&row),
         }),
     ))
@@ -381,7 +375,7 @@ pub(crate) async fn probe_connection(
             started,
             ProbeOutcome {
                 probe: "configuration",
-                result: Err(cfg_err.to_string()),
+                result: Err(ProbeFailure::from(&cfg_err)),
             },
         )));
     }
@@ -437,7 +431,7 @@ pub(crate) async fn probe_connection(
         result: backend
             .health_check(&attempt)
             .await
-            .map_err(|err| err.to_string()),
+            .map_err(|err| ProbeFailure::from(&err)),
     };
     Ok(Json(probe_response(&conn_row, driver_id, started, outcome)))
 }
@@ -483,10 +477,38 @@ fn probe_dependencies(
     out
 }
 
-/// What a built-in probe did, and why it failed when it did.
+/// What a probe did, and why it failed when it did.
 struct ProbeOutcome {
     probe: &'static str,
-    result: Result<(), String>,
+    result: Result<(), ProbeFailure>,
+}
+
+/// Why a probe failed: the message, and — when a provider answered — its
+/// normalised class and what it observed of the effect.
+struct ProbeFailure {
+    message: String,
+    class: Option<ConnectorErrorClass>,
+    effect_status: Option<EffectStatus>,
+}
+
+impl From<String> for ProbeFailure {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            class: None,
+            effect_status: None,
+        }
+    }
+}
+
+impl From<&crate::extensions::ConnectorError> for ProbeFailure {
+    fn from(err: &crate::extensions::ConnectorError) -> Self {
+        Self {
+            message: err.to_string(),
+            class: Some(err.class),
+            effect_status: Some(err.effect_status),
+        }
+    }
 }
 
 /// The answer to a probe: `healthy`, with `details.probe` naming the check
@@ -497,20 +519,22 @@ fn probe_response(
     started: Instant,
     outcome: ProbeOutcome,
 ) -> ConnectionProbeResponse {
-    let healthy = outcome.result.is_ok();
-    let mut details = json!({ "probe": outcome.probe });
-    match outcome.result {
-        Ok(()) => details["status"] = json!("ok"),
-        Err(error) => details["error"] = json!(error),
-    }
+    let (healthy, failure) = match outcome.result {
+        Ok(()) => (true, None),
+        Err(failure) => (false, Some(failure)),
+    };
     ConnectionProbeResponse {
         connection_id: row.connection_id.to_string(),
         revision: row.revision.get(),
         driver_id,
         healthy,
-        status: if healthy { "healthy" } else { "unhealthy" }.to_string(),
         latency_ms: started.elapsed().as_millis() as u64,
-        details,
+        details: ProbeDetails {
+            probe: outcome.probe.to_string(),
+            error: failure.as_ref().map(|f| f.message.clone()),
+            error_class: failure.as_ref().and_then(|f| f.class),
+            effect_status: failure.as_ref().and_then(|f| f.effect_status),
+        },
     }
 }
 
@@ -528,9 +552,9 @@ async fn probe_builtin(
     driver: &'static str,
 ) -> ProbeOutcome {
     use crate::connector::{ConnectorConfig, ConnectorType};
-    let config_stage = |result| ProbeOutcome {
+    let config_stage = |result: Result<(), String>| ProbeOutcome {
         probe: "configuration",
-        result,
+        result: result.map_err(ProbeFailure::from),
     };
     let Some((connector_type, config)) =
         crate::extensions::foundation::builtin_connector(driver, row.config_with_locators())
@@ -573,15 +597,17 @@ async fn probe_builtin(
     match &resolved {
         ConnectorConfig::Db(db) => ProbeOutcome {
             probe: "SELECT 1",
-            result: probe_db(state, name, db).await,
+            result: probe_db(state, name, db).await.map_err(ProbeFailure::from),
         },
         ConnectorConfig::Cache(cache) => ProbeOutcome {
             probe: "cache read of a probe key",
-            result: probe_cache(state, name, cache).await,
+            result: probe_cache(state, name, cache)
+                .await
+                .map_err(ProbeFailure::from),
         },
         ConnectorConfig::Http(http) => ProbeOutcome {
             probe: "TCP connect to the URL's host",
-            result: probe_http(name, http).await,
+            result: probe_http(name, http).await.map_err(ProbeFailure::from),
         },
     }
 }

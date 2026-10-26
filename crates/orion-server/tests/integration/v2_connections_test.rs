@@ -196,7 +196,7 @@ async fn helper_package(app: &Router) -> (String, Value) {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{uploaded}");
     (
-        uploaded["digest"].as_str().unwrap().to_string(),
+        uploaded["package"]["digest"].as_str().unwrap().to_string(),
         uploaded["package"].clone(),
     )
 }

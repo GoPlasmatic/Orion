@@ -4,253 +4,320 @@
 //! - Runtime capabilities & edition discovery (`/runtime-capabilities`)
 //! - Connector packages, their admission and revocations (`/connector-packages`)
 //! - Connection revisions and their probes (`/connections/{id}/revisions`)
+//! - Definitions, by digest (`/definitions`)
 //! - Candidate deployment plans (`/deployment-plans`), and deployments — an
 //!   apply or a rollback, both under CAS — with their convergence (`/deployments`)
 //! - Enterprise-to-Community edition transition preflight (`/edition-transition-preflight`)
 //! - Provider package authoring scaffold, lint & pack (`/authoring/*`)
+//!
+//! # Strict, and versioned
+//!
+//! Unlike the operational DTOs in [`crate::dto`], this contract is
+//! **strict**: a field is required unless its absence has a meaning the
+//! field's documentation states, every request type refuses an unknown
+//! field, a closed vocabulary is an enum ([`vocab`]), and a part the server
+//! generates is a typed struct rather than a JSON value. A server bug that
+//! drops a field is then a decode error in the client, not a silent `0`,
+//! `""` or `false`, and the OpenAPI document describes every part.
+//!
+//! What stays a [`serde_json::Value`] is a document someone else owns the
+//! shape of: a definition body or a channel's `config`, a connection's
+//! `public_config`, a provider package's own files (`manifest`,
+//! `distribution`, `inventory`), a provider lock, the data a workflow test
+//! run took and produced, and the engine's trace of that run (dataflow-rs's
+//! shape, not this contract's).
+//!
+//! Version skew is negotiated rather than tolerated: the server reports
+//! [`API_VERSION`] as [`RuntimeCapabilitiesResponse::api_version`], and a
+//! client speaking another refuses to go on. A response *gaining* a field
+//! is not a change (clients ignore what they do not know); anything else —
+//! a field removed, renamed, retyped or made required, a request field
+//! added, a variant added to an enum an answer carries — moves the number.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Runtime capabilities: edition, registered drivers and providers, deployment head (`GET /api/v2/admin/runtime-capabilities`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub mod manifest;
+pub mod vocab;
+
+pub use manifest::{
+    COMPILED_DEPLOYMENT_SCHEMA_VERSION, CompiledConnection, CompiledDeployment, CompiledMember,
+    CompiledRequirement, DEPLOYMENT_MANIFEST_SCHEMA_VERSION, DeploymentManifest, EntityRef,
+    ManifestMember, ManifestProvider, RolloutInterval,
+};
+pub use vocab::{
+    ConnectorErrorClass, EditionFindingCode, EditionTier, EffectStatus, EntityKind,
+    ImplementationKind, PackageArtifactState, UnknownName,
+};
+
+/// The revision of the `/api/v2/admin` contract this crate defines, which
+/// a server reports as [`RuntimeCapabilitiesResponse::api_version`]. A
+/// client speaks exactly one; see the module documentation for what moves
+/// it.
+pub const API_VERSION: u32 = 1;
+
+// ============================================================
+// Runtime capabilities
+// ============================================================
+
+/// What this node is and serves (`GET /api/v2/admin/runtime-capabilities`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RuntimeCapabilitiesResponse {
-    #[serde(default)]
-    pub api_version: String,
-    #[serde(default)]
-    pub edition: String,
-    #[serde(default)]
+    /// The contract revision this server speaks: [`API_VERSION`] of the
+    /// `orion-api` it was built with. A client that speaks another must
+    /// not read the rest of this answer, or any other v2 answer.
+    pub api_version: u32,
+    pub edition: EditionTier,
+    /// The package admission policy this node admits under.
     pub admission_policy_id: String,
-    #[serde(default, alias = "channel_drivers")]
-    pub registered_channel_drivers: Vec<String>,
-    #[serde(default)]
+    /// The channel protocols this node serves (`rest`, `http`, `cron`, …).
+    pub channel_drivers: Vec<String>,
     pub schema_profiles: Vec<String>,
-    #[serde(default)]
+    /// The WebAssembly plugin worlds this node runs.
     pub wasm_worlds: Vec<String>,
-    #[serde(default)]
-    pub provider_backends: Vec<Value>,
-    #[serde(default)]
-    pub registered_rust_providers: Vec<String>,
-    #[serde(default)]
-    pub registered_workflow_providers: Vec<String>,
-    #[serde(default)]
-    pub deployment_head: Value,
-    #[serde(default)]
-    pub reconciler: Value,
-    #[serde(default)]
-    pub native_scheduler: Value,
-    #[serde(default)]
-    pub active_deployment_revision: u64,
-    #[serde(default)]
-    pub node_status: Value,
+    /// Every connector provider backend this node registers.
+    pub provider_backends: Vec<ProviderBackendInfo>,
+    pub deployment_head: DeploymentHead,
+    pub native_scheduler: NativeSchedulerStatus,
+    /// This node's reconciler: what it serves and how it got there.
+    pub node_status: NodeStatus,
 }
 
-/// A single file entry inside a provider package archive.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// One registered provider backend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct ArchiveEntryDto {
-    pub path: String,
-    pub content: String,
+pub struct ProviderBackendInfo {
+    pub kind: ImplementationKind,
+    /// The backend id: a `rust` driver's id, or a `workflow`/`wasm`
+    /// package's digest.
+    pub driver_id: String,
+    /// A built-in driver's fixed provider digest — what a connection
+    /// revision over it names as its `provider_digest`. Absent for a
+    /// backend that is not a built-in driver.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_digest: Option<String>,
 }
 
-/// Summary of an uploaded/admitted connector provider package (`GET /api/v2/admin/connector-packages`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// The committed deployment head.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct DeploymentHead {
+    /// `0` before the first apply.
+    pub revision: u64,
+    pub epoch: u64,
+}
+
+/// The node's native work scheduler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct NativeSchedulerStatus {
+    pub in_flight: u64,
+    pub max_in_flight: u64,
+}
+
+/// One node's reconciler status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct NodeStatus {
+    pub node_id: String,
+    /// Changes on every process start.
+    pub boot_id: String,
+    /// The revision the node is converging on.
+    pub desired_revision: u64,
+    /// The revision the node serves; `0` before it served any.
+    pub applied_revision: u64,
+    /// The manifest digest of the applied revision; absent before one.
+    pub applied_manifest_digest: Option<String>,
+    /// Whether some member of the applied revision is quarantined.
+    pub configuration_degraded: bool,
+    pub quarantined_entities: Vec<QuarantinedEntity>,
+    /// Why the last attempt to build the desired revision failed, while it
+    /// does.
+    pub last_error: Option<String>,
+    pub backoff_attempt: u32,
+    pub backoff_delay_ms: u64,
+    pub security_lease_expires_at_ms: u64,
+    /// The revisions the node keeps built, ascending.
+    pub retained_revisions: Vec<u64>,
+}
+
+/// A member the node serves without, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct QuarantinedEntity {
+    pub entity: EntityRef,
+    pub reason: String,
+}
+
+// ============================================================
+// Connector packages
+// ============================================================
+
+/// A stored connector provider package (`GET /api/v2/admin/connector-packages`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ConnectorPackageSummary {
-    #[serde(default)]
     pub publisher: String,
-    #[serde(default)]
     pub provider_id: String,
-    #[serde(default)]
     pub version: String,
-    #[serde(default)]
+    /// The package digest: `sha256:<64 lowercase hex>`.
     pub digest: String,
-    #[serde(default)]
-    pub package_digest: String,
-    #[serde(default)]
-    pub implementation: String,
-    #[serde(default)]
-    pub tier: String,
-    #[serde(default)]
+    pub implementation: ImplementationKind,
+    /// The tier `distribution.json` declares; `community` when it declares
+    /// none.
+    pub tier: EditionTier,
+    /// Admitted and not revoked.
     pub admitted: bool,
-    #[serde(default)]
     pub revoked: bool,
-    #[serde(default)]
-    pub artifact_state: String,
-    #[serde(default, alias = "manifest_json")]
+    pub artifact_state: PackageArtifactState,
+    /// The package's `connector.json`.
     pub manifest: Value,
-    #[serde(default, alias = "distribution_json")]
+    /// The package's `distribution.json`.
     pub distribution: Value,
-    #[serde(default, alias = "inventory_json")]
+    /// The package's `inventory.json`.
     pub inventory: Value,
 }
 
-/// Provider package admission record (`PUT /api/v2/admin/connector-packages/{digest}/admission`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// A package's admission record (`PUT /api/v2/admin/connector-packages/{digest}/admission`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ProviderAdmissionDto {
-    #[serde(default)]
     pub package_digest: String,
-    #[serde(default)]
     pub policy_id: String,
-    #[serde(default)]
+    /// Changes when the policy or the package's verified inputs do: an
+    /// admission recorded under another fingerprint is invalid.
     pub admission_fingerprint: String,
-    #[serde(default)]
     pub revoked: bool,
 }
 
-/// Response listing connector provider packages (`GET /api/v2/admin/connector-packages`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Every stored package, and every admission record (`GET /api/v2/admin/connector-packages`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ConnectorPackagesListResponse {
-    #[serde(default)]
     pub count: usize,
-    #[serde(default, alias = "data")]
     pub packages: Vec<ConnectorPackageSummary>,
-    #[serde(default)]
     pub admissions: Vec<ProviderAdmissionDto>,
 }
 
 /// One connector provider package and its admission record
 /// (`GET /api/v2/admin/connector-packages/{digest}`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ConnectorPackageResponse {
-    #[serde(default)]
     pub package: ConnectorPackageSummary,
     /// The admission recorded for the package; absent while it was never
     /// admitted.
-    #[serde(default)]
     pub admission: Option<ProviderAdmissionDto>,
 }
 
-/// Request body for uploading, linting, or packing a provider package (`POST /api/v2/admin/connector-packages`, `/authoring/lint`, `/authoring/pack`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// A provider package's files: the body of `POST /api/v2/admin/connector-packages`,
+/// `/authoring/lint` and `/authoring/pack`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
 pub struct UploadPackageRequest {
-    /// Map of relative path -> UTF-8 or `base64:<...>` file content.
-    #[serde(default)]
+    /// Relative path → the file, as UTF-8 text or `base64:<…>`.
     pub files: BTreeMap<String, String>,
-    /// Optional list of `{path, content}` entries (converted into `files` if `files` is empty).
-    #[serde(default)]
-    pub entries: Vec<ArchiveEntryDto>,
+    /// Upload only: admit the package in the same request. Absent means
+    /// `false`.
     #[serde(default)]
     pub admit: bool,
-    #[serde(default)]
+    /// Upload only, with `admit`: the provider lock the admission must
+    /// verify against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lock: Option<Value>,
 }
 
-impl UploadPackageRequest {
-    pub fn merged_files(&self) -> BTreeMap<String, String> {
-        let mut map = self.files.clone();
-        for entry in &self.entries {
-            map.entry(entry.path.clone())
-                .or_insert_with(|| entry.content.clone());
-        }
-        map
-    }
-}
-
-/// Response from uploading a verified provider package (`POST /api/v2/admin/connector-packages`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// An uploaded package (`POST /api/v2/admin/connector-packages`, `201`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct UploadPackageResponse {
-    #[serde(default)]
-    pub status: String,
-    #[serde(default)]
-    pub digest: String,
-    #[serde(default)]
     pub package: ConnectorPackageSummary,
-    #[serde(default)]
+    /// The admission, when the upload asked for one.
     pub admission: Option<ProviderAdmissionDto>,
 }
 
-/// Request body for admitting an uploaded provider package (`PUT /api/v2/admin/connector-packages/{digest}/admission`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Request body for admitting an uploaded provider package
+/// (`PUT /api/v2/admin/connector-packages/{digest}/admission`). The body is
+/// optional.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
 pub struct AdmitPackageRequest {
-    #[serde(default)]
+    /// The provider lock the admission must verify against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lock: Option<Value>,
 }
 
-/// Response from admitting a provider package (`PUT /api/v2/admin/connector-packages/{digest}/admission`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// The admission recorded (`PUT /api/v2/admin/connector-packages/{digest}/admission`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct AdmitPackageResponse {
-    #[serde(default)]
-    pub status: String,
-    #[serde(default)]
     pub admission: ProviderAdmissionDto,
 }
 
-/// Request body for revoking an admitted provider package (`POST /api/v2/admin/connector-packages/{digest}/revocations`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Request body for revoking an admitted provider package
+/// (`POST /api/v2/admin/connector-packages/{digest}/revocations`). The body
+/// is optional.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
 pub struct RevokePackageRequest {
-    #[serde(default)]
+    /// Why, for the audit record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
-/// Response from revoking a provider package (`POST /api/v2/admin/connector-packages/{digest}/revocations`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// A recorded revocation (`POST /api/v2/admin/connector-packages/{digest}/revocations`, `201`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RevokePackageResponse {
-    #[serde(default)]
-    pub status: String,
-    #[serde(default)]
     pub package_digest: String,
-    #[serde(default)]
-    pub revoked: bool,
-    #[serde(default)]
+    /// The reason the request gave, if it gave one.
     pub reason: Option<String>,
 }
 
+// ============================================================
+// Connections
+// ============================================================
+
 /// An immutable connection revision (`GET /api/v2/admin/connections/{id}/revisions/{revision}`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ConnectionRevisionResponse {
-    #[serde(default)]
     pub connection_id: String,
-    #[serde(default)]
     pub revision: u64,
-    #[serde(default)]
     pub provider_digest: String,
-    #[serde(default)]
-    pub provider_ref: Value,
-    #[serde(default)]
-    pub config: Value,
-    #[serde(default)]
+    /// The connection's settings, as created.
     pub public_config: Value,
-    /// Config path to secret reference (`env://`, `vault://`, …).
-    #[serde(default)]
+    /// Config path → secret reference (`env://`, `vault://`, …).
     pub secret_locators: BTreeMap<String, String>,
     /// Over a `workflow` provider package: the connection each of the
-    /// package's dependency aliases calls (`alias -> connection_id`).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// package's dependency aliases calls (`alias -> connection_id`). Empty
+    /// for any other provider.
     pub bindings: BTreeMap<String, String>,
-    #[serde(default)]
-    pub config_fingerprint: String,
-    #[serde(default)]
+    /// The digest over the public settings, the locators and the bindings:
+    /// what a manifest member for this revision names as its
+    /// `definition_digest`.
     pub configuration_digest: String,
 }
 
-/// Response listing connection revisions (`GET /api/v2/admin/connections`, `GET /api/v2/admin/connections/{id}/revisions`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Connection revisions, ordered by connection then revision
+/// (`GET /api/v2/admin/connections`, `GET /api/v2/admin/connections/{id}/revisions`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ConnectionsListResponse {
-    #[serde(default)]
     pub count: usize,
-    #[serde(default, alias = "data")]
     pub connections: Vec<ConnectionRevisionResponse>,
 }
 
 /// Request body to create an immutable connection revision
 /// (`POST /api/v2/admin/connections/{id}/revisions`). The connection is the
 /// one the path names.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct CreateConnectionRevisionRequest {
@@ -261,88 +328,86 @@ pub struct CreateConnectionRevisionRequest {
     pub provider_digest: String,
     /// The connection's settings. Never a secret: a credential-shaped key or
     /// value is refused.
-    #[serde(default)]
     pub public_config: Value,
     /// Where each credential comes from: a config path (`connection_string`,
     /// `auth.token`, `auth.client_secret`, …) to a secret reference such as
-    /// `env://ORDERS_DB_URL`. Placed at that path when the connection is used.
+    /// `env://ORDERS_DB_URL`. Placed at that path when the connection is
+    /// used. Absent means none.
     #[serde(default)]
     pub secret_locators: BTreeMap<String, String>,
     /// Over a `workflow` provider package: which connection each of the
     /// package's declared dependency aliases calls (`alias -> connection_id`).
     /// Every alias must be bound, and each target must be a stored
     /// connection; a deployment member for this connection must require each
-    /// bound connection. Empty for any other provider.
+    /// bound connection. Absent means none, as it must be for any other
+    /// provider.
     #[serde(default)]
     pub bindings: BTreeMap<String, String>,
 }
 
-/// Response from creating an immutable connection revision (`POST /api/v2/admin/connections/{id}/revisions`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// A created (or, for identical content, the stored) connection revision
+/// (`POST /api/v2/admin/connections/{id}/revisions`, `201`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct CreateConnectionRevisionResponse {
-    #[serde(default)]
-    pub status: String,
-    #[serde(default)]
     pub connection: ConnectionRevisionResponse,
 }
 
 /// One health probe of a connection revision
 /// (`POST /api/v2/admin/connections/{id}/revisions/{revision}/probes`). A probe
 /// that ran answers `200` whatever it found: `healthy` is the finding.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ConnectionProbeResponse {
-    #[serde(default)]
     pub connection_id: String,
-    #[serde(default)]
     pub revision: u64,
-    #[serde(default)]
+    /// The built-in driver, or the backend id of the provider package.
     pub driver_id: String,
-    #[serde(default)]
     pub healthy: bool,
-    #[serde(default)]
-    pub status: String,
-    #[serde(default)]
     pub latency_ms: u64,
-    #[serde(default, alias = "error")]
-    pub details: Value,
+    pub details: ProbeDetails,
 }
 
+/// Which check a probe ran, and why it failed when it did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct ProbeDetails {
+    /// The check: `configuration`, `SELECT 1`, `TCP connect to the URL's
+    /// host`, `cache read of a probe key`, `provider health check`.
+    pub probe: String,
+    /// Why it failed; absent when it passed. Never a resolved secret.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The failure's normalised class, when a provider answered one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_class: Option<ConnectorErrorClass>,
+    /// Whether the failed check may have reached the backend, when a
+    /// provider answered it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effect_status: Option<EffectStatus>,
+}
+
+// ============================================================
+// Deployment plans and deployments
+// ============================================================
+
 /// Request body for planning a candidate deployment (`POST /api/v2/admin/deployment-plans`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct CreateDeploymentPlanRequest {
     /// The head the candidate is planned on: `0` before the first apply.
     pub base_revision: u64,
-    #[serde(alias = "candidate_manifest")]
-    pub manifest: Value,
-}
-
-/// A deployment member by identity, as a plan names it.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct DeploymentEntityRef {
-    #[serde(default)]
-    pub kind: String,
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub revision: u64,
+    pub manifest: DeploymentManifest,
 }
 
 /// A member the base deploys at one revision and the candidate at another.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DeploymentEntityUpdate {
-    #[serde(default)]
-    pub kind: String,
-    #[serde(default)]
+    pub kind: EntityKind,
     pub id: String,
-    #[serde(default)]
     pub from_revision: u64,
-    #[serde(default)]
     pub to_revision: u64,
 }
 
@@ -350,24 +415,19 @@ pub struct DeploymentEntityUpdate {
 /// (`POST /api/v2/admin/deployment-plans`). Nothing is stored: the plan is a
 /// function of the request and the store, and `reviewed_manifest_digest` is
 /// what an apply must name to commit exactly this candidate.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DeploymentPlanResponse {
-    #[serde(default)]
     pub base_revision: u64,
     /// The candidate's canonical manifest digest. An apply names it as its
     /// `reviewed_manifest_digest`.
-    #[serde(default)]
     pub reviewed_manifest_digest: String,
     /// Members the base does not deploy at all.
-    #[serde(default)]
-    pub added_entities: Vec<DeploymentEntityRef>,
+    pub added_entities: Vec<EntityRef>,
     /// Members the base deploys at another revision.
-    #[serde(default)]
     pub updated_entities: Vec<DeploymentEntityUpdate>,
     /// Members the base deploys and the candidate drops: they stop serving.
-    #[serde(default)]
-    pub removed_entities: Vec<DeploymentEntityRef>,
+    pub removed_entities: Vec<EntityRef>,
 }
 
 /// Request body for `POST /api/v2/admin/deployments`: commit the next
@@ -383,7 +443,7 @@ pub enum CreateDeploymentRequest {
 }
 
 /// Commit a reviewed candidate manifest.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ApplyDeploymentRequest {
@@ -391,7 +451,7 @@ pub struct ApplyDeploymentRequest {
     /// The head the candidate was planned on; anything else is
     /// `DEPLOYMENT_HEAD_CONFLICT`.
     pub base_revision: u64,
-    pub manifest: Value,
+    pub manifest: DeploymentManifest,
     /// The audit reason the revision records.
     pub reason: String,
     /// The digest `POST /deployment-plans` answered for this candidate on
@@ -411,6 +471,7 @@ pub struct RollbackDeploymentRequest {
     pub base_revision: u64,
     /// The committed revision whose manifest to deploy again.
     pub rollback_to: u64,
+    /// The audit reason the revision records; `rollback` when absent.
     #[serde(default = "default_rollback_reason")]
     pub reason: String,
 }
@@ -426,13 +487,9 @@ fn default_rollback_reason() -> String {
 struct RawCreateDeployment {
     idempotency_key: String,
     base_revision: u64,
-    #[serde(default, alias = "candidate_manifest")]
-    manifest: Option<Value>,
-    #[serde(default)]
+    manifest: Option<DeploymentManifest>,
     reviewed_manifest_digest: Option<String>,
-    #[serde(default)]
     rollback_to: Option<u64>,
-    #[serde(default)]
     reason: Option<String>,
 }
 
@@ -480,228 +537,205 @@ impl TryFrom<RawCreateDeployment> for CreateDeploymentRequest {
     }
 }
 
-/// The durable receipt of a committed apply or rollback (`POST /api/v2/admin/deployments`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// The durable receipt of a committed apply or rollback. A replay of the
+/// same idempotency key answers the receipt the first request committed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DeploymentReceiptResponse {
-    #[serde(default)]
     pub operation_id: String,
-    #[serde(default)]
     pub idempotency_key: String,
-    #[serde(default)]
-    pub principal_id: String,
-    #[serde(default)]
+    /// The admin key id that committed it, or `anonymous`.
     pub principal: String,
-    #[serde(default)]
     pub request_hash: String,
-    #[serde(default)]
     pub committed_revision: u64,
-    #[serde(default)]
     pub manifest_digest: String,
-    #[serde(default)]
     pub epoch: u64,
-    #[serde(default)]
+    /// The node that took the write: what `?target=this-node` waits on.
     pub receiving_node_id: String,
-    #[serde(default)]
-    pub replayed: bool,
-    #[serde(default)]
+    /// ISO 8601, on the database clock.
     pub created_at: String,
 }
 
-/// Node/cluster convergence report for a committed deployment revision (`GET /api/v2/admin/deployments/{revision}/convergence`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Node/cluster convergence on a committed deployment revision (`GET /api/v2/admin/deployments/{revision}/convergence`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ConvergenceStatusResponse {
-    #[serde(default)]
     pub converged: bool,
-    #[serde(default)]
     pub target_revision: u64,
-    #[serde(default)]
     pub converged_nodes: Vec<String>,
-    #[serde(default)]
     pub pending_nodes: Vec<String>,
-    #[serde(default)]
     pub degraded_nodes: Vec<String>,
 }
 
-/// A committed apply or rollback (`POST /api/v2/admin/deployments`, `202`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// A committed apply or rollback (`POST /api/v2/admin/deployments`, `202`):
+/// the revision is committed, and nodes converge on it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct CreateDeploymentResponse {
-    /// Always `accepted`: the revision is committed; nodes converge on it.
-    #[serde(default)]
-    pub status: String,
-    #[serde(default)]
     pub committed_revision: u64,
-    #[serde(default)]
     pub receipt: DeploymentReceiptResponse,
     /// What committing this revision does not do — a rollback does not
-    /// reverse an external effect already made.
-    #[serde(default)]
+    /// reverse an external effect already made. Empty for an apply.
     pub warnings: Vec<String>,
-    /// This node's convergence on the committed revision, once it tried to
+    /// This node's convergence on the committed revision, after it tried to
     /// build it.
-    #[serde(default)]
-    pub evaluation: Option<ConvergenceStatusResponse>,
+    pub evaluation: ConvergenceStatusResponse,
     /// Why this node could not build the committed revision, when it could
     /// not. The revision stays committed; the node keeps serving what it had.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub local_error: Option<String>,
 }
 
 /// A committed deployment revision without its manifest: one row of
 /// `GET /api/v2/admin/deployments`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DeploymentRevisionSummary {
-    #[serde(default)]
     pub revision: u64,
-    #[serde(default)]
+    /// The head it was committed on; absent for the first revision.
     pub parent_revision: Option<u64>,
-    #[serde(default)]
     pub manifest_digest: String,
     /// Members in the manifest; `0` once compacted.
-    #[serde(default)]
     pub member_count: usize,
-    #[serde(default)]
     pub reason: String,
-    #[serde(default)]
     pub created_by: String,
     /// The collector dropped this revision's members: it can no longer be
     /// rolled back to.
-    #[serde(default)]
     pub members_compacted: bool,
-    #[serde(default)]
+    /// ISO 8601, on the database clock.
     pub created_at: String,
 }
 
 /// A committed deployment revision with its manifest
 /// (`GET /api/v2/admin/deployments/{revision}`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DeploymentRevisionResponse {
     #[serde(flatten)]
     pub summary: DeploymentRevisionSummary,
-    #[serde(default)]
-    pub manifest: Value,
+    /// The canonical manifest. A compacted revision's has no members.
+    pub manifest: DeploymentManifest,
 }
 
 /// One page of committed revisions, newest first, with the head they were
 /// read against (`GET /api/v2/admin/deployments`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DeploymentsPage {
-    #[serde(default)]
     pub head_revision: u64,
-    #[serde(default)]
     pub epoch: u64,
     /// The revision this node serves.
-    #[serde(default)]
     pub applied_revision: u64,
-    #[serde(default)]
     pub data: Vec<DeploymentRevisionSummary>,
-    #[serde(default)]
     pub limit: u64,
     /// Pass back as `?cursor=` for the next, older page; absent on the last.
     /// Opaque: do not parse it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
 }
+
+// ============================================================
+// Provider package authoring
+// ============================================================
 
 fn default_scaffold_version() -> String {
     "1.0.0".to_string()
 }
 
 /// Request body to scaffold a new provider package (`POST /api/v2/admin/authoring/scaffold`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
 pub struct ScaffoldRequest {
     pub publisher: String,
     pub provider_id: String,
+    /// The package's semantic version; `1.0.0` when absent.
     #[serde(default = "default_scaffold_version")]
     pub version: String,
-    #[serde(alias = "implementation")]
-    pub kind: String,
+    pub kind: ImplementationKind,
 }
 
-/// Response from scaffolding a provider package (`POST /api/v2/admin/authoring/scaffold`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// A generated provider package (`POST /api/v2/admin/authoring/scaffold`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ScaffoldResponse {
-    #[serde(default)]
     pub publisher: String,
-    #[serde(default)]
     pub provider_id: String,
-    #[serde(default)]
     pub version: String,
-    #[serde(default)]
-    pub implementation: String,
-    #[serde(default)]
+    pub implementation: ImplementationKind,
+    /// The digest the files pack to.
     pub package_digest: String,
-    #[serde(default)]
+    /// Relative path → the file, as UTF-8 text or `base64:<…>`.
     pub files: BTreeMap<String, String>,
 }
 
-/// Response from linting a provider package (`POST /api/v2/admin/authoring/lint`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// A provider package's lint report (`POST /api/v2/admin/authoring/lint`):
+/// `200` when it is valid, `422` when it is not, `400` when a file does not
+/// decode.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct LintResponse {
-    #[serde(default)]
     pub valid: bool,
-    #[serde(default)]
-    pub publisher: Option<String>,
-    #[serde(default)]
+    /// The provider id `connector.json` declares; absent when it could not
+    /// be read.
     pub provider_id: Option<String>,
-    #[serde(default)]
+    /// The version `connector.json` declares; absent when it could not be
+    /// read.
     pub version: Option<String>,
-    #[serde(default)]
-    pub implementation: Option<String>,
-    #[serde(default)]
-    pub package_digest: Option<String>,
-    #[serde(default)]
+    /// The implementation kind `connector.json` declares; absent when it
+    /// could not be read or is not one of the kinds.
+    pub implementation: Option<ImplementationKind>,
+    /// Each problem, `CODE: where`.
     pub errors: Vec<String>,
-    #[serde(default)]
-    pub warnings: Vec<String>,
 }
 
-/// Response from deterministically packing a provider package (`POST /api/v2/admin/authoring/pack`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// A deterministically packed provider package (`POST /api/v2/admin/authoring/pack`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct PackResponse {
-    #[serde(default)]
     pub package_digest: String,
-    #[serde(default)]
-    pub inventory: Value,
-    #[serde(default)]
+    /// The package's files, `inventory.json` included, ready for upload.
     pub files: BTreeMap<String, String>,
 }
 
-/// Request body for Enterprise-to-Community edition transition preflight (`POST /api/v2/admin/edition-transition-preflight`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+// ============================================================
+// Edition transition preflight
+// ============================================================
+
+/// Request body for Enterprise-to-Community edition transition preflight
+/// (`POST /api/v2/admin/edition-transition-preflight`). The body is optional.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
 pub struct EditionTransitionPreflightRequest {
-    #[serde(default)]
+    /// The revision to inspect; the head when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<u64>,
 }
 
 /// Enterprise-to-Community edition transition preflight report (`POST /api/v2/admin/edition-transition-preflight`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct EditionTransitionPreflightResponse {
-    #[serde(default)]
-    pub target_edition: String,
-    #[serde(default)]
+    pub target_edition: EditionTier,
     pub transition_allowed: bool,
-    #[serde(default)]
     pub inspected_revision: u64,
-    #[serde(default)]
+    /// `publisher.provider_id` of each provider only Enterprise serves.
     pub incompatible_providers: Vec<String>,
-    #[serde(default)]
     pub incompatible_channels: Vec<String>,
-    #[serde(default)]
-    pub findings: Vec<Value>,
-    #[serde(default)]
+    pub findings: Vec<EditionFinding>,
     pub backup_retention_checklist: Vec<String>,
+}
+
+/// One reason a revision cannot move to the target edition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct EditionFinding {
+    pub code: EditionFindingCode,
+    /// `publisher.provider_id`.
+    pub provider: String,
+    pub digest: String,
+    pub message: String,
 }
 
 // ============================================================
@@ -729,11 +763,11 @@ pub enum Definition {
 
 impl Definition {
     /// The kind, as a manifest member spells it.
-    pub fn kind(&self) -> &'static str {
+    pub fn kind(&self) -> EntityKind {
         match self {
-            Self::Workflow(_) => "workflow",
-            Self::Channel(_) => "channel",
-            Self::Plugin(_) => "plugin",
+            Self::Workflow(_) => EntityKind::Workflow,
+            Self::Channel(_) => EntityKind::Channel,
+            Self::Plugin(_) => EntityKind::Plugin,
         }
     }
 }
@@ -836,34 +870,31 @@ pub struct PluginDefinition {
 }
 
 /// A stored definition (`POST`/`GET /api/v2/admin/definitions`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DefinitionResponse {
     /// `sha256:…` of the canonical definition: what a manifest member's
     /// `definition_digest` names.
     pub digest: String,
-    pub kind: String,
+    pub kind: EntityKind,
     pub size_bytes: u64,
     /// What the engine reports about a workflow and does not refuse — a
     /// `$`-prefixed key it emits with one `$` stripped, a `validation` whose
     /// failure stops nothing. Informational: the definition was stored.
     /// Empty for a channel or a plugin.
-    #[serde(default)]
     pub advisories: Vec<DefinitionAdvisory>,
 }
 
 /// One advisory on an uploaded definition ([`DefinitionResponse::advisories`]).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DefinitionAdvisory {
     /// A stable id for the kind of finding (`engine.unguarded_validation`,
-    /// `logic.escaped_template_key`, `engine.advisory`).
-    #[serde(default)]
+    /// `logic.escaped_template_key`, `engine.advisory`). A later version
+    /// may add ids, so this is an identifier, not an enum.
     pub check: String,
     /// Where in the definition it was found, as the engine names it.
-    #[serde(default)]
     pub path: String,
-    #[serde(default)]
     pub message: String,
 }
 
@@ -877,99 +908,30 @@ pub struct TestDefinitionRequest {
     pub definition: WorkflowDefinition,
     /// The message's `data`.
     pub data: Value,
-    /// The message's metadata, normalised the way an ingress builds it.
+    /// The message's metadata, normalised the way an ingress builds it;
+    /// empty when absent.
     #[serde(default)]
     pub metadata: Value,
 }
 
 /// One run of a workflow definition (`POST /api/v2/admin/definitions/test`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct TestDefinitionResponse {
     /// Whether the workflow's condition matched the supplied input.
-    #[serde(default)]
     pub matched: bool,
-    /// The run's trace: the context it started from (`initial`), then each
-    /// step with its `task_id`, `result` (`executed` | `skipped` | `failed`)
-    /// and the changes it made.
-    #[serde(default)]
+    /// The engine's trace of the run: the context it started from
+    /// (`initial`), then each step with its `task_id`, `result`
+    /// (`executed` | `skipped` | `failed`) and the changes it made. Its
+    /// shape is dataflow-rs's, so it is carried as the engine writes it.
     pub trace: Value,
     /// The message data after the pipeline ran.
-    #[serde(default)]
     pub output: Value,
-    #[serde(default)]
+    /// The errors the engine recorded on the message, as it records them.
     pub errors: Vec<Value>,
     /// Why the run stopped short, when it did.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-}
-
-// ============================================================
-// Compiled deployments: what `orion-server compile --format deployment`
-// writes and `orion-cli deployments apply -d` reads
-// ============================================================
-
-/// The `schema_version` a compiled deployment directory's
-/// `deployment.json` carries.
-pub const COMPILED_DEPLOYMENT_SCHEMA_VERSION: u64 = 1;
-
-/// `deployment.json` of a compiled deployment directory: the members a
-/// deployment deploys, with no revisions. Only the target knows which
-/// revision a changed definition must get, so the deployer assigns them.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CompiledDeployment {
-    #[serde(default)]
-    pub schema_version: u64,
-    #[serde(default)]
-    pub members: Vec<CompiledMember>,
-}
-
-/// One member of a compiled deployment. A workflow, channel or plugin names
-/// its `definition` by digest (the file `definitions/<hex>.json`); a
-/// connection names its `connection` file (`connections/<id>.json`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CompiledMember {
-    #[serde(default)]
-    pub kind: String,
-    #[serde(default)]
-    pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub definition: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub connection: Option<String>,
-    #[serde(default)]
-    pub requires: Vec<CompiledRequirement>,
-}
-
-/// A member another member depends on, by kind and id. The deployer
-/// resolves it to the revision it assigns that member.
-#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct CompiledRequirement {
-    #[serde(default)]
-    pub kind: String,
-    #[serde(default)]
-    pub id: String,
-}
-
-/// `connections/<id>.json` of a compiled deployment directory: a connection
-/// over a built-in driver, without a revision. Its fields are those of a
-/// [`CreateConnectionRevisionRequest`] for the connection it names, plus the
-/// driver the provider digest names.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CompiledConnection {
-    #[serde(default)]
-    pub connection_id: String,
-    /// The built-in driver, such as `org.orion.postgresql`.
-    #[serde(default)]
-    pub driver: String,
-    /// The driver's provider digest, as `GET /runtime-capabilities` reports
-    /// it under `provider_backends[].package_digest`.
-    #[serde(default)]
-    pub provider_digest: String,
-    #[serde(default)]
-    pub public_config: Value,
-    #[serde(default)]
-    pub secret_locators: BTreeMap<String, String>,
 }
 
 #[cfg(test)]
@@ -977,26 +939,63 @@ pub struct CompiledConnection {
 mod tests {
     use super::*;
 
+    /// An answer missing a field is a decode error, not a silent default:
+    /// a server that drops one is caught by its client.
     #[test]
-    fn v2_dtos_tolerate_empty_json_objects() {
-        let cap: RuntimeCapabilitiesResponse = serde_json::from_str("{}").expect("default decode");
-        assert!(cap.api_version.is_empty());
-        assert!(cap.wasm_worlds.is_empty());
+    fn an_answer_missing_a_field_does_not_decode() {
+        assert!(serde_json::from_str::<RuntimeCapabilitiesResponse>("{}").is_err());
+        assert!(
+            serde_json::from_str::<DeploymentReceiptResponse>(r#"{"committed_revision": 3}"#)
+                .is_err()
+        );
+        // A field the client does not know is not a change.
+        let page: DeploymentsPage = serde_json::from_str(
+            r#"{"head_revision":1,"epoch":1,"applied_revision":1,"data":[],"limit":50,
+                "something_new":true}"#,
+        )
+        .unwrap();
+        assert_eq!(page.head_revision, 1);
+    }
 
-        let receipt: DeploymentReceiptResponse =
-            serde_json::from_str(r#"{"committed_revision": 3}"#).expect("partial decode");
-        assert_eq!(receipt.committed_revision, 3);
-        assert!(!receipt.replayed);
+    /// A request carrying a field the server does not read is refused, not
+    /// half-applied.
+    #[test]
+    fn a_request_with_an_unknown_field_is_refused() {
+        for (what, body) in [
+            (
+                "connection",
+                r#"{"revision":1,"provider_digest":"d","public_config":{},"config":{}}"#,
+            ),
+            ("upload", r#"{"files":{},"entries":[]}"#),
+            (
+                "scaffold",
+                r#"{"publisher":"p","provider_id":"i","kind":"rust","implementation":"rust"}"#,
+            ),
+            ("plan", r#"{"base_revision":0,"candidate_manifest":{}}"#),
+        ] {
+            let refused = match what {
+                "connection" => {
+                    serde_json::from_str::<CreateConnectionRevisionRequest>(body).is_err()
+                }
+                "upload" => serde_json::from_str::<UploadPackageRequest>(body).is_err(),
+                "scaffold" => serde_json::from_str::<ScaffoldRequest>(body).is_err(),
+                _ => serde_json::from_str::<CreateDeploymentPlanRequest>(body).is_err(),
+            };
+            assert!(refused, "{what}: {body}");
+        }
+        let manifest = r#"{"schema_version":2,"providers":[],"members":[],"edition":"community"}"#;
+        assert!(serde_json::from_str::<DeploymentManifest>(manifest).is_err());
     }
 
     /// A `POST /deployments` body is an apply or a rollback, never both, and
     /// an apply always names the digest it reviewed.
     #[test]
     fn a_deployment_request_is_an_apply_or_a_rollback() {
-        let apply: CreateDeploymentRequest = serde_json::from_str(
-            r#"{"idempotency_key":"k","base_revision":1,"manifest":{},"reason":"r",
-                "reviewed_manifest_digest":"sha256:x"}"#,
-        )
+        let manifest = r#"{"schema_version":2,"providers":[],"members":[]}"#;
+        let apply: CreateDeploymentRequest = serde_json::from_str(&format!(
+            r#"{{"idempotency_key":"k","base_revision":1,"manifest":{manifest},"reason":"r",
+                "reviewed_manifest_digest":"sha256:x"}}"#
+        ))
         .expect("apply");
         assert!(matches!(apply, CreateDeploymentRequest::Apply(ref a) if a.base_revision == 1));
         let rollback: CreateDeploymentRequest =
@@ -1007,13 +1006,18 @@ mod tests {
             CreateDeploymentRequest::Rollback(ref r) if r.rollback_to == 1 && r.reason == "rollback"
         ));
         for refused in [
-            r#"{"idempotency_key":"k","base_revision":1,"manifest":{},"reason":"r"}"#,
-            r#"{"idempotency_key":"k","base_revision":1}"#,
-            r#"{"idempotency_key":"k","base_revision":1,"manifest":{},"rollback_to":1,"reason":"r","reviewed_manifest_digest":"d"}"#,
-            r#"{"idempotency_key":"k","base_revision":1,"rollback_to":1,"surprise":true}"#,
+            format!(
+                r#"{{"idempotency_key":"k","base_revision":1,"manifest":{manifest},"reason":"r"}}"#
+            ),
+            r#"{"idempotency_key":"k","base_revision":1}"#.to_string(),
+            format!(
+                r#"{{"idempotency_key":"k","base_revision":1,"manifest":{manifest},"rollback_to":1,"reason":"r","reviewed_manifest_digest":"d"}}"#
+            ),
+            r#"{"idempotency_key":"k","base_revision":1,"rollback_to":1,"surprise":true}"#
+                .to_string(),
         ] {
             assert!(
-                serde_json::from_str::<CreateDeploymentRequest>(refused).is_err(),
+                serde_json::from_str::<CreateDeploymentRequest>(&refused).is_err(),
                 "{refused}"
             );
         }
@@ -1023,18 +1027,24 @@ mod tests {
         assert!(wire.get("Rollback").is_none());
     }
 
+    /// A manifest reads back as it was written: `requires` spelled out,
+    /// what is absent left out.
     #[test]
-    fn scaffold_request_accepts_both_kind_and_implementation() {
-        let req_kind: ScaffoldRequest = serde_json::from_str(
-            r#"{"publisher":"acme","provider_id":"crm","version":"0.1.0","kind":"workflow"}"#,
-        )
-        .expect("decode kind");
-        assert_eq!(req_kind.kind, "workflow");
-
-        let req_impl: ScaffoldRequest = serde_json::from_str(
-            r#"{"publisher":"acme","provider_id":"crm","version":"0.1.0","implementation":"wasm"}"#,
-        )
-        .expect("decode implementation alias");
-        assert_eq!(req_impl.kind, "wasm");
+    fn a_manifest_round_trips() {
+        let text = r#"{"schema_version":2,"providers":[],"members":[
+            {"entity":{"kind":"channel","id":"c","revision":1},"definition_digest":"sha256:a",
+             "requires":[{"kind":"workflow","id":"w","revision":2}]},
+            {"entity":{"kind":"workflow","id":"w","revision":2},"definition_digest":"sha256:b"}]}"#;
+        let manifest: DeploymentManifest = serde_json::from_str(text).unwrap();
+        assert_eq!(manifest.members[0].requires[0].kind, EntityKind::Workflow);
+        assert!(manifest.members[1].requires.is_empty());
+        let wire = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(wire["members"][1]["requires"], serde_json::json!([]));
+        assert!(wire["members"][1].get("rollouts").is_none());
+        assert!(wire.get("provider_lock_digest").is_none());
+        assert_eq!(
+            serde_json::from_value::<DeploymentManifest>(wire).unwrap(),
+            manifest
+        );
     }
 }

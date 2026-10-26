@@ -32,9 +32,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router};
 use base64::Engine as _;
-use orion_api::v2::RuntimeCapabilitiesResponse;
+use orion_api::v2::{
+    DeploymentHead, NativeSchedulerStatus, NodeStatus, ProviderBackendInfo, QuarantinedEntity,
+    RuntimeCapabilitiesResponse,
+};
 use orion_api::{ErrorBody, ErrorEnvelope, ErrorKind};
-use serde_json::json;
 
 use crate::errors::OrionError;
 use crate::extensions::deployment_store::{DeploymentError, DeploymentErrorKind};
@@ -216,113 +218,89 @@ pub(super) fn decode_files_map(
     path = "/api/v2/admin/runtime-capabilities",
     tag = "Deployments",
     summary = "Discover runtime capabilities and edition boundaries",
-    description = "Returns the server's active v2 edition (`community` or `enterprise`), registered channel drivers, provider backends, the plugin Wasm world, deployment head revision, and reconciler status.",
+    description = "Returns the v2 contract revision this server speaks (`api_version` — a client that speaks another must stop), its edition (`community` or `enterprise`), registered channel drivers and provider backends (each built-in driver with the digest a connection revision names), the plugin Wasm world, the deployment head, and this node's reconciler status.",
     responses(
         (status = 200, description = "Runtime capabilities report", body = RuntimeCapabilitiesResponse),
     )
 )]
 pub(crate) async fn get_runtime_capabilities(
     State(state): State<AppState>,
-) -> V2Result<Json<RuntimeCapabilitiesResponse>> {
+) -> Json<RuntimeCapabilitiesResponse> {
     let comp = &state.composition;
-    let (head_rev, epoch) = state.deployments.current_head();
-    let local_status = state.reconciler.local_status();
-    let policy_id = comp.admission().policy_id().to_string();
-    let edition = comp.edition().as_str();
-    let drivers = comp.providers().registered_drivers();
-    let mut rust_providers = Vec::new();
-    let mut workflow_providers = Vec::new();
-    let mut providers = Vec::new();
-    for (kind, id) in drivers {
-        match kind {
-            crate::extensions::ImplementationKind::Rust => rust_providers.push(id.clone()),
-            crate::extensions::ImplementationKind::Workflow => workflow_providers.push(id.clone()),
-            crate::extensions::ImplementationKind::Wasm => {}
-        }
-        // A built-in driver's digest is what a connection revision names
-        // as its provider, so it is reported where a client looks for it.
-        let mut backend = json!({
-            "kind": kind.as_str(),
-            "driver_id": id,
-        });
-        if let Some(digest) = crate::extensions::foundation::builtin_provider_digest(&id) {
-            backend["package_digest"] = json!(digest);
-        }
-        providers.push(backend);
-    }
-
-    Ok(Json(RuntimeCapabilitiesResponse {
-        api_version: "v2".to_string(),
-        edition: edition.to_string(),
-        admission_policy_id: policy_id,
-        registered_channel_drivers: comp.channels().protocol_ids(),
+    let (revision, epoch) = state.deployments.current_head();
+    let provider_backends = comp
+        .providers()
+        .registered_drivers()
+        .into_iter()
+        .map(|(kind, driver_id)| ProviderBackendInfo {
+            kind,
+            // A built-in driver's digest is what a connection revision
+            // names as its provider, so it is reported where a client
+            // looks for it.
+            package_digest: crate::extensions::foundation::builtin_provider_digest(&driver_id)
+                .map(|d| d.to_string()),
+            driver_id,
+        })
+        .collect();
+    Json(RuntimeCapabilitiesResponse {
+        api_version: orion_api::v2::API_VERSION,
+        edition: comp.edition(),
+        admission_policy_id: comp.admission().policy_id().to_string(),
+        channel_drivers: comp.channels().protocol_ids(),
         schema_profiles: vec![crate::extensions::PROFILE_ID.to_string()],
         wasm_worlds: vec![crate::plugin::manifest::ABI.to_string()],
-        provider_backends: providers,
-        registered_rust_providers: rust_providers,
-        registered_workflow_providers: workflow_providers,
-        deployment_head: json!({
-            "revision": head_rev,
-            "epoch": epoch,
-        }),
-        reconciler: json!({
-            "applied_revision": local_status.applied_revision,
-            "backoff_attempt": local_status.backoff_attempt,
-            "quarantined_entities": local_status.quarantined_entities,
-        }),
-        native_scheduler: json!({
-            "in_flight": state.native_scheduler.in_flight(),
-            "max_in_flight": state.native_scheduler.max_in_flight(),
-        }),
-        active_deployment_revision: local_status.applied_revision,
-        node_status: serde_json::to_value(&local_status)?,
-    }))
+        provider_backends,
+        deployment_head: DeploymentHead { revision, epoch },
+        native_scheduler: NativeSchedulerStatus {
+            in_flight: state.native_scheduler.in_flight() as u64,
+            max_in_flight: state.native_scheduler.max_in_flight() as u64,
+        },
+        node_status: node_status_dto(&state.reconciler.local_status()),
+    })
+}
+
+/// A node's reconciler status as the wire carries it.
+pub(crate) fn node_status_dto(
+    status: &crate::extensions::reconciler::RuntimeNodeStatus,
+) -> NodeStatus {
+    NodeStatus {
+        node_id: status.identity.node_id.clone(),
+        boot_id: status.identity.boot_id.clone(),
+        desired_revision: status.desired_revision,
+        applied_revision: status.applied_revision,
+        applied_manifest_digest: status.applied_manifest_digest.clone(),
+        configuration_degraded: status.configuration_degraded,
+        quarantined_entities: status
+            .quarantined_entities
+            .iter()
+            .map(|q| QuarantinedEntity {
+                entity: entity_ref_dto(&q.entity),
+                reason: q.reason.clone(),
+            })
+            .collect(),
+        last_error: status.last_error.clone(),
+        backoff_attempt: status.backoff_attempt,
+        backoff_delay_ms: status.backoff_delay_ms,
+        security_lease_expires_at_ms: status.security_lease_expires_at_ms,
+        retained_revisions: status.retained_revisions.iter().copied().collect(),
+    }
+}
+
+/// A member identity as the wire carries it.
+pub(crate) fn entity_ref_dto(
+    entity: &crate::extensions::deployment_store::EntityRef,
+) -> orion_api::v2::EntityRef {
+    orion_api::v2::EntityRef {
+        kind: entity.kind,
+        id: entity.id.clone(),
+        revision: entity.revision.get(),
+    }
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
-    use super::*;
-    use serde_json::Value;
-
-    #[test]
-    fn v2_admin_capabilities_and_dtos_match_wire_contract() {
-        let comp = crate::extensions::CompositionRoot::community()
-            .build_in_memory()
-            .unwrap();
-        let store = comp.providers().deployment_store();
-        let (head_rev, epoch) = store.current_head();
-        let reconciler = crate::extensions::NodeReconciler::new(store.clone(), "node-a", "boot-1");
-        let local_status = reconciler.local_status();
-        let policy_id = comp.admission().policy_id();
-        let scheduler = crate::extensions::NativeWorkScheduler::new(4);
-        let payload = json!({
-            "api_version": "v2",
-            "edition": "community",
-            "schema_profiles": [crate::extensions::PROFILE_ID],
-            "wasm_worlds": [crate::plugin::manifest::ABI],
-            "channel_drivers": comp.channels().protocol_ids(),
-            "provider_backends": [],
-            "admission_policy_id": policy_id,
-            "deployment_head": { "revision": head_rev, "epoch": epoch },
-            "reconciler": {
-                "applied_revision": local_status.applied_revision,
-                "backoff_attempt": local_status.backoff_attempt,
-                "quarantined_entities": local_status.quarantined_entities,
-            },
-            "native_scheduler": {
-                "in_flight": scheduler.in_flight(),
-                "max_in_flight": scheduler.max_in_flight(),
-            }
-        });
-
-        let dto: orion_api::v2::RuntimeCapabilitiesResponse =
-            serde_json::from_value(payload).expect("deserialize RuntimeCapabilitiesResponse");
-        assert_eq!(dto.api_version, "v2");
-        assert_eq!(dto.edition, "community");
-        assert_eq!(dto.wasm_worlds, vec!["orion:plugin@1.0.0"]);
-        assert_eq!(dto.registered_channel_drivers, vec!["cron", "http", "rest"]);
-    }
+    use serde_json::{Value, json};
 
     /// The v2 admin router behind `orion_client::V2Admin`: every typed
     /// client call, sent through the real routes.
@@ -411,8 +389,18 @@ mod tests {
 
         // 1. Capabilities
         let cap = client.runtime_capabilities().await.unwrap();
-        assert_eq!(cap.api_version, "v2");
-        assert_eq!(cap.edition, "community");
+        assert_eq!(cap.api_version, orion_api::v2::API_VERSION);
+        assert_eq!(client.server_api_version().await.unwrap(), Some(1));
+        assert_eq!(cap.edition, EditionTier::Community);
+        assert_eq!(cap.wasm_worlds, vec!["orion:plugin@1.0.0"]);
+        assert_eq!(cap.channel_drivers, vec!["cron", "http", "rest"]);
+        assert_eq!(cap.node_status.node_id, "node-cli-test");
+        assert!(
+            cap.provider_backends
+                .iter()
+                .any(|b| b.driver_id == "org.orion.sqlite" && b.package_digest.is_some()),
+            "{cap:?}"
+        );
 
         // 2. Scaffold, lint, pack
         let scaffold = client
@@ -420,12 +408,12 @@ mod tests {
                 publisher: "org.orion".to_string(),
                 provider_id: "org.orion.memory-cache".to_string(),
                 version: "2.0.0".to_string(),
-                kind: "rust".to_string(),
+                kind: ImplementationKind::Rust,
             })
             .await
             .unwrap();
         assert!(!scaffold.files.is_empty());
-        assert_eq!(scaffold.implementation, "rust");
+        assert_eq!(scaffold.implementation, ImplementationKind::Rust);
         let bundle = UploadPackageRequest {
             files: scaffold.files.clone(),
             ..Default::default()
@@ -443,8 +431,8 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(uploaded.digest, packed.package_digest);
-        let digest = uploaded.digest.clone();
+        assert_eq!(uploaded.package.digest, packed.package_digest);
+        let digest = uploaded.package.digest.clone();
         let read = client.get_connector_package(&digest).await.unwrap();
         assert_eq!(read.package.digest, digest);
         assert!(read.admission.is_none(), "not admitted yet");
@@ -495,30 +483,30 @@ mod tests {
         assert_eq!(revisions.count, 1);
         let probe = client.probe_connection("cache-main", 1).await.unwrap();
         assert!(probe.healthy, "{probe:?}");
-        assert_eq!(probe.status, "healthy");
+        assert!(probe.details.error.is_none(), "{probe:?}");
         let missing = client.probe_connection("cache-main", 2).await.unwrap_err();
         assert_eq!(missing.status().map(|s| s.as_u16()), Some(404));
 
         // 5. Plan, then apply with the reviewed digest
-        let manifest = json!({
-            "schema_version": 2,
-            "providers": [{
-                "publisher": "org.orion",
-                "provider_id": "org.orion.memory-cache",
-                "version": "2.0.0",
-                "digest": digest,
+        let manifest = DeploymentManifest {
+            providers: vec![ManifestProvider {
+                publisher: "org.orion".to_string(),
+                provider_id: "org.orion.memory-cache".to_string(),
+                version: "2.0.0".to_string(),
+                digest: digest.clone(),
             }],
-            "members": [{
-                "entity": {
-                    "kind": "connection",
-                    "id": "cache-main",
-                    "revision": 1,
+            ..DeploymentManifest::of_members(vec![ManifestMember {
+                entity: EntityRef {
+                    kind: EntityKind::Connection,
+                    id: "cache-main".to_string(),
+                    revision: 1,
                 },
-                "definition_digest": created.connection.configuration_digest,
-                "requires": [],
-                "rollouts": [],
-            }],
-        });
+                definition_digest: created.connection.configuration_digest.clone(),
+                owning_package: None,
+                requires: Vec::new(),
+                rollouts: Vec::new(),
+            }])
+        };
         let plan = client
             .plan_deployment(&CreateDeploymentPlanRequest {
                 base_revision: 0,
@@ -529,8 +517,8 @@ mod tests {
         assert!(plan.reviewed_manifest_digest.starts_with("sha256:"));
         assert_eq!(
             plan.added_entities,
-            vec![DeploymentEntityRef {
-                kind: "connection".into(),
+            vec![EntityRef {
+                kind: EntityKind::Connection,
                 id: "cache-main".into(),
                 revision: 1,
             }]
@@ -582,7 +570,7 @@ mod tests {
         let got = client.get_deployment(1).await.unwrap();
         assert_eq!(got.summary.revision, 1);
         assert_eq!(got.summary.manifest_digest, plan.reviewed_manifest_digest);
-        assert_eq!(got.manifest["members"][0]["entity"]["id"], "cache-main");
+        assert_eq!(got.manifest, manifest);
 
         // 7. Rollback: a new revision deploying revision 1 again
         let rolled = client
@@ -616,7 +604,7 @@ mod tests {
             .revoke_connector_package(&digest, &RevokePackageRequest::default())
             .await
             .unwrap();
-        assert!(revoked.revoked);
+        assert_eq!(revoked.package_digest, digest);
         let read = client.get_connector_package(&digest).await.unwrap();
         assert!(read.package.revoked);
     }

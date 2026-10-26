@@ -10,29 +10,8 @@ use crate::extensions::ProviderRef;
 use crate::extensions::package_identity::canonical_bytes;
 use crate::extensions::{Digest, Revision};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EntityKind {
-    Workflow,
-    Channel,
-    Connection,
-    Source,
-    Model,
-    Plugin,
-}
-
-impl EntityKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Workflow => "workflow",
-            Self::Channel => "channel",
-            Self::Connection => "connection",
-            Self::Source => "source",
-            Self::Model => "model",
-            Self::Plugin => "plugin",
-        }
-    }
-}
+/// The kind of a deployment member: the wire's vocabulary.
+pub use orion_api::v2::EntityKind;
 
 /// Tagged integer-revision reference to an immutable deployment entity (`V2-03.1`).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -162,6 +141,59 @@ impl CanonicalManifest {
                 DeploymentError::new(DeploymentErrorKind::InvalidManifestJson, e.to_string())
             })
         })
+    }
+
+    /// The manifest a request carries, checked: [`Self::from_json`] over
+    /// its wire form, so a malformed digest or a revision of `0` is refused
+    /// by the code that names it.
+    pub fn from_wire(wire: &orion_api::v2::DeploymentManifest) -> Result<Self, DeploymentError> {
+        let value = serde_json::to_value(wire).map_err(|e| {
+            DeploymentError::new(DeploymentErrorKind::InvalidManifestJson, e.to_string())
+        })?;
+        Self::from_json(&value)
+    }
+
+    /// The manifest as the wire spells it.
+    pub fn to_wire(&self) -> orion_api::v2::DeploymentManifest {
+        use orion_api::v2 as wire;
+        let entity = |e: &EntityRef| wire::EntityRef {
+            kind: e.kind,
+            id: e.id.clone(),
+            revision: e.revision.get(),
+        };
+        wire::DeploymentManifest {
+            schema_version: self.schema_version,
+            providers: self
+                .providers
+                .iter()
+                .map(|p| wire::ManifestProvider {
+                    publisher: p.publisher.clone(),
+                    provider_id: p.provider_id.to_string(),
+                    version: p.version.clone(),
+                    digest: p.digest.to_string(),
+                })
+                .collect(),
+            provider_lock_digest: self.provider_lock_digest.clone(),
+            members: self
+                .members
+                .iter()
+                .map(|m| wire::ManifestMember {
+                    entity: entity(&m.entity),
+                    definition_digest: m.definition_digest.clone(),
+                    owning_package: m.owning_package.clone(),
+                    requires: m.requires.iter().map(entity).collect(),
+                    rollouts: m
+                        .rollouts
+                        .iter()
+                        .map(|r| wire::RolloutInterval {
+                            workflow_revision: r.workflow_revision,
+                            start_bucket: r.start_bucket,
+                            end_bucket: r.end_bucket,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
     }
 
     /// Validate ownership, singleton constraints, rollout partitions, and

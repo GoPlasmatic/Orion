@@ -19,10 +19,12 @@ workspace = true
 
 # Kept to what a trait signature names. Anything that would pull in a runtime
 # (tokio, sqlx, axum, reqwest) belongs in orion-server, behind a trait here.
-# orion-api is here for the two wire types a contract shares with it:
-# `Digest` (the CLI checks a digest the same way) and `FieldError` (what a
-# channel driver's validation answers, sent back as the admin API's error
-# details). Its optional `utoipa` feature stays off.
+# orion-api is here for the wire types a contract shares with it: `Digest`
+# (the CLI checks a digest the same way), `FieldError` (what a channel
+# driver's validation answers, sent back as the admin API's error details),
+# and the closed vocabularies the v2 wire carries too — `ImplementationKind`,
+# `ConnectorErrorClass`, `EffectStatus`, `EditionTier` — defined there once
+# and re-exported here. Its optional `utoipa` feature stays off.
 [dependencies]
 orion-api.workspace = true
 serde = { version = "1", features = ["derive"] }

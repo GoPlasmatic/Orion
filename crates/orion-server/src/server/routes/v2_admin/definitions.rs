@@ -61,7 +61,7 @@ pub(crate) async fn upload_definition(
         StatusCode::CREATED,
         Json(DefinitionResponse {
             digest: row.digest,
-            kind: definition.kind().to_string(),
+            kind: definition.kind(),
             size_bytes: row.size_bytes as u64,
             advisories,
         }),

@@ -343,7 +343,7 @@
             }
           },
           "400": {
-            "description": "Unsupported implementation kind",
+            "description": "A body that does not parse, such as an implementation kind that is not `rust`, `workflow` or `wasm` (`VALIDATION_ERROR`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2836,7 +2836,7 @@
           "Deployments"
         ],
         "summary": "Discover runtime capabilities and edition boundaries",
-        "description": "Returns the server's active v2 edition (`community` or `enterprise`), registered channel drivers, provider backends, the plugin Wasm world, deployment head revision, and reconciler status.",
+        "description": "Returns the v2 contract revision this server speaks (`api_version` — a client that speaks another must stop), its edition (`community` or `enterprise`), registered channel drivers and provider backends (each built-in driver with the digest a connection revision names), the plugin Wasm world, the deployment head, and this node's reconciler status.",
         "operationId": "get_runtime_capabilities",
         "responses": {
           "200": {
@@ -3880,20 +3880,23 @@
     "schemas": {
       "AdmitPackageRequest": {
         "type": "object",
-        "description": "Request body for admitting an uploaded provider package (`PUT /api/v2/admin/connector-packages/{digest}/admission`).",
+        "description": "Request body for admitting an uploaded provider package\n(`PUT /api/v2/admin/connector-packages/{digest}/admission`). The body is\noptional.",
         "properties": {
-          "lock": {}
-        }
+          "lock": {
+            "description": "The provider lock the admission must verify against."
+          }
+        },
+        "additionalProperties": false
       },
       "AdmitPackageResponse": {
         "type": "object",
-        "description": "Response from admitting a provider package (`PUT /api/v2/admin/connector-packages/{digest}/admission`).",
+        "description": "The admission recorded (`PUT /api/v2/admin/connector-packages/{digest}/admission`).",
+        "required": [
+          "admission"
+        ],
         "properties": {
           "admission": {
             "$ref": "#/components/schemas/ProviderAdmissionDto"
-          },
-          "status": {
-            "type": "string"
           }
         }
       },
@@ -3917,7 +3920,9 @@
           "idempotency_key": {
             "type": "string"
           },
-          "manifest": {},
+          "manifest": {
+            "$ref": "#/components/schemas/DeploymentManifest"
+          },
           "reason": {
             "type": "string",
             "description": "The audit reason the revision records."
@@ -3928,22 +3933,6 @@
           }
         },
         "additionalProperties": false
-      },
-      "ArchiveEntryDto": {
-        "type": "object",
-        "description": "A single file entry inside a provider package archive.",
-        "required": [
-          "path",
-          "content"
-        ],
-        "properties": {
-          "content": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          }
-        }
       },
       "AsyncSubmitResponse": {
         "type": "object",
@@ -4266,13 +4255,24 @@
       "ConnectionProbeResponse": {
         "type": "object",
         "description": "One health probe of a connection revision\n(`POST /api/v2/admin/connections/{id}/revisions/{revision}/probes`). A probe\nthat ran answers `200` whatever it found: `healthy` is the finding.",
+        "required": [
+          "connection_id",
+          "revision",
+          "driver_id",
+          "healthy",
+          "latency_ms",
+          "details"
+        ],
         "properties": {
           "connection_id": {
             "type": "string"
           },
-          "details": {},
+          "details": {
+            "$ref": "#/components/schemas/ProbeDetails"
+          },
           "driver_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The built-in driver, or the backend id of the provider package."
           },
           "healthy": {
             "type": "boolean"
@@ -4286,19 +4286,25 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
-          },
-          "status": {
-            "type": "string"
           }
         }
       },
       "ConnectionRevisionResponse": {
         "type": "object",
         "description": "An immutable connection revision (`GET /api/v2/admin/connections/{id}/revisions/{revision}`).",
+        "required": [
+          "connection_id",
+          "revision",
+          "provider_digest",
+          "public_config",
+          "secret_locators",
+          "bindings",
+          "configuration_digest"
+        ],
         "properties": {
           "bindings": {
             "type": "object",
-            "description": "Over a `workflow` provider package: the connection each of the\npackage's dependency aliases calls (`alias -> connection_id`).",
+            "description": "Over a `workflow` provider package: the connection each of the\npackage's dependency aliases calls (`alias -> connection_id`). Empty\nfor any other provider.",
             "additionalProperties": {
               "type": "string"
             },
@@ -4306,12 +4312,9 @@
               "type": "string"
             }
           },
-          "config": {},
-          "config_fingerprint": {
-            "type": "string"
-          },
           "configuration_digest": {
-            "type": "string"
+            "type": "string",
+            "description": "The digest over the public settings, the locators and the bindings:\nwhat a manifest member for this revision names as its\n`definition_digest`."
           },
           "connection_id": {
             "type": "string"
@@ -4319,8 +4322,9 @@
           "provider_digest": {
             "type": "string"
           },
-          "provider_ref": {},
-          "public_config": {},
+          "public_config": {
+            "description": "The connection's settings, as created."
+          },
           "revision": {
             "type": "integer",
             "format": "int64",
@@ -4328,7 +4332,7 @@
           },
           "secret_locators": {
             "type": "object",
-            "description": "Config path to secret reference (`env://`, `vault://`, …).",
+            "description": "Config path → secret reference (`env://`, `vault://`, …).",
             "additionalProperties": {
               "type": "string"
             },
@@ -4340,7 +4344,11 @@
       },
       "ConnectionsListResponse": {
         "type": "object",
-        "description": "Response listing connection revisions (`GET /api/v2/admin/connections`, `GET /api/v2/admin/connections/{id}/revisions`).",
+        "description": "Connection revisions, ordered by connection then revision\n(`GET /api/v2/admin/connections`, `GET /api/v2/admin/connections/{id}/revisions`).",
+        "required": [
+          "count",
+          "connections"
+        ],
         "properties": {
           "connections": {
             "type": "array",
@@ -4353,6 +4361,23 @@
             "minimum": 0
           }
         }
+      },
+      "ConnectorErrorClass": {
+        "type": "string",
+        "description": "The normalised class of a connector failure.",
+        "enum": [
+          "invalid_input",
+          "unauthorized",
+          "forbidden",
+          "not_found",
+          "conflict",
+          "rate_limited",
+          "unavailable",
+          "deadline",
+          "cancelled",
+          "provider_failure",
+          "contract_violation"
+        ]
       },
       "ConnectorLoadIssueResponse": {
         "type": "object",
@@ -4383,6 +4408,9 @@
       "ConnectorPackageResponse": {
         "type": "object",
         "description": "One connector provider package and its admission record\n(`GET /api/v2/admin/connector-packages/{digest}`).",
+        "required": [
+          "package"
+        ],
         "properties": {
           "admission": {
             "oneOf": [
@@ -4402,25 +4430,44 @@
       },
       "ConnectorPackageSummary": {
         "type": "object",
-        "description": "Summary of an uploaded/admitted connector provider package (`GET /api/v2/admin/connector-packages`).",
+        "description": "A stored connector provider package (`GET /api/v2/admin/connector-packages`).",
+        "required": [
+          "publisher",
+          "provider_id",
+          "version",
+          "digest",
+          "implementation",
+          "tier",
+          "admitted",
+          "revoked",
+          "artifact_state",
+          "manifest",
+          "distribution",
+          "inventory"
+        ],
         "properties": {
           "admitted": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Admitted and not revoked."
           },
           "artifact_state": {
-            "type": "string"
+            "$ref": "#/components/schemas/PackageArtifactState"
           },
           "digest": {
-            "type": "string"
+            "type": "string",
+            "description": "The package digest: `sha256:<64 lowercase hex>`."
           },
-          "distribution": {},
+          "distribution": {
+            "description": "The package's `distribution.json`."
+          },
           "implementation": {
-            "type": "string"
+            "$ref": "#/components/schemas/ImplementationKind"
           },
-          "inventory": {},
-          "manifest": {},
-          "package_digest": {
-            "type": "string"
+          "inventory": {
+            "description": "The package's `inventory.json`."
+          },
+          "manifest": {
+            "description": "The package's `connector.json`."
           },
           "provider_id": {
             "type": "string"
@@ -4432,7 +4479,8 @@
             "type": "boolean"
           },
           "tier": {
-            "type": "string"
+            "$ref": "#/components/schemas/EditionTier",
+            "description": "The tier `distribution.json` declares; `community` when it declares\nnone."
           },
           "version": {
             "type": "string"
@@ -4441,7 +4489,12 @@
       },
       "ConnectorPackagesListResponse": {
         "type": "object",
-        "description": "Response listing connector provider packages (`GET /api/v2/admin/connector-packages`).",
+        "description": "Every stored package, and every admission record (`GET /api/v2/admin/connector-packages`).",
+        "required": [
+          "count",
+          "packages",
+          "admissions"
+        ],
         "properties": {
           "admissions": {
             "type": "array",
@@ -4463,7 +4516,14 @@
       },
       "ConvergenceStatusResponse": {
         "type": "object",
-        "description": "Node/cluster convergence report for a committed deployment revision (`GET /api/v2/admin/deployments/{revision}/convergence`).",
+        "description": "Node/cluster convergence on a committed deployment revision (`GET /api/v2/admin/deployments/{revision}/convergence`).",
+        "required": [
+          "converged",
+          "target_revision",
+          "converged_nodes",
+          "pending_nodes",
+          "degraded_nodes"
+        ],
         "properties": {
           "converged": {
             "type": "boolean"
@@ -4498,12 +4558,13 @@
         "description": "Request body to create an immutable connection revision\n(`POST /api/v2/admin/connections/{id}/revisions`). The connection is the\none the path names.",
         "required": [
           "revision",
-          "provider_digest"
+          "provider_digest",
+          "public_config"
         ],
         "properties": {
           "bindings": {
             "type": "object",
-            "description": "Over a `workflow` provider package: which connection each of the\npackage's declared dependency aliases calls (`alias -> connection_id`).\nEvery alias must be bound, and each target must be a stored\nconnection; a deployment member for this connection must require each\nbound connection. Empty for any other provider.",
+            "description": "Over a `workflow` provider package: which connection each of the\npackage's declared dependency aliases calls (`alias -> connection_id`).\nEvery alias must be bound, and each target must be a stored\nconnection; a deployment member for this connection must require each\nbound connection. Absent means none, as it must be for any other\nprovider.",
             "additionalProperties": {
               "type": "string"
             },
@@ -4525,7 +4586,7 @@
           },
           "secret_locators": {
             "type": "object",
-            "description": "Where each credential comes from: a config path (`connection_string`,\n`auth.token`, `auth.client_secret`, …) to a secret reference such as\n`env://ORDERS_DB_URL`. Placed at that path when the connection is used.",
+            "description": "Where each credential comes from: a config path (`connection_string`,\n`auth.token`, `auth.client_secret`, …) to a secret reference such as\n`env://ORDERS_DB_URL`. Placed at that path when the connection is\nused. Absent means none.",
             "additionalProperties": {
               "type": "string"
             },
@@ -4538,13 +4599,13 @@
       },
       "CreateConnectionRevisionResponse": {
         "type": "object",
-        "description": "Response from creating an immutable connection revision (`POST /api/v2/admin/connections/{id}/revisions`).",
+        "description": "A created (or, for identical content, the stored) connection revision\n(`POST /api/v2/admin/connections/{id}/revisions`, `201`).",
+        "required": [
+          "connection"
+        ],
         "properties": {
           "connection": {
             "$ref": "#/components/schemas/ConnectionRevisionResponse"
-          },
-          "status": {
-            "type": "string"
           }
         }
       },
@@ -4562,7 +4623,9 @@
             "description": "The head the candidate is planned on: `0` before the first apply.",
             "minimum": 0
           },
-          "manifest": {}
+          "manifest": {
+            "$ref": "#/components/schemas/DeploymentManifest"
+          }
         },
         "additionalProperties": false
       },
@@ -4579,7 +4642,13 @@
       },
       "CreateDeploymentResponse": {
         "type": "object",
-        "description": "A committed apply or rollback (`POST /api/v2/admin/deployments`, `202`).",
+        "description": "A committed apply or rollback (`POST /api/v2/admin/deployments`, `202`):\nthe revision is committed, and nodes converge on it.",
+        "required": [
+          "committed_revision",
+          "receipt",
+          "warnings",
+          "evaluation"
+        ],
         "properties": {
           "committed_revision": {
             "type": "integer",
@@ -4587,15 +4656,8 @@
             "minimum": 0
           },
           "evaluation": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/ConvergenceStatusResponse",
-                "description": "This node's convergence on the committed revision, once it tried to\nbuild it."
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "$ref": "#/components/schemas/ConvergenceStatusResponse",
+            "description": "This node's convergence on the committed revision, after it tried to\nbuild it."
           },
           "local_error": {
             "type": [
@@ -4607,16 +4669,12 @@
           "receipt": {
             "$ref": "#/components/schemas/DeploymentReceiptResponse"
           },
-          "status": {
-            "type": "string",
-            "description": "Always `accepted`: the revision is committed; nodes converge on it."
-          },
           "warnings": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "What committing this revision does not do — a rollback does not\nreverse an external effect already made."
+            "description": "What committing this revision does not do — a rollback does not\nreverse an external effect already made. Empty for an apply."
           }
         }
       },
@@ -5688,10 +5746,15 @@
       "DefinitionAdvisory": {
         "type": "object",
         "description": "One advisory on an uploaded definition ([`DefinitionResponse::advisories`]).",
+        "required": [
+          "check",
+          "path",
+          "message"
+        ],
         "properties": {
           "check": {
             "type": "string",
-            "description": "A stable id for the kind of finding (`engine.unguarded_validation`,\n`logic.escaped_template_key`, `engine.advisory`)."
+            "description": "A stable id for the kind of finding (`engine.unguarded_validation`,\n`logic.escaped_template_key`, `engine.advisory`). A later version\nmay add ids, so this is an identifier, not an enum."
           },
           "message": {
             "type": "string"
@@ -5708,7 +5771,8 @@
         "required": [
           "digest",
           "kind",
-          "size_bytes"
+          "size_bytes",
+          "advisories"
         ],
         "properties": {
           "advisories": {
@@ -5723,26 +5787,9 @@
             "description": "`sha256:…` of the canonical definition: what a manifest member's\n`definition_digest` names."
           },
           "kind": {
-            "type": "string"
+            "$ref": "#/components/schemas/EntityKind"
           },
           "size_bytes": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          }
-        }
-      },
-      "DeploymentEntityRef": {
-        "type": "object",
-        "description": "A deployment member by identity, as a plan names it.",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "kind": {
-            "type": "string"
-          },
-          "revision": {
             "type": "integer",
             "format": "int64",
             "minimum": 0
@@ -5752,6 +5799,12 @@
       "DeploymentEntityUpdate": {
         "type": "object",
         "description": "A member the base deploys at one revision and the candidate at another.",
+        "required": [
+          "kind",
+          "id",
+          "from_revision",
+          "to_revision"
+        ],
         "properties": {
           "from_revision": {
             "type": "integer",
@@ -5762,7 +5815,7 @@
             "type": "string"
           },
           "kind": {
-            "type": "string"
+            "$ref": "#/components/schemas/EntityKind"
           },
           "to_revision": {
             "type": "integer",
@@ -5771,14 +5824,80 @@
           }
         }
       },
+      "DeploymentHead": {
+        "type": "object",
+        "description": "The committed deployment head.",
+        "required": [
+          "revision",
+          "epoch"
+        ],
+        "properties": {
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "`0` before the first apply.",
+            "minimum": 0
+          }
+        }
+      },
+      "DeploymentManifest": {
+        "type": "object",
+        "description": "A deployment manifest: the providers a deployment pins and the members\nit deploys (`POST /deployment-plans`, `POST /deployments`, and read back\nby `GET /deployments/{revision}`).",
+        "required": [
+          "schema_version",
+          "providers",
+          "members"
+        ],
+        "properties": {
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManifestMember"
+            }
+          },
+          "provider_lock_digest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The digest of the provider lock the providers were resolved under,\nwhen they were."
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManifestProvider"
+            },
+            "description": "The uploaded provider packages the members run on. A connection over\na built-in driver needs no entry."
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Always [`DEPLOYMENT_MANIFEST_SCHEMA_VERSION`]; anything else is\n`MANIFEST_VERSION_UNSUPPORTED`.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "DeploymentPlanResponse": {
         "type": "object",
         "description": "A candidate deployment, checked against its base\n(`POST /api/v2/admin/deployment-plans`). Nothing is stored: the plan is a\nfunction of the request and the store, and `reviewed_manifest_digest` is\nwhat an apply must name to commit exactly this candidate.",
+        "required": [
+          "base_revision",
+          "reviewed_manifest_digest",
+          "added_entities",
+          "updated_entities",
+          "removed_entities"
+        ],
         "properties": {
           "added_entities": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/DeploymentEntityRef"
+              "$ref": "#/components/schemas/EntityRef"
             },
             "description": "Members the base does not deploy at all."
           },
@@ -5790,7 +5909,7 @@
           "removed_entities": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/DeploymentEntityRef"
+              "$ref": "#/components/schemas/EntityRef"
             },
             "description": "Members the base deploys and the candidate drops: they stop serving."
           },
@@ -5809,7 +5928,18 @@
       },
       "DeploymentReceiptResponse": {
         "type": "object",
-        "description": "The durable receipt of a committed apply or rollback (`POST /api/v2/admin/deployments`).",
+        "description": "The durable receipt of a committed apply or rollback. A replay of the\nsame idempotency key answers the receipt the first request committed.",
+        "required": [
+          "operation_id",
+          "idempotency_key",
+          "principal",
+          "request_hash",
+          "committed_revision",
+          "manifest_digest",
+          "epoch",
+          "receiving_node_id",
+          "created_at"
+        ],
         "properties": {
           "committed_revision": {
             "type": "integer",
@@ -5817,7 +5947,8 @@
             "minimum": 0
           },
           "created_at": {
-            "type": "string"
+            "type": "string",
+            "description": "ISO 8601, on the database clock."
           },
           "epoch": {
             "type": "integer",
@@ -5834,16 +5965,12 @@
             "type": "string"
           },
           "principal": {
-            "type": "string"
-          },
-          "principal_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The admin key id that committed it, or `anonymous`."
           },
           "receiving_node_id": {
-            "type": "string"
-          },
-          "replayed": {
-            "type": "boolean"
+            "type": "string",
+            "description": "The node that took the write: what `?target=this-node` waits on."
           },
           "request_hash": {
             "type": "string"
@@ -5857,8 +5984,14 @@
           },
           {
             "type": "object",
+            "required": [
+              "manifest"
+            ],
             "properties": {
-              "manifest": {}
+              "manifest": {
+                "$ref": "#/components/schemas/DeploymentManifest",
+                "description": "The canonical manifest. A compacted revision's has no members."
+              }
             }
           }
         ],
@@ -5867,9 +6000,19 @@
       "DeploymentRevisionSummary": {
         "type": "object",
         "description": "A committed deployment revision without its manifest: one row of\n`GET /api/v2/admin/deployments`.",
+        "required": [
+          "revision",
+          "manifest_digest",
+          "member_count",
+          "reason",
+          "created_by",
+          "members_compacted",
+          "created_at"
+        ],
         "properties": {
           "created_at": {
-            "type": "string"
+            "type": "string",
+            "description": "ISO 8601, on the database clock."
           },
           "created_by": {
             "type": "string"
@@ -5892,6 +6035,7 @@
               "null"
             ],
             "format": "int64",
+            "description": "The head it was committed on; absent for the first revision.",
             "minimum": 0
           },
           "reason": {
@@ -5907,6 +6051,13 @@
       "DeploymentsPage": {
         "type": "object",
         "description": "One page of committed revisions, newest first, with the head they were\nread against (`GET /api/v2/admin/deployments`).",
+        "required": [
+          "head_revision",
+          "epoch",
+          "applied_revision",
+          "data",
+          "limit"
+        ],
         "properties": {
           "applied_revision": {
             "type": "integer",
@@ -5966,9 +6117,49 @@
           }
         }
       },
+      "EditionFinding": {
+        "type": "object",
+        "description": "One reason a revision cannot move to the target edition.",
+        "required": [
+          "code",
+          "provider",
+          "digest",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/EditionFindingCode"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string",
+            "description": "`publisher.provider_id`."
+          }
+        }
+      },
+      "EditionFindingCode": {
+        "type": "string",
+        "description": "Why an edition transition preflight refuses a revision.",
+        "enum": [
+          "ENTERPRISE_PROVIDER_IN_MANIFEST"
+        ]
+      },
+      "EditionTier": {
+        "type": "string",
+        "description": "An edition, and the distribution tier a provider package declares.",
+        "enum": [
+          "community",
+          "enterprise"
+        ]
+      },
       "EditionTransitionPreflightRequest": {
         "type": "object",
-        "description": "Request body for Enterprise-to-Community edition transition preflight (`POST /api/v2/admin/edition-transition-preflight`).",
+        "description": "Request body for Enterprise-to-Community edition transition preflight\n(`POST /api/v2/admin/edition-transition-preflight`). The body is optional.",
         "properties": {
           "revision": {
             "type": [
@@ -5976,13 +6167,24 @@
               "null"
             ],
             "format": "int64",
+            "description": "The revision to inspect; the head when absent.",
             "minimum": 0
           }
-        }
+        },
+        "additionalProperties": false
       },
       "EditionTransitionPreflightResponse": {
         "type": "object",
         "description": "Enterprise-to-Community edition transition preflight report (`POST /api/v2/admin/edition-transition-preflight`).",
+        "required": [
+          "target_edition",
+          "transition_allowed",
+          "inspected_revision",
+          "incompatible_providers",
+          "incompatible_channels",
+          "findings",
+          "backup_retention_checklist"
+        ],
         "properties": {
           "backup_retention_checklist": {
             "type": "array",
@@ -5992,7 +6194,9 @@
           },
           "findings": {
             "type": "array",
-            "items": {}
+            "items": {
+              "$ref": "#/components/schemas/EditionFinding"
+            }
           },
           "incompatible_channels": {
             "type": "array",
@@ -6004,7 +6208,8 @@
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "`publisher.provider_id` of each provider only Enterprise serves."
           },
           "inspected_revision": {
             "type": "integer",
@@ -6012,12 +6217,21 @@
             "minimum": 0
           },
           "target_edition": {
-            "type": "string"
+            "$ref": "#/components/schemas/EditionTier"
           },
           "transition_allowed": {
             "type": "boolean"
           }
         }
+      },
+      "EffectStatus": {
+        "type": "string",
+        "description": "What the host observed of an external effect.\n\nOrdered by uncertainty: once an attempt or a child records\n[`EffectStatus::Unknown`], a later local pre-send rejection cannot\ndowngrade the logical invocation back to [`EffectStatus::NotStarted`].",
+        "enum": [
+          "not_started",
+          "completed",
+          "unknown"
+        ]
       },
       "EngineCapabilities": {
         "type": "object",
@@ -6131,6 +6345,42 @@
             "minimum": 0
           }
         }
+      },
+      "EntityKind": {
+        "type": "string",
+        "description": "The kind of a deployment member.",
+        "enum": [
+          "workflow",
+          "channel",
+          "connection",
+          "source",
+          "model",
+          "plugin"
+        ]
+      },
+      "EntityRef": {
+        "type": "object",
+        "description": "An entity at a revision.",
+        "required": [
+          "kind",
+          "id",
+          "revision"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/EntityKind"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "At least 1.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "ErrorDetail": {
         "type": "object",
@@ -6262,39 +6512,47 @@
           }
         }
       },
+      "ImplementationKind": {
+        "type": "string",
+        "description": "The three connector implementation kinds.\n\nChannels are not among them: a channel is a native ingress or scheduler\ndriver, whereas a connector provider may be a Rust driver, a\nworkflow-group composite, or a Wasm component.",
+        "enum": [
+          "rust",
+          "workflow",
+          "wasm"
+        ]
+      },
       "LintResponse": {
         "type": "object",
-        "description": "Response from linting a provider package (`POST /api/v2/admin/authoring/lint`).",
+        "description": "A provider package's lint report (`POST /api/v2/admin/authoring/lint`):\n`200` when it is valid, `422` when it is not, `400` when a file does not\ndecode.",
+        "required": [
+          "valid",
+          "errors"
+        ],
         "properties": {
           "errors": {
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "Each problem, `CODE: where`."
           },
           "implementation": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "package_digest": {
-            "type": [
-              "string",
-              "null"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImplementationKind",
+                "description": "The implementation kind `connector.json` declares; absent when it\ncould not be read or is not one of the kinds."
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "provider_id": {
             "type": [
               "string",
               "null"
-            ]
-          },
-          "publisher": {
-            "type": [
-              "string",
-              "null"
-            ]
+            ],
+            "description": "The provider id `connector.json` declares; absent when it could not\nbe read."
           },
           "valid": {
             "type": "boolean"
@@ -6303,13 +6561,8 @@
             "type": [
               "string",
               "null"
-            ]
-          },
-          "warnings": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
+            ],
+            "description": "The version `connector.json` declares; absent when it could not be\nread."
           }
         }
       },
@@ -6326,12 +6579,187 @@
           }
         }
       },
+      "ManifestMember": {
+        "type": "object",
+        "description": "One member of a manifest: an entity at a revision, the definition (or,\nfor a connection, the configuration) it is, and what it needs.",
+        "required": [
+          "entity",
+          "definition_digest"
+        ],
+        "properties": {
+          "definition_digest": {
+            "type": "string",
+            "description": "A workflow, channel or plugin's stored definition; a connection\nrevision's `configuration_digest`."
+          },
+          "entity": {
+            "$ref": "#/components/schemas/EntityRef"
+          },
+          "owning_package": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The provider package (by digest, one of the manifest's `providers`)\nthat owns this member. Absent for a member no package owns."
+          },
+          "requires": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EntityRef"
+            },
+            "description": "The members this one needs, each at the revision it uses. Absent\nmeans none."
+          },
+          "rollouts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RolloutInterval"
+            },
+            "description": "A channel's workflow rollout: disjoint bucket intervals covering\n`[0, 100)`. Absent means the channel serves one workflow revision."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ManifestProvider": {
+        "type": "object",
+        "description": "One provider a manifest pins: a publisher, an id, a semantic version\nand the package digest.",
+        "required": [
+          "publisher",
+          "provider_id",
+          "version",
+          "digest"
+        ],
+        "properties": {
+          "digest": {
+            "type": "string",
+            "description": "`sha256:<64 lowercase hex>`."
+          },
+          "provider_id": {
+            "type": "string"
+          },
+          "publisher": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "NativeSchedulerStatus": {
+        "type": "object",
+        "description": "The node's native work scheduler.",
+        "required": [
+          "in_flight",
+          "max_in_flight"
+        ],
+        "properties": {
+          "in_flight": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "max_in_flight": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "NodeStatus": {
+        "type": "object",
+        "description": "One node's reconciler status.",
+        "required": [
+          "node_id",
+          "boot_id",
+          "desired_revision",
+          "applied_revision",
+          "configuration_degraded",
+          "quarantined_entities",
+          "backoff_attempt",
+          "backoff_delay_ms",
+          "security_lease_expires_at_ms",
+          "retained_revisions"
+        ],
+        "properties": {
+          "applied_manifest_digest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The manifest digest of the applied revision; absent before one."
+          },
+          "applied_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision the node serves; `0` before it served any.",
+            "minimum": 0
+          },
+          "backoff_attempt": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "backoff_delay_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "boot_id": {
+            "type": "string",
+            "description": "Changes on every process start."
+          },
+          "configuration_degraded": {
+            "type": "boolean",
+            "description": "Whether some member of the applied revision is quarantined."
+          },
+          "desired_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The revision the node is converging on.",
+            "minimum": 0
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last attempt to build the desired revision failed, while it\ndoes."
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "quarantined_entities": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuarantinedEntity"
+            }
+          },
+          "retained_revisions": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "description": "The revisions the node keeps built, ascending."
+          },
+          "security_lease_expires_at_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "PackResponse": {
         "type": "object",
-        "description": "Response from deterministically packing a provider package (`POST /api/v2/admin/authoring/pack`).",
+        "description": "A deterministically packed provider package (`POST /api/v2/admin/authoring/pack`).",
+        "required": [
+          "package_digest",
+          "files"
+        ],
         "properties": {
           "files": {
             "type": "object",
+            "description": "The package's files, `inventory.json` included, ready for upload.",
             "additionalProperties": {
               "type": "string"
             },
@@ -6339,11 +6767,19 @@
               "type": "string"
             }
           },
-          "inventory": {},
           "package_digest": {
             "type": "string"
           }
         }
+      },
+      "PackageArtifactState": {
+        "type": "string",
+        "description": "Where a stored provider package's bytes are in their lifecycle.",
+        "enum": [
+          "active",
+          "draining",
+          "deleted"
+        ]
       },
       "Paginated_AuditLogEntryResponse": {
         "type": "object",
@@ -6613,6 +7049,48 @@
           }
         }
       },
+      "ProbeDetails": {
+        "type": "object",
+        "description": "Which check a probe ran, and why it failed when it did.",
+        "required": [
+          "probe"
+        ],
+        "properties": {
+          "effect_status": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EffectStatus",
+                "description": "Whether the failed check may have reached the backend, when a\nprovider answered it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it failed; absent when it passed. Never a resolved secret."
+          },
+          "error_class": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ConnectorErrorClass",
+                "description": "The failure's normalised class, when a provider answered one."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "probe": {
+            "type": "string",
+            "description": "The check: `configuration`, `SELECT 1`, `TCP connect to the URL's\nhost`, `cache read of a probe key`, `provider health check`."
+          }
+        }
+      },
       "ProcessRequest": {
         "type": "object",
         "properties": {
@@ -6690,10 +7168,17 @@
       },
       "ProviderAdmissionDto": {
         "type": "object",
-        "description": "Provider package admission record (`PUT /api/v2/admin/connector-packages/{digest}/admission`).",
+        "description": "A package's admission record (`PUT /api/v2/admin/connector-packages/{digest}/admission`).",
+        "required": [
+          "package_digest",
+          "policy_id",
+          "admission_fingerprint",
+          "revoked"
+        ],
         "properties": {
           "admission_fingerprint": {
-            "type": "string"
+            "type": "string",
+            "description": "Changes when the policy or the package's verified inputs do: an\nadmission recorded under another fingerprint is invalid."
           },
           "package_digest": {
             "type": "string"
@@ -6703,6 +7188,30 @@
           },
           "revoked": {
             "type": "boolean"
+          }
+        }
+      },
+      "ProviderBackendInfo": {
+        "type": "object",
+        "description": "One registered provider backend.",
+        "required": [
+          "kind",
+          "driver_id"
+        ],
+        "properties": {
+          "driver_id": {
+            "type": "string",
+            "description": "The backend id: a `rust` driver's id, or a `workflow`/`wasm`\npackage's digest."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ImplementationKind"
+          },
+          "package_digest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A built-in driver's fixed provider digest — what a connection\nrevision over it names as its `provider_digest`. Absent for a\nbackend that is not a built-in driver."
           }
         }
       },
@@ -6718,6 +7227,22 @@
             "description": "Age cut-off in hours: exhausted entries whose `failed_at` is older than\nthis are deleted. Required rather than defaulted — purging is\ndestructive and an omitted age must not silently mean \"everything\".",
             "example": 168,
             "minimum": 0
+          }
+        }
+      },
+      "QuarantinedEntity": {
+        "type": "object",
+        "description": "A member the node serves without, and why.",
+        "required": [
+          "entity",
+          "reason"
+        ],
+        "properties": {
+          "entity": {
+            "$ref": "#/components/schemas/EntityRef"
+          },
+          "reason": {
+            "type": "string"
           }
         }
       },
@@ -6768,19 +7293,24 @@
       },
       "RevokePackageRequest": {
         "type": "object",
-        "description": "Request body for revoking an admitted provider package (`POST /api/v2/admin/connector-packages/{digest}/revocations`).",
+        "description": "Request body for revoking an admitted provider package\n(`POST /api/v2/admin/connector-packages/{digest}/revocations`). The body\nis optional.",
         "properties": {
           "reason": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Why, for the audit record."
           }
-        }
+        },
+        "additionalProperties": false
       },
       "RevokePackageResponse": {
         "type": "object",
-        "description": "Response from revoking a provider package (`POST /api/v2/admin/connector-packages/{digest}/revocations`).",
+        "description": "A recorded revocation (`POST /api/v2/admin/connector-packages/{digest}/revocations`, `201`).",
+        "required": [
+          "package_digest"
+        ],
         "properties": {
           "package_digest": {
             "type": "string"
@@ -6789,13 +7319,8 @@
             "type": [
               "string",
               "null"
-            ]
-          },
-          "revoked": {
-            "type": "boolean"
-          },
-          "status": {
-            "type": "string"
+            ],
+            "description": "The reason the request gave, if it gave one."
           }
         }
       },
@@ -6818,7 +7343,8 @@
             "type": "string"
           },
           "reason": {
-            "type": "string"
+            "type": "string",
+            "description": "The audit reason the revision records; `rollback` when absent."
           },
           "rollback_to": {
             "type": "integer",
@@ -6829,49 +7355,85 @@
         },
         "additionalProperties": false
       },
-      "RuntimeCapabilitiesResponse": {
+      "RolloutInterval": {
         "type": "object",
-        "description": "Runtime capabilities: edition, registered drivers and providers, deployment head (`GET /api/v2/admin/runtime-capabilities`).",
+        "description": "One half-open bucket interval `[start_bucket, end_bucket)` of a\nchannel's rollout, served by `workflow_revision`.",
+        "required": [
+          "workflow_revision",
+          "start_bucket",
+          "end_bucket"
+        ],
         "properties": {
-          "active_deployment_revision": {
+          "end_bucket": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "start_bucket": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "workflow_revision": {
             "type": "integer",
             "format": "int64",
             "minimum": 0
-          },
+          }
+        },
+        "additionalProperties": false
+      },
+      "RuntimeCapabilitiesResponse": {
+        "type": "object",
+        "description": "What this node is and serves (`GET /api/v2/admin/runtime-capabilities`).",
+        "required": [
+          "api_version",
+          "edition",
+          "admission_policy_id",
+          "channel_drivers",
+          "schema_profiles",
+          "wasm_worlds",
+          "provider_backends",
+          "deployment_head",
+          "native_scheduler",
+          "node_status"
+        ],
+        "properties": {
           "admission_policy_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The package admission policy this node admits under."
           },
           "api_version": {
-            "type": "string"
+            "type": "integer",
+            "format": "int32",
+            "description": "The contract revision this server speaks: [`API_VERSION`] of the\n`orion-api` it was built with. A client that speaks another must\nnot read the rest of this answer, or any other v2 answer.",
+            "minimum": 0
           },
-          "deployment_head": {},
+          "channel_drivers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The channel protocols this node serves (`rest`, `http`, `cron`, …)."
+          },
+          "deployment_head": {
+            "$ref": "#/components/schemas/DeploymentHead"
+          },
           "edition": {
-            "type": "string"
+            "$ref": "#/components/schemas/EditionTier"
           },
-          "native_scheduler": {},
-          "node_status": {},
+          "native_scheduler": {
+            "$ref": "#/components/schemas/NativeSchedulerStatus"
+          },
+          "node_status": {
+            "$ref": "#/components/schemas/NodeStatus",
+            "description": "This node's reconciler: what it serves and how it got there."
+          },
           "provider_backends": {
             "type": "array",
-            "items": {}
-          },
-          "reconciler": {},
-          "registered_channel_drivers": {
-            "type": "array",
             "items": {
-              "type": "string"
-            }
-          },
-          "registered_rust_providers": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "registered_workflow_providers": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
+              "$ref": "#/components/schemas/ProviderBackendInfo"
+            },
+            "description": "Every connector provider backend this node registers."
           },
           "schema_profiles": {
             "type": "array",
@@ -6883,7 +7445,8 @@
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "The WebAssembly plugin worlds this node runs."
           }
         }
       },
@@ -6897,7 +7460,7 @@
         ],
         "properties": {
           "kind": {
-            "type": "string"
+            "$ref": "#/components/schemas/ImplementationKind"
           },
           "provider_id": {
             "type": "string"
@@ -6906,16 +7469,27 @@
             "type": "string"
           },
           "version": {
-            "type": "string"
+            "type": "string",
+            "description": "The package's semantic version; `1.0.0` when absent."
           }
-        }
+        },
+        "additionalProperties": false
       },
       "ScaffoldResponse": {
         "type": "object",
-        "description": "Response from scaffolding a provider package (`POST /api/v2/admin/authoring/scaffold`).",
+        "description": "A generated provider package (`POST /api/v2/admin/authoring/scaffold`).",
+        "required": [
+          "publisher",
+          "provider_id",
+          "version",
+          "implementation",
+          "package_digest",
+          "files"
+        ],
         "properties": {
           "files": {
             "type": "object",
+            "description": "Relative path → the file, as UTF-8 text or `base64:<…>`.",
             "additionalProperties": {
               "type": "string"
             },
@@ -6924,10 +7498,11 @@
             }
           },
           "implementation": {
-            "type": "string"
+            "$ref": "#/components/schemas/ImplementationKind"
           },
           "package_digest": {
-            "type": "string"
+            "type": "string",
+            "description": "The digest the files pack to."
           },
           "provider_id": {
             "type": "string"
@@ -6956,7 +7531,7 @@
             "description": "The workflow to run, as `POST /definitions` would take it."
           },
           "metadata": {
-            "description": "The message's metadata, normalised the way an ingress builds it."
+            "description": "The message's metadata, normalised the way an ingress builds it;\nempty when absent."
           }
         },
         "additionalProperties": false
@@ -6964,6 +7539,12 @@
       "TestDefinitionResponse": {
         "type": "object",
         "description": "One run of a workflow definition (`POST /api/v2/admin/definitions/test`).",
+        "required": [
+          "matched",
+          "trace",
+          "output",
+          "errors"
+        ],
         "properties": {
           "error": {
             "type": [
@@ -6974,7 +7555,8 @@
           },
           "errors": {
             "type": "array",
-            "items": {}
+            "items": {},
+            "description": "The errors the engine recorded on the message, as it records them."
           },
           "matched": {
             "type": "boolean",
@@ -6984,7 +7566,7 @@
             "description": "The message data after the pipeline ran."
           },
           "trace": {
-            "description": "The run's trace: the context it started from (`initial`), then each\nstep with its `task_id`, `result` (`executed` | `skipped` | `failed`)\nand the changes it made."
+            "description": "The engine's trace of the run: the context it started from\n(`initial`), then each step with its `task_id`, `result`\n(`executed` | `skipped` | `failed`) and the changes it made. Its\nshape is dataflow-rs's, so it is carried as the engine writes it."
           }
         }
       },
@@ -7308,21 +7890,18 @@
       },
       "UploadPackageRequest": {
         "type": "object",
-        "description": "Request body for uploading, linting, or packing a provider package (`POST /api/v2/admin/connector-packages`, `/authoring/lint`, `/authoring/pack`).",
+        "description": "A provider package's files: the body of `POST /api/v2/admin/connector-packages`,\n`/authoring/lint` and `/authoring/pack`.",
+        "required": [
+          "files"
+        ],
         "properties": {
           "admit": {
-            "type": "boolean"
-          },
-          "entries": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ArchiveEntryDto"
-            },
-            "description": "Optional list of `{path, content}` entries (converted into `files` if `files` is empty)."
+            "type": "boolean",
+            "description": "Upload only: admit the package in the same request. Absent means\n`false`."
           },
           "files": {
             "type": "object",
-            "description": "Map of relative path -> UTF-8 or `base64:<...>` file content.",
+            "description": "Relative path → the file, as UTF-8 text or `base64:<…>`.",
             "additionalProperties": {
               "type": "string"
             },
@@ -7330,31 +7909,32 @@
               "type": "string"
             }
           },
-          "lock": {}
-        }
+          "lock": {
+            "description": "Upload only, with `admit`: the provider lock the admission must\nverify against."
+          }
+        },
+        "additionalProperties": false
       },
       "UploadPackageResponse": {
         "type": "object",
-        "description": "Response from uploading a verified provider package (`POST /api/v2/admin/connector-packages`).",
+        "description": "An uploaded package (`POST /api/v2/admin/connector-packages`, `201`).",
+        "required": [
+          "package"
+        ],
         "properties": {
           "admission": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/ProviderAdmissionDto"
+                "$ref": "#/components/schemas/ProviderAdmissionDto",
+                "description": "The admission, when the upload asked for one."
               },
               {
                 "type": "null"
               }
             ]
           },
-          "digest": {
-            "type": "string"
-          },
           "package": {
             "$ref": "#/components/schemas/ConnectorPackageSummary"
-          },
-          "status": {
-            "type": "string"
           }
         }
       },

@@ -6,13 +6,13 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use orion_api::v2::{
     ApplyDeploymentRequest, ConvergenceStatusResponse, CreateDeploymentPlanRequest,
-    CreateDeploymentRequest, CreateDeploymentResponse, DeploymentEntityRef, DeploymentEntityUpdate,
+    CreateDeploymentRequest, CreateDeploymentResponse, DeploymentEntityUpdate,
     DeploymentPlanResponse, DeploymentReceiptResponse, DeploymentRevisionResponse,
     DeploymentRevisionSummary, DeploymentsPage, RollbackDeploymentRequest,
 };
 use serde::Deserialize;
 
-use super::{V2Error, V2Result, principal_id};
+use super::{V2Error, V2Result, entity_ref_dto, principal_id};
 use crate::extensions::deployment_store::{
     CandidatePlan, CanonicalManifest, DeploymentError, DeploymentErrorKind, DeploymentReceipt,
     DeploymentRevisionRow, EntityRef,
@@ -55,14 +55,12 @@ fn receipt_to_dto(receipt: &DeploymentReceipt) -> DeploymentReceiptResponse {
     DeploymentReceiptResponse {
         operation_id: receipt.operation_id.clone(),
         idempotency_key: receipt.idempotency_key.clone(),
-        principal_id: receipt.principal.clone(),
         principal: receipt.principal.clone(),
         request_hash: receipt.request_hash.clone(),
         committed_revision: receipt.committed_revision,
         manifest_digest: receipt.manifest_digest.clone(),
         epoch: receipt.epoch,
         receiving_node_id: receipt.receiving_node_id.clone(),
-        replayed: false,
         created_at: wire_time(receipt.created_at),
     }
 }
@@ -80,26 +78,17 @@ fn revision_summary(row: &DeploymentRevisionRow) -> DeploymentRevisionSummary {
     }
 }
 
-fn entity_dto(entity: &EntityRef) -> DeploymentEntityRef {
-    DeploymentEntityRef {
-        kind: entity.kind.as_str().to_string(),
-        id: entity.id.clone(),
-        revision: entity.revision.get(),
-    }
-}
-
 /// The plan's change to its base, by member: one the base does not deploy
 /// is added, one it deploys at another revision is updated, and one the
 /// candidate drops is removed.
 fn plan_diff(
     plan: &CandidatePlan,
 ) -> (
-    Vec<DeploymentEntityRef>,
+    Vec<orion_api::v2::EntityRef>,
     Vec<DeploymentEntityUpdate>,
-    Vec<DeploymentEntityRef>,
+    Vec<orion_api::v2::EntityRef>,
 ) {
-    let same_member =
-        |a: &EntityRef, b: &EntityRef| a.kind.as_str() == b.kind.as_str() && a.id == b.id;
+    let same_member = |a: &EntityRef, b: &EntityRef| a.kind == b.kind && a.id == b.id;
     let mut added = Vec::new();
     let mut updated = Vec::new();
     for entity in &plan.added_entities {
@@ -109,19 +98,19 @@ fn plan_diff(
             .find(|old| same_member(old, entity))
         {
             Some(old) => updated.push(DeploymentEntityUpdate {
-                kind: entity.kind.as_str().to_string(),
+                kind: entity.kind,
                 id: entity.id.clone(),
                 from_revision: old.revision.get(),
                 to_revision: entity.revision.get(),
             }),
-            None => added.push(entity_dto(entity)),
+            None => added.push(entity_ref_dto(entity)),
         }
     }
     let removed = plan
         .removed_entities
         .iter()
         .filter(|old| !plan.added_entities.iter().any(|e| same_member(old, e)))
-        .map(entity_dto)
+        .map(entity_ref_dto)
         .collect();
     (added, updated, removed)
 }
@@ -145,7 +134,7 @@ pub(crate) async fn create_deployment_plan(
     State(state): State<AppState>,
     OrionJson(req): OrionJson<CreateDeploymentPlanRequest>,
 ) -> V2Result<Json<DeploymentPlanResponse>> {
-    let manifest = CanonicalManifest::from_json(&req.manifest)?;
+    let manifest = CanonicalManifest::from_wire(&req.manifest)?;
     let plan = state
         .deployments
         .plan_candidate_in_db(&state.db_pool, req.base_revision, manifest)
@@ -258,11 +247,10 @@ pub(crate) async fn create_deployment(
     Ok((
         StatusCode::ACCEPTED,
         Json(CreateDeploymentResponse {
-            status: "accepted".to_string(),
             committed_revision: receipt.committed_revision,
             receipt: receipt_to_dto(&receipt),
             warnings,
-            evaluation: Some(evaluation),
+            evaluation,
             local_error,
         }),
     ))
@@ -276,7 +264,7 @@ async fn apply_deployment(
     req: ApplyDeploymentRequest,
 ) -> Result<DeploymentReceipt, DeploymentError> {
     let actor = principal_id(principal);
-    let manifest = CanonicalManifest::from_json(&req.manifest)?;
+    let manifest = CanonicalManifest::from_wire(&req.manifest)?;
     let plan = state
         .deployments
         .plan_candidate_in_db(&state.db_pool, req.base_revision, manifest)
@@ -431,7 +419,7 @@ pub(crate) async fn get_deployment_revision(
         })?;
     Ok(Json(DeploymentRevisionResponse {
         summary: revision_summary(&row),
-        manifest: serde_json::to_value(&row.manifest)?,
+        manifest: row.manifest.to_wire(),
     }))
 }
 

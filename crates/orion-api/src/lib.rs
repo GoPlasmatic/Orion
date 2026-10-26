@@ -17,21 +17,31 @@
 //! | [`enums`] | closed value sets (status, protocol, …) and their string constants |
 //! | [`envelope`] | the `{"data": …}` and paginated envelopes admin 2xx responses carry |
 //! | [`error`] | the `{"error": {code, message, details[], request_id}}` envelope and the stable code registry |
+//! | [`v2`] | the strict, versioned `/api/v2/admin` contract: deployments, connections, connector packages |
 //!
 //! What deliberately does **not** live here: the server's `OrionError` enum
 //! (its internal error domain — only the serialized envelope is contract),
 //! database row types, request validation, and any I/O.
 //!
-//! **Response deserialization is tolerant by design**: every field on every
-//! [`dto`] struct carries `#[serde(default)]`, unknown fields are ignored, and
-//! the fields that hold a growing vocabulary — `status`, `state`,
-//! `channel_type`, `mode` — are `String` on the
-//! wire rather than an enum. A v1.0 CLI must keep reading pre-1.0 servers and
-//! a v1.0 server's responses must keep parsing in older clients; version skew
-//! across the fleet is normal during a rollout, not an error. Compare those
-//! strings against the constants in [`enums`] rather than deserializing into
-//! the enum, and an unrecognised value degrades to "not one I know" instead of
-//! failing the whole response.
+//! **Two disciplines, by surface.**
+//!
+//! The operational DTOs — [`dto`] and [`engine`]: traces, cron, health,
+//! audit logs, the DLQ, engine status, functions — predate the v2 contract
+//! and stay **tolerant**: every field carries `#[serde(default)]`, unknown
+//! fields are ignored, and the fields that hold a growing vocabulary —
+//! `status`, `state`, `channel_type`, `mode` — are `String` on the wire
+//! rather than an enum. A CLI must keep reading an older server there, and
+//! the other way round; compare those strings against the constants in
+//! [`enums`], and an unrecognised value degrades to "not one I know"
+//! instead of failing the whole response.
+//!
+//! The v2 admin contract in [`v2`] is **strict**: fields are required
+//! unless their absence is documented to mean something, requests refuse
+//! unknown fields, closed vocabularies are enums and server-generated parts
+//! are typed. It does not absorb version skew with defaults; it negotiates
+//! it. A server reports [`v2::API_VERSION`] in
+//! `GET /api/v2/admin/runtime-capabilities`, and a client that speaks
+//! another revision refuses to go on rather than misread an answer.
 //!
 //! The [`enums`] types themselves are **strict on purpose**, and are not part
 //! of that tolerance. They exist for the request side and for server-internal

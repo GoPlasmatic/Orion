@@ -20,7 +20,8 @@ use std::path::Path;
 
 use orion_api::v2::{
     COMPILED_DEPLOYMENT_SCHEMA_VERSION, ChannelDefinition, CompiledConnection, CompiledDeployment,
-    CompiledMember, CompiledRequirement, Definition, PluginDefinition, WorkflowDefinition,
+    CompiledMember, CompiledRequirement, Definition, EntityKind, PluginDefinition,
+    WorkflowDefinition,
 };
 use serde_json::{Map, Value};
 
@@ -112,7 +113,7 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
                     Err(e) => errors.push(e),
                 }
                 members.push(CompiledMember {
-                    kind: "connection".to_string(),
+                    kind: EntityKind::Connection,
                     id: id.clone(),
                     definition: None,
                     connection: Some(id),
@@ -136,7 +137,7 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
         for (connection, function) in used_connections(&workflow, functions) {
             if connection_ids.contains(&connection) {
                 requires.push(CompiledRequirement {
-                    kind: "connection".to_string(),
+                    kind: EntityKind::Connection,
                     id: connection,
                 });
             } else {
@@ -151,7 +152,7 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
         match definition_file(&Definition::Workflow(workflow)) {
             Ok((digest, path, bytes)) => {
                 out.files.insert(path, bytes);
-                members.push(member("workflow", id, digest, requires));
+                members.push(member(EntityKind::Workflow, id, digest, requires));
                 out.counts.workflows += 1;
             }
             Err(e) => errors.push(format!("workflow '{id}' ({}): {e}", def.origin)),
@@ -160,7 +161,7 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
 
     let workflow_ids: BTreeSet<&str> = members
         .iter()
-        .filter(|m| m.kind == "workflow")
+        .filter(|m| m.kind == EntityKind::Workflow)
         .map(|m| m.id.as_str())
         .collect();
     let mut channel_members = Vec::new();
@@ -180,13 +181,13 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
             continue;
         }
         let requires = vec![CompiledRequirement {
-            kind: "workflow".to_string(),
+            kind: EntityKind::Workflow,
             id: workflow_id,
         }];
         match definition_file(&Definition::Channel(channel)) {
             Ok((digest, path, bytes)) => {
                 out.files.insert(path, bytes);
-                channel_members.push(member("channel", id, digest, requires));
+                channel_members.push(member(EntityKind::Channel, id, digest, requires));
                 out.counts.channels += 1;
             }
             Err(e) => errors.push(format!("channel '{id}' ({}): {e}", def.origin)),
@@ -215,16 +216,16 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
         match converted {
             Ok((digest, path, bytes)) => {
                 out.files.insert(path, bytes);
-                members.push(member("plugin", id, digest, Vec::new()));
+                members.push(member(EntityKind::Plugin, id, digest, Vec::new()));
                 out.counts.plugins += 1;
             }
             Err(e) => errors.push(format!("plugin '{id}' ({}): {e}", plugin.origin)),
         }
     }
 
-    let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut seen: BTreeSet<(EntityKind, String)> = BTreeSet::new();
     for m in &members {
-        if !seen.insert((m.kind.clone(), m.id.clone())) {
+        if !seen.insert((m.kind, m.id.clone())) {
             errors.push(format!(
                 "two {}s in the set share the id '{}'",
                 m.kind, m.id
@@ -235,9 +236,12 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
         return Err(errors);
     }
 
-    members.sort_by(|a, b| (&a.kind, &a.id).cmp(&(&b.kind, &b.id)));
+    // By the kind's name, then the id: the order `deployment.json` has
+    // always listed members and requirements in.
+    members.sort_by(|a, b| (a.kind.as_str(), &a.id).cmp(&(b.kind.as_str(), &b.id)));
     for m in &mut members {
-        m.requires.sort();
+        m.requires
+            .sort_by(|a, b| (a.kind.as_str(), &a.id).cmp(&(b.kind.as_str(), &b.id)));
         m.requires.dedup();
     }
     let deployment = CompiledDeployment {
@@ -252,13 +256,13 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
 }
 
 fn member(
-    kind: &str,
+    kind: EntityKind,
     id: String,
     digest: String,
     requires: Vec<CompiledRequirement>,
 ) -> CompiledMember {
     CompiledMember {
-        kind: kind.to_string(),
+        kind,
         id,
         definition: Some(digest),
         connection: None,

@@ -46,6 +46,44 @@ fn body<T: Serialize + ?Sized>(request: &T) -> Result<Option<Value>, serde_json:
     serde_json::to_value(request).map(Some)
 }
 
+/// Whether a server reporting `server` (see [`V2Admin::server_api_version`])
+/// speaks the contract this client was built against,
+/// [`orion_api::v2::API_VERSION`]. A client speaks exactly one revision.
+pub fn check_api_version(server: Option<u64>) -> Result<(), ApiVersionMismatch> {
+    match server {
+        Some(v) if v == u64::from(orion_api::v2::API_VERSION) => Ok(()),
+        server => Err(ApiVersionMismatch { server }),
+    }
+}
+
+/// The server speaks a v2 contract revision this client does not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiVersionMismatch {
+    /// What the server reported; `None` when it reported no revision.
+    pub server: Option<u64>,
+}
+
+impl std::fmt::Display for ApiVersionMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let ours = orion_api::v2::API_VERSION;
+        match self.server {
+            Some(theirs) => write!(
+                f,
+                "the server speaks v2 admin API version {theirs}, and this client speaks \
+                 version {ours}: use a client from the same Orion release as the server"
+            ),
+            None => write!(
+                f,
+                "the server reports no v2 admin API version (it predates the versioned \
+                 contract), and this client speaks version {ours}: use a client from the \
+                 same Orion release as the server"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ApiVersionMismatch {}
+
 /// Every v2 admin operation, typed. See the module documentation.
 pub trait V2Admin: Sync {
     /// What a call fails with. A body that does not decode as the response
@@ -62,6 +100,20 @@ pub trait V2Admin: Sync {
     ) -> impl Future<Output = Result<Value, Self::Error>> + Send;
 
     // -- Capabilities --
+
+    /// The v2 contract revision the server reports, read before anything
+    /// else of the answer is: a server speaking another revision may answer
+    /// a shape this client cannot decode. `None` when the answer carries no
+    /// integer `api_version` (a server from before the contract was
+    /// versioned).
+    fn server_api_version(&self) -> impl Future<Output = Result<Option<u64>, Self::Error>> + Send {
+        async move {
+            let answer = self
+                .send(Method::GET, paths::V2_RUNTIME_CAPABILITIES, None)
+                .await?;
+            Ok(answer.get("api_version").and_then(Value::as_u64))
+        }
+    }
 
     fn runtime_capabilities(
         &self,

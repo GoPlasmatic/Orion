@@ -16,8 +16,8 @@ use colored::Colorize;
 use orion_api::v2::{
     AdmitPackageRequest, ApplyDeploymentRequest, CreateConnectionRevisionRequest,
     CreateDeploymentPlanRequest, CreateDeploymentRequest, DeploymentPlanResponse,
-    EditionTransitionPreflightRequest, RevokePackageRequest, RollbackDeploymentRequest,
-    ScaffoldRequest, UploadPackageRequest,
+    EditionTransitionPreflightRequest, ImplementationKind, RevokePackageRequest,
+    RollbackDeploymentRequest, ScaffoldRequest, UploadPackageRequest,
 };
 use orion_client::V2Admin;
 use tabled::Tabled;
@@ -31,6 +31,16 @@ fn load_file_or_stdin(file: &str) -> Result<serde_json::Value> {
     } else {
         crate::utils::read_json_input(Some(file), None, false)
     }
+}
+
+/// Refuse a server whose v2 contract revision this CLI does not speak,
+/// before any v2 command reads an answer it could misread.
+pub async fn require_api_version(client: &OrionClient) -> Result<()> {
+    let server = client
+        .server_api_version()
+        .await
+        .context("reading the server's v2 admin API version")?;
+    orion_client::check_api_version(server).map_err(anyhow::Error::from)
 }
 
 /// `file` (or stdin for `-`) read as the request type `T`.
@@ -189,12 +199,7 @@ impl DeploymentsCmd {
             DeploymentsSubcommand::Capabilities => {
                 let resp = client.runtime_capabilities().await?;
                 if quiet {
-                    let ed = if resp.edition.is_empty() {
-                        "community"
-                    } else {
-                        resp.edition.as_str()
-                    };
-                    println!("{ed}");
+                    println!("{}", resp.edition);
                     return Ok(0);
                 }
                 output::print_value(format, &serde_json::to_value(&resp)?)?;
@@ -210,7 +215,7 @@ impl DeploymentsCmd {
                         .await
                         .map(|_| 0);
                 }
-                let manifest = load_file_or_stdin(file.as_deref().unwrap_or("-"))?;
+                let manifest = load_request(file.as_deref().unwrap_or("-"), "deployment manifest")?;
                 let resp = client
                     .plan_deployment(&CreateDeploymentPlanRequest {
                         base_revision: base_revision.unwrap_or(0),
@@ -268,7 +273,10 @@ impl DeploymentsCmd {
                     None => ApplyDeploymentRequest {
                         idempotency_key: idempotency_key.clone().unwrap_or_default(),
                         base_revision: base_revision.unwrap_or(0),
-                        manifest: load_file_or_stdin(file.as_deref().unwrap_or("-"))?,
+                        manifest: load_request(
+                            file.as_deref().unwrap_or("-"),
+                            "deployment manifest",
+                        )?,
                         reason: reason.clone(),
                         reviewed_manifest_digest: reviewed_digest.clone().unwrap_or_default(),
                     },
@@ -571,7 +579,7 @@ pub enum ProviderSubcommand {
         /// but no Community node executes it yet. `orion-cli deployments
         /// capabilities` lists the registered backends.
         #[arg(long, default_value = "rust")]
-        kind: String,
+        kind: ImplementationKind,
     },
     /// Lint a provider package manifest and schema bundle
     Lint {
@@ -639,7 +647,7 @@ impl ProviderCmd {
                         publisher: p.publisher.clone(),
                         provider_id: p.provider_id.clone(),
                         version: p.version.clone(),
-                        implementation: p.implementation.clone(),
+                        implementation: p.implementation.to_string(),
                         admitted: p.admitted.to_string(),
                         digest: p.digest.clone(),
                     })
@@ -660,7 +668,7 @@ impl ProviderCmd {
                 let req: UploadPackageRequest = load_request(file, "package upload payload")?;
                 let resp = client.upload_connector_package(&req).await?;
                 if quiet {
-                    println!("{}", resp.digest);
+                    println!("{}", resp.package.digest);
                     return Ok(0);
                 }
                 output::print_value(format, &serde_json::to_value(&resp)?)?;
@@ -704,7 +712,7 @@ impl ProviderCmd {
                         publisher: publisher.clone(),
                         provider_id: provider_id.clone(),
                         version: version.clone(),
-                        kind: kind.clone(),
+                        kind: *kind,
                     })
                     .await?;
                 output::print_value(format, &serde_json::to_value(&resp)?)?;
@@ -851,7 +859,7 @@ impl ConnectionsCmd {
                 let revision = resolve_revision(client, id, *revision).await?;
                 let resp = client.probe_connection(id, revision).await?;
                 if quiet {
-                    println!("{}", resp.status);
+                    println!("{}", if resp.healthy { "healthy" } else { "unhealthy" });
                 } else {
                     output::print_value(format, &serde_json::to_value(&resp)?)?;
                 }
@@ -865,130 +873,239 @@ impl ConnectionsCmd {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use orion_api::v2::*;
     use serde_json::{Value, json};
+
+    /// Answers as the server spells them: every field, so a fixture that
+    /// drifts from the contract fails to decode here as it would against a
+    /// server.
+    fn to_value(answer: impl serde::Serialize) -> Result<Value> {
+        Ok(serde_json::to_value(answer)?)
+    }
+
+    fn capabilities(backends: Vec<ProviderBackendInfo>) -> RuntimeCapabilitiesResponse {
+        RuntimeCapabilitiesResponse {
+            api_version: API_VERSION,
+            edition: EditionTier::Community,
+            admission_policy_id: "community".into(),
+            channel_drivers: vec!["rest".into()],
+            schema_profiles: vec![],
+            wasm_worlds: vec![],
+            provider_backends: backends,
+            deployment_head: DeploymentHead {
+                revision: 0,
+                epoch: 0,
+            },
+            native_scheduler: NativeSchedulerStatus {
+                in_flight: 0,
+                max_in_flight: 4,
+            },
+            node_status: NodeStatus {
+                node_id: "node-1".into(),
+                boot_id: "boot-1".into(),
+                desired_revision: 0,
+                applied_revision: 0,
+                applied_manifest_digest: None,
+                configuration_degraded: false,
+                quarantined_entities: vec![],
+                last_error: None,
+                backoff_attempt: 0,
+                backoff_delay_ms: 0,
+                security_lease_expires_at_ms: 0,
+                retained_revisions: vec![],
+            },
+        }
+    }
+
+    fn package() -> ConnectorPackageSummary {
+        ConnectorPackageSummary {
+            publisher: "org.plasmatic.foundation".into(),
+            provider_id: "memory-cache".into(),
+            version: "2.0.0".into(),
+            digest: "sha256:1111".into(),
+            implementation: ImplementationKind::Rust,
+            tier: EditionTier::Community,
+            admitted: false,
+            revoked: false,
+            artifact_state: PackageArtifactState::Active,
+            manifest: json!({}),
+            distribution: json!({}),
+            inventory: json!({}),
+        }
+    }
+
+    fn connection(id: &str, revision: u64, config_digest: &str) -> ConnectionRevisionResponse {
+        ConnectionRevisionResponse {
+            connection_id: id.into(),
+            revision,
+            provider_digest: "sha256:1111".into(),
+            public_config: json!({}),
+            configuration_digest: config_digest.into(),
+            ..Default::default()
+        }
+    }
+
+    pub(super) fn committed(revision: u64, warnings: Vec<String>) -> CreateDeploymentResponse {
+        CreateDeploymentResponse {
+            committed_revision: revision,
+            receipt: DeploymentReceiptResponse {
+                operation_id: "op".into(),
+                idempotency_key: "k".into(),
+                principal: "anonymous".into(),
+                request_hash: "h".into(),
+                committed_revision: revision,
+                manifest_digest: "sha256:3333".into(),
+                epoch: revision,
+                receiving_node_id: "node-1".into(),
+                created_at: String::new(),
+            },
+            warnings,
+            evaluation: ConvergenceStatusResponse::default(),
+            local_error: None,
+        }
+    }
+
+    fn plan(base_revision: u64, digest: &str) -> DeploymentPlanResponse {
+        DeploymentPlanResponse {
+            base_revision,
+            reviewed_manifest_digest: digest.into(),
+            added_entities: vec![],
+            updated_entities: vec![],
+            removed_entities: vec![],
+        }
+    }
+
+    fn summary(revision: u64, digest: &str) -> DeploymentRevisionSummary {
+        DeploymentRevisionSummary {
+            revision,
+            manifest_digest: digest.into(),
+            ..Default::default()
+        }
+    }
 
     fn handle_v2_request(method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
         let body_val = body.cloned().unwrap_or_else(|| json!({}));
         match (method, path) {
-            ("GET", "/api/v2/admin/runtime-capabilities") => Ok(json!({
-                "api_version": "v2",
-                "edition": "community",
-            })),
+            ("GET", "/api/v2/admin/runtime-capabilities") => to_value(capabilities(vec![])),
             ("POST", "/api/v2/admin/authoring/scaffold") => {
                 let req: ScaffoldRequest = serde_json::from_value(body_val)?;
-                assert_eq!(req.kind, "rust");
-                Ok(json!({
-                    "publisher": req.publisher,
-                    "provider_id": req.provider_id,
-                    "version": req.version,
-                    "implementation": "rust",
-                    "package_digest": "sha256:1111",
-                    "files": {"manifest.json": "{}"},
-                }))
+                assert_eq!(req.kind, ImplementationKind::Rust);
+                to_value(ScaffoldResponse {
+                    publisher: req.publisher,
+                    provider_id: req.provider_id,
+                    version: req.version,
+                    implementation: req.kind,
+                    package_digest: "sha256:1111".into(),
+                    files: [("manifest.json".to_string(), "{}".to_string())].into(),
+                })
             }
-            ("POST", "/api/v2/admin/authoring/lint") => Ok(json!({"valid": true})),
-            ("POST", "/api/v2/admin/authoring/pack") => Ok(json!({
-                "package_digest": "sha256:1111",
-                "inventory": {},
-                "files": {"manifest.json": "{}", "inventory.json": "{}"},
-            })),
+            ("POST", "/api/v2/admin/authoring/lint") => to_value(LintResponse {
+                valid: true,
+                ..Default::default()
+            }),
+            ("POST", "/api/v2/admin/authoring/pack") => to_value(PackResponse {
+                package_digest: "sha256:1111".into(),
+                files: [
+                    ("manifest.json".to_string(), "{}".to_string()),
+                    ("inventory.json".to_string(), "{}".to_string()),
+                ]
+                .into(),
+            }),
             ("PUT", p)
                 if p.starts_with("/api/v2/admin/connector-packages/")
                     && p.ends_with("/admission") =>
             {
-                Ok(json!({
-                    "status": "admitted",
-                    "admission": {
-                        "package_digest": "sha256:1111",
-                        "policy_id": "community",
-                        "admission_fingerprint": "fp1",
-                        "revoked": false,
-                    }
-                }))
+                to_value(AdmitPackageResponse {
+                    admission: ProviderAdmissionDto {
+                        package_digest: "sha256:1111".into(),
+                        policy_id: "community".into(),
+                        admission_fingerprint: "fp1".into(),
+                        revoked: false,
+                    },
+                })
             }
-            ("POST", "/api/v2/admin/connector-packages") => Ok(json!({
-                "status": "uploaded",
-                "digest": "sha256:1111",
-                "package": {
-                    "publisher": "org.plasmatic.foundation",
-                    "provider_id": "memory-cache",
-                    "version": "2.0.0",
-                    "digest": "sha256:1111",
-                    "package_digest": "sha256:1111",
-                    "implementation": "rust",
-                    "admitted": false,
-                }
-            })),
-            ("GET", "/api/v2/admin/connections/cache-1/revisions") => Ok(json!({
-                "count": 1,
-                "connections": [{"connection_id": "cache-1", "revision": 1}],
-            })),
-            ("POST", "/api/v2/admin/connections/cache-1/revisions/1/probes") => Ok(json!({
-                "connection_id": "cache-1",
-                "revision": 1,
-                "driver_id": "memory-cache",
-                "healthy": true,
-                "status": "healthy",
-                "latency_ms": 1,
-            })),
-            ("POST", "/api/v2/admin/connections/cache-1/revisions") => Ok(json!({
-                "status": "created",
-                "connection": {
-                    "connection_id": "cache-1",
-                    "revision": 1,
-                    "provider_digest": "sha256:1111",
-                    "configuration_digest": "sha256:2222",
-                }
-            })),
-            ("POST", "/api/v2/admin/deployment-plans") => Ok(json!({
-                "base_revision": 0,
-                "reviewed_manifest_digest": "sha256:3333",
-            })),
+            ("POST", "/api/v2/admin/connector-packages") => to_value(UploadPackageResponse {
+                package: package(),
+                admission: None,
+            }),
+            ("GET", "/api/v2/admin/connections/cache-1/revisions") => {
+                to_value(ConnectionsListResponse {
+                    count: 1,
+                    connections: vec![connection("cache-1", 1, "sha256:2222")],
+                })
+            }
+            ("POST", "/api/v2/admin/connections/cache-1/revisions/1/probes") => {
+                to_value(ConnectionProbeResponse {
+                    connection_id: "cache-1".into(),
+                    revision: 1,
+                    driver_id: "memory-cache".into(),
+                    healthy: true,
+                    latency_ms: 1,
+                    details: ProbeDetails {
+                        probe: "cache read of a probe key".into(),
+                        error: None,
+                        error_class: None,
+                        effect_status: None,
+                    },
+                })
+            }
+            ("POST", "/api/v2/admin/connections/cache-1/revisions") => {
+                to_value(CreateConnectionRevisionResponse {
+                    connection: connection("cache-1", 1, "sha256:2222"),
+                })
+            }
+            ("POST", "/api/v2/admin/deployment-plans") => to_value(plan(0, "sha256:3333")),
             ("POST", "/api/v2/admin/deployments") => {
                 match serde_json::from_value::<CreateDeploymentRequest>(body_val)? {
                     CreateDeploymentRequest::Rollback(req) => {
                         assert_eq!(req.rollback_to, 1);
                         assert_eq!(req.base_revision, 1);
                         assert!(!req.reason.is_empty());
-                        Ok(json!({
-                            "status": "accepted",
-                            "committed_revision": 2,
-                            "receipt": {
-                                "committed_revision": 2,
-                                "manifest_digest": "sha256:3333",
-                            }
-                        }))
+                        to_value(committed(2, vec!["no undo".into()]))
                     }
                     CreateDeploymentRequest::Apply(req) => {
                         assert!(!req.reason.is_empty(), "apply must send required reason");
                         assert_eq!(req.reviewed_manifest_digest, "sha256:3333");
-                        Ok(json!({
-                            "status": "accepted",
-                            "committed_revision": 1,
-                            "receipt": {
-                                "committed_revision": 1,
-                                "manifest_digest": "sha256:3333",
-                            }
-                        }))
+                        to_value(committed(1, vec![]))
                     }
                 }
             }
-            ("GET", "/api/v2/admin/deployments?limit=50") => Ok(json!({
-                "head_revision": 1,
-                "data": [{"revision": 1, "manifest_digest": "sha256:3333", "member_count": 0}],
-                "limit": 50,
-            })),
-            ("GET", p) if p.starts_with("/api/v2/admin/deployments/1/convergence") => Ok(json!({
-                "converged": true,
-                "target_revision": 1,
-                "converged_nodes": ["node-1"],
-            })),
-            ("GET", "/api/v2/admin/deployments/1") => Ok(json!({
-                "revision": 1,
-                "manifest_digest": "sha256:3333",
-                "reason": "cli apply",
-            })),
+            ("GET", "/api/v2/admin/deployments?limit=50") => to_value(DeploymentsPage {
+                head_revision: 1,
+                data: vec![summary(1, "sha256:3333")],
+                limit: 50,
+                ..Default::default()
+            }),
+            ("GET", p) if p.starts_with("/api/v2/admin/deployments/1/convergence") => {
+                to_value(ConvergenceStatusResponse {
+                    converged: true,
+                    target_revision: 1,
+                    converged_nodes: vec!["node-1".into()],
+                    ..Default::default()
+                })
+            }
+            ("GET", "/api/v2/admin/deployments/1") => to_value(DeploymentRevisionResponse {
+                summary: summary(1, "sha256:3333"),
+                manifest: DeploymentManifest::of_members(vec![]),
+            }),
             _ => anyhow::bail!("unexpected {method} {path}"),
+        }
+    }
+
+    /// A server speaking another contract revision, or none, is refused
+    /// before any v2 command runs.
+    #[tokio::test]
+    async fn a_server_speaking_another_api_version_is_refused() {
+        let ok = OrionClient::with_mock_transport(handle_v2_request).unwrap();
+        require_api_version(&ok).await.unwrap();
+        for answer in [
+            json!({"api_version": API_VERSION + 1}),
+            json!({"api_version": "v2"}),
+        ] {
+            let client =
+                OrionClient::with_mock_transport(move |_, _, _| Ok(answer.clone())).unwrap();
+            let err = require_api_version(&client).await.unwrap_err().to_string();
+            assert!(err.contains("this client speaks version 1"), "{err}");
         }
     }
 
@@ -1009,7 +1126,7 @@ mod tests {
             publisher: "org.plasmatic.foundation".to_string(),
             provider_id: "memory-cache".to_string(),
             version: "2.0.0".to_string(),
-            kind: "rust".to_string(),
+            kind: ImplementationKind::Rust,
         })
         .run(&client, &fmt, true)
         .await
@@ -1089,7 +1206,7 @@ mod tests {
         let manifest_file = dir.path().join("manifest.json");
         std::fs::write(
             &manifest_file,
-            r#"{"schema_version":"2.0","edition":"community","providers":[],"connections":[],"members":[]}"#,
+            r#"{"schema_version":2,"providers":[],"members":[]}"#,
         )
         .unwrap();
 
@@ -1196,46 +1313,87 @@ mod tests {
             match (method, path) {
                 // Head 4 deploys the channel as it is, the workflow at an
                 // older definition.
-                ("GET", "/api/v2/admin/deployments") => Ok(json!({
-                    "head_revision": 4,
-                    "data": [{"revision": 4, "manifest_digest": "sha256:head"}],
-                })),
-                ("GET", "/api/v2/admin/deployments/4") => Ok(json!({
-                    "revision": 4,
-                    "manifest_digest": "sha256:head",
-                    "manifest": {"members": [
-                        {"entity": {"kind": "channel", "id": "c", "revision": 2},
-                         "definition_digest": format!("sha256:{}", "b".repeat(64))},
-                        {"entity": {"kind": "workflow", "id": "w", "revision": 5},
-                         "definition_digest": "sha256:old"},
-                    ]},
-                })),
-                ("POST", "/api/v2/admin/definitions") => {
-                    let hex = if body["kind"] == "workflow" { "a" } else { "b" };
-                    Ok(json!({"digest": format!("sha256:{}", hex.repeat(64)),
-                              "kind": body["kind"], "size_bytes": 1}))
+                ("GET", "/api/v2/admin/deployments") => to_value(DeploymentsPage {
+                    head_revision: 4,
+                    data: vec![summary(4, "sha256:head")],
+                    limit: 50,
+                    ..Default::default()
+                }),
+                ("GET", "/api/v2/admin/deployments/4") => {
+                    let member = |kind, id: &str, revision, digest: String| ManifestMember {
+                        entity: EntityRef {
+                            kind,
+                            id: id.into(),
+                            revision,
+                        },
+                        definition_digest: digest,
+                        owning_package: None,
+                        requires: vec![],
+                        rollouts: vec![],
+                    };
+                    to_value(DeploymentRevisionResponse {
+                        summary: summary(4, "sha256:head"),
+                        manifest: DeploymentManifest::of_members(vec![
+                            member(
+                                EntityKind::Channel,
+                                "c",
+                                2,
+                                format!("sha256:{}", "b".repeat(64)),
+                            ),
+                            member(EntityKind::Workflow, "w", 5, "sha256:old".into()),
+                        ]),
+                    })
                 }
-                ("GET", "/api/v2/admin/runtime-capabilities") => Ok(json!({
-                    "provider_backends": [
-                        {"driver_id": "org.orion.sqlite", "package_digest": "sha256:p"}],
-                })),
-                ("GET", "/api/v2/admin/connections") => Ok(json!({"connections": [
-                    {"connection_id": "db", "revision": 2, "provider_digest": "sha256:p",
-                     "public_config": {"connection_string": "sqlite:/other.db"}},
-                ]})),
+                ("POST", "/api/v2/admin/definitions") => {
+                    let workflow = body["kind"] == "workflow";
+                    let hex = if workflow { "a" } else { "b" };
+                    to_value(DefinitionResponse {
+                        digest: format!("sha256:{}", hex.repeat(64)),
+                        kind: if workflow {
+                            EntityKind::Workflow
+                        } else {
+                            EntityKind::Channel
+                        },
+                        size_bytes: 1,
+                        advisories: vec![],
+                    })
+                }
+                ("GET", "/api/v2/admin/runtime-capabilities") => {
+                    to_value(capabilities(vec![ProviderBackendInfo {
+                        kind: ImplementationKind::Rust,
+                        driver_id: "org.orion.sqlite".into(),
+                        package_digest: Some("sha256:p".into()),
+                    }]))
+                }
+                ("GET", "/api/v2/admin/connections") => to_value(ConnectionsListResponse {
+                    count: 1,
+                    connections: vec![ConnectionRevisionResponse {
+                        connection_id: "db".into(),
+                        revision: 2,
+                        provider_digest: "sha256:p".into(),
+                        public_config: json!({"connection_string": "sqlite:/other.db"}),
+                        ..Default::default()
+                    }],
+                }),
                 ("POST", "/api/v2/admin/connections/db/revisions") => {
                     assert_eq!(body["revision"], 3, "one past the stored revisions");
                     assert!(body.get("connection_id").is_none(), "the path names it");
-                    Ok(json!({"connection": {"connection_id": "db", "revision": 3,
-                              "configuration_digest": "sha256:cfg"}}))
+                    to_value(CreateConnectionRevisionResponse {
+                        connection: ConnectionRevisionResponse {
+                            connection_id: "db".into(),
+                            revision: 3,
+                            configuration_digest: "sha256:cfg".into(),
+                            ..Default::default()
+                        },
+                    })
                 }
                 ("POST", "/api/v2/admin/deployment-plans") => {
                     assert_eq!(body["base_revision"], 4);
-                    Ok(json!({"reviewed_manifest_digest": "sha256:next"}))
+                    to_value(plan(4, "sha256:next"))
                 }
                 ("POST", "/api/v2/admin/deployments") => {
                     *seen.lock().unwrap() = Some(body);
-                    Ok(json!({"status": "accepted", "committed_revision": 5}))
+                    to_value(committed(5, vec![]))
                 }
                 _ => anyhow::bail!("unexpected {method} {path}"),
             }

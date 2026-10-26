@@ -19,16 +19,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use orion_api::v2::{
     COMPILED_DEPLOYMENT_SCHEMA_VERSION, CompiledConnection, CompiledDeployment,
-    ConnectionRevisionResponse, CreateConnectionRevisionRequest, Definition,
+    ConnectionRevisionResponse, CreateConnectionRevisionRequest, Definition, DeploymentManifest,
+    EntityKind, EntityRef, ManifestMember,
 };
 use orion_client::V2Admin;
-use serde::Deserialize;
-use serde_json::{Value, json};
 
 use crate::client::OrionClient;
-
-/// The kinds a compiled deployment's members may be.
-const DEFINITION_KINDS: &[&str] = &["workflow", "channel", "plugin"];
 
 /// A deployment directory, read and checked against itself.
 #[derive(Debug)]
@@ -65,14 +61,14 @@ impl DeploymentDir {
         let mut definitions = BTreeMap::new();
         let mut connections = BTreeMap::new();
         for member in &deployment.members {
-            if !seen.insert((member.kind.as_str(), member.id.as_str())) {
+            if !seen.insert((member.kind, member.id.as_str())) {
                 bail!(
                     "deployment.json lists {} '{}' twice",
                     member.kind,
                     member.id
                 );
             }
-            if member.kind == "connection" {
+            if member.kind == EntityKind::Connection {
                 let name = member.connection.as_deref().unwrap_or(&member.id);
                 let path = root.join("connections").join(format!("{name}.json"));
                 let text = std::fs::read_to_string(&path)
@@ -88,7 +84,10 @@ impl DeploymentDir {
                     );
                 }
                 connections.insert(member.id.clone(), connection);
-            } else if DEFINITION_KINDS.contains(&member.kind.as_str()) {
+            } else if matches!(
+                member.kind,
+                EntityKind::Workflow | EntityKind::Channel | EntityKind::Plugin
+            ) {
                 let Some(digest) = member.definition.as_deref() else {
                     bail!("{} '{}' names no definition", member.kind, member.id);
                 };
@@ -123,7 +122,7 @@ impl DeploymentDir {
         }
         for member in &deployment.members {
             for req in &member.requires {
-                if !seen.contains(&(req.kind.as_str(), req.id.as_str())) {
+                if !seen.contains(&(req.kind, req.id.as_str())) {
                     bail!(
                         "{} '{}' requires {} '{}', which deployment.json does not list",
                         member.kind,
@@ -142,41 +141,18 @@ impl DeploymentDir {
     }
 }
 
-/// One member of a stored manifest, as much of it as assigning revisions
-/// reads.
-#[derive(Debug, Clone, Default, Deserialize)]
-struct StoredMember {
-    #[serde(default)]
-    entity: StoredEntity,
-    #[serde(default)]
-    definition_digest: String,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct StoredEntity {
-    #[serde(default)]
-    kind: String,
-    #[serde(default)]
-    id: String,
-    #[serde(default)]
-    revision: u64,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct StoredManifest {
-    #[serde(default)]
-    members: Vec<StoredMember>,
-}
+/// `(kind, id, revision, definition digest)` of one deployed member.
+type Deployed = (EntityKind, String, u64, String);
 
 /// What the target has deployed: its head, and every revision before it.
 #[derive(Debug, Default)]
 pub struct History {
     pub head_revision: u64,
     pub head_manifest_digest: Option<String>,
-    /// `(kind, id, revision, definition digest)` the head deploys.
-    head: Vec<(String, String, u64, String)>,
+    /// What the head deploys.
+    head: Vec<Deployed>,
     /// The same for every revision the target lists, head included.
-    all: Vec<(String, String, u64, String)>,
+    all: Vec<Deployed>,
 }
 
 impl History {
@@ -208,36 +184,32 @@ impl History {
     }
 
     /// Record one revision's members.
-    fn add(&mut self, revision: u64, manifest_digest: &str, manifest: &Value) {
-        {
-            let manifest: StoredManifest =
-                serde_json::from_value(manifest.clone()).unwrap_or_default();
-            let members: Vec<_> = manifest
-                .members
-                .into_iter()
-                .map(|m| {
-                    (
-                        m.entity.kind,
-                        m.entity.id,
-                        m.entity.revision,
-                        m.definition_digest,
-                    )
-                })
-                .collect();
-            if revision == self.head_revision {
-                self.head = members.clone();
-                self.head_manifest_digest = Some(manifest_digest.to_string());
-            }
-            self.all.extend(members);
+    fn add(&mut self, revision: u64, manifest_digest: &str, manifest: &DeploymentManifest) {
+        let members: Vec<Deployed> = manifest
+            .members
+            .iter()
+            .map(|m| {
+                (
+                    m.entity.kind,
+                    m.entity.id.clone(),
+                    m.entity.revision,
+                    m.definition_digest.clone(),
+                )
+            })
+            .collect();
+        if revision == self.head_revision {
+            self.head = members.clone();
+            self.head_manifest_digest = Some(manifest_digest.to_string());
         }
+        self.all.extend(members);
     }
 
     /// The revision `(kind, id)` takes for `digest`: kept, taken back, or
     /// the next one.
-    pub fn revision_for(&self, kind: &str, id: &str, digest: &str) -> u64 {
-        let same = |list: &[(String, String, u64, String)]| {
+    pub fn revision_for(&self, kind: EntityKind, id: &str, digest: &str) -> u64 {
+        let same = |list: &[Deployed]| {
             list.iter()
-                .filter(|(k, i, _, d)| k == kind && i == id && d == digest)
+                .filter(|(k, i, _, d)| *k == kind && i == id && d == digest)
                 .map(|(_, _, r, _)| *r)
                 .max()
         };
@@ -246,7 +218,7 @@ impl History {
         }
         self.all
             .iter()
-            .filter(|(k, i, _, _)| k == kind && i == id)
+            .filter(|(k, i, _, _)| *k == kind && i == id)
             .map(|(_, _, r, _)| *r)
             .max()
             .unwrap_or(0)
@@ -257,7 +229,7 @@ impl History {
     fn head_connection(&self, id: &str) -> Option<u64> {
         self.head
             .iter()
-            .find(|(k, i, _, _)| k == "connection" && i == id)
+            .find(|(k, i, _, _)| *k == EntityKind::Connection && i == id)
             .map(|(_, _, r, _)| *r)
     }
 }
@@ -288,7 +260,7 @@ pub fn matching_connection_revision(
 /// A member with the revision it was assigned, for the summary.
 #[derive(Debug, Clone)]
 pub struct Assigned {
-    pub kind: String,
+    pub kind: EntityKind,
     pub id: String,
     pub revision: u64,
     /// Whether the head deploys this revision already.
@@ -300,7 +272,7 @@ pub struct Assigned {
 pub struct Prepared {
     pub base_revision: u64,
     pub head_manifest_digest: Option<String>,
-    pub manifest: Value,
+    pub manifest: DeploymentManifest,
     pub assigned: Vec<Assigned>,
 }
 
@@ -358,13 +330,8 @@ pub async fn prepare(
         let capabilities = client.runtime_capabilities().await?;
         let builtin: BTreeMap<String, String> = capabilities
             .provider_backends
-            .iter()
-            .filter_map(|backend| {
-                Some((
-                    backend["driver_id"].as_str()?.to_string(),
-                    backend["package_digest"].as_str()?.to_string(),
-                ))
-            })
+            .into_iter()
+            .filter_map(|backend| Some((backend.driver_id, backend.package_digest?)))
             .collect();
         let stored = client.list_connections().await?;
         for (id, connection) in &dir.connections {
@@ -420,9 +387,9 @@ pub async fn prepare(
     }
 
     // Every member's revision, then every requirement resolved against them.
-    let mut revisions: BTreeMap<(String, String), (u64, String)> = BTreeMap::new();
+    let mut revisions: BTreeMap<(EntityKind, String), (u64, String)> = BTreeMap::new();
     for member in &dir.deployment.members {
-        let assigned = if member.kind == "connection" {
+        let assigned = if member.kind == EntityKind::Connection {
             connection_revisions
                 .get(&member.id)
                 .cloned()
@@ -430,52 +397,57 @@ pub async fn prepare(
         } else {
             let digest = member.definition.clone().unwrap_or_default();
             (
-                history.revision_for(&member.kind, &member.id, &digest),
+                history.revision_for(member.kind, &member.id, &digest),
                 digest,
             )
         };
-        revisions.insert((member.kind.clone(), member.id.clone()), assigned);
+        revisions.insert((member.kind, member.id.clone()), assigned);
     }
 
     let mut members = Vec::new();
     let mut assigned = Vec::new();
     for member in &dir.deployment.members {
-        let revision_of = |kind: &str, id: &str| {
+        let revision_of = |kind: EntityKind, id: &str| {
             revisions
-                .get(&(kind.to_string(), id.to_string()))
+                .get(&(kind, id.to_string()))
                 .cloned()
                 .with_context(|| format!("{kind} '{id}' was assigned no revision"))
         };
-        let (revision, digest) = revision_of(&member.kind, &member.id)?;
-        let mut requires: Vec<Value> = Vec::new();
+        let (revision, digest) = revision_of(member.kind, &member.id)?;
+        let mut requires = Vec::new();
         for req in &member.requires {
-            let (rev, _) = revision_of(&req.kind, &req.id)?;
-            requires.push(json!({"kind": req.kind, "id": req.id, "revision": rev}));
+            let (rev, _) = revision_of(req.kind, &req.id)?;
+            requires.push(EntityRef {
+                kind: req.kind,
+                id: req.id.clone(),
+                revision: rev,
+            });
         }
-        members.push(json!({
-            "entity": {"kind": member.kind, "id": member.id, "revision": revision},
-            "definition_digest": digest,
-            "requires": requires,
-            "rollouts": [],
-        }));
+        members.push(ManifestMember {
+            entity: EntityRef {
+                kind: member.kind,
+                id: member.id.clone(),
+                revision,
+            },
+            definition_digest: digest,
+            owning_package: None,
+            requires,
+            rollouts: Vec::new(),
+        });
         assigned.push(Assigned {
-            kind: member.kind.clone(),
+            kind: member.kind,
             id: member.id.clone(),
             revision,
             unchanged: history
                 .head
                 .iter()
-                .any(|(k, i, r, _)| k == &member.kind && i == &member.id && *r == revision),
+                .any(|(k, i, r, _)| *k == member.kind && i == &member.id && *r == revision),
         });
     }
     Ok(Prepared {
         base_revision: history.head_revision,
         head_manifest_digest: history.head_manifest_digest,
-        manifest: json!({
-            "schema_version": 2,
-            "providers": [],
-            "members": members,
-        }),
+        manifest: DeploymentManifest::of_members(members),
         assigned,
     })
 }
@@ -494,40 +466,52 @@ pub fn default_idempotency_key(base_revision: u64, candidate_digest: &str) -> St
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use serde_json::{Value, json};
 
-    fn member(kind: &str, id: &str, rev: u64, digest: &str) -> Value {
-        json!({"entity": {"kind": kind, "id": id, "revision": rev}, "definition_digest": digest})
+    fn member(kind: EntityKind, id: &str, rev: u64, digest: &str) -> ManifestMember {
+        ManifestMember {
+            entity: EntityRef {
+                kind,
+                id: id.to_string(),
+                revision: rev,
+            },
+            definition_digest: digest.to_string(),
+            owning_package: None,
+            requires: Vec::new(),
+            rollouts: Vec::new(),
+        }
     }
 
     #[test]
     fn a_member_keeps_takes_back_or_advances_its_revision() {
+        use EntityKind::{Channel, Workflow};
         let mut history = History {
             head_revision: 3,
             ..History::default()
         };
-        let manifest = |members: Value| json!({"schema_version": 2, "members": members});
+        let manifest = |m: ManifestMember| DeploymentManifest::of_members(vec![m]);
         history.add(
             1,
             "sha256:1",
-            &manifest(json!([member("workflow", "w", 1, "sha256:a")])),
+            &manifest(member(Workflow, "w", 1, "sha256:a")),
         );
         history.add(
             2,
             "sha256:2",
-            &manifest(json!([member("workflow", "w", 2, "sha256:b")])),
+            &manifest(member(Workflow, "w", 2, "sha256:b")),
         );
         // A rollback to revision 1's manifest.
         history.add(
             3,
             "sha256:3",
-            &manifest(json!([member("workflow", "w", 1, "sha256:a")])),
+            &manifest(member(Workflow, "w", 1, "sha256:a")),
         );
-        assert_eq!(history.revision_for("workflow", "w", "sha256:a"), 1);
-        assert_eq!(history.revision_for("workflow", "w", "sha256:b"), 2);
+        assert_eq!(history.revision_for(Workflow, "w", "sha256:a"), 1);
+        assert_eq!(history.revision_for(Workflow, "w", "sha256:b"), 2);
         // New content goes past every revision the entity ever had, not the
         // head's: revision 2 already names something else.
-        assert_eq!(history.revision_for("workflow", "w", "sha256:c"), 3);
-        assert_eq!(history.revision_for("channel", "c", "sha256:z"), 1);
+        assert_eq!(history.revision_for(Workflow, "w", "sha256:c"), 3);
+        assert_eq!(history.revision_for(Channel, "c", "sha256:z"), 1);
         assert_eq!(history.head_manifest_digest.as_deref(), Some("sha256:3"));
     }
 

@@ -167,7 +167,6 @@ The v2 admin API's own refusals — connector packages, connections, plans and d
 | `ARCHIVE_INVENTORY_INVALID` | 400 | The package archive: inventory invalid |
 | `ARCHIVE_PATH_INVALID` | 400 | The package archive: path invalid |
 | `INVALID_PACKAGE_ENCODING` | 400 | A file in an upload is neither UTF-8 text nor valid `base64:` |
-| `INVALID_IMPLEMENTATION_KIND` | 400 | Not `rust`, `workflow` or `wasm` |
 | `PACK_VALIDATION_FAILED` | 400 | `POST /authoring/pack` could not pack the files; the message names the finding |
 | `PACKAGE_INVALID` | 400 | A package finding with no code of its own here; the message carries the finding's |
 | `INVENTORY_CONTENT_MISMATCH` | 400 | The package inventory: content mismatch |

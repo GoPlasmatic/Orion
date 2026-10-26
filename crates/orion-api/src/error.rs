@@ -264,8 +264,6 @@ v2_codes! {
     ArchivePathInvalid = "ARCHIVE_PATH_INVALID" => Invalid,
     /// A file in an upload is neither UTF-8 text nor valid `base64:`.
     InvalidPackageEncoding = "INVALID_PACKAGE_ENCODING" => Invalid,
-    /// Not `rust`, `workflow` or `wasm`.
-    InvalidImplementationKind = "INVALID_IMPLEMENTATION_KIND" => Invalid,
     /// `POST /authoring/pack` could not pack the files.
     PackValidationFailed = "PACK_VALIDATION_FAILED" => Invalid,
     /// A package finding with no code of its own here; the message carries

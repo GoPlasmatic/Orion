@@ -9,7 +9,6 @@ use base64::Engine as _;
 use orion_api::v2::{
     LintResponse, PackResponse, ScaffoldRequest, ScaffoldResponse, UploadPackageRequest,
 };
-use serde_json::Value;
 
 use super::{V2Error, V2Result, decode_files_map};
 use crate::extensions::ImplementationKind;
@@ -18,18 +17,6 @@ use crate::extensions::authoring::{
 };
 use crate::extensions::deployment_store::DeploymentErrorKind;
 use crate::server::extract::OrionJson;
-
-fn parse_implementation_kind(kind_str: &str) -> V2Result<ImplementationKind> {
-    let name = kind_str.trim().to_ascii_lowercase();
-    ImplementationKind::parse(&name).ok_or_else(|| {
-        V2Error::new(
-            DeploymentErrorKind::InvalidImplementationKind,
-            format!(
-                "unsupported implementation kind '{name}'; expected 'rust', 'workflow', or 'wasm'"
-            ),
-        )
-    })
-}
 
 /// `POST /api/v2/admin/authoring/scaffold`.
 #[utoipa::path(
@@ -41,14 +28,13 @@ fn parse_implementation_kind(kind_str: &str) -> V2Result<ImplementationKind> {
     request_body = ScaffoldRequest,
     responses(
         (status = 200, description = "Generated provider package scaffold", body = ScaffoldResponse),
-        (status = 400, description = "Unsupported implementation kind"),
+        (status = 400, description = "A body that does not parse, such as an implementation kind that is not `rust`, `workflow` or `wasm` (`VALIDATION_ERROR`)"),
     )
 )]
 pub(crate) async fn authoring_scaffold(
     OrionJson(req): OrionJson<ScaffoldRequest>,
 ) -> V2Result<Json<ScaffoldResponse>> {
-    let kind = parse_implementation_kind(&req.kind)?;
-    let pkg = scaffold_provider_package(&req.publisher, &req.provider_id, &req.version, kind);
+    let pkg = scaffold_provider_package(&req.publisher, &req.provider_id, &req.version, req.kind);
     let package_digest = pack_provider_package(&pkg.files)
         .map(|inv| inv.package_digest.into_string())
         .unwrap_or_default();
@@ -69,7 +55,7 @@ pub(crate) async fn authoring_scaffold(
         publisher: pkg.publisher,
         provider_id: pkg.provider_id,
         version: pkg.version,
-        implementation: pkg.implementation.as_str().to_string(),
+        implementation: pkg.implementation,
         package_digest,
         files: files_utf8,
     }))
@@ -91,7 +77,7 @@ pub(crate) async fn authoring_scaffold(
 pub(crate) async fn authoring_pack(
     OrionJson(req): OrionJson<UploadPackageRequest>,
 ) -> V2Result<Json<PackResponse>> {
-    let mut raw_files = req.merged_files();
+    let mut raw_files = req.files;
     let files = decode_files_map(&raw_files)?;
     let packed = pack_provider_package(&files).map_err(|err| {
         V2Error::new(
@@ -99,13 +85,12 @@ pub(crate) async fn authoring_pack(
             format!("the files do not pack: {}", err.code),
         )
     })?;
-    let inventory: Value = serde_json::from_slice(&packed.inventory_bytes)?;
-    if let Ok(inv_str) = String::from_utf8(packed.inventory_bytes) {
-        raw_files.insert("inventory.json".to_string(), inv_str);
-    }
+    let inventory = String::from_utf8(packed.inventory_bytes).map_err(|e| {
+        crate::errors::OrionError::internal_from("packing a provider package's inventory", e)
+    })?;
+    raw_files.insert("inventory.json".to_string(), inventory);
     Ok(Json(PackResponse {
         package_digest: packed.package_digest.to_string(),
-        inventory,
         files: raw_files,
     }))
 }
@@ -125,8 +110,7 @@ pub(crate) async fn authoring_pack(
     )
 )]
 pub(crate) async fn authoring_lint(OrionJson(req): OrionJson<UploadPackageRequest>) -> Response {
-    let raw_files = req.merged_files();
-    let files = match decode_files_map(&raw_files) {
+    let files = match decode_files_map(&req.files) {
         Ok(f) => f,
         Err(V2Error::Store(e)) => {
             let resp = LintResponse {
@@ -144,8 +128,15 @@ pub(crate) async fn authoring_lint(OrionJson(req): OrionJson<UploadPackageReques
     } else {
         StatusCode::UNPROCESSABLE_ENTITY
     };
-    match serde_json::to_value(&report).and_then(serde_json::from_value::<LintResponse>) {
-        Ok(dto) => (status, Json(dto)).into_response(),
-        Err(e) => V2Error::from(e).into_response(),
-    }
+    // The report names what `connector.json` declares, empty when it could
+    // not be read.
+    let declared = |s: String| (!s.is_empty()).then_some(s);
+    let resp = LintResponse {
+        valid: report.valid,
+        implementation: ImplementationKind::parse(&report.implementation),
+        provider_id: declared(report.provider_id),
+        version: declared(report.version),
+        errors: report.errors,
+    };
+    (status, Json(resp)).into_response()
 }

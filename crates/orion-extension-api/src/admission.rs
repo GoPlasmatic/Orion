@@ -3,6 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use orion_api::v2::EditionTier;
+
 use crate::contract::ImplementationKind;
 use crate::identity::ProviderRef;
 
@@ -17,32 +19,6 @@ pub struct PackageAdmissionRequest {
     pub tier: EditionTier,
     /// Optional detached signature payload verified by Enterprise admission policies.
     pub signature: Option<String>,
-}
-
-/// Distribution tier per `DEC-005`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum EditionTier {
-    Community,
-    Enterprise,
-}
-
-impl EditionTier {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Community => "community",
-            Self::Enterprise => "enterprise",
-        }
-    }
-
-    /// The tier named `name`, or `None` for a name that is not one.
-    pub fn parse(name: &str) -> Option<Self> {
-        match name {
-            "community" => Some(Self::Community),
-            "enterprise" => Some(Self::Enterprise),
-            _ => None,
-        }
-    }
 }
 
 /// Successful admission verdict returned by [`PackageVerifier::verify_package`].

@@ -37,4 +37,4 @@ pub use client::OrionClient;
 pub use error::ClientError;
 pub use paths::query_string;
 pub use reqwest::{Method, StatusCode};
-pub use v2::V2Admin;
+pub use v2::{ApiVersionMismatch, V2Admin, check_api_version};

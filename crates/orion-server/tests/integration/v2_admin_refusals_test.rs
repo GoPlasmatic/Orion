@@ -43,7 +43,7 @@ fn helper_package_upload() -> Value {
 async fn deployed_package(app: &Router) -> (String, Value) {
     let (status, uploaded) = send(app, "POST", PACKAGES, helper_package_upload()).await;
     assert_eq!(status, StatusCode::CREATED, "{uploaded}");
-    let digest = uploaded["digest"].as_str().unwrap().to_string();
+    let digest = uploaded["package"]["digest"].as_str().unwrap().to_string();
     let pkg = &uploaded["package"];
     let manifest = json!({
         "schema_version": 2,

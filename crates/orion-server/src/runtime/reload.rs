@@ -172,7 +172,7 @@ async fn manifest_definitions(
         })?;
         let parsed = super::definitions::parse(bytes)
             .map_err(|e| OrionError::validation(format!("{}: {e}", what())))?;
-        if parsed.kind() != member.entity.kind.as_str() {
+        if parsed.kind() != member.entity.kind {
             return Err(OrionError::validation(format!(
                 "{}: names a {} definition",
                 what(),

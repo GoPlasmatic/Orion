@@ -67,7 +67,9 @@ pub use provider::{
     ProviderBackend, SourceBatchItem, SourceConnectorFacet, SourcePollBatch, SourceSettlement,
 };
 
-/// The two wire types a contract shares with `orion-api`.
+/// The wire types a contract shares with `orion-api`. The vocabularies
+/// ([`ImplementationKind`], [`ConnectorErrorClass`], [`EffectStatus`],
+/// [`EditionTier`]) are `orion_api::v2`'s too, re-exported above.
 pub use orion_api::{Digest, DigestError, FieldError};
 
 /// The attribute the async traits here are declared with; implement them

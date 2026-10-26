@@ -3,8 +3,10 @@
 
 use axum::Json;
 use axum::extract::State;
-use orion_api::v2::{EditionTransitionPreflightRequest, EditionTransitionPreflightResponse};
-use serde_json::json;
+use orion_api::v2::{
+    EditionFinding, EditionFindingCode, EditionTier, EditionTransitionPreflightRequest,
+    EditionTransitionPreflightResponse,
+};
 
 use crate::server::extract::OrionJson;
 use crate::server::state::AppState;
@@ -45,19 +47,21 @@ pub(crate) async fn edition_transition_preflight(
                     || p.publisher.starts_with("com.orion.enterprise"))
             {
                 incompatible_providers.push(full_id.clone());
-                findings.push(json!({
-                    "code": "ENTERPRISE_PROVIDER_IN_MANIFEST",
-                    "provider": full_id,
-                    "digest": p.digest,
-                    "message": "Enterprise provider must be replaced or removed before transitioning to Community Edition"
-                }));
+                findings.push(EditionFinding {
+                    code: EditionFindingCode::EnterpriseProviderInManifest,
+                    provider: full_id,
+                    digest: p.digest.to_string(),
+                    message: "Enterprise provider must be replaced or removed before \
+                              transitioning to Community Edition"
+                        .to_string(),
+                });
             }
         }
     }
 
     let transition_allowed = incompatible_providers.is_empty() && incompatible_channels.is_empty();
     Json(EditionTransitionPreflightResponse {
-        target_edition: "community".to_string(),
+        target_edition: EditionTier::Community,
         transition_allowed,
         inspected_revision: target_rev,
         incompatible_providers,
