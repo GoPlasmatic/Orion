@@ -2,7 +2,7 @@
 //! connection its manifest member requires, and nothing else.
 
 use crate::common;
-use orion::extensions::{CanonicalManifest, EntityKind, EntityRef, ManifestMember};
+use orion::test_support::{CanonicalManifest, EntityKind, EntityRef, ManifestMember};
 use serde_json::{Value, json};
 
 fn cache_workflow(id: &str) -> Value {
@@ -41,7 +41,7 @@ fn member(kind: EntityKind, id: &str, digest: String, requires: Vec<EntityRef>) 
         entity: EntityRef {
             kind,
             id: id.to_string(),
-            revision: orion::extensions::Revision::FIRST,
+            revision: orion_extension_api::Revision::FIRST,
         },
         definition_digest: digest,
         owning_package: None,
@@ -54,7 +54,7 @@ fn entity(kind: EntityKind, id: &str) -> EntityRef {
     EntityRef {
         kind,
         id: id.to_string(),
-        revision: orion::extensions::Revision::FIRST,
+        revision: orion_extension_api::Revision::FIRST,
     }
 }
 
@@ -100,10 +100,9 @@ async fn a_workflow_calls_only_the_connections_its_member_requires() {
     // The connection names the built-in memory-cache driver by its built-in
     // digest, so the manifest declares no provider package for it.
     let deployments = &state.deployments;
-    let builtin = orion::extensions::foundation::builtin_provider_digest(
-        orion::extensions::foundation::DRIVER_MEMORY_CACHE,
-    )
-    .expect("a built-in driver");
+    let builtin =
+        orion::test_support::builtin_provider_digest(orion::test_support::DRIVER_MEMORY_CACHE)
+            .expect("a built-in driver");
     let conn = deployments
         .store_connection_revision_in_db(
             &state.db_pool,

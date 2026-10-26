@@ -1081,7 +1081,7 @@ mod tests {
     use crate::extensions::CompositionRoot;
     use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
     use crate::extensions::{ConnectorOutput, Digest, ProviderRef};
-    use crate::extensions::{ProviderBackend, SourceConnectorFacet};
+    use orion_extension_api::{ProviderBackend, SourceConnectorFacet};
     use serde_json::json;
     use std::collections::BTreeSet;
     use std::time::{Duration, Instant};

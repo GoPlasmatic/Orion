@@ -111,7 +111,7 @@ impl ProviderTable {
 ///
 /// A lookup reads the composed layer first. Bound at build to the node's
 /// deployment store (the connection revisions a call resolves) and its
-/// [`RevocationLedger`] (checked before every dispatch).
+/// `RevocationLedger` (checked before every dispatch).
 #[derive(Clone)]
 pub struct ProviderRegistry {
     composed: Arc<ProviderTable>,

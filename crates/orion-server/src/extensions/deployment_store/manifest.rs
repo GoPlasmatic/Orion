@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{DeploymentError, DeploymentErrorKind};
-pub use crate::extensions::ProviderRef;
+use crate::extensions::ProviderRef;
 use crate::extensions::package_identity::canonical_bytes;
 use crate::extensions::{Digest, Revision};
 

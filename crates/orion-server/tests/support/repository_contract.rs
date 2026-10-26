@@ -47,8 +47,8 @@ pub async fn run_all(backend: &str, pool: &DbPool) {
 }
 
 /// A deployment store manifest of one workflow member over `digest`.
-fn one_workflow_manifest(id: &str, digest: &str) -> orion::extensions::CanonicalManifest {
-    use orion::extensions::{CanonicalManifest, EntityKind, EntityRef, ManifestMember};
+fn one_workflow_manifest(id: &str, digest: &str) -> orion::test_support::CanonicalManifest {
+    use orion::test_support::{CanonicalManifest, EntityKind, EntityRef, ManifestMember};
     CanonicalManifest {
         schema_version: 2,
         providers: Vec::new(),
@@ -57,7 +57,7 @@ fn one_workflow_manifest(id: &str, digest: &str) -> orion::extensions::Canonical
             entity: EntityRef {
                 kind: EntityKind::Workflow,
                 id: id.to_string(),
-                revision: orion::extensions::Revision::FIRST,
+                revision: orion_extension_api::Revision::FIRST,
             },
             definition_digest: digest.to_string(),
             owning_package: None,
@@ -71,11 +71,11 @@ fn one_workflow_manifest(id: &str, digest: &str) -> orion::extensions::Canonical
 /// transaction that moves the head: present the moment the commit returns,
 /// absent when nothing was committed (an idempotent replay, a lost race).
 async fn a_deployment_audit_row_commits_with_the_head(backend: &str, pool: &DbPool) {
-    use orion::extensions::deployment_store::Rollback;
-    use orion::extensions::{Admission, DeploymentReceipt, ImmutableDeploymentStore};
     use orion::storage::repositories::audit_logs::{
         AuditEvent, AuditLogFilter, AuditLogRepository, SqlAuditLogRepository,
     };
+    use orion::test_support::Rollback;
+    use orion::test_support::{Admission, DeploymentReceipt, ImmutableDeploymentStore};
 
     let audit = SqlAuditLogRepository::new(pool.clone());
     let rows = |action: &'static str| {
@@ -225,7 +225,7 @@ async fn a_deployment_audit_row_commits_with_the_head(backend: &str, pool: &DbPo
 /// winner's request replayed from several nodes at once answers its receipt
 /// every time and commits nothing more.
 async fn concurrent_applies_on_one_base_commit_exactly_once(backend: &str, pool: &DbPool) {
-    use orion::extensions::{Admission, ImmutableDeploymentStore};
+    use orion::test_support::{Admission, ImmutableDeploymentStore};
 
     const NODES: usize = 6;
     let policy = Admission::community();
@@ -309,7 +309,7 @@ async fn concurrent_applies_on_one_base_commit_exactly_once(backend: &str, pool:
 }
 
 /// The fixture package's archive entries (`tests/fixtures/v2/package-identity`).
-fn fixture_package() -> Vec<orion::extensions::ArchiveEntryInput> {
+fn fixture_package() -> Vec<orion::test_support::ArchiveEntryInput> {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/v2/package-identity/bundle.json");
     let bundle: serde_json::Value =
@@ -321,7 +321,7 @@ fn fixture_package() -> Vec<orion::extensions::ArchiveEntryInput> {
         .iter()
         .map(|(path, text)| {
             let bytes = text.as_str().expect("text").as_bytes().to_vec();
-            orion::extensions::ArchiveEntryInput {
+            orion::test_support::ArchiveEntryInput {
                 path: path.clone(),
                 compressed_size: bytes.len(),
                 bytes,
@@ -329,8 +329,8 @@ fn fixture_package() -> Vec<orion::extensions::ArchiveEntryInput> {
             }
         })
         .collect();
-    let inventory = orion::extensions::canonical_bytes(&pkg["inventory"]).expect("inventory");
-    entries.push(orion::extensions::ArchiveEntryInput {
+    let inventory = orion::test_support::canonical_bytes(&pkg["inventory"]).expect("inventory");
+    entries.push(orion::test_support::ArchiveEntryInput {
         path: "inventory.json".to_string(),
         compressed_size: inventory.len(),
         bytes: inventory,
@@ -345,10 +345,11 @@ fn fixture_package() -> Vec<orion::extensions::ArchiveEntryInput> {
 /// bindings, an apply naming both, and the revocation — each read back by a
 /// fresh node as it was written.
 async fn a_package_admission_connection_and_revocation_read_back(backend: &str, pool: &DbPool) {
-    use orion::extensions::{
+    use orion::test_support::{
         Admission, CanonicalManifest, EntityKind, EntityRef, ImmutableDeploymentStore,
-        ManifestMember, ProviderRef,
+        ManifestMember,
     };
+    use orion_extension_api::ProviderRef;
 
     let policy = Admission::community();
     let node = ImmutableDeploymentStore::new("contract-pkg");
@@ -385,7 +386,7 @@ async fn a_package_admission_connection_and_revocation_read_back(backend: &str, 
         entity: EntityRef {
             kind,
             id: id.to_string(),
-            revision: orion::extensions::Revision::FIRST,
+            revision: orion_extension_api::Revision::FIRST,
         },
         definition_digest: digest.to_string(),
         owning_package: None,
@@ -429,7 +430,7 @@ async fn a_package_admission_connection_and_revocation_read_back(backend: &str, 
     );
     assert_eq!(
         *fresh
-            .get_connection("contract-pkg-conn", orion::extensions::Revision::FIRST)
+            .get_connection("contract-pkg-conn", orion_extension_api::Revision::FIRST)
             .expect("connection"),
         conn,
         "{backend}: the connection reads back whole"
@@ -477,7 +478,7 @@ async fn a_package_admission_connection_and_revocation_read_back(backend: &str, 
 /// the pass drains it first and the apply is refused. Never a committed head
 /// naming a draining definition.
 async fn a_collection_racing_an_apply_never_takes_what_it_deploys(backend: &str, pool: &DbPool) {
-    use orion::extensions::{Admission, ArtifactState, ImmutableDeploymentStore};
+    use orion::test_support::{Admission, ArtifactState, ImmutableDeploymentStore};
 
     let policy = Admission::community();
     for round in 0..4 {
@@ -725,7 +726,7 @@ async fn the_artifact_collector_judges_its_grace_on_the_database_clock(
     backend: &str,
     pool: &DbPool,
 ) {
-    use orion::extensions::{Admission, ArtifactState, ImmutableDeploymentStore};
+    use orion::test_support::{Admission, ArtifactState, ImmutableDeploymentStore};
 
     let policy = Admission::community();
     let node_a = ImmutableDeploymentStore::new("contract-gc-a");
@@ -853,7 +854,7 @@ async fn expire_source_lease(pool: &DbPool, channel: &str, partition: &str) {
 /// one — expired on the database's clock — is, with a greater fence; and a
 /// checkpoint commits only under the current fence.
 async fn source_leases_are_won_once_and_judged_on_the_database_clock(backend: &str, pool: &DbPool) {
-    use orion::extensions::{SourceLeaseCoordinator, SourcePartitionKey};
+    use orion::test_support::{SourceLeaseCoordinator, SourcePartitionKey};
     let key = SourcePartitionKey::new("contract-source", "p0");
 
     let claims = futures::future::join_all((0..6).map(|i| {

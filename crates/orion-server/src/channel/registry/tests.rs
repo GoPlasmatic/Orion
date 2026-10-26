@@ -253,7 +253,7 @@ async fn a_channel_whose_protocol_has_no_driver_is_quarantined() {
 /// gets its channel's route served.
 #[tokio::test]
 async fn a_registered_driver_that_registers_routes_is_routed() {
-    use crate::extensions::{ChannelDriver, ChannelDriverCapabilities, ChannelProtocolFields};
+    use orion_extension_api::{ChannelDriver, ChannelDriverCapabilities, ChannelProtocolFields};
     struct Graphql;
     impl ChannelDriver for Graphql {
         fn protocol_id(&self) -> &'static str {
@@ -277,7 +277,7 @@ async fn a_registered_driver_that_registers_routes_is_routed() {
         ..rest_channel("graph", "/graph")
     };
     let mut deps = TestDeps::new();
-    let mut drivers = crate::extensions::community_drivers();
+    let mut drivers = crate::extensions::channel_driver::community_drivers();
     drivers.push(Arc::new(Graphql));
     deps.channel_drivers =
         crate::extensions::ChannelDriverRegistry::new(drivers).expect("distinct protocols");

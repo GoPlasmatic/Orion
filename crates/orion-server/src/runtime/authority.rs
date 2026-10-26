@@ -83,7 +83,7 @@ impl ConnectorAuthority {
 
     /// This authority, with the dependencies the manifest's connections over
     /// workflow packages bind
-    /// ([`manifest_dependencies`](crate::extensions::workflow_provider::manifest_dependencies)).
+    /// (`manifest_dependencies`).
     pub fn with_dependencies(
         mut self,
         dependencies: BTreeMap<String, (ConnectionReference, BTreeSet<String>)>,

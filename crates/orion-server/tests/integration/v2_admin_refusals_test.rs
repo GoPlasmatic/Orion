@@ -31,8 +31,7 @@ fn helper_package_upload() -> Value {
     let bundle: Value = serde_json::from_str(&std::fs::read_to_string(dir).unwrap()).unwrap();
     let pkg = &bundle["providers"][1];
     let mut files = pkg["payloads"].as_object().unwrap().clone();
-    let inventory =
-        orion::extensions::package_identity::canonical_bytes(&pkg["inventory"]).unwrap();
+    let inventory = orion::test_support::canonical_bytes(&pkg["inventory"]).unwrap();
     files.insert(
         "inventory.json".to_string(),
         Value::String(String::from_utf8(inventory).unwrap()),

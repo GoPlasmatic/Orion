@@ -421,7 +421,7 @@ impl CancellationScope {
     }
 }
 
-/// Authority projection carried by a [`RunContext`] (`V2-05.1`).
+/// Authority projection carried by a `RunContext` (`V2-05.1`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AuthorityGrant {
     /// Allowed `(connection_id, operation)` pairs in this context.
@@ -699,6 +699,10 @@ impl RunContext {
     /// Restricted to `pub(crate)` so only the host [`super::source_runner::SourceChannelRunner`]
     /// can mint privileged source facet calls while application workflows are blocked by
     /// [`Self::start_invocation`].
+    #[allow(
+        dead_code,
+        reason = "only the source runner mints these, and no driver runs it yet"
+    )]
     pub(crate) fn start_privileged_source_invocation(
         &self,
         connection: ConnectionReference,

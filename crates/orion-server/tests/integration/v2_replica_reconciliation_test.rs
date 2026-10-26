@@ -5,11 +5,12 @@
 //! An integration test rather than a deployment-store unit test because it
 //! assembles whole nodes (`bootstrap::assemble`), which the store sits below.
 
-use orion::extensions::deployment_store::Rollback;
-use orion::extensions::package_identity::canonical_bytes;
-use orion::extensions::{
-    ArchiveEntryInput, CanonicalManifest, EntityKind, EntityRef, ManifestMember, ProviderRef,
+use orion::test_support::Rollback;
+use orion::test_support::canonical_bytes;
+use orion::test_support::{
+    ArchiveEntryInput, CanonicalManifest, EntityKind, EntityRef, ManifestMember,
 };
+use orion_extension_api::ProviderRef;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -158,14 +159,14 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
                 entity: EntityRef {
                     kind: EntityKind::Channel,
                     id: "orders-ch".to_string(),
-                    revision: orion::extensions::Revision::FIRST,
+                    revision: orion_extension_api::Revision::FIRST,
                 },
                 definition_digest: ch_v1.clone(),
                 owning_package: None,
                 requires: vec![EntityRef {
                     kind: EntityKind::Workflow,
                     id: "orders-wf".to_string(),
-                    revision: orion::extensions::Revision::FIRST,
+                    revision: orion_extension_api::Revision::FIRST,
                 }],
                 rollouts: Vec::new(),
             },
@@ -173,7 +174,7 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
                 entity: EntityRef {
                     kind: EntityKind::Workflow,
                     id: "orders-wf".to_string(),
-                    revision: orion::extensions::Revision::FIRST,
+                    revision: orion_extension_api::Revision::FIRST,
                 },
                 definition_digest: wf_v1.clone(),
                 owning_package: None,
@@ -184,7 +185,7 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
                 entity: EntityRef {
                     kind: EntityKind::Connection,
                     id: "crm-http".to_string(),
-                    revision: orion::extensions::Revision::FIRST,
+                    revision: orion_extension_api::Revision::FIRST,
                 },
                 definition_digest: conn.configuration_digest.to_string(),
                 owning_package: None,
@@ -241,7 +242,7 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
     assert!(
         state_b
             .deployments
-            .get_connection("crm-http", orion::extensions::Revision::FIRST)
+            .get_connection("crm-http", orion_extension_api::Revision::FIRST)
             .is_some(),
         "Claim 4: replica B must automatically learn connection crm-http@1"
     );
@@ -403,7 +404,7 @@ async fn a_node_does_not_boot_on_a_head_it_cannot_build() {
             entity: EntityRef {
                 kind: EntityKind::Workflow,
                 id: "ghost-wf".to_string(),
-                revision: orion::extensions::Revision::FIRST,
+                revision: orion_extension_api::Revision::FIRST,
             },
             definition_digest: ghost,
             owning_package: None,

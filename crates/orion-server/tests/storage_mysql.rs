@@ -545,14 +545,15 @@ async fn mysql_cron_cancel_frees_a_dead_holders_slots() {
 /// a served run would: inside a run admitted for exactly that operation on
 /// the connection.
 async fn mysql_provider_call(
-    provider: &orion::extensions::MysqlProviderBackend,
+    provider: &orion::test_support::MysqlProviderBackend,
     operation: &str,
     input: serde_json::Value,
-) -> Result<orion::extensions::ConnectorOutput, orion::extensions::ConnectorError> {
-    use orion::extensions::{
-        AdmittedRun, AuthorityGrant, BudgetLimits, ConnectionReference, DRIVER_MYSQL,
-        EffectiveConnectionIdentity, ProviderBackend, ProviderRef,
-        foundation::builtin_provider_digest,
+) -> Result<orion_extension_api::ConnectorOutput, orion_extension_api::ConnectorError> {
+    use orion::test_support::{
+        AdmittedRun, AuthorityGrant, BudgetLimits, DRIVER_MYSQL, builtin_provider_digest,
+    };
+    use orion_extension_api::{
+        ConnectionReference, EffectiveConnectionIdentity, ProviderBackend, ProviderRef,
     };
     use std::collections::{BTreeMap, BTreeSet};
     use std::time::{Duration, Instant};
@@ -560,7 +561,7 @@ async fn mysql_provider_call(
     let digest = builtin_provider_digest(DRIVER_MYSQL).expect("a built-in driver");
     let connection = ConnectionReference {
         connection_id: "orders-mysql".into(),
-        revision: orion::extensions::Revision::FIRST,
+        revision: orion_extension_api::Revision::FIRST,
         provider: ProviderRef {
             publisher: "test".to_string(),
             provider_id: DRIVER_MYSQL.into(),
@@ -571,7 +572,7 @@ async fn mysql_provider_call(
     let identity = EffectiveConnectionIdentity {
         provider_digest: digest,
         connection_id: "orders-mysql".into(),
-        revision: orion::extensions::Revision::FIRST,
+        revision: orion_extension_api::Revision::FIRST,
         secret_hash: "sha256:none".to_string(),
     };
     let run = AdmittedRun::admit(
@@ -604,10 +605,11 @@ async fn mysql_provider_call(
 #[tokio::test]
 #[ignore = "needs Docker; run with: cargo test --test storage_mysql -- --ignored"]
 async fn mysql_foundation_provider_runs_bound_statements() {
-    use orion::extensions::{
-        DRIVER_MYSQL, ImmutableDeploymentStore, MysqlProviderBackend, RetryAdvice, SqlLimits,
-        codes, foundation::builtin_provider_digest,
+    use orion::test_support::{
+        DRIVER_MYSQL, ImmutableDeploymentStore, MysqlProviderBackend, SqlLimits,
+        builtin_provider_digest,
     };
+    use orion_extension_api::{RetryAdvice, codes};
     use serde_json::json;
     use sqlx::Connection;
 

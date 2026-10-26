@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::http::StatusCode;
-use orion::extensions::AttemptContext;
-use orion::extensions::ProviderBackend;
-use orion::extensions::{ConnectorError, ConnectorOutput, ImplementationKind};
+use orion_extension_api::AttemptContext;
+use orion_extension_api::ProviderBackend;
+use orion_extension_api::{ConnectorError, ConnectorOutput, ImplementationKind};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -29,7 +29,7 @@ async fn send(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 }
 
 fn builtin(driver: &str) -> String {
-    orion::extensions::foundation::builtin_provider_digest(driver)
+    orion::test_support::builtin_provider_digest(driver)
         .expect("a built-in driver")
         .into_string()
 }
@@ -77,8 +77,8 @@ fn problems(body: &Value) -> Vec<(String, String)> {
 #[tokio::test]
 async fn a_built_in_connection_that_would_not_load_is_refused_by_field() {
     let app = test_app().await;
-    let http = builtin(orion::extensions::foundation::DRIVER_HTTP);
-    let db = builtin(orion::extensions::foundation::DRIVER_POSTGRESQL);
+    let http = builtin(orion::test_support::DRIVER_HTTP);
+    let db = builtin(orion::test_support::DRIVER_POSTGRESQL);
 
     for (config, locators, path, code) in [
         (
@@ -183,8 +183,7 @@ async fn helper_package(app: &Router) -> (String, Value) {
     let bundle: Value = serde_json::from_str(&std::fs::read_to_string(dir).unwrap()).unwrap();
     let pkg = &bundle["providers"][1];
     let mut files = pkg["payloads"].as_object().unwrap().clone();
-    let inventory =
-        orion::extensions::package_identity::canonical_bytes(&pkg["inventory"]).unwrap();
+    let inventory = orion::test_support::canonical_bytes(&pkg["inventory"]).unwrap();
     files.insert(
         "inventory.json".to_string(),
         Value::String(String::from_utf8(inventory).unwrap()),
@@ -252,9 +251,7 @@ async fn probe(app: &Router, id: &str) -> (StatusCode, Value) {
 /// allows one — and it never answers a secret.
 #[tokio::test]
 async fn a_built_in_connection_probe_connects() {
-    use orion::extensions::foundation::{
-        DRIVER_HTTP, DRIVER_MEMORY_CACHE, DRIVER_POSTGRESQL, DRIVER_SQLITE,
-    };
+    use orion::test_support::{DRIVER_HTTP, DRIVER_MEMORY_CACHE, DRIVER_POSTGRESQL, DRIVER_SQLITE};
     let app = test_app().await;
 
     let (status, body) = create(

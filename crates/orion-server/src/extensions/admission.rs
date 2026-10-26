@@ -186,7 +186,7 @@ impl RevocationLedger {
 }
 
 /// The node's admission: the edition's [`PackageVerifier`] over the node's
-/// [`RevocationLedger`]. What the deployment store and the admin routes
+/// `RevocationLedger`. What the deployment store and the admin routes
 /// admit, roll out and roll back under.
 #[derive(Clone)]
 pub struct Admission {

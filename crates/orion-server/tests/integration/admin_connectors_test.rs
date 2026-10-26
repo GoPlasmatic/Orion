@@ -37,7 +37,7 @@ async fn refused_connection(
     driver: &str,
     public_config: Value,
 ) -> Value {
-    let provider = orion::extensions::foundation::builtin_provider_digest(driver).unwrap();
+    let provider = orion::test_support::builtin_provider_digest(driver).unwrap();
     let resp = app
         .clone()
         .oneshot(json_request(
@@ -179,7 +179,7 @@ async fn an_http_connection_with_a_non_http_url_scheme_is_refused() {
     let body = refused_connection(
         &app,
         "ftp-connector",
-        orion::extensions::foundation::DRIVER_HTTP,
+        orion::test_support::DRIVER_HTTP,
         json!({"url": "ftp://example.com/files", "method": "GET"}),
     )
     .await;
@@ -206,7 +206,7 @@ async fn s6_db_connection_refuses_schemes_that_are_not_databases() {
         let body = refused_connection(
             &app,
             id,
-            orion::extensions::foundation::DRIVER_POSTGRESQL,
+            orion::test_support::DRIVER_POSTGRESQL,
             json!({"connection_string": conn}),
         )
         .await;
@@ -241,7 +241,7 @@ async fn a_cache_connector_is_memory_only() {
     let body = refused_connection(
         &app,
         "cache-redis",
-        orion::extensions::foundation::DRIVER_MEMORY_CACHE,
+        orion::test_support::DRIVER_MEMORY_CACHE,
         json!({"backend": "redis", "url": "rediss://cache.example.com:6379"}),
     )
     .await;

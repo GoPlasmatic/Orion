@@ -1067,8 +1067,8 @@ mod tests {
             fn protocol_id(&self) -> &'static str {
                 "kafka"
             }
-            fn capabilities(&self) -> crate::extensions::ChannelDriverCapabilities {
-                crate::extensions::ChannelDriverCapabilities {
+            fn capabilities(&self) -> orion_extension_api::ChannelDriverCapabilities {
+                orion_extension_api::ChannelDriverCapabilities {
                     supports_sync: false,
                     supports_async: true,
                     registers_http_routes: false,
@@ -1093,7 +1093,7 @@ mod tests {
                     .collect()
             }
         }
-        let mut with_kafka = crate::extensions::community_drivers();
+        let mut with_kafka = crate::extensions::channel_driver::community_drivers();
         with_kafka.push(std::sync::Arc::new(Kafka));
         let drivers =
             crate::extensions::ChannelDriverRegistry::new(with_kafka).expect("distinct protocols");
@@ -1109,9 +1109,12 @@ mod tests {
         let login = json!({"oauth2_login": {}});
         let err = validate_oauth2_login_routing(&login, &Kafka, None).expect_err("no flow");
         assert_eq!(err.field_errors()[0].path, "channel.config.oauth2_login");
-        let err =
-            validate_oauth2_login_routing(&login, &crate::extensions::RestChannelDriver, None)
-                .expect_err("no route");
+        let err = validate_oauth2_login_routing(
+            &login,
+            &crate::extensions::channel_driver::RestChannelDriver,
+            None,
+        )
+        .expect_err("no route");
         assert_eq!(err.field_errors()[0].path, "channel.route_pattern");
     }
 

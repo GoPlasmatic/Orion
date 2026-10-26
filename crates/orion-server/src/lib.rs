@@ -67,6 +67,8 @@ pub mod signatures;
 #[doc(hidden)]
 pub mod sql_lex;
 pub mod storage;
+#[doc(hidden)]
+pub mod test_support;
 pub(crate) mod text;
 #[doc(hidden)]
 pub mod trace_context;

@@ -1,7 +1,7 @@
 //! `connector_call` — unified v2 connector invocation function for `dataflow-rs` 4 (`V2-10.1`, `V2-11.1`, `V2-14`).
 //!
 //! Dispatches any registered [`ProviderBackend`](crate::extensions::ProviderBackend) (`rust`, `workflow`, or `wasm`)
-//! through [`ProviderRegistry`] under an owned [`RunContext`] / [`AttemptContext`](crate::extensions::AttemptContext),
+//! through [`ProviderRegistry`] under an owned `RunContext` / [`AttemptContext`](crate::extensions::AttemptContext),
 //! enforcing reserved operation denial (`orion.internal.*`), deadline/cancellation
 //! propagation, and normalized [`ConnectorOutput`](crate::extensions::ConnectorOutput) / [`ConnectorError`](crate::extensions::ConnectorError) outcomes.
 

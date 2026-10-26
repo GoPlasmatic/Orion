@@ -753,7 +753,7 @@ async fn locators_are_placed_at_their_paths() {
 /// One attempt on the backend registered as `(kind, driver_id)`.
 async fn dispatch(
     providers: &crate::extensions::ProviderRegistry,
-    invocation: &crate::extensions::Invocation,
+    invocation: &crate::extensions::context::Invocation,
     kind: ImplementationKind,
     driver_id: &str,
     input: Value,

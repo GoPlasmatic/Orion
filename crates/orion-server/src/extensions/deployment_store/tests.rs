@@ -1,3 +1,4 @@
+use super::manifest::{RolloutInterval, validate_rollout_partition};
 use super::*;
 use crate::extensions::Admission;
 use crate::extensions::package_identity::canonical_bytes;

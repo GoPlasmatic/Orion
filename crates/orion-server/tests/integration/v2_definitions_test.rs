@@ -267,10 +267,8 @@ async fn a_manifest_naming_a_missing_definition_is_refused() {
 #[tokio::test]
 async fn a_deployed_connection_serves_the_built_in_functions() {
     let app = test_app().await;
-    let sqlite = orion::extensions::foundation::builtin_provider_digest(
-        orion::extensions::foundation::DRIVER_SQLITE,
-    )
-    .expect("a built-in driver");
+    let sqlite = orion::test_support::builtin_provider_digest(orion::test_support::DRIVER_SQLITE)
+        .expect("a built-in driver");
     let (status, created) = send(
         &app,
         "POST",

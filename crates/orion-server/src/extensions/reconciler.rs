@@ -14,7 +14,6 @@ use super::deployment_store::{
 
 pub const MIN_BACKOFF_MS: u64 = 250;
 pub const MAX_BACKOFF_MS: u64 = 30_000;
-pub const DEFAULT_CONVERGENCE_TIMEOUT_MS: u64 = 60_000;
 pub const DEFAULT_SECURITY_LEASE_MS: u64 = 5_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

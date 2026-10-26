@@ -94,7 +94,7 @@ static BUILTIN_DIGESTS: LazyLock<Vec<(&'static str, Digest)>> = LazyLock::new(||
 /// `None` for an id this build does not ship.
 ///
 /// The table is Community's: a `rust` backend an edition composes beyond
-/// [`COMMUNITY_RUST_DRIVERS`] has no built-in digest, so a connection
+/// `COMMUNITY_RUST_DRIVERS` has no built-in digest, so a connection
 /// reaches it through an uploaded `rust` package naming its id.
 pub fn builtin_provider_digest(driver_id: &str) -> Option<Digest> {
     BUILTIN_DIGESTS
@@ -484,6 +484,7 @@ impl std::fmt::Debug for HttpProviderBackend {
 }
 
 impl HttpProviderBackend {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -1181,6 +1182,7 @@ impl SqliteProviderBackend {
     }
 
     /// Execute a real SQL statement against a sandboxed SQLite target (`V2-14.3`).
+    #[cfg(test)]
     pub async fn execute_live_sqlite(
         &self,
         conn_str: &str,
@@ -1340,7 +1342,7 @@ impl ProviderBackend for SqliteProviderBackend {
 
 /// Community foundation MySQL and MariaDB connector provider (`org.orion.mysql`).
 ///
-/// The same operations as [`PostgresProviderBackend`]: `query` and `execute`,
+/// The same operations as `PostgresProviderBackend`: `query` and `execute`,
 /// a literal statement with `params` bound to its `?` placeholders, and a
 /// target taken only from the connection revision.
 pub struct MysqlProviderBackend {
@@ -1656,6 +1658,7 @@ impl PartitionedMemoryCache {
         removed
     }
 
+    #[cfg(test)]
     pub fn partition_count(&self) -> usize {
         self.partitions.lock().map(|g| g.len()).unwrap_or(0)
     }

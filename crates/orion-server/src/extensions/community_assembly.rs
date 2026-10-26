@@ -202,8 +202,8 @@ mod tests {
             "kafka"
         }
 
-        fn capabilities(&self) -> crate::extensions::ChannelDriverCapabilities {
-            crate::extensions::ChannelDriverCapabilities {
+        fn capabilities(&self) -> orion_extension_api::ChannelDriverCapabilities {
+            orion_extension_api::ChannelDriverCapabilities {
                 supports_sync: false,
                 supports_async: true,
                 registers_http_routes: false,

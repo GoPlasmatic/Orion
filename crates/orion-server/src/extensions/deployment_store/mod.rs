@@ -24,16 +24,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub use error::{DeploymentError, DeploymentErrorKind, ErrorClass};
-pub use manifest::{
-    CanonicalManifest, EntityKind, EntityRef, ManifestMember, ProviderRef, RolloutInterval,
-    validate_rollout_partition,
-};
+pub use manifest::{CanonicalManifest, EntityKind, EntityRef, ManifestMember};
 
 use super::ImplementationKind;
 use super::package_identity::{canonical_bytes, sha256_digest};
 use super::schema_profile::{CompiledSchemaBundle, SchemaProfileFinding};
 use super::{
-    ConnectionId, ConnectionReference, Digest, EffectiveConnectionIdentity, ProviderId, Revision,
+    ConnectionId, ConnectionReference, Digest, EffectiveConnectionIdentity, ProviderId,
+    ProviderRef, Revision,
 };
 use error::DeploymentErrorKind as Kind;
 

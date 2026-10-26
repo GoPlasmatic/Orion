@@ -667,7 +667,7 @@ fn a_connections_secret_references_become_its_locators() {
     assert_eq!(api["driver"], "org.orion.http");
     assert_eq!(
         api["provider_digest"].as_str(),
-        orion::extensions::foundation::builtin_provider_digest("org.orion.http").as_deref()
+        orion::test_support::builtin_provider_digest("org.orion.http").as_deref()
     );
     assert_eq!(
         api["secret_locators"],

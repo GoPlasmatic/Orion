@@ -1,157 +1,79 @@
-//! Open extension seams, the composition, and owned context contracts (`V2-11.1`, `V2-05.1`).
+//! The node's side of the extension seams (`V2-11.1`, `V2-05.1`).
 //!
-//! # Architecture & Dependency Direction
+//! What an edition implements (the channel driver, provider backend, pool
+//! cache and package verifier traits, their contract types and the
+//! [`orion_extension_api::Registrar`] surface) is the
+//! `orion-extension-api` crate, together with the vocabulary its docs
+//! define. This module is what the node does with them, and its one public
+//! part is how an edition hands its composition to the node:
 //!
-//! This module defines the public registration and runtime contracts around Orion's
-//! core library target so the public repository stays focused on the **Community Edition**
-//! while **Enterprise Edition** extends it cleanly from a separate private workspace.
+//! - [`CompositionBuilder`] (named [`CompositionRoot`] in the Enterprise
+//!   design docs; Community's is [`CompositionBuilder::community`]) collects
+//!   the edition, its channel drivers, provider backends, pool caches and
+//!   package verifier. It implements `Registrar`, so an edition's
+//!   registration code is written against the API crate and applied with
+//!   [`CompositionBuilder::with_extension`].
+//! - [`crate::run`] / `bootstrap::assemble` create the node's services
+//!   (its identity, deployment store, revocation ledger and native work
+//!   scheduler) and freeze the builder over them into a [`Composition`]:
+//!   plain maps, private fields, nothing registered after boot. A duplicate
+//!   registration fails the build.
 //!
-//! An edition describes what its node serves with an owned
-//! [`CompositionBuilder`] (Community's is [`CompositionRoot::community`]) and
-//! hands it to [`crate::run`] / [`crate::bootstrap::assemble`]. Bootstrap
-//! creates the node's services (its [`NodeIdentity`], deployment store,
-//! [`RevocationLedger`] and [`NativeWorkScheduler`]) and freezes the builder
-//! over them into a [`Composition`]: plain maps, private fields, nothing
-//! registered after boot. A duplicate registration fails the build.
-//!
-//! - **Channels (100% Native Rust via [`ChannelDriver`])**:
-//!   Community ships the foundational ingress and scheduler drivers (`http`, `rest`,
-//!   `cron`, [`community_drivers`]). Enterprise registers additional native
-//!   Rust drivers (`graphql`, `kafka`, `sse`) via
-//!   [`CompositionBuilder::with_channel_driver`]. The [`ChannelDriverRegistry`]
-//!   is the one answer to which protocols exist: the registered driver
-//!   validates a channel of its protocol and decides whether it claims a
-//!   route, and a protocol with no driver is refused at upload and
-//!   quarantined at load.
-//! - **Connectors (Unified Backend Architecture via [`ProviderBackend`])**:
-//!   Supports Direct Rust (`ImplementationKind::Rust`) and Workflow-Group composite
-//!   packages (`ImplementationKind::Workflow`) under one invocation contract (`Result<`[`ConnectorOutput`]`, `[`ConnectorError`]`>`),
-//!   owned context ([`RunContext`], [`Invocation`], [`AttemptContext`]), and
-//!   optional [`SourceConnectorFacet`] (`open` / `poll` / `settle` / `close`).
-//!   Composed backends are frozen; packages admitted at runtime live in the
-//!   [`ProviderRegistry`]'s separate admitted layer.
-//! - **Resource Pooling (via [`ResourcePoolRegistry`] & [`VersionedSessionPool`])**:
-//!   Direct Rust providers register their own [`ConnectionPoolCache`] instances
-//!   (unique by `cache_id`) without requiring a closed `PoolSlot` enum variant.
-//! - **Package Admission ([`PackageVerifier`]) and revocation ([`RevocationLedger`])**:
-//!   Community composes [`CommunityPackageVerifier`]; Enterprise injects its
-//!   signed-package and entitlement verifier via
-//!   [`CompositionBuilder::with_package_verifier`], and its edition via
-//!   [`CompositionBuilder::with_edition`]. The revocation ledger and security
-//!   lease are core: [`Admission`] checks them whatever the verifier says.
-//!
-//! # Vocabulary
-//!
-//! The words below have one meaning each across this module (and the
-//! [glossary](https://docs.goplasmatic.io/concepts/glossary.html)):
-//!
-//! - **Connector**: the authored form — a connector file in a definition set
-//!   (`http`, `db`, `cache`), which `compile` turns into a connection.
-//! - **Connection**: an immutable, numbered revision of a connector's
-//!   configuration ([`ConnectionRevisionRow`]), named by [`ConnectionId`] and
-//!   [`Revision`] and pinned in a running call as a [`ConnectionReference`].
-//! - **Provider**: what a connection runs on, pinned as a [`ProviderRef`]
-//!   (publisher, [`ProviderId`], version, [`Digest`]): a driver, or an uploaded
-//!   provider package ([`ProviderPackageRow`]).
-//! - **Driver**: a provider compiled into the binary (`org.orion.http`, …). It
-//!   has no package; a connection names it by its built-in digest
-//!   ([`foundation::builtin_provider_digest`]).
-//! - **Backend**: the [`ProviderBackend`] a node dispatches a provider's
-//!   operations to, registered under its kind and backend id: a `rust`
-//!   backend's driver id, or a `workflow`/`wasm` package's digest
-//!   ([`ProviderPackageRow::backend_id`]).
-//! - **`target_id`**: the `connector_call` input naming that backend id; with
-//!   none, the connection's provider decides it.
-//!
-//! A `rust` backend is keyed by driver id, not by digest: its code is the
-//! binary, so one backend serves every package version that names its id,
-//! and the digest a manifest pins identifies the package's declared schemas,
-//! not different code. A `workflow` or `wasm` backend's id *is* its digest,
-//! so the registry is already keyed by digest wherever the digest names code.
+//! The rest is crate-private: the channel driver registry (which protocols
+//! a node serves, refusing the rest at upload and at load), the provider
+//! registry (composed backends frozen, runtime-admitted workflow packages in
+//! a separate layer that cannot shadow them), the run context and budgets
+//! an attempt is a view of, the deployment store, the reconciler, the
+//! Community foundation drivers and the source runner. Tests that drive
+//! them from outside the crate go through `crate::test_support`.
 
-pub mod admission;
-pub mod authoring;
-pub mod channel_driver;
+pub(crate) mod admission;
+pub(crate) mod authoring;
+pub(crate) mod channel_driver;
 #[cfg(test)]
 mod community_assembly;
-pub mod context;
-pub mod deployment_store;
-pub mod foundation;
-pub mod owned_native_work;
-pub mod package_identity;
-pub mod provider_backend;
-pub mod reconciler;
-pub mod resource_pool;
-pub mod schema_profile;
-pub mod source_runner;
-pub mod workflow_provider;
+pub(crate) mod context;
+pub(crate) mod deployment_store;
+pub(crate) mod foundation;
+pub(crate) mod owned_native_work;
+pub(crate) mod package_identity;
+pub(crate) mod provider_backend;
+pub(crate) mod reconciler;
+pub(crate) mod resource_pool;
+pub(crate) mod schema_profile;
+#[allow(
+    dead_code,
+    reason = "no channel driver runs a source yet: the runner is exercised by its tests and the repository contract"
+)]
+pub(crate) mod source_runner;
+pub(crate) mod workflow_provider;
 
 use std::sync::Arc;
 
-pub use orion_extension_api::{
-    AdmissionRejection, AdmissionVerdict, AttemptContext, AttemptScope, ChannelDriver,
-    ChannelDriverCapabilities, ChannelProtocolFields, CompositionError, ConnectionId,
+pub(crate) use orion_extension_api::{
+    AttemptContext, ChannelDriver, ChannelProtocolFields, CompositionError, ConnectionId,
     ConnectionPoolCache, ConnectionReference, ConnectorError, ConnectorErrorClass, ConnectorOutput,
-    Digest, DigestError, DuplicateProvider, EditionTier, EffectStatus, EffectiveConnectionIdentity,
-    ErrorOrigin, ImplementationKind, OriginKind, PackageAdmissionRequest, PackageVerifier,
-    PoolEntry, ProviderBackend, ProviderId, ProviderRef, Registrar, RetryAdvice, Revision,
-    SourceBatchItem, SourceConnectorFacet, SourcePollBatch, SourceSettlement, codes,
+    Digest, EditionTier, EffectStatus, EffectiveConnectionIdentity, ErrorOrigin,
+    ImplementationKind, PackageAdmissionRequest, PackageVerifier, PoolEntry, ProviderBackend,
+    ProviderId, ProviderRef, Registrar, RetryAdvice, Revision, SourcePollBatch, SourceSettlement,
+    codes,
 };
 
-pub use admission::{Admission, CommunityPackageVerifier, RevocationLedger};
-pub use channel_driver::{
-    ChannelDriverRegistry, CronChannelDriver, HttpChannelDriver, PROTOCOL_CRON, PROTOCOL_HTTP,
-    PROTOCOL_REST, RestChannelDriver, community_drivers,
-};
-pub use context::{
-    AdmittedRun, AuthorityGrant, BudgetCounters, BudgetLimits, BudgetScope, CancellationScope,
-    ChargeVector, Invocation, Reservation, RunContext, WorkLease,
-};
-pub use deployment_store::{
-    ArchiveEntryInput, ArtifactObjectRow, ArtifactState, CandidatePlan, CanonicalManifest,
-    ConnectionRevisionRow, DeploymentError, DeploymentErrorKind, DeploymentReceipt,
-    DeploymentRevisionRow, EntityKind, EntityRef, ImmutableDeploymentStore, ManifestMember,
-    ProviderAdmissionRow, ProviderPackageRow, RolloutInterval, validate_rollout_partition,
-};
-pub use foundation::{
-    COMMUNITY_RUST_DRIVERS, DRIVER_HTTP, DRIVER_MEMORY_CACHE, DRIVER_MYSQL, DRIVER_POSTGRESQL,
-    DRIVER_SQLITE, FoundationOptions, HttpProviderBackend, MemoryCacheProviderBackend,
-    MysqlProviderBackend, PartitionedMemoryCache, PostgresProviderBackend, SqlLimits,
-    SqliteProviderBackend, register_community_foundation,
-};
-pub use owned_native_work::{
-    NativeJobInfo, NativeJobState, NativeWorkError, NativeWorkScheduler, OwnedPermit,
-    ShutdownDrainReport,
-};
-pub use package_identity::{
-    DeclaredLockDependency, MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_FILES, MAX_PACKAGE_TOTAL_BYTES,
-    PackageIdentityFinding, SIGNATURE_DOMAIN_PREFIX, VerifiedArtifactMetadata, build_inventory,
-    canonical_bytes, check_dependency_lock, sha256_digest, sha256_hex, signature_signing_bytes,
-    validate_payload_path, verify_inventory,
-};
-pub use provider_backend::ProviderRegistry;
-pub use reconciler::{
-    CandidateBuildIssue, ConvergenceReport, ConvergenceTarget, DEFAULT_CONVERGENCE_TIMEOUT_MS,
-    DEFAULT_SECURITY_LEASE_MS, MAX_BACKOFF_MS, MIN_BACKOFF_MS, NodeIdentity, NodeReconciler,
-    QuarantinedEntity, RuntimeNodeStatus, compute_reconcile_backoff_ms,
-};
-pub use resource_pool::{ResourcePoolRegistry, SessionHandle, VersionedSessionPool};
-pub use schema_profile::{
-    CompiledSchemaBundle, DIALECT_URI, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, PROFILE_ID,
-    SchemaProfileFinding, SchemaProfileLimits, check_manifest_bundle, parse_json_pointer,
-    resolve_pointer, validate_safe_package_path,
-};
-pub use source_runner::{
-    ContiguousCheckpointLedger, ItemSettlementState, SourceChannelRunner, SourceCoordinationError,
-    SourceLeaseCoordinator, SourcePartitionClaim, SourcePartitionKey, SourceRunnerLimits,
-};
-pub use workflow_provider::{
-    PackageDependency, PackageProblem, WorkflowHost, WorkflowPackage, WorkflowProviderBackend,
-};
+pub(crate) use admission::{Admission, CommunityPackageVerifier, RevocationLedger};
+pub(crate) use channel_driver::ChannelDriverRegistry;
+pub(crate) use context::{AdmittedRun, AuthorityGrant, BudgetLimits, RunContext};
+pub(crate) use deployment_store::ImmutableDeploymentStore;
+pub(crate) use foundation::{COMMUNITY_RUST_DRIVERS, FoundationOptions, SqlLimits};
+pub(crate) use owned_native_work::NativeWorkScheduler;
+pub(crate) use provider_backend::ProviderRegistry;
+pub(crate) use reconciler::{NodeIdentity, NodeReconciler};
+pub(crate) use resource_pool::ResourcePoolRegistry;
+pub(crate) use schema_profile::PROFILE_ID;
+pub(crate) use workflow_provider::PackageProblem;
 
 /// What a provider setup ([`CompositionBuilder::with_providers`]) is handed:
 /// the node services a backend binds to, and where to put what it builds.
-pub struct ProviderRegistrar<'a> {
+pub(crate) struct ProviderRegistrar<'a> {
     deployments: &'a ImmutableDeploymentStore,
     options: &'a FoundationOptions,
     providers: Vec<Arc<dyn ProviderBackend>>,
@@ -185,7 +107,7 @@ type ProviderSetup = Box<dyn FnOnce(&mut ProviderRegistrar<'_>) + Send>;
 
 /// The node services a composition is built over: bootstrap creates them
 /// once per node, before the composition.
-pub struct BuildContext {
+pub(crate) struct BuildContext {
     /// The node's deployment store, created with the node's identity.
     pub deployments: ImmutableDeploymentStore,
     /// The node's revocation ledger.
@@ -196,25 +118,31 @@ pub struct BuildContext {
 
 /// An owned description of what a node serves (`V2-11.1`): its edition, the
 /// channel drivers, the connector provider backends, the connection-pool
-/// caches and the package verifier. [`Self::build`] turns it into the frozen
-/// [`Composition`] the node runs on; nothing registered here can change after
-/// that.
+/// caches and the package verifier. The node freezes it into the
+/// [`Composition`] it runs on when it starts; nothing registered here can
+/// change after that.
 ///
 /// Community's is [`CompositionRoot::community`]. An edition starts from it
-/// (or from [`Self::new`]) and adds its own:
+/// (or from [`Self::new`]) and applies its own registration, written against
+/// `orion-extension-api`'s `Registrar`:
 ///
 /// ```no_run
-/// # async fn enterprise(config: orion::config::AppConfig) -> Result<(), Box<dyn std::error::Error>> {
-/// use orion::extensions::{CompositionRoot, EditionTier};
-/// let composition = CompositionRoot::community().with_edition(EditionTier::Enterprise);
-/// //  .with_channel_driver(Arc::new(KafkaChannelDriver))
-/// //  .with_providers(|r| r.provider(Arc::new(MongoProvider::new(r.deployments().clone()))))
-/// //  .with_package_verifier(Arc::new(EnterprisePackageVerifier::new(..)))
+/// use orion_extension_api::{EditionTier, Registrar};
+///
+/// fn enterprise(node: &mut dyn Registrar) {
+///     node.edition(EditionTier::Enterprise);
+///     // node.channel_driver(Arc::new(KafkaChannelDriver));
+///     // node.provider_backend(Arc::new(MongoProvider::new()));
+///     // node.package_verifier(Arc::new(EnterprisePackageVerifier::new()));
+/// }
+///
+/// # async fn run(config: orion::config::AppConfig) -> Result<(), Box<dyn std::error::Error>> {
+/// let composition = orion::extensions::CompositionRoot::community().with_extension(enterprise);
 /// orion::run(config, composition).await
 /// # }
 /// ```
 ///
-/// A duplicate registration is an error, reported by [`Self::build`].
+/// A duplicate registration is an error, reported when the node starts.
 pub struct CompositionBuilder {
     edition: EditionTier,
     channels: Vec<Arc<dyn ChannelDriver>>,
@@ -275,7 +203,7 @@ impl CompositionBuilder {
     /// - the foundational Direct Rust connector providers (`org.orion.http`,
     ///   `org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite`,
     ///   `org.orion.memory-cache`) and their version-fenced session/cache pools
-    /// - [`CommunityPackageVerifier`]
+    /// - Community's package verifier, which refuses `tier: "enterprise"` packages
     pub fn community() -> Self {
         let mut builder = Self::new(EditionTier::Community);
         for driver in channel_driver::community_drivers() {
@@ -306,7 +234,7 @@ impl CompositionBuilder {
     /// node's services exist: a backend that resolves governed connections
     /// needs the node's deployment store, and one that calls out needs its
     /// HTTP client. `setup` runs once, in [`Self::build`].
-    pub fn with_providers(
+    pub(crate) fn with_providers(
         mut self,
         setup: impl FnOnce(&mut ProviderRegistrar<'_>) + Send + 'static,
     ) -> Self {
@@ -341,7 +269,7 @@ impl CompositionBuilder {
     /// Freeze the composition over the node's services: run the provider
     /// setups, then key every driver, provider and pool. The first
     /// duplicate is the error.
-    pub fn build(self, node: BuildContext) -> Result<Composition, CompositionError> {
+    pub(crate) fn build(self, node: BuildContext) -> Result<Composition, CompositionError> {
         let Self {
             edition,
             channels,
@@ -393,7 +321,7 @@ impl CompositionBuilder {
 
     /// [`Self::build`] over an in-memory deployment store, a fresh ledger and
     /// the default foundation options: for tests and tools that run no node.
-    pub fn build_in_memory(self) -> Result<Composition, CompositionError> {
+    pub(crate) fn build_in_memory(self) -> Result<Composition, CompositionError> {
         self.build(BuildContext {
             deployments: ImmutableDeploymentStore::default(),
             ledger: Arc::new(RevocationLedger::new()),
@@ -429,7 +357,8 @@ impl Registrar for CompositionBuilder {
 /// What a node serves, frozen (`V2-11.1`): the edition, the channel drivers,
 /// the provider backends, the pool caches and the admission they were
 /// composed with, bound to the node's deployment store and revocation
-/// ledger. Built by [`CompositionBuilder::build`]; cheap to clone.
+/// ledger. Built from a [`CompositionBuilder`] when the node starts; cheap
+/// to clone.
 ///
 /// The one runtime-mutable part is the admitted layer of
 /// [`ProviderRegistry`] (provider packages the node admits while it runs),
@@ -462,7 +391,7 @@ impl Composition {
     }
 
     /// The channel drivers: which protocols this node serves.
-    pub fn channels(&self) -> &ChannelDriverRegistry {
+    pub(crate) fn channels(&self) -> &ChannelDriverRegistry {
         &self.channels
     }
 
@@ -472,7 +401,11 @@ impl Composition {
     }
 
     /// The connection-pool caches.
-    pub fn pools(&self) -> &ResourcePoolRegistry {
+    #[allow(
+        dead_code,
+        reason = "pool eviction is not wired to connection changes yet"
+    )]
+    pub(crate) fn pools(&self) -> &ResourcePoolRegistry {
         &self.pools
     }
 
@@ -485,7 +418,14 @@ impl Composition {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use super::channel_driver::CronChannelDriver;
+    use super::foundation::{
+        DRIVER_HTTP, DRIVER_MEMORY_CACHE, DRIVER_MYSQL, DRIVER_POSTGRESQL, DRIVER_SQLITE,
+        MemoryCacheProviderBackend, PartitionedMemoryCache,
+    };
+    use super::resource_pool::VersionedSessionPool;
     use super::*;
+    use orion_extension_api::{AdmissionRejection, AdmissionVerdict, DuplicateProvider};
 
     #[tokio::test]
     async fn the_community_composition_wires_channels_providers_admission_and_pools() {

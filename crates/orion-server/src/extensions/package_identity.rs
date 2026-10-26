@@ -12,7 +12,6 @@ use super::schema_profile::MAX_SAFE_INTEGER;
 pub const MAX_PACKAGE_FILE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_PACKAGE_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_PACKAGE_FILES: usize = 1_024;
-pub const SIGNATURE_DOMAIN_PREFIX: &[u8] = b"orion-connector-package-signature-v1\0";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[error("{code}")]
@@ -250,15 +249,6 @@ fn validate_inventory_shape(inventory: &Value) -> Result<(), PackageIdentityFind
         }
     }
     Ok(())
-}
-
-/// Build the domain-separated signing message for a detached signature statement.
-pub fn signature_signing_bytes(statement: &Value) -> Result<Vec<u8>, PackageIdentityFinding> {
-    let encoded = canonical_bytes(statement)?;
-    let mut out = Vec::with_capacity(SIGNATURE_DOMAIN_PREFIX.len() + encoded.len());
-    out.extend_from_slice(SIGNATURE_DOMAIN_PREFIX);
-    out.extend_from_slice(&encoded);
-    Ok(out)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

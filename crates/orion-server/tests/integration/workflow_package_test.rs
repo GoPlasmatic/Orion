@@ -25,11 +25,11 @@ async fn send(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 /// and its manifest declaring one dependency, `cache`, on the built-in
 /// memory cache with `cache.set` and `cache.get`.
 fn package_files(tasks: Value, extra_files: &[(&str, Value)]) -> serde_json::Map<String, Value> {
-    let pkg = orion::extensions::authoring::scaffold_provider_package(
+    let pkg = orion::test_support::scaffold_provider_package(
         "acme",
         "acme.recall",
         "1.0.0",
-        orion::extensions::ImplementationKind::Workflow,
+        orion_extension_api::ImplementationKind::Workflow,
     );
     let mut files = serde_json::Map::new();
     for (path, bytes) in pkg.files {

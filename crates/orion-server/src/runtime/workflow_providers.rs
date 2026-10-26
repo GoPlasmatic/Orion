@@ -1,7 +1,7 @@
 //! Which workflow provider packages this node serves.
 //!
 //! An uploaded package with `implementation.kind = "workflow"` becomes a
-//! [`WorkflowProviderBackend`] in the admitted layer of the node's
+//! `WorkflowProviderBackend` in the admitted layer of the node's
 //! [`ProviderRegistry`](crate::extensions::ProviderRegistry), registered under
 //! its digest, while it is admitted and not revoked. The composed layer (what
 //! the edition built in) is frozen and never touched here. [`sync`] makes the

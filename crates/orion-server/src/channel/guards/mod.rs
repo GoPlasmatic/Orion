@@ -1484,13 +1484,13 @@ mod tests {
         // channel at upload — not of a helper beside it.
         let schedule = serde_json::json!({"schedule": "0 15 2 * * *"});
         assert!(
-            crate::extensions::CronChannelDriver
+            crate::extensions::channel_driver::CronChannelDriver
                 .validate_transport(&schedule, &serde_json::json!({}), None)
                 .is_empty(),
             "the probe schedule itself must be valid"
         );
         let refused = |key: &str| {
-            !crate::extensions::CronChannelDriver
+            !crate::extensions::channel_driver::CronChannelDriver
                 .validate_transport(&schedule, &serde_json::json!({ key: {} }), None)
                 .is_empty()
         };

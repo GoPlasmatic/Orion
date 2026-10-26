@@ -654,7 +654,7 @@ async fn no_instance_outlives_its_call() {
 /// frees, releasing it when done.
 #[tokio::test]
 async fn a_compile_waits_for_a_native_work_slot() {
-    use orion::extensions::NativeWorkScheduler;
+    use orion::test_support::NativeWorkScheduler;
 
     let native = NativeWorkScheduler::new(1);
     let impatient =
