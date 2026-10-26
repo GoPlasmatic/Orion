@@ -539,7 +539,6 @@ pub fn workflow_json(
 /// and workflows to load on it, and the named load breaks held to their
 /// quarantines. The plugin host's tests load its functions through them.
 #[cfg(any(test, feature = "test-support"))]
-#[allow(clippy::unwrap_used, clippy::panic)]
 pub mod testing {
     use super::*;
 

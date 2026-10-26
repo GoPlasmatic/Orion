@@ -362,7 +362,7 @@ struct Lease {
 /// attempt, one generation, from the channel resolution through to the engine
 /// call. That is the rule every ingress follows, and stating it in the
 /// signature is what stops a future edit quietly re-reading the `ArcSwap` here.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 async fn execute(
     deps: &WorkerDeps,
     generation: &Arc<crate::runtime::RuntimeGeneration>,

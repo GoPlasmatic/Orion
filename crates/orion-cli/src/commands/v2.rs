@@ -34,7 +34,7 @@ pub(super) fn load_request<T: serde::de::DeserializeOwned>(file: &str, what: &st
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use super::super::connections::*;
     use super::super::deployments::*;

@@ -463,7 +463,6 @@ pub fn default_idempotency_key(base_revision: u64, candidate_digest: &str) -> St
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use serde_json::{Value, json};

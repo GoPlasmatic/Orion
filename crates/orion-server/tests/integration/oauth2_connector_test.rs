@@ -17,7 +17,6 @@ use crate::common;
 /// a connection holds references only — set before `main()` while the
 /// process is single-threaded, in the reserved `ORION_SECRET_*` namespace.
 #[ctor::ctor(unsafe)]
-#[allow(unsafe_code)]
 fn install_oauth2_connector_env() {
     // SAFETY: runs pre-main on the sole thread of the process.
     unsafe {

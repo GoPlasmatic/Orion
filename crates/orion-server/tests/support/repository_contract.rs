@@ -22,6 +22,8 @@
 //! support shared between test binaries, and the alternative is public API on
 //! the library that exists solely for tests.
 
+// Shared by several test binaries, each using a subset: `allow`, not
+// `expect`, because the lint fires in some binaries and not in others.
 #![allow(dead_code)]
 
 use orion::storage::DbPool;

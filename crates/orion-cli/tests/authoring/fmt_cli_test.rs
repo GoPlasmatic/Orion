@@ -214,7 +214,7 @@ fn file_permissions_survive_the_rewrite() {
 
 #[cfg(unix)]
 #[test]
-#[allow(unsafe_code)] // geteuid, to skip the case under root
+#[expect(unsafe_code)] // geteuid, to skip the case under root
 fn an_unwritable_directory_reports_the_write_and_leaves_no_temp_file() {
     use std::os::unix::fs::PermissionsExt;
     // Root can write anywhere; the case is meaningless there.
@@ -241,7 +241,7 @@ fn an_unwritable_directory_reports_the_write_and_leaves_no_temp_file() {
 }
 
 #[cfg(unix)]
-#[allow(unsafe_code)]
+#[expect(unsafe_code)]
 unsafe fn libc_geteuid() -> u32 {
     unsafe extern "C" {
         fn geteuid() -> u32;

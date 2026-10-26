@@ -90,7 +90,7 @@ fn env_reference(name: &str, port: u16, url: &str) -> String {
     );
     // SAFETY: see above; the name is unique to this container, so no reader
     // can observe this variable changing.
-    #[allow(unsafe_code)]
+    #[expect(unsafe_code)]
     unsafe {
         std::env::set_var(&var, url)
     };

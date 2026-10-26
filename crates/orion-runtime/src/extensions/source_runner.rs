@@ -969,7 +969,7 @@ impl SourceChannelRunner {
     }
 
     /// Authorize and execute `source.poll`, enforcing `max_batch_items` and cursor bounds (`V2-15.1`).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub async fn poll_batch(
         &self,
         run_ctx: &RunContext,
@@ -1029,7 +1029,7 @@ impl SourceChannelRunner {
     }
 
     /// Authorize and execute `source.settle` for a single delivery ID (`V2-15.1`, `V2-15.3`).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub async fn settle_item(
         &self,
         run_ctx: &RunContext,
@@ -1074,7 +1074,7 @@ impl SourceChannelRunner {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
+#[expect(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::extensions::AttemptContext;

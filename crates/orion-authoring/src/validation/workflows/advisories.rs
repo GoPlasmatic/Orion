@@ -389,7 +389,7 @@ pub fn secret_reference_errors(
 /// element, `".name"` for an object member. A node whose `rel` is listed in
 /// `exempt` is where the handler resolves key material, so it and everything
 /// under it is left alone.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn collect_secret_references(
     value: &Value,
     path: &str,

@@ -460,7 +460,7 @@ mod tests {
     // any. These tests need a task that panics — that is the failure the
     // supervisor exists to catch, and the only way to produce it is to write
     // one.
-    #![allow(clippy::panic)]
+    #![expect(clippy::panic)]
 
     use super::*;
     use std::sync::atomic::AtomicUsize;

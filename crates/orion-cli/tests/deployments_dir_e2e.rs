@@ -11,7 +11,7 @@
 //! `cargo test -p orion-cli` and no server binary built, the test says so
 //! and passes without running.
 
-#![allow(clippy::unwrap_used, clippy::panic)]
+#![expect(clippy::unwrap_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output};

@@ -63,7 +63,7 @@
 
 // Tests unwrap and panic on what they did not expect; the workspace's
 // lints against both are for production code.
-#![allow(clippy::unwrap_used, clippy::panic)]
+#![expect(clippy::panic)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;

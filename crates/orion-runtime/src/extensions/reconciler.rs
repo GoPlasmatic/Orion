@@ -412,7 +412,7 @@ impl NodeReconciler {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::extensions::Admission;

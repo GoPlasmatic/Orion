@@ -466,7 +466,6 @@ where
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
 mod error_taxonomy_tests {
     use super::*;
 

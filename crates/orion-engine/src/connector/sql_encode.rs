@@ -807,7 +807,7 @@ mod tests {
     // The crate warns on `panic!` because production code should not have any.
     // A test that has to say *which* case failed is the exception the other
     // test modules in this crate already make.
-    #![allow(clippy::panic)]
+    #![expect(clippy::panic)]
 
     use super::*;
     use serde_json::json;

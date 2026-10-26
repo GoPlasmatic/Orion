@@ -800,7 +800,7 @@ async fn submit_async(
 /// documented operations. `#[utoipa::path]` can only be applied once per
 /// function, so the async operation hangs off this stub instead of inventing a
 /// second handler. It is never called; the macro only reads its attribute.
-#[allow(dead_code)]
+#[expect(dead_code)]
 #[utoipa::path(
     post,
     path = "/api/v2/data/{channel}/async",

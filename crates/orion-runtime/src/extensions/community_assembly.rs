@@ -153,7 +153,7 @@ pub fn verify_community_assembly(root: &Composition) -> CommunityAssemblyReport 
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::extensions::workflow_provider::{

@@ -220,7 +220,7 @@ impl CompiledSchemaBundle {
         let mut references: Vec<(NodeKey, Value)> = Vec::new();
         let mut bundle_bytes = 0usize;
 
-        #[allow(clippy::too_many_arguments)]
+        #[expect(clippy::too_many_arguments)]
         fn walk(
             path: &str,
             node: &Value,
@@ -1375,7 +1375,7 @@ fn validate_manifest_shape(obj: &Map<String, Value>) -> Result<(), SchemaProfile
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
+#[expect(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::path::PathBuf;

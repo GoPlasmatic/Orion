@@ -33,7 +33,6 @@ pub trait RateLimitBackend: Send + Sync {
     ///
     /// Takes `&String` because governor's keyed store is keyed by `String`
     /// and looks up by `&K`.
-    #[allow(clippy::ptr_arg)]
     fn check_now(&self, _key: &String) -> Option<bool> {
         None
     }

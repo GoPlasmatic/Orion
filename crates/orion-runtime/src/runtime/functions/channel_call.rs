@@ -160,23 +160,15 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    #[allow(unused_imports)]
     use crate::engine::functions::channel_call::*;
     use crate::engine::functions::twin::{self, Failure, Seen};
-    #[allow(unused_imports)]
-    use crate::engine::kit::{self, read};
+    use crate::engine::kit::{self};
     use crate::runtime::RuntimeHandle;
-    #[allow(unused_imports)]
     use dataflow_rs::datavalue::OwnedDataValue;
-    #[allow(unused_imports)]
-    use dataflow_rs::function::{FunctionConfig, FunctionSpec};
-    #[allow(unused_imports)]
+    use dataflow_rs::function::FunctionConfig;
     use dataflow_rs::program::IssueCode;
-    #[allow(unused_imports)]
-    use dataflow_rs::run::{AuditMode, CancelToken, Instant, RunStatus};
-    #[allow(unused_imports)]
-    use dataflow_rs::{Ctx, Expr, Function, Message, Outcome, RunOptions};
-    #[allow(unused_imports)]
+    use dataflow_rs::run::{AuditMode, CancelToken, RunStatus};
+    use dataflow_rs::{Ctx, Function, Message, Outcome, RunOptions};
     use std::time::Duration;
 
     /// `engine.max_channel_call_depth`'s default.

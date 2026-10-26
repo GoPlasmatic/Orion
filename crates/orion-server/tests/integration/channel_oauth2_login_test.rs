@@ -22,7 +22,6 @@ use crate::common;
 /// in the reserved `ORION_SECRET_*` namespace, so a test that loads config
 /// does not refuse it as a misspelled override.
 #[ctor::ctor(unsafe)]
-#[allow(unsafe_code)]
 fn install_oauth2_login_env() {
     // SAFETY: runs pre-main on the sole thread of the process.
     unsafe {

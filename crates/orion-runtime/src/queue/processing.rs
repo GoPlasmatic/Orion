@@ -623,7 +623,7 @@ async fn mark_running(
 /// route the result write through the configured persistence mode (with
 /// inline retries in sync mode), set the final trace status, and settle any
 /// leased DLQ retry entry (`TD-05`).
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 async fn persist_success(
     ctx: &ProcessingContext,
     effective_trace: &crate::channel::registry::EffectiveTraceConfig,
@@ -956,7 +956,7 @@ async fn enqueue_dlq_row(
 #[cfg(test)]
 mod tests {
     // The panic below is the subject of the test, not an accident.
-    #![allow(clippy::panic)]
+    #![expect(clippy::panic)]
 
     use super::*;
 

@@ -84,14 +84,11 @@ fn connector_run_context(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
+#[expect(clippy::panic)]
 mod tests {
     use super::*;
-    #[allow(unused_imports)]
     use crate::engine::TraceCapture;
-    #[allow(unused_imports)]
-    use crate::engine::budget;
-    #[allow(unused_imports)]
+
     use crate::engine::execute::*;
 
     #[test]

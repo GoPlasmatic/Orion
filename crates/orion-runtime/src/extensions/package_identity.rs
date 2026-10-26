@@ -635,7 +635,7 @@ fn validate_lock_shape(lock: &Value) -> Result<(), PackageIdentityFinding> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
+#[expect(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::extensions::schema_profile::parse_json_pointer;

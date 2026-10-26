@@ -267,17 +267,10 @@ pub fn register_connector_call(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[allow(unused_imports)]
-    use crate::engine::functions::connector_call::*;
-    #[allow(unused_imports)]
-    use crate::engine::kit::{self, read};
+
     use crate::extensions::Composition;
-    #[allow(unused_imports)]
     use dataflow_rs::datavalue::OwnedDataValue;
-    #[allow(unused_imports)]
     use dataflow_rs::program::IssueCode;
-    #[allow(unused_imports)]
-    use dataflow_rs::{Ctx, Expr, Function, Issue, Outcome};
 
     fn community() -> Composition {
         crate::extensions::CompositionRoot::community()

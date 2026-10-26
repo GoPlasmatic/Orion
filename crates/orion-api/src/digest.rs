@@ -198,7 +198,7 @@ impl PartialEq<Digest> for String {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

@@ -512,7 +512,7 @@ mod tests {
     // The crate warns on `panic!` because production code should not have any.
     // These tests assert on the *variant* a rejection carries, and a wrong
     // variant has to fail loudly with the one it got — `expect` cannot say that.
-    #![allow(clippy::panic)]
+    #![expect(clippy::panic)]
 
     use super::*;
 

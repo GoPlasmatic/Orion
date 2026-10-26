@@ -55,7 +55,6 @@ pub use orion_runtime::cron;
 /// internals stay reachable to this crate and, for tests, through
 /// [`test_support`].
 pub mod extensions {
-    #[allow(unused_imports)]
     pub(crate) use orion_runtime::extensions::*;
     pub use orion_runtime::extensions::{Composition, CompositionBuilder, CompositionRoot};
 }

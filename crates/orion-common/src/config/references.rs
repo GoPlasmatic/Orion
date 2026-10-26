@@ -217,7 +217,6 @@ mod tests {
     /// Set before `main()`, while the process is single-threaded, in the
     /// reserved `ORION_SECRET_*` namespace so `load_config` ignores it.
     #[ctor::ctor(unsafe)]
-    #[allow(unsafe_code)]
     fn install_ref_env() {
         // SAFETY: runs pre-main on the sole thread of the process.
         unsafe { std::env::set_var("ORION_SECRET_TEST_REF_URL", "postgres://u:p@h/db") };

@@ -41,10 +41,6 @@ pub mod provider_backend;
 pub mod reconciler;
 pub mod resource_pool;
 pub mod schema_profile;
-#[allow(
-    dead_code,
-    reason = "no channel driver runs a source yet: the runner is exercised by its tests and the repository contract"
-)]
 pub mod source_runner;
 pub mod workflow_provider;
 
@@ -401,9 +397,12 @@ impl Composition {
     }
 
     /// The connection-pool caches.
-    #[allow(
-        dead_code,
-        reason = "pool eviction is not wired to connection changes yet"
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "pool eviction is not wired to connection changes yet; only tests read it"
+        )
     )]
     pub(crate) fn pools(&self) -> &ResourcePoolRegistry {
         &self.pools
@@ -416,7 +415,7 @@ impl Composition {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use super::channel_driver::CronChannelDriver;
     use super::foundation::{

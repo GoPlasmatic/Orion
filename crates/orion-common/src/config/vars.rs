@@ -625,7 +625,7 @@ mod parse_tests {
     #[derive(Debug, serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Inner {
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         needed: String,
     }
 
@@ -687,10 +687,10 @@ mod parse_tests {
     #[derive(Debug, serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Guard {
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         mode: Mode,
         #[serde(default)]
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         keys: Option<Vec<String>>,
     }
 
@@ -700,7 +700,6 @@ mod parse_tests {
         #[serde(default)]
         guard: Option<Guard>,
         #[serde(default)]
-        #[allow(dead_code)]
         note: Option<String>,
     }
 
@@ -729,7 +728,7 @@ mod parse_tests {
     fn a_required_member_nothing_fits_is_named() {
         #[derive(Debug, serde::Deserialize)]
         struct Needs {
-            #[allow(dead_code)]
+            #[expect(dead_code)]
             inner: Inner,
         }
         let doc = json!({ "inner": "var://inner" });

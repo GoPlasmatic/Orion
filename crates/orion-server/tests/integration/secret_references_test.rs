@@ -28,7 +28,6 @@ use tower::ServiceExt;
 /// so the obligation was always there — 0.4 just did not make you write it.
 /// It is the same obligation the SAFETY note below already discharges.
 #[ctor::ctor(unsafe)]
-#[allow(unsafe_code)]
 fn install_b5_env_fixture() {
     // SAFETY: runs pre-main on the sole thread of the process; no concurrent
     // reader of the environment can exist yet.

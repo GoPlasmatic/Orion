@@ -388,7 +388,7 @@ fn decide<A>(bound: crate::connector::sql_encode::Bound<A>, fallback: A) -> (A, 
 /// intact, exactly like `db_read`'s row cap.
 ///
 /// [`QueryFailure::Limit`]: super::connector_helpers::QueryFailure::Limit
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 async fn run_write_statement<'e, E, R, F, G>(
     executor: E,
     sql: &'e str,

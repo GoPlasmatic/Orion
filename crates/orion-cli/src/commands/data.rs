@@ -291,7 +291,7 @@ fn render_profile(profile: &Value) {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
+#[expect(clippy::panic)]
 mod tests {
     use super::*;
     use clap::Parser;

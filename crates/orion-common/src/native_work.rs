@@ -310,7 +310,7 @@ impl NativeWorkScheduler {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::sync::Barrier;

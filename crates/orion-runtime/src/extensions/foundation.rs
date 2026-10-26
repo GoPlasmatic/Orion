@@ -1858,6 +1858,6 @@ pub fn register_community_foundation(r: &mut super::ProviderRegistrar<'_>) {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
+#[expect(clippy::unwrap_used)]
 #[path = "foundation_tests.rs"]
 mod tests;

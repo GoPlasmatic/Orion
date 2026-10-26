@@ -14,7 +14,6 @@ const REF_VALUE: &str = "postgres://orion:s3cret@db.internal:5432/orion";
 /// Set before `main()`, while the process is single-threaded: the only point
 /// where `set_var` cannot race another test's `getenv`.
 #[ctor::ctor(unsafe)]
-#[allow(unsafe_code)]
 fn set_ref_env() {
     // SAFETY: runs pre-main on the sole thread of the process.
     unsafe { std::env::set_var(REF_ENV, REF_VALUE) };

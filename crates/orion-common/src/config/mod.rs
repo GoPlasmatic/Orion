@@ -295,7 +295,7 @@ pub(crate) fn env_guard() -> std::sync::MutexGuard<'static, ()> {
 
 #[cfg(test)]
 // The tests set and clear environment variables under `env_guard`.
-#[allow(unsafe_code)]
+#[expect(unsafe_code)]
 mod tests {
     use super::*;
     use crate::config::env_guard;

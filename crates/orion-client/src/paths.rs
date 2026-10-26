@@ -201,7 +201,6 @@ pub fn query_string(params: &[(&str, Option<String>)]) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 

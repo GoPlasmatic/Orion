@@ -41,10 +41,6 @@ impl std::fmt::Debug for ResourcePoolRegistry {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "pool eviction is not wired to connection changes yet"
-)]
 impl ResourcePoolRegistry {
     /// A registry of `entries`, refusing the first `cache_id` seen twice.
     pub fn new(entries: impl IntoIterator<Item = PoolEntry>) -> Result<Self, String> {

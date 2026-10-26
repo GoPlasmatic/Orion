@@ -404,7 +404,7 @@ impl ImmutableDeploymentStore {
 
     /// [`Self::store_connection_revision_in_db`], with the dependency
     /// `bindings` of a connection over a `workflow` provider package.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub async fn store_connection_revision_with_bindings_in_db(
         &self,
         pool: &DbPool,
@@ -510,7 +510,7 @@ impl ImmutableDeploymentStore {
     /// from the receipt written in the commit's transaction: it lands with
     /// the head move or not at all. `None` beside the receipt when nothing
     /// was committed (an idempotent replay of a committed apply).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub async fn apply_candidate_audited_in_db<A, E>(
         &self,
         pool: &DbPool,
@@ -621,7 +621,7 @@ impl ImmutableDeploymentStore {
     /// the base checked against the head, the providers' admissions and the
     /// manifest's closure re-read and re-checked, then the head moved and
     /// the revision, its members and the receipt written.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     async fn commit_plan(
         &self,
         tx: &mut DbTransaction,
