@@ -1,13 +1,13 @@
-use crate::storage::DbPool;
+use crate::DbPool;
 use async_trait::async_trait;
 use chrono::NaiveDateTime;
 use sea_query::{Asterisk, Condition, Expr, ExprTrait, IntoIden, Order, Query};
 use serde::Deserialize;
 
 use super::helpers::{Page, Projection};
-use crate::errors::OrionError;
-use crate::storage::models::{self, Trace, TraceListRow};
-use crate::storage::{build_sqlx, schema::Traces};
+use crate::models::{self, Trace, TraceListRow};
+use crate::{build_sqlx, schema::Traces};
+use orion_common::errors::OrionError;
 
 #[derive(Debug, Default, Deserialize, serde::Serialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -276,7 +276,7 @@ fn completed_values(
 }
 
 /// The 11 columns a trace *listing* reads, in
-/// [`crate::storage::models::TraceListRow`] order.
+/// [`crate::models::TraceListRow`] order.
 ///
 /// Named explicitly so the four columns that are not here — `input_json`,
 /// `result_json`, `task_trace_json` and `access_token_hash` — cannot come back
@@ -489,7 +489,7 @@ impl TraceSink for SqlTraceRepository {
         input_json: Option<&str>,
         access_token_hash: Option<&str>,
     ) -> Result<Trace, OrionError> {
-        crate::metrics::timed_db_op("traces.create_pending", async {
+        orion_common::metrics::timed_db_op("traces.create_pending", async {
             let id = uuid::Uuid::new_v4().to_string();
 
             let input_val = super::helpers::optional_string_value(input_json);
@@ -537,7 +537,7 @@ impl TraceSink for SqlTraceRepository {
         status: &str,
         error_message: Option<&str>,
     ) -> Result<(), OrionError> {
-        crate::metrics::timed_db_op("traces.update_status", async {
+        orion_common::metrics::timed_db_op("traces.update_status", async {
             // Bind chrono values, not strings: postgres rejects TEXT
             // parameters against timestamp columns (42804).
             let now = chrono::Utc::now().naive_utc();
@@ -580,7 +580,7 @@ impl TraceSink for SqlTraceRepository {
     }
 
     async fn complete(&self, id: &str, completion: TraceCompletion<'_>) -> Result<(), OrionError> {
-        crate::metrics::timed_db_op("traces.complete", async {
+        orion_common::metrics::timed_db_op("traces.complete", async {
             let now = chrono::Utc::now().naive_utc();
             let (sql, values) = build_sqlx(
                 self.pool.backend(),
@@ -595,7 +595,7 @@ impl TraceSink for SqlTraceRepository {
     }
 
     async fn store_completed(&self, row: TraceCompletedRef<'_>) -> Result<String, OrionError> {
-        crate::metrics::timed_db_op("traces.store_completed", async {
+        orion_common::metrics::timed_db_op("traces.store_completed", async {
             let id = uuid::Uuid::new_v4().to_string();
             let now = chrono::Utc::now().naive_utc();
 
@@ -621,7 +621,7 @@ impl TraceSink for SqlTraceRepository {
         if rows.is_empty() {
             return Ok(Vec::new());
         }
-        crate::metrics::timed_db_op("traces.store_completed_batch", async {
+        orion_common::metrics::timed_db_op("traces.store_completed_batch", async {
             let now = chrono::Utc::now().naive_utc();
             let mut ids = Vec::with_capacity(rows.len());
             let mut insert = Query::insert();
@@ -635,7 +635,7 @@ impl TraceSink for SqlTraceRepository {
             }
             let (sql, values) = build_sqlx(self.pool.backend(), &mut insert);
             self.pool.execute_query(&sql, values).await?;
-            crate::metrics::record_trace_persistence_batch_size(rows.len());
+            orion_common::metrics::record_trace_persistence_batch_size(rows.len());
             Ok(ids)
         })
         .await
@@ -645,7 +645,7 @@ impl TraceSink for SqlTraceRepository {
         if rows.is_empty() {
             return Ok(());
         }
-        crate::metrics::timed_db_op("traces.complete_batch", async {
+        orion_common::metrics::timed_db_op("traces.complete_batch", async {
             let now = chrono::Utc::now().naive_utc();
             let mut tx = self.pool.begin_tx().await.map_err(OrionError::Storage)?;
             for row in rows {
@@ -656,7 +656,7 @@ impl TraceSink for SqlTraceRepository {
                 tx.execute_query(&sql, values).await?;
             }
             tx.commit().await.map_err(OrionError::Storage)?;
-            crate::metrics::record_trace_persistence_batch_size(rows.len());
+            orion_common::metrics::record_trace_persistence_batch_size(rows.len());
             Ok(())
         })
         .await
@@ -666,7 +666,7 @@ impl TraceSink for SqlTraceRepository {
 #[async_trait]
 impl TraceReader for SqlTraceRepository {
     async fn get_by_id(&self, id: &str) -> Result<Trace, OrionError> {
-        crate::metrics::timed_db_op("traces.get_by_id", async {
+        orion_common::metrics::timed_db_op("traces.get_by_id", async {
             let (sql, values) = build_sqlx(self.pool.backend(), &mut trace_select(id));
 
             self.pool
@@ -678,7 +678,7 @@ impl TraceReader for SqlTraceRepository {
     }
 
     async fn list_paginated(&self, filter: &TraceFilter) -> Result<TracePage, OrionError> {
-        crate::metrics::timed_db_op("traces.list_paginated", async {
+        orion_common::metrics::timed_db_op("traces.list_paginated", async {
             // The base page — projection (D27), filter, sort and clamped
             // bounds — comes from `list_page`, the same builder the SQL-shape
             // test asserts against, so keyset mode cannot drift away from the
@@ -767,7 +767,7 @@ impl TraceReader for SqlTraceRepository {
 #[async_trait]
 impl TraceRetention for SqlTraceRepository {
     async fn delete_older_than(&self, hours: u64) -> Result<u64, OrionError> {
-        crate::metrics::timed_db_op("traces.delete_older_than", async {
+        orion_common::metrics::timed_db_op("traces.delete_older_than", async {
             let now = chrono::Utc::now().naive_utc();
             let cutoff = super::helpers::cutoff_hours_ago(now, hours);
             // D4: rows stuck in `pending`/`running` (queue submit failed,
@@ -803,8 +803,8 @@ impl TraceRetention for SqlTraceRepository {
 mod tests {
     use super::*;
 
-    async fn test_pool() -> crate::storage::DbPool {
-        crate::storage::test_sqlite_pool().await
+    async fn test_pool() -> crate::DbPool {
+        crate::test_sqlite_pool().await
     }
 
     /// The listing must never read the payload columns or the capability
@@ -886,7 +886,7 @@ mod tests {
             .expect("test")
             .to_string();
         match &pool {
-            crate::storage::DbPool::Sqlite(p) => {
+            crate::DbPool::Sqlite(p) => {
                 sqlx::query("UPDATE traces SET created_at = ? WHERE id = ?")
                     .bind(&old_time)
                     .bind(&id)
@@ -946,7 +946,7 @@ mod tests {
             .expect("test")
             .to_string();
         match &pool {
-            crate::storage::DbPool::Sqlite(p) => {
+            crate::DbPool::Sqlite(p) => {
                 sqlx::query("UPDATE traces SET created_at = ? WHERE id = ?")
                     .bind(&old_time)
                     .bind(&trace.id)
@@ -980,7 +980,7 @@ mod tests {
                 .expect("test")
                 .to_string();
             match &pool {
-                crate::storage::DbPool::Sqlite(p) => {
+                crate::DbPool::Sqlite(p) => {
                     sqlx::query("UPDATE traces SET created_at = ?, status = ? WHERE id = ?")
                         .bind(&old_time)
                         .bind(status)
@@ -1004,7 +1004,7 @@ mod tests {
 
     /// Seed `n` completed traces one second apart, oldest first, so the
     /// created_at ordering is unambiguous. Returns the ids in insert order.
-    async fn seed_traces(pool: &crate::storage::DbPool, n: usize) -> Vec<String> {
+    async fn seed_traces(pool: &crate::DbPool, n: usize) -> Vec<String> {
         let repo = SqlTraceRepository::new(pool.clone());
         let mut ids = Vec::new();
         let base = chrono::Utc::now().naive_utc();
@@ -1026,7 +1026,7 @@ mod tests {
                 .expect("test")
                 .to_string();
             match pool {
-                crate::storage::DbPool::Sqlite(p) => {
+                crate::DbPool::Sqlite(p) => {
                     sqlx::query("UPDATE traces SET created_at = ? WHERE id = ?")
                         .bind(&stamp)
                         .bind(&id)
@@ -1120,7 +1120,7 @@ mod tests {
         }
         let same = "2026-01-01 00:00:00";
         match &pool {
-            crate::storage::DbPool::Sqlite(p) => {
+            crate::DbPool::Sqlite(p) => {
                 sqlx::query("UPDATE traces SET created_at = ?")
                     .bind(same)
                     .execute(p)
@@ -1216,7 +1216,7 @@ mod tests {
     #[tokio::test]
     async fn test_sortable_columns_are_indexed() {
         let pool = test_pool().await;
-        let crate::storage::DbPool::Sqlite(p) = &pool else {
+        let crate::DbPool::Sqlite(p) = &pool else {
             unreachable!("Test requires SQLite");
         };
         let indexes: Vec<(String,)> = sqlx::query_as(

@@ -1,0 +1,45 @@
+[package]
+name = "orion-storage"
+# No release cycle of its own: no tag names this crate. crates-publish.yml
+# publishes it as a rider before the crates that depend on it, on the
+# workspace's version.
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The Orion runtime's state database: pools over SQLite, PostgreSQL and MySQL, the embedded migrations, row models and repositories"
+license.workspace = true
+repository.workspace = true
+homepage = "https://docs.goplasmatic.io/"
+readme = "README.md"
+keywords = ["workflow", "runtime", "database", "sqlx"]
+categories = ["database"]
+include = ["src/**", "migrations/**", "build.rs", "README.md"]
+
+[lints]
+workspace = true
+
+[features]
+# `test_sqlite_pool`, which orion-server's own unit tests call.
+test-support = []
+
+# The same requirements orion-server states, so the lockfile carries one copy
+# of each.
+[dependencies]
+orion-api = { workspace = true, features = ["utoipa"] }
+orion-common.workspace = true
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "sqlite", "postgres", "mysql"] }
+sea-query = { version = "1.0", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
+sea-query-sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+tracing = "0.1"
+utoipa = { version = "6", features = ["axum_extras", "chrono"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }

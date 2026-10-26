@@ -47,7 +47,8 @@ library crates — `crates/orion-api` (the wire contract),
 (the static definition primitives) — `crates/orion-extension-api` (the
 traits and contract types an edition implements against), `crates/orion-common`
 (the runtime's shared primitives: configuration, `OrionError`, crypto,
-metrics, request and trace context) and
+metrics, request and trace context), `crates/orion-storage` (the state
+database: pools, the embedded migrations, row models and repositories) and
 `crates/orion-plugin-sdk` (the guest crate a plugin author links against; it
 depends on nothing else here). The end-to-end suite that drives the server with the CLI lives at the
 repo root (`tests/e2e/`). Bare cargo commands target the server via
@@ -60,24 +61,18 @@ crates/orion-server/
   lib.rs               # Public module declarations
   bootstrap.rs         # Startup sequence: config -> pools -> repos -> engine -> server
   cli.rs               # CLI subcommands (migrate, lint, dry-run, test, preflight, ...)
-  preflight.rs         # `orion-server preflight`: scan stored entities for 1.0 breaks
-  package_cli.rs       # `orion-server package`: export/lint/plan/apply/diff promotion CLI
   channel/             # Channel registry, config, routing, deduplication, auth guards
   cluster/             # Cluster mode: config-epoch watcher, background-job leases
   cron/                # Scheduled channels: reconciler, workers, occurrence ledger
-  config/              # Configuration loading (TOML + ORION_SECTION__KEY env overrides)
   connector/           # Connector types, registry, circuit breakers, pool caching
   definitions/         # Definition sets: the JSON front end, analysis, fmt, clippy, compile
   engine/              # Dataflow engine & custom function handlers (functions/)
-  errors.rs            # OrionError enum -> HTTP response mapping
   jwt/                 # Shared JWT core: verify, sign, JWKS cache
-  metrics.rs           # Prometheus metrics collection
   plugin/              # WebAssembly plugins: Wasmtime sandbox, manifest, handler, limits
   query/               # Portable data dialect (data_query / data_write -> SQL)
   queue/               # Async trace processing, DLQ retry
   runtime/             # The published generation (engine + channel estate), reload, task supervisor
   server/              # Axum routes (routes/), middleware, AppState
-  storage/             # Database abstraction, models, repositories (repositories/)
   validation/          # Input validation, SSRF protection
  tests/
   integration/         # Consolidated integration test binary (main.rs + *_test.rs modules)
@@ -88,6 +83,8 @@ crates/orion-server/
   storage_mysql.rs     # MySQL repository suite (container-gated)
   metrics_exposition.rs # Rendered /metrics assertions (own process — the recorder is global)
   benchmark/           # bench.sh + fixtures (hey-based performance scenarios)
+crates/orion-common/   # Shared runtime primitives: config, OrionError, crypto, metrics, contexts
+crates/orion-storage/  # State database: pools, models, repositories
  migrations/           # SQLite / Postgres / MySQL migrations (embedded at compile time)
 crates/orion-cli/
  src/commands/         # clap subcommands (one file per command group)
@@ -146,7 +143,7 @@ code.
 The shipped migration files are **checksum-frozen** once released (sqlx records
 a checksum per applied migration), so never edit an existing `NNN_*.sql` — add
 a new numbered file to **each** of
-`crates/orion-server/migrations/{sqlite,postgres,mysql}/`.
+`crates/orion-storage/migrations/{sqlite,postgres,mysql}/`.
 Each set starts at `001_v2_baseline.sql`, the whole schema of an Orion 2 state
 database; Orion 1.x databases are refused at startup rather than upgraded. To
 bootstrap the set for a new backend, copy an existing backend's baseline and
@@ -319,7 +316,7 @@ secrets they need and the full procedure are in `RELEASING.md`.
    `[workspace.dependencies]` requirement together, then tags. A bare
    `v`-prefixed tag (`v1.0.0`) releases every package at that version, and
    lockstep is what keeps the rider crates (`orion-api`, `orion-client`,
-   `orion-definitions`, `orion-extension-api`, `orion-common`, `orion-plugin-sdk`) publishable — their version always moves with a
+   `orion-definitions`, `orion-extension-api`, `orion-common`, `orion-storage`, `orion-plugin-sdk`) publishable — their version always moves with a
    release, so the skip-if-present rider publish can never leave
    `orion-server` resolving older crates.io content. The Helm chart needs **no** manual bump —
    `docker-release.yml` stamps both the chart version and `appVersion` from

@@ -1,6 +1,6 @@
+use crate::definitions::documents::CreateWorkflowRequest;
 use crate::engine::FunctionRegistry;
 use crate::errors::{FieldError, OrionError};
-use crate::storage::models::CreateWorkflowRequest;
 use serde_json::Value;
 
 use super::common::{uncompiled_source_errors, validate_description, validate_id, validate_name};

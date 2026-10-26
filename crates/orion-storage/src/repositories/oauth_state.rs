@@ -9,11 +9,11 @@
 use async_trait::async_trait;
 use sea_query::{Expr, ExprTrait, Query};
 
-use crate::errors::OrionError;
-use crate::storage::config_encryption::ConfigCipher;
-use crate::storage::models::ConnectorOauthStateRow;
-use crate::storage::schema::ConnectorOauthState as S;
-use crate::storage::{DbPool, build_sqlx};
+use crate::models::ConnectorOauthStateRow;
+use crate::schema::ConnectorOauthState as S;
+use crate::{DbPool, build_sqlx};
+use orion_common::config_encryption::ConfigCipher;
+use orion_common::errors::OrionError;
 
 #[async_trait]
 pub trait OAuthStateRepository: Send + Sync {
@@ -79,7 +79,7 @@ impl OAuthStateRepository for SqlOAuthStateRepository {
         &self,
         connector_name: &str,
     ) -> Result<Option<ConnectorOauthStateRow>, OrionError> {
-        crate::metrics::timed_db_op("connectors.get_oauth_state", async {
+        orion_common::metrics::timed_db_op("connectors.get_oauth_state", async {
             let (sql, values) = build_sqlx(
                 self.pool.backend(),
                 Query::select()
@@ -108,7 +108,7 @@ impl OAuthStateRepository for SqlOAuthStateRepository {
         fingerprint: &str,
         state_json: &str,
     ) -> Result<(), OrionError> {
-        crate::metrics::timed_db_op("connectors.put_oauth_state", async {
+        orion_common::metrics::timed_db_op("connectors.put_oauth_state", async {
             let stored = self.store_form(state_json)?;
             let now = Expr::cust(super::helpers::sql_now(self.pool.backend()));
             let mut insert = Query::insert()
@@ -134,7 +134,7 @@ impl OAuthStateRepository for SqlOAuthStateRepository {
     }
 
     async fn delete_oauth_state(&self, connector_name: &str) -> Result<(), OrionError> {
-        crate::metrics::timed_db_op("connectors.delete_oauth_state", async {
+        orion_common::metrics::timed_db_op("connectors.delete_oauth_state", async {
             let (sql, values) = build_sqlx(
                 self.pool.backend(),
                 Query::delete()
@@ -170,7 +170,7 @@ mod tests {
     /// without quoting the state it refused to open.
     #[tokio::test]
     async fn oauth_state_round_trips_through_the_cipher() {
-        let pool = crate::storage::test_sqlite_pool().await;
+        let pool = crate::test_sqlite_pool().await;
         let repo = encrypting(&pool);
         repo.put_oauth_state("oauth-rt", "fp1", r#"{"access_token":"abc"}"#)
             .await
@@ -205,7 +205,7 @@ mod tests {
     /// A row written before the key existed still reads once one is set.
     #[tokio::test]
     async fn plaintext_state_reads_once_a_key_is_configured() {
-        let pool = crate::storage::test_sqlite_pool().await;
+        let pool = crate::test_sqlite_pool().await;
         SqlOAuthStateRepository::new(pool.clone(), None)
             .put_oauth_state("legacy", "fp0", r#"{"access_token":"old"}"#)
             .await

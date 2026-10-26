@@ -66,7 +66,7 @@ pub mod server;
 pub use orion_common::signatures;
 #[doc(hidden)]
 pub mod sql_lex;
-pub mod storage;
+pub use orion_storage as storage;
 #[doc(hidden)]
 pub mod test_support;
 pub(crate) use orion_common::text;

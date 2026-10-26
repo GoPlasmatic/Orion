@@ -33,14 +33,14 @@ impl Repositories {
     /// for OAuth2 token state (H3) — validated at config load, so a bad key
     /// never reaches this point.
     pub fn new(
-        pool: &crate::storage::DbPool,
-        storage: &crate::config::StorageConfig,
-    ) -> Result<Self, crate::errors::OrionError> {
+        pool: &crate::DbPool,
+        storage: &orion_common::config::StorageConfig,
+    ) -> Result<Self, orion_common::errors::OrionError> {
         let cipher = if storage.connector_encryption_key.is_empty() {
             None
         } else {
             Some(Arc::new(
-                crate::storage::config_encryption::ConfigCipher::from_hex(
+                orion_common::config_encryption::ConfigCipher::from_hex(
                     &storage.connector_encryption_key,
                 )?,
             ))

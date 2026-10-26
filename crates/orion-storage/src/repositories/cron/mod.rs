@@ -28,13 +28,13 @@ use chrono::NaiveDateTime;
 use sea_query::{Asterisk, Condition, Expr, ExprTrait, IntoIden, Query, SimpleExpr};
 
 use super::helpers::{self, Page, PaginatedResult, Projection};
-use crate::errors::OrionError;
-use crate::storage::build_sqlx;
-use crate::storage::models::{CronOccurrence, CronScheduleState};
-use crate::storage::schema::{
+use crate::build_sqlx;
+use crate::models::{CronOccurrence, CronScheduleState};
+use crate::schema::{
     CronOccurrences, CronScheduleState as ScheduleState, CronSingletonSlots, CronSingletons,
 };
-use crate::storage::{DbBackend, DbPool};
+use crate::{DbBackend, DbPool};
+use orion_common::errors::OrionError;
 
 // ============================================================
 // Status vocabulary
@@ -496,7 +496,7 @@ impl SqlCronRepository {
 #[async_trait]
 impl CronRepository for SqlCronRepository {
     async fn db_now(&self) -> Result<NaiveDateTime, OrionError> {
-        crate::metrics::timed_db_op("cron.db_now", async {
+        orion_common::metrics::timed_db_op("cron.db_now", async {
             let (sql, values) =
                 build_sqlx(self.pool.backend(), Query::select().expr(self.now_expr()));
             self.pool
@@ -508,7 +508,7 @@ impl CronRepository for SqlCronRepository {
     }
 
     async fn schedule_states(&self) -> Result<Vec<CronScheduleState>, OrionError> {
-        crate::metrics::timed_db_op("cron.schedule_states", async {
+        orion_common::metrics::timed_db_op("cron.schedule_states", async {
             let (sql, values) = build_sqlx(
                 self.pool.backend(),
                 Query::select()
@@ -525,7 +525,7 @@ impl CronRepository for SqlCronRepository {
     }
 
     async fn upsert_cursor(&self, cursor: ScheduleCursor<'_>) -> Result<(), OrionError> {
-        crate::metrics::timed_db_op("cron.upsert_cursor", async {
+        orion_common::metrics::timed_db_op("cron.upsert_cursor", async {
             // Update-then-insert rather than a backend-specific upsert: the
             // update is the common path (a reactivation, a schedule edit) and
             // the insert only ever runs once per channel.
@@ -565,7 +565,7 @@ impl CronRepository for SqlCronRepository {
     }
 
     async fn pause_cursor(&self, channel_id: &str) -> Result<(), OrionError> {
-        crate::metrics::timed_db_op("cron.pause_cursor", async {
+        orion_common::metrics::timed_db_op("cron.pause_cursor", async {
             let (sql, values) = build_sqlx(
                 self.pool.backend(),
                 Query::update()
@@ -587,7 +587,7 @@ impl CronRepository for SqlCronRepository {
         from: NaiveDateTime,
         to: NaiveDateTime,
     ) -> Result<bool, OrionError> {
-        crate::metrics::timed_db_op("cron.advance_cursor", async {
+        orion_common::metrics::timed_db_op("cron.advance_cursor", async {
             // Compare-and-set on the value the caller planned from. Two
             // reconcilers that planned the same pass both insert the same
             // occurrence (idempotent) and exactly one advances the cursor; the
@@ -607,7 +607,7 @@ impl CronRepository for SqlCronRepository {
     }
 
     async fn insert_occurrence(&self, occurrence: NewOccurrence<'_>) -> Result<bool, OrionError> {
-        crate::metrics::timed_db_op("cron.insert_occurrence", async {
+        orion_common::metrics::timed_db_op("cron.insert_occurrence", async {
             // A row written already settled — a misfire summary, a `forbid`
             // tick that came due with every slot held — is settled as of now,
             // like one a worker settles.
@@ -658,7 +658,7 @@ impl CronRepository for SqlCronRepository {
     }
 
     async fn claim_due(&self, req: ClaimRequest<'_>) -> Result<Vec<CronOccurrence>, OrionError> {
-        crate::metrics::timed_db_op("cron.claim_due", async {
+        orion_common::metrics::timed_db_op("cron.claim_due", async {
             let backend = self.pool.backend();
             let now = helpers::sql_now(backend);
             let lease_until = self.lease_until(req.lease_secs);
@@ -725,7 +725,7 @@ impl CronRepository for SqlCronRepository {
         singleton: Option<SingletonRequest<'_>>,
         lease_secs: u64,
     ) -> Result<AttemptStart, OrionError> {
-        crate::metrics::timed_db_op("cron.start_attempt", async {
+        orion_common::metrics::timed_db_op("cron.start_attempt", async {
             let backend = self.pool.backend();
             let now = helpers::sql_now(backend);
             let lease_until = self.lease_until(lease_secs);
@@ -833,7 +833,7 @@ impl CronRepository for SqlCronRepository {
         held: Option<HeldSlot>,
         lease_secs: u64,
     ) -> Result<bool, OrionError> {
-        crate::metrics::timed_db_op("cron.renew", async {
+        orion_common::metrics::timed_db_op("cron.renew", async {
             let backend = self.pool.backend();
             let lease_until = self.lease_until(lease_secs);
 
@@ -886,7 +886,7 @@ impl CronRepository for SqlCronRepository {
     }
 
     async fn settle(&self, settlement: Settlement<'_>) -> Result<bool, OrionError> {
-        crate::metrics::timed_db_op("cron.settle", async {
+        orion_common::metrics::timed_db_op("cron.settle", async {
             let backend = self.pool.backend();
             let now = helpers::sql_now(backend);
             let mut update = Query::update()
@@ -928,7 +928,7 @@ impl CronRepository for SqlCronRepository {
     }
 
     async fn release_claim(&self, occurrence_id: &str, claimant: &str) -> Result<bool, OrionError> {
-        crate::metrics::timed_db_op("cron.release_claim", async {
+        orion_common::metrics::timed_db_op("cron.release_claim", async {
             let (sql, values) = build_sqlx(
                 self.pool.backend(),
                 Query::update()
@@ -951,7 +951,7 @@ impl CronRepository for SqlCronRepository {
         occurrence_id: &str,
         held: HeldSlot,
     ) -> Result<bool, OrionError> {
-        crate::metrics::timed_db_op("cron.release_singleton", async {
+        orion_common::metrics::timed_db_op("cron.release_singleton", async {
             // Conditional on all of them, which is what stops a slow holder
             // that has already been superseded from deleting the *new*
             // holder's row and letting another occurrence in alongside it.
@@ -981,7 +981,7 @@ impl CronRepository for SqlCronRepository {
         &self,
         keys: &[&str],
     ) -> Result<std::collections::HashMap<String, u32>, OrionError> {
-        crate::metrics::timed_db_op("cron.singleton_holds", async {
+        orion_common::metrics::timed_db_op("cron.singleton_holds", async {
             let mut out = std::collections::HashMap::new();
             if keys.is_empty() {
                 return Ok(out);
@@ -1016,7 +1016,7 @@ impl CronRepository for SqlCronRepository {
     }
 
     async fn set_trace_id(&self, occurrence_id: &str, trace_id: &str) -> Result<(), OrionError> {
-        crate::metrics::timed_db_op("cron.set_trace_id", async {
+        orion_common::metrics::timed_db_op("cron.set_trace_id", async {
             let (sql, values) = build_sqlx(
                 self.pool.backend(),
                 Query::update()
@@ -1032,7 +1032,7 @@ impl CronRepository for SqlCronRepository {
     }
 
     async fn get_by_id(&self, id: &str) -> Result<CronOccurrence, OrionError> {
-        crate::metrics::timed_db_op("cron.get_by_id", async {
+        orion_common::metrics::timed_db_op("cron.get_by_id", async {
             let (sql, values) = build_sqlx(self.pool.backend(), &mut occurrence_select(id));
             helpers::fetch_required(&self.pool, &sql, values, || {
                 OrionError::NotFound(format!("Cron occurrence '{id}' not found"))
@@ -1046,7 +1046,7 @@ impl CronRepository for SqlCronRepository {
         &self,
         filter: &CronOccurrenceFilter,
     ) -> Result<PaginatedResult<CronOccurrence>, OrionError> {
-        crate::metrics::timed_db_op("cron.list_paginated", async {
+        orion_common::metrics::timed_db_op("cron.list_paginated", async {
             let (limit, offset) = helpers::clamp_pagination(filter.limit, filter.offset);
             let page = Page {
                 from: sea_query::IntoIden::into_iden(CronOccurrences::Table),
@@ -1065,7 +1065,7 @@ impl CronRepository for SqlCronRepository {
     }
 
     async fn requeue(&self, id: &str) -> Result<CronOccurrence, OrionError> {
-        crate::metrics::timed_db_op("cron.requeue", async {
+        orion_common::metrics::timed_db_op("cron.requeue", async {
             // Only from a terminal, unsuccessful state. `completed` is refused
             // by the route with a 409 rather than silently re-running finished
             // work.
@@ -1107,7 +1107,7 @@ impl CronRepository for SqlCronRepository {
         reason: &str,
         grace_secs: u64,
     ) -> Result<CronOccurrence, OrionError> {
-        crate::metrics::timed_db_op("cron.cancel", async {
+        orion_common::metrics::timed_db_op("cron.cancel", async {
             let backend = self.pool.backend();
             let now = helpers::sql_now(backend);
             let grace_until = self.lease_until(grace_secs);
@@ -1183,7 +1183,7 @@ impl CronRepository for SqlCronRepository {
         &self,
         channel_id: &str,
     ) -> Result<Option<CronOccurrence>, OrionError> {
-        crate::metrics::timed_db_op("cron.latest_for_channel", async {
+        orion_common::metrics::timed_db_op("cron.latest_for_channel", async {
             // One indexed read per channel rather than a "newest per group"
             // query. The status endpoint has the channel list in hand and a
             // scheduled estate is tens of channels, not thousands; a correlated
@@ -1208,7 +1208,7 @@ impl CronRepository for SqlCronRepository {
     }
 
     async fn pending_count(&self, channel_id: Option<&str>) -> Result<i64, OrionError> {
-        crate::metrics::timed_db_op("cron.pending_count", async {
+        orion_common::metrics::timed_db_op("cron.pending_count", async {
             let mut cond =
                 Condition::all().add(Expr::col(CronOccurrences::Status).eq(status::PENDING));
             if let Some(channel_id) = channel_id {
@@ -1225,7 +1225,7 @@ impl CronRepository for SqlCronRepository {
     }
 
     async fn oldest_pending_age_secs(&self) -> Result<Option<i64>, OrionError> {
-        crate::metrics::timed_db_op("cron.oldest_pending_age", async {
+        orion_common::metrics::timed_db_op("cron.oldest_pending_age", async {
             let (sql, values) = build_sqlx(
                 self.pool.backend(),
                 Query::select()
@@ -1253,7 +1253,7 @@ impl CronRepository for SqlCronRepository {
     }
 
     async fn delete_terminal_older_than(&self, hours: u64) -> Result<u64, OrionError> {
-        crate::metrics::timed_db_op("cron.delete_terminal_older_than", async {
+        orion_common::metrics::timed_db_op("cron.delete_terminal_older_than", async {
             let now = self.db_now().await?;
             let cutoff = helpers::cutoff_hours_ago(now, hours);
             let (sql, values) = build_sqlx(
@@ -1280,7 +1280,7 @@ impl CronRepository for SqlCronRepository {
     }
 
     async fn purge_channel(&self, channel_id: &str) -> Result<(), OrionError> {
-        crate::metrics::timed_db_op("cron.purge_channel", async {
+        orion_common::metrics::timed_db_op("cron.purge_channel", async {
             let mut occurrences = Query::delete()
                 .from_table(CronOccurrences::Table)
                 .and_where(Expr::col(CronOccurrences::ChannelId).eq(channel_id))

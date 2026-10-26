@@ -6,7 +6,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::Workflow;
+use crate::storage::models::{ChannelType, Workflow};
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateWorkflowRequest {
@@ -38,7 +38,7 @@ pub struct CreateChannelRequest {
     pub channel_id: Option<String>,
     pub name: String,
     pub description: Option<String>,
-    pub channel_type: super::ChannelType,
+    pub channel_type: ChannelType,
     #[serde(deserialize_with = "orion_api::enums::deserialize_protocol")]
     pub protocol: String,
     pub methods: Option<Vec<String>>,

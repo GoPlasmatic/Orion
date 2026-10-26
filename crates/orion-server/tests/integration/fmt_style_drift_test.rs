@@ -10,8 +10,10 @@
 
 use std::collections::BTreeSet;
 
+use orion::definitions::documents::{
+    CreateChannelRequest, CreateConnectorRequest, CreateWorkflowRequest,
+};
 use orion::definitions::fmt::style::{self, STYLE};
-use orion::storage::models::{CreateChannelRequest, CreateConnectorRequest, CreateWorkflowRequest};
 const FMT_MD: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../docs/src/reference/fmt.md"

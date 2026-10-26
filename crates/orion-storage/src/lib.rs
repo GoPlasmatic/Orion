@@ -40,8 +40,8 @@ use sea_query_sqlx::SqlxBinder;
 // `SqlxValues` beside it — so no caller-supplied value is ever in the text.
 use sqlx::AssertSqlSafe;
 
-use crate::config::StorageConfig;
-use crate::errors::OrionError;
+use orion_common::config::StorageConfig;
+use orion_common::errors::OrionError;
 
 // ============================================================
 // Database backend detection — determined at runtime from URL
@@ -133,7 +133,7 @@ impl DbPool {
     /// checks needed *a* pool and that trait happened to hold one. It is a
     /// property of the pool, not of any entity.
     pub async fn ping(&self) -> Result<(), sqlx::Error> {
-        crate::metrics::timed_db_op("db.ping", async {
+        orion_common::metrics::timed_db_op("db.ping", async {
             let (sql, values) = build_sqlx(
                 self.backend(),
                 sea_query::Query::select().expr(sea_query::Expr::val(1i32)),
@@ -389,9 +389,9 @@ pub fn migrator_for(backend: DbBackend) -> &'static sqlx::migrate::Migrator {
 /// Initialize the database connection pool and run migrations.
 /// Fresh in-memory SQLite pool with migrations applied — the shared
 /// constructor for in-file repository tests.
-#[cfg(test)]
-pub(crate) async fn test_sqlite_pool() -> DbPool {
-    init_pool(&crate::config::StorageConfig {
+#[cfg(any(test, feature = "test-support"))]
+pub async fn test_sqlite_pool() -> DbPool {
+    init_pool(&orion_common::config::StorageConfig {
         url: "sqlite::memory:".to_string(),
         max_connections: 1,
         ..Default::default()

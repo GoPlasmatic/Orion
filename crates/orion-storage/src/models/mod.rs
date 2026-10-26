@@ -27,7 +27,6 @@
 
 pub mod dto;
 pub mod enums;
-pub mod requests;
 pub mod rows;
 
 pub use dto::{
@@ -39,9 +38,6 @@ pub use enums::{
     CHANNEL_TYPE_ASYNC, CHANNEL_TYPE_SYNC, ChannelType, EntityStatus, TRACE_MODE_ASYNC,
     TRACE_MODE_CRON, TRACE_MODE_SYNC, TRACE_STATUS_COMPLETED, TRACE_STATUS_FAILED,
     TRACE_STATUS_PENDING, TRACE_STATUS_RUNNING, VALID_CHANNEL_TYPES,
-};
-pub use requests::{
-    CreateChannelRequest, CreateConnectorRequest, CreateWorkflowRequest, synthetic_workflow,
 };
 pub use rows::{
     AuditLogEntry, Channel, Connector, ConnectorOauthStateRow, CronOccurrence, CronScheduleState,

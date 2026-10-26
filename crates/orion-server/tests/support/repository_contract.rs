@@ -1,7 +1,7 @@
 //! The repository behaviours that must hold on **every** backend, written once.
 //!
 //! Before this, each backend binary spelled out its own round-trip: SQLite in
-//! the unit tests under `src/storage/repositories/`, Postgres in
+//! the unit tests under `orion-storage/src/repositories/`, Postgres in
 //! `storage_postgres.rs`, MySQL in `storage_mysql.rs`. Three copies of the
 //! same intent, which is why the MySQL-only branches ended up covered by "one
 //! round-trip each" — nobody was going to write the fourth assertion three

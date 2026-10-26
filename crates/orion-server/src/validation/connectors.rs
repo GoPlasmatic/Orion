@@ -1,6 +1,6 @@
 use crate::connector::{ConnectorConfig, ConnectorType};
+use crate::definitions::documents::CreateConnectorRequest;
 use crate::errors::{FieldError, OrionError};
-use crate::storage::models::CreateConnectorRequest;
 use orion_api::error::field_codes;
 
 use super::common::{validate_id, validate_name};

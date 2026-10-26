@@ -43,6 +43,7 @@ pub mod clippy;
 pub mod compile;
 pub mod deployment;
 mod diagnostic;
+pub mod documents;
 mod expand;
 pub mod fix;
 pub mod fmt;

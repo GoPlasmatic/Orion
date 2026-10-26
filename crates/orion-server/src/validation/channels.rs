@@ -1,6 +1,6 @@
+use crate::definitions::documents::CreateChannelRequest;
 use crate::errors::OrionError;
 use crate::extensions::{ChannelDriver, ChannelDriverRegistry};
-use crate::storage::models::CreateChannelRequest;
 use dataflow_rs::datalogic_rs;
 
 use super::common::{validate_description, validate_id, validate_name};

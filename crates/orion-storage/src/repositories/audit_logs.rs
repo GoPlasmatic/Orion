@@ -3,10 +3,10 @@ use chrono::NaiveDateTime;
 use sea_query::{Condition, Expr, ExprTrait, IntoIden, Order, Query, SimpleExpr};
 
 use super::helpers::{Page, PaginatedResult, Projection};
-use crate::errors::OrionError;
-use crate::storage::models::AuditLogEntry;
-use crate::storage::schema::AuditLogs;
-use crate::storage::{DbPool, build_sqlx};
+use crate::models::AuditLogEntry;
+use crate::schema::AuditLogs;
+use crate::{DbPool, build_sqlx};
+use orion_common::errors::OrionError;
 
 /// Server-side filter for audit-log reads. Every field is an exact match
 /// except the half-open time window `[start_time, end_time)`; unset fields do
@@ -80,7 +80,7 @@ where
 #[derive(Debug, Clone)]
 pub struct AuditEvent {
     /// The actor: a derived per-key id (see
-    /// [`crate::server::admin_auth::AdminPrincipal`]) or `"anonymous"`.
+    /// `AdminPrincipal`) or `"anonymous"`.
     pub principal: String,
     pub action: String,
     pub resource_type: String,
@@ -114,7 +114,7 @@ pub trait AuditLogRepository: Send + Sync {
     /// entity write owns the transaction and this joins it.
     async fn insert_tx(
         &self,
-        tx: &mut crate::storage::DbTransaction,
+        tx: &mut crate::DbTransaction,
         event: &AuditEvent,
     ) -> Result<(), OrionError>;
 
@@ -185,10 +185,10 @@ fn insert_statement(
 /// owns its transaction outside the repository layer (the v2 deployment
 /// store's head move).
 pub async fn insert_in_tx(
-    tx: &mut crate::storage::DbTransaction,
+    tx: &mut crate::DbTransaction,
     event: &AuditEvent,
 ) -> Result<(), OrionError> {
-    crate::metrics::timed_db_op("audit_logs.insert_tx", async {
+    orion_common::metrics::timed_db_op("audit_logs.insert_tx", async {
         let (sql, values) = build_sqlx(
             tx.backend(),
             &mut insert_statement(
@@ -215,7 +215,7 @@ impl AuditLogRepository for SqlAuditLogRepository {
         resource_id: &str,
         details: Option<&str>,
     ) -> Result<(), OrionError> {
-        crate::metrics::timed_db_op("audit_logs.insert", async {
+        orion_common::metrics::timed_db_op("audit_logs.insert", async {
             let (sql, values) = build_sqlx(
                 self.pool.backend(),
                 &mut insert_statement(principal, action, resource_type, resource_id, details),
@@ -228,7 +228,7 @@ impl AuditLogRepository for SqlAuditLogRepository {
 
     async fn insert_tx(
         &self,
-        tx: &mut crate::storage::DbTransaction,
+        tx: &mut crate::DbTransaction,
         event: &AuditEvent,
     ) -> Result<(), OrionError> {
         insert_in_tx(tx, event).await
@@ -238,7 +238,7 @@ impl AuditLogRepository for SqlAuditLogRepository {
         &self,
         filter: &AuditLogFilter,
     ) -> Result<PaginatedResult<AuditLogEntry>, OrionError> {
-        crate::metrics::timed_db_op("audit_logs.list", async {
+        orion_common::metrics::timed_db_op("audit_logs.list", async {
             let (limit, offset) = super::helpers::clamp_pagination(filter.limit, filter.offset);
 
             // Every predicate is a bound parameter — no identifier or value is
@@ -285,7 +285,7 @@ impl AuditLogRepository for SqlAuditLogRepository {
     }
 
     async fn delete_older_than(&self, days: u64) -> Result<u64, OrionError> {
-        crate::metrics::timed_db_op("audit_logs.delete_older_than", async {
+        orion_common::metrics::timed_db_op("audit_logs.delete_older_than", async {
             let cutoff = super::helpers::cutoff_days_ago(chrono::Utc::now().naive_utc(), days);
 
             // D6: chunked — see `delete_chunked`.
@@ -354,7 +354,7 @@ pub(crate) mod tests {
     }
 
     async fn test_repo() -> SqlAuditLogRepository {
-        SqlAuditLogRepository::new(crate::storage::test_sqlite_pool().await)
+        SqlAuditLogRepository::new(crate::test_sqlite_pool().await)
     }
 
     async fn list_all(repo: &SqlAuditLogRepository) -> PaginatedResult<AuditLogEntry> {
@@ -414,7 +414,7 @@ pub(crate) mod tests {
     /// Nothing removed audit rows before this, so the table grew forever.
     #[tokio::test]
     async fn test_delete_older_than_removes_only_expired_rows() {
-        let pool = crate::storage::test_sqlite_pool().await;
+        let pool = crate::test_sqlite_pool().await;
         let repo = SqlAuditLogRepository::new(pool.clone());
 
         repo.insert("admin...", "create", "workflow", "old", None)
@@ -436,7 +436,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn test_delete_older_than_keeps_everything_when_nothing_expired() {
-        let pool = crate::storage::test_sqlite_pool().await;
+        let pool = crate::test_sqlite_pool().await;
         let repo = SqlAuditLogRepository::new(pool.clone());
 
         repo.insert("admin...", "create", "workflow", "wf-1", None)
@@ -579,7 +579,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn test_time_range_filter() {
-        let pool = crate::storage::test_sqlite_pool().await;
+        let pool = crate::test_sqlite_pool().await;
         let repo = SqlAuditLogRepository::new(pool.clone());
         repo.insert("alice...", "create", "workflow", "old", None)
             .await

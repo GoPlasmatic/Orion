@@ -273,7 +273,7 @@ fn workflow_problems(
                 .iter()
                 .any(|name| e.message.contains(&format!("'{name}'")))
     };
-    let request = crate::storage::models::CreateWorkflowRequest {
+    let request = crate::definitions::documents::CreateWorkflowRequest {
         workflow_id: None,
         name: workflow.name.clone(),
         description: workflow.description.clone(),
@@ -332,7 +332,7 @@ fn workflow_advisories(state: &AppState, workflow: &WorkflowDefinition) -> Vec<D
 /// A channel is checked as a channel create is, minus its identity and its
 /// workflow, which the manifest supplies.
 fn channel_problems(state: &AppState, channel: &ChannelDefinition) -> Vec<FieldError> {
-    let request = crate::storage::models::CreateChannelRequest {
+    let request = crate::definitions::documents::CreateChannelRequest {
         channel_id: None,
         name: channel.name.clone(),
         description: channel.description.clone(),

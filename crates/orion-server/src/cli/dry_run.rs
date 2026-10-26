@@ -144,7 +144,7 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     definitions: Option<&Catalog>,
     secrets: &orion::engine::ResolvedSecrets,
 ) -> Result<OfflineRun, Box<dyn std::error::Error>> {
-    use orion::{engine::workflow_json, storage::models::CreateWorkflowRequest};
+    use orion::{definitions::documents::CreateWorkflowRequest, engine::workflow_json};
 
     let doc = read_expanded_workflow(workflow_path, definitions)?;
     let req: CreateWorkflowRequest = serde_json::from_value(doc)
@@ -175,7 +175,7 @@ pub(crate) fn build_dry_run_engine_with_stubs(
 
     // Build a synthetic Workflow row from the request to reuse the
     // existing dataflow conversion. Version + timestamps are placeholders.
-    let synthetic = orion::storage::models::synthetic_workflow(
+    let synthetic = orion::definitions::documents::synthetic_workflow(
         &req,
         req.workflow_id.as_deref().unwrap_or("dry-run"),
     )?;

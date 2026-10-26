@@ -29,8 +29,8 @@ impl<'a> SlotRow<'a> {
 
 /// The slot `occurrence_id` already holds on `key`, if any.
 pub(super) async fn own_slot(
-    tx: &mut crate::storage::DbTransaction,
-    backend: crate::storage::DbBackend,
+    tx: &mut crate::DbTransaction,
+    backend: crate::DbBackend,
     key: &str,
     occurrence_id: &str,
 ) -> Result<Option<u32>, OrionError> {
@@ -68,8 +68,8 @@ pub(super) async fn own_slot(
 /// attempt now holds it. `fencing_token + 1` on every acquisition, so a
 /// superseded holder's conditional writes match nothing.
 pub(super) async fn take_slot(
-    tx: &mut crate::storage::DbTransaction,
-    backend: crate::storage::DbBackend,
+    tx: &mut crate::DbTransaction,
+    backend: crate::DbBackend,
     row: SlotRow<'_>,
     occurrence_id: &str,
     holder: &str,

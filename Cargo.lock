@@ -3085,6 +3085,7 @@ dependencies = [
  "orion-common",
  "orion-definitions",
  "orion-extension-api",
+ "orion-storage",
  "proptest",
  "rand 0.10.3",
  "rcgen",
@@ -3116,6 +3117,27 @@ dependencies = [
  "utoipa-swagger-ui",
  "uuid",
  "wasmtime",
+]
+
+[[package]]
+name = "orion-storage"
+version = "1.12.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "hex",
+ "orion-api",
+ "orion-common",
+ "sea-query",
+ "sea-query-sqlx",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "utoipa",
+ "uuid",
 ]
 
 [[package]]

@@ -1,13 +1,13 @@
 use async_trait::async_trait;
 use sea_query::{Asterisk, Condition, Expr, ExprTrait, IntoIden, Query, SimpleExpr};
 
-use crate::errors::OrionError;
+use orion_common::errors::OrionError;
 // D28: both row shapes this repository reads — `TraceDlqEntry` and the
 // payload-free `TraceDlqSummary` — live in `storage::models::rows`, like every
 // other row struct. Only the request-side filter is defined here.
-use crate::storage::models::{TraceDlqEntry, TraceDlqSummary};
-use crate::storage::schema::TraceDlq;
-use crate::storage::{DbBackend, DbPool, build_sqlx};
+use crate::models::{TraceDlqEntry, TraceDlqSummary};
+use crate::schema::TraceDlq;
+use crate::{DbBackend, DbPool, build_sqlx};
 
 use super::helpers::{Page, PaginatedResult, Projection};
 
@@ -55,7 +55,7 @@ fn clear_lease(q: &mut sea_query::UpdateStatement) -> &mut sea_query::UpdateStat
 }
 
 /// The 9 columns a DLQ *listing* reads, in
-/// [`crate::storage::models::TraceDlqSummary`] order.
+/// [`crate::models::TraceDlqSummary`] order.
 fn summary_columns() -> [TraceDlq; 9] {
     [
         TraceDlq::Id,
@@ -327,7 +327,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
             retry_count,
             max_retries,
         } = row;
-        crate::metrics::timed_db_op("trace_dlq.enqueue", async {
+        orion_common::metrics::timed_db_op("trace_dlq.enqueue", async {
             let id = uuid::Uuid::new_v4().to_string();
 
             // First retry after 1 second. Bind chrono values, not strings:
@@ -389,7 +389,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
         limit: i64,
         lease_secs: u64,
     ) -> Result<Vec<TraceDlqEntry>, OrionError> {
-        crate::metrics::timed_db_op("trace_dlq.claim_pending", async {
+        orion_common::metrics::timed_db_op("trace_dlq.claim_pending", async {
             let backend = self.pool.backend();
             let now = super::helpers::sql_now(backend);
             let lease_until = super::helpers::sql_now_plus_secs(backend, lease_secs);
@@ -441,7 +441,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
         id: &str,
         next_retry_at: chrono::NaiveDateTime,
     ) -> Result<(), OrionError> {
-        crate::metrics::timed_db_op("trace_dlq.record_retry", async {
+        orion_common::metrics::timed_db_op("trace_dlq.record_retry", async {
             let (sql, values) = build_sqlx(
                 self.pool.backend(),
                 clear_lease(
@@ -461,7 +461,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
     }
 
     async fn remove(&self, id: &str) -> Result<(), OrionError> {
-        crate::metrics::timed_db_op("trace_dlq.remove", async {
+        orion_common::metrics::timed_db_op("trace_dlq.remove", async {
             let (sql, values) = build_sqlx(
                 self.pool.backend(),
                 Query::delete()
@@ -476,7 +476,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
     }
 
     async fn mark_exhausted(&self, id: &str) -> Result<(), OrionError> {
-        crate::metrics::timed_db_op("trace_dlq.mark_exhausted", async {
+        orion_common::metrics::timed_db_op("trace_dlq.mark_exhausted", async {
             let (sql, values) = build_sqlx(
                 self.pool.backend(),
                 clear_lease(
@@ -498,21 +498,21 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
         &self,
         filter: &TraceDlqFilter,
     ) -> Result<PaginatedResult<TraceDlqSummary>, OrionError> {
-        crate::metrics::timed_db_op("trace_dlq.list_paginated", async {
+        orion_common::metrics::timed_db_op("trace_dlq.list_paginated", async {
             super::helpers::paginate(&self.pool, list_page(filter)).await
         })
         .await
     }
 
     async fn count(&self, filter: &TraceDlqFilter) -> Result<i64, OrionError> {
-        crate::metrics::timed_db_op("trace_dlq.count", async {
+        orion_common::metrics::timed_db_op("trace_dlq.count", async {
             super::helpers::count_where(&self.pool, TraceDlq::Table, filter.condition()).await
         })
         .await
     }
 
     async fn get_by_id(&self, id: &str) -> Result<TraceDlqEntry, OrionError> {
-        crate::metrics::timed_db_op("trace_dlq.get_by_id", async {
+        orion_common::metrics::timed_db_op("trace_dlq.get_by_id", async {
             let (sql, values) = build_sqlx(self.pool.backend(), &mut dlq_select(id));
             super::helpers::fetch_required::<TraceDlqEntry>(&self.pool, &sql, values, || {
                 OrionError::NotFound(format!("DLQ entry '{id}' not found"))
@@ -523,7 +523,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
     }
 
     async fn requeue(&self, id: &str) -> Result<TraceDlqEntry, OrionError> {
-        crate::metrics::timed_db_op("trace_dlq.requeue", async {
+        orion_common::metrics::timed_db_op("trace_dlq.requeue", async {
             let now = chrono::Utc::now().naive_utc();
             let mut update = clear_lease(
                 Query::update()
@@ -550,7 +550,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
     }
 
     async fn purge_exhausted(&self, older_than_hours: u64) -> Result<u64, OrionError> {
-        crate::metrics::timed_db_op("trace_dlq.purge_exhausted", async {
+        orion_common::metrics::timed_db_op("trace_dlq.purge_exhausted", async {
             let cutoff =
                 super::helpers::cutoff_hours_ago(chrono::Utc::now().naive_utc(), older_than_hours);
 
@@ -574,7 +574,7 @@ mod tests {
     use super::*;
 
     async fn test_repo() -> SqlTraceDlqRepository {
-        SqlTraceDlqRepository::new(crate::storage::test_sqlite_pool().await)
+        SqlTraceDlqRepository::new(crate::test_sqlite_pool().await)
     }
 
     /// The listing must never read the failed request's body. Asserted against

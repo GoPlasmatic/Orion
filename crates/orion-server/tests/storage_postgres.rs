@@ -181,7 +181,7 @@ async fn postgres_dlq_record_retry_and_mark_exhausted_persist() {
 /// D8 keyset pagination, on the backend whose `timestamp` type the cursor
 /// actually has to bind against.
 ///
-/// The SQLite tests in `src/storage/repositories/traces.rs` compare a
+/// The SQLite tests in `orion-storage/src/repositories/traces.rs` compare a
 /// `NaiveDateTime` against a `timestamp_text` *string* column; here it is a
 /// real `timestamp`, so this is the first proof that the cursor's
 /// `(created_at, id)` comparison round-trips through the wire format at all.

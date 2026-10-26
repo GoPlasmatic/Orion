@@ -1,8 +1,8 @@
 use sea_query::{Asterisk, Condition, DynIden, ExprTrait, Order, Query};
 use serde::Serialize;
 
-use crate::errors::OrionError;
-use crate::storage::{DbPool, DbRow, DbTransaction};
+use crate::{DbPool, DbRow, DbTransaction};
+use orion_common::errors::OrionError;
 
 /// One page of repository results plus the paging bookkeeping every admin
 /// list endpoint returns. Shared by all repositories.
@@ -45,11 +45,11 @@ pub fn optional_string_value(opt: Option<&str>) -> sea_query::Value {
 /// SQLite `datetime('now')` and MySQL `UTC_TIMESTAMP()` are UTC; Postgres
 /// `LOCALTIMESTAMP` matches the session timezone (UTC by convention here),
 /// staying in timestamp-without-tz land like the stored columns.
-pub fn sql_now(backend: crate::storage::DbBackend) -> &'static str {
+pub fn sql_now(backend: crate::DbBackend) -> &'static str {
     match backend {
-        crate::storage::DbBackend::Sqlite => "datetime('now')",
-        crate::storage::DbBackend::Postgres => "LOCALTIMESTAMP",
-        crate::storage::DbBackend::Mysql => "UTC_TIMESTAMP()",
+        crate::DbBackend::Sqlite => "datetime('now')",
+        crate::DbBackend::Postgres => "LOCALTIMESTAMP",
+        crate::DbBackend::Mysql => "UTC_TIMESTAMP()",
     }
 }
 
@@ -66,13 +66,13 @@ pub fn updated_now() -> sea_query::SimpleExpr {
 }
 
 /// `sql_now` plus a positive offset in seconds, per backend.
-pub fn sql_now_plus_secs(backend: crate::storage::DbBackend, secs: u64) -> String {
+pub fn sql_now_plus_secs(backend: crate::DbBackend, secs: u64) -> String {
     match backend {
-        crate::storage::DbBackend::Sqlite => format!("datetime('now', '+{secs} seconds')"),
-        crate::storage::DbBackend::Postgres => {
+        crate::DbBackend::Sqlite => format!("datetime('now', '+{secs} seconds')"),
+        crate::DbBackend::Postgres => {
             format!("LOCALTIMESTAMP + interval '{secs} seconds'")
         }
-        crate::storage::DbBackend::Mysql => {
+        crate::DbBackend::Mysql => {
             format!("DATE_ADD(UTC_TIMESTAMP(), INTERVAL {secs} SECOND)")
         }
     }
@@ -105,7 +105,7 @@ where
     I: sea_query::IntoTableRef,
 {
     use sea_query::{Asterisk, Expr, Func, Query};
-    let (sql, values) = crate::storage::build_sqlx(
+    let (sql, values) = crate::build_sqlx(
         pool.backend(),
         Query::select()
             .expr(Func::count(Expr::col(Asterisk)))
@@ -165,7 +165,7 @@ pub async fn paginate<T: DbRow>(
 ) -> Result<PaginatedResult<T>, OrionError> {
     let total = count_where(pool, page.from.clone(), page.cond.clone()).await?;
 
-    let (sql, values) = crate::storage::build_sqlx(pool.backend(), &mut page_select(&page));
+    let (sql, values) = crate::build_sqlx(pool.backend(), &mut page_select(&page));
     let data = pool.fetch_all_as::<T>(&sql, values).await?;
 
     Ok(PaginatedResult {
@@ -295,7 +295,7 @@ pub async fn update_returning_scalar<C>(
 where
     C: sea_query::IntoColumnRef,
 {
-    use crate::storage::{DbBackend, build_sqlx};
+    use crate::{DbBackend, build_sqlx};
 
     let backend = pool.backend();
     match backend {
@@ -332,30 +332,27 @@ impl WriteStatement<'_> {
     /// time. (SQLite's UPDATEs could not use it while an AFTER UPDATE trigger
     /// wrote `updated_at` in a second statement RETURNING never saw.) MySQL:
     /// no RETURNING at all.
-    fn supports_returning(&self, backend: crate::storage::DbBackend) -> bool {
+    fn supports_returning(&self, backend: crate::DbBackend) -> bool {
         match backend {
-            crate::storage::DbBackend::Postgres | crate::storage::DbBackend::Sqlite => true,
-            crate::storage::DbBackend::Mysql => false,
+            crate::DbBackend::Postgres | crate::DbBackend::Sqlite => true,
+            crate::DbBackend::Mysql => false,
         }
     }
 
     fn build_returning_all(
         &mut self,
-        backend: crate::storage::DbBackend,
+        backend: crate::DbBackend,
     ) -> (String, sea_query_sqlx::SqlxValues) {
         match self {
-            Self::Insert(q) => crate::storage::build_sqlx(backend, q.returning_all()),
-            Self::Update(q) => crate::storage::build_sqlx(backend, q.returning_all()),
+            Self::Insert(q) => crate::build_sqlx(backend, q.returning_all()),
+            Self::Update(q) => crate::build_sqlx(backend, q.returning_all()),
         }
     }
 
-    fn build(
-        &mut self,
-        backend: crate::storage::DbBackend,
-    ) -> (String, sea_query_sqlx::SqlxValues) {
+    fn build(&mut self, backend: crate::DbBackend) -> (String, sea_query_sqlx::SqlxValues) {
         match self {
-            Self::Insert(q) => crate::storage::build_sqlx(backend, &mut **q),
-            Self::Update(q) => crate::storage::build_sqlx(backend, &mut **q),
+            Self::Insert(q) => crate::build_sqlx(backend, &mut **q),
+            Self::Update(q) => crate::build_sqlx(backend, &mut **q),
         }
     }
 }
@@ -424,7 +421,7 @@ pub async fn write_returning_row_tx<T: DbRow>(
         tx.execute_query(&sql, values)
             .await
             .map_err(map_write_err)?;
-        let (sql, values) = crate::storage::build_sqlx(backend, read_back);
+        let (sql, values) = crate::build_sqlx(backend, read_back);
         fetch_required_tx(tx, &sql, values, missing).await
     }
 }
@@ -440,7 +437,7 @@ pub async fn insert_if_absent<C>(
 where
     C: sea_query::IntoIden,
 {
-    use crate::storage::{DbBackend, build_sqlx};
+    use crate::{DbBackend, build_sqlx};
 
     let backend = pool.backend();
     match backend {
@@ -482,7 +479,7 @@ where
     I: IntoIterator,
     I::Item: sea_query::IntoIden,
 {
-    use crate::storage::{DbBackend, build_sqlx};
+    use crate::{DbBackend, build_sqlx};
 
     let backend = pool.backend();
     match backend {
@@ -513,7 +510,7 @@ where
 /// writes must commit or roll back with it — singleton acquisition, where "the
 /// row already existed" means another occurrence holds the key.
 pub async fn insert_if_absent_tx<I>(
-    tx: &mut crate::storage::DbTransaction,
+    tx: &mut crate::DbTransaction,
     mut insert: sea_query::InsertStatement,
     conflict_cols: I,
 ) -> Result<u64, OrionError>
@@ -521,7 +518,7 @@ where
     I: IntoIterator,
     I::Item: sea_query::IntoIden,
 {
-    use crate::storage::{DbBackend, build_sqlx};
+    use crate::{DbBackend, build_sqlx};
 
     let backend = tx.backend();
     match backend {
@@ -599,7 +596,7 @@ pub async fn delete_chunked(
             .column(id_column.clone())
             .from_subquery(inner, Alias::new("d6_chunk"))
             .to_owned();
-        let (sql, values) = crate::storage::build_sqlx(
+        let (sql, values) = crate::build_sqlx(
             pool.backend(),
             Query::delete()
                 .from_table(table.clone())
@@ -678,10 +675,10 @@ mod tests {
     fn sample_page(projection: Projection) -> Page {
         use sea_query::IntoIden;
         Page {
-            from: crate::storage::schema::Traces::Table.into_iden(),
+            from: crate::schema::Traces::Table.into_iden(),
             projection,
             cond: sea_query::Condition::all(),
-            sort: crate::storage::schema::Traces::CreatedAt.into_iden(),
+            sort: crate::schema::Traces::CreatedAt.into_iden(),
             order: Order::Desc,
             limit: 25,
             offset: 50,
@@ -704,8 +701,8 @@ mod tests {
     fn projection_columns_names_only_what_it_was_given() {
         use sea_query::IntoIden;
         let sql = rendered(&sample_page(Projection::Columns(vec![
-            crate::storage::schema::Traces::Id.into_iden(),
-            crate::storage::schema::Traces::Status.into_iden(),
+            crate::schema::Traces::Id.into_iden(),
+            crate::schema::Traces::Status.into_iden(),
         ])));
         assert!(sql.contains(r#"SELECT "id", "status""#), "{sql}");
         assert!(!sql.contains('*'), "{sql}");
@@ -719,8 +716,8 @@ mod tests {
     /// SQLite for both statement kinds; MySQL has no RETURNING at all.
     #[test]
     fn returning_dispatch_matches_backend_semantics() {
-        use crate::storage::DbBackend::{Mysql, Postgres, Sqlite};
-        use crate::storage::schema::Traces;
+        use crate::DbBackend::{Mysql, Postgres, Sqlite};
+        use crate::schema::Traces;
 
         let mut insert = Query::insert()
             .into_table(Traces::Table)
@@ -744,7 +741,7 @@ mod tests {
     /// the same row types their `SELECT *` read-backs decoded.
     #[test]
     fn returning_all_is_appended_to_both_statement_kinds() {
-        use crate::storage::schema::Traces;
+        use crate::schema::Traces;
         use sea_query::PostgresQueryBuilder;
 
         let mut insert = Query::insert()

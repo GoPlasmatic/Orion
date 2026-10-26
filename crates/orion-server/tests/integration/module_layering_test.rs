@@ -19,8 +19,8 @@
 //!
 //! All five are gone — `runtime/` is where reload lives now, and the shared
 //! primitives (`crypto`, `request_context`, `trace_context`, `errors`,
-//! `config`, …) are the `orion-common` crate, whose crate boundary enforces
-//! their being leaves. This test is what stops the rest growing back: it is a text scan, deliberately, because the thing it
+//! `config`, …) are the `orion-common` crate and storage is `orion-storage`,
+//! whose crate boundaries enforce their being below everything that serves. This test is what stops the rest growing back: it is a text scan, deliberately, because the thing it
 //! guards is a *convention*, and a convention no one can see is a convention
 //! that erodes.
 
@@ -51,11 +51,6 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
     ("engine", &["crate::cron::"]),
     ("channel", &["crate::cron::"]),
     ("queue", &["crate::cron::"]),
-    // Storage and config are below everything that serves.
-    (
-        "storage",
-        &["crate::server::", "crate::bootstrap::", "crate::engine::"],
-    ),
     // The one SQL lexer: read by `db_read`/`db_write` (below `definitions`),
     // by the `$sql` pass and the clippy rules (above `engine`), and by the
     // binary's `sql check`. None of them may reach the others for it.
@@ -93,7 +88,6 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
         "plugin",
         &["crate::runtime::reload", "crate::runtime::handler_deps"],
     ),
-    ("storage", &["crate::runtime::"]),
     // V2 extension seams and composition root sit below the HTTP server,
     // bootstrap, reload, and background workers (`TD-36`).
     (

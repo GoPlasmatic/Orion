@@ -15,7 +15,7 @@ pub(crate) fn run_lint(
     definitions: Option<&str>,
     plugin_dirs: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use orion::storage::models::CreateWorkflowRequest;
+    use orion::definitions::documents::CreateWorkflowRequest;
 
     // A directory is a definition set, and the checks that matter there are
     // the ones *between* files — which a per-file lint cannot see by

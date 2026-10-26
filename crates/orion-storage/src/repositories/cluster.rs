@@ -15,9 +15,9 @@
 use async_trait::async_trait;
 use sea_query::{Expr, ExprTrait, Query, SimpleExpr};
 
-use crate::errors::OrionError;
-use crate::storage::schema::{ConfigEpoch, JobLeases};
-use crate::storage::{DbBackend, DbPool, build_sqlx};
+use crate::schema::{ConfigEpoch, JobLeases};
+use crate::{DbBackend, DbPool, build_sqlx};
+use orion_common::errors::OrionError;
 
 use super::helpers::{fetch_required, insert_if_absent, update_returning_scalar};
 
@@ -99,7 +99,7 @@ impl SqlClusterRepository {
 #[async_trait]
 impl ClusterRepository for SqlClusterRepository {
     async fn get_epoch(&self) -> Result<EpochRow, OrionError> {
-        crate::metrics::timed_db_op("cluster.get_epoch", async {
+        orion_common::metrics::timed_db_op("cluster.get_epoch", async {
             let (sql, values) = build_sqlx(
                 self.pool.backend(),
                 Query::select()
@@ -113,7 +113,7 @@ impl ClusterRepository for SqlClusterRepository {
     }
 
     async fn request_breaker_reset(&self, key: &str) -> Result<i64, OrionError> {
-        crate::metrics::timed_db_op("cluster.request_breaker_reset", async {
+        orion_common::metrics::timed_db_op("cluster.request_breaker_reset", async {
             let update = Query::update()
                 .table(ConfigEpoch::Table)
                 .value(
@@ -134,7 +134,7 @@ impl ClusterRepository for SqlClusterRepository {
         holder: &str,
         ttl_secs: u64,
     ) -> Result<bool, OrionError> {
-        crate::metrics::timed_db_op("cluster.try_acquire_job_lease", async {
+        orion_common::metrics::timed_db_op("cluster.try_acquire_job_lease", async {
             let expiry: SimpleExpr = Expr::cust(super::helpers::sql_now_plus_secs(
                 self.pool.backend(),
                 ttl_secs,
@@ -174,7 +174,7 @@ mod tests {
     use super::*;
 
     async fn test_repo() -> SqlClusterRepository {
-        SqlClusterRepository::new(crate::storage::test_sqlite_pool().await)
+        SqlClusterRepository::new(crate::test_sqlite_pool().await)
     }
 
     #[tokio::test]

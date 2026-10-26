@@ -51,8 +51,4 @@ fn main() {
         println!("cargo:rerun-if-changed=.git/packed-refs");
     }
     println!("cargo:rerun-if-changed=build.rs");
-    // Recompile when migrations change: sqlx::migrate! embeds the directory
-    // contents at macro expansion, so a NEW migration file is silently
-    // invisible until the crate rebuilds.
-    println!("cargo:rerun-if-changed=migrations");
 }

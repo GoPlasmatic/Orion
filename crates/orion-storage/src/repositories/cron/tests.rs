@@ -2,7 +2,7 @@ use super::*;
 use chrono::Duration;
 
 async fn test_repo() -> SqlCronRepository {
-    SqlCronRepository::new(crate::storage::test_sqlite_pool().await)
+    SqlCronRepository::new(crate::test_sqlite_pool().await)
 }
 
 fn occurrence<'a>(id: &'a str, channel_id: &'a str, at: NaiveDateTime) -> NewOccurrence<'a> {
@@ -995,7 +995,7 @@ async fn a_dead_database_errors_rather_than_reporting_nothing_due() {
     // Close the underlying pool: every subsequent statement fails the way
     // an unreachable database does.
     let pool = match &repo.pool {
-        crate::storage::DbPool::Sqlite(pool) => pool,
+        crate::DbPool::Sqlite(pool) => pool,
         _ => unreachable!("the in-memory test pool is SQLite"),
     };
     pool.close().await;

@@ -26,9 +26,9 @@
 use sea_query::{Expr, ExprTrait, LockType, OnConflict, Query, SimpleExpr};
 use sha2::{Digest, Sha256};
 
-use crate::errors::OrionError;
-use crate::storage::schema::{ClusterKv, ClusterRateWindows};
-use crate::storage::{DbBackend, DbPool, DbTransaction, build_sqlx};
+use crate::schema::{ClusterKv, ClusterRateWindows};
+use crate::{DbBackend, DbPool, DbTransaction, build_sqlx};
+use orion_common::errors::OrionError;
 
 use super::helpers::{insert_if_absent, sql_now, sql_now_plus_secs};
 
@@ -390,7 +390,7 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .expect("the shared store answers");
-        crate::storage::migrator_for(DbBackend::Sqlite)
+        crate::migrator_for(DbBackend::Sqlite)
             .run(&pool)
             .await
             .expect("the shared store answers");
