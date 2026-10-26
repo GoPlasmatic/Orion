@@ -41,6 +41,7 @@
 //! sub-channels. Shared logic belongs in the package's authoring, as
 //! compile-time fragments.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -54,8 +55,8 @@ use serde_json::{Value, json};
 
 use super::context::{AttemptContext, Invocation};
 use super::contract::{
-    ConnectionReference, ConnectorError, ConnectorErrorClass, ConnectorOutput, ConnectorResult,
-    EffectStatus, ErrorOrigin, ImplementationKind, ProviderReference, RetryAdvice, codes,
+    ConnectionReference, ConnectorError, ConnectorErrorClass, ConnectorOutput, EffectStatus,
+    ErrorOrigin, ImplementationKind, ProviderReference, RetryAdvice, codes,
 };
 use super::deployment_store::{
     ConnectionRevisionRow, ImmutableDeploymentStore, PackageSchema, ProviderPackageRow,
@@ -759,7 +760,7 @@ fn plugin_named_by(document: &Value, step_id: Option<&str>) -> bool {
 /// A package workflow's failure, as the caller's `connector_call` reports it.
 fn workflow_failed(message: String, effect: EffectStatus) -> ConnectorError {
     ConnectorError {
-        code: "PROVIDER_WORKFLOW_FAILED".to_string(),
+        code: Cow::Borrowed(codes::WORKFLOW_FAILED),
         class: ConnectorErrorClass::ProviderFailure,
         message,
         effect_status: effect,
@@ -1008,13 +1009,10 @@ async fn dispatch_dependency(
             effect,
         ));
     };
-    match providers
+    providers
         .dispatch_attempt(&child, backend.as_ref(), input)
         .await
-    {
-        ConnectorResult::Success { data, .. } => Ok(data),
-        ConnectorResult::Error { error } => Err(error),
-    }
+        .map(|output| output.data)
 }
 
 /// Where a dependency call dispatches: the backend and the identity it runs

@@ -4,7 +4,7 @@
 
 # `connector_call`
 
-Invokes a v2 connector provider operation (`rust`, `workflow`, or `wasm`) under an owned `RunContext`, enforcing admission, capability grants, reserved-operation denial, and normalized `ConnectorResult` / `ConnectorError` outcomes.
+Invokes a v2 connector provider operation (`rust`, `workflow`, or `wasm`) under an owned `RunContext`, enforcing admission, capability grants, reserved-operation denial, and a normalized `ConnectorError` on failure.
 
 ## Synopsis
 

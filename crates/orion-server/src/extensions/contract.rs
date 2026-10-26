@@ -1,10 +1,12 @@
 //! Normalized connector invocation, identity, result and error contract (`V2-10.1`).
 //!
 //! All three connector implementation kinds (`rust`, `workflow`, `wasm`) share
-//! this semantic contract. Host adapters translate backend-specific outputs into
-//! [`ConnectorResult`] and normalize errors into [`ConnectorError`] while
-//! preserving host-observed [`EffectStatus`] and trusted call lineage.
+//! this semantic contract: a call answers `Result<`[`ConnectorOutput`]`,
+//! `[`ConnectorError`]`>`. Host adapters translate backend-specific outputs
+//! into a [`ConnectorOutput`] and normalize errors into a [`ConnectorError`]
+//! while preserving host-observed [`EffectStatus`] and trusted call lineage.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -178,22 +180,24 @@ pub enum OriginKind {
     Provider,
 }
 
-/// Structured error origin (`V2-10.1`).
+/// Structured error origin (`V2-10.1`). The stage is a fixed word in
+/// practice (`dispatch`, `validation`, `transport`, …), so it is borrowed
+/// rather than allocated; a deserialized one owns its text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorOrigin {
     pub kind: OriginKind,
-    pub stage: String,
+    pub stage: Cow<'static, str>,
 }
 
 impl ErrorOrigin {
-    pub fn host(stage: impl Into<String>) -> Self {
+    pub fn host(stage: impl Into<Cow<'static, str>>) -> Self {
         Self {
             kind: OriginKind::Host,
             stage: stage.into(),
         }
     }
 
-    pub fn provider(stage: impl Into<String>) -> Self {
+    pub fn provider(stage: impl Into<Cow<'static, str>>) -> Self {
         Self {
             kind: OriginKind::Provider,
             stage: stage.into(),
@@ -215,12 +219,17 @@ pub mod codes {
     pub const CANCELLED: &str = "CONNECTOR_CANCELLED";
     pub const BUDGET_EXHAUSTED: &str = "CONNECTOR_BUDGET_EXHAUSTED";
     pub const CONTRACT_VIOLATION: &str = "PROVIDER_CONTRACT_VIOLATION";
+    pub const WORKFLOW_FAILED: &str = "PROVIDER_WORKFLOW_FAILED";
 }
 
 /// Normalized connector failure record (`V2-10.1`).
+///
+/// Kept small enough to travel in a `Result` by value: the code and the
+/// stage are borrowed (every host code is a [`codes`] constant), and the
+/// rarely-set `details` are boxed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectorError {
-    pub code: String,
+    pub code: Cow<'static, str>,
     pub class: ConnectorErrorClass,
     pub message: String,
     pub effect_status: EffectStatus,
@@ -229,13 +238,13 @@ pub struct ConnectorError {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_after_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub details: Option<Value>,
+    pub details: Option<Box<Value>>,
 }
 
 impl ConnectorError {
     pub fn capability_invalid(message: impl Into<String>, prior_effect: EffectStatus) -> Self {
         Self {
-            code: codes::CAPABILITY_INVALID.to_string(),
+            code: Cow::Borrowed(codes::CAPABILITY_INVALID),
             class: ConnectorErrorClass::Forbidden,
             message: message.into(),
             effect_status: prior_effect,
@@ -248,7 +257,7 @@ impl ConnectorError {
 
     pub fn budget_exhausted(message: impl Into<String>, prior_effect: EffectStatus) -> Self {
         Self {
-            code: codes::BUDGET_EXHAUSTED.to_string(),
+            code: Cow::Borrowed(codes::BUDGET_EXHAUSTED),
             class: ConnectorErrorClass::ProviderFailure,
             message: message.into(),
             effect_status: prior_effect,
@@ -261,7 +270,7 @@ impl ConnectorError {
 
     pub fn deadline_exceeded(prior_effect: EffectStatus) -> Self {
         Self {
-            code: codes::DEADLINE_EXCEEDED.to_string(),
+            code: Cow::Borrowed(codes::DEADLINE_EXCEEDED),
             class: ConnectorErrorClass::Deadline,
             message: "Connector deadline exceeded".to_string(),
             effect_status: prior_effect,
@@ -274,7 +283,7 @@ impl ConnectorError {
 
     pub fn cancelled(prior_effect: EffectStatus) -> Self {
         Self {
-            code: codes::CANCELLED.to_string(),
+            code: Cow::Borrowed(codes::CANCELLED),
             class: ConnectorErrorClass::Cancelled,
             message: "Connector invocation cancelled".to_string(),
             effect_status: prior_effect,
@@ -286,13 +295,13 @@ impl ConnectorError {
     }
 
     pub fn forbidden(
-        code: &str,
-        stage: &str,
+        code: &'static str,
+        stage: &'static str,
         message: impl Into<String>,
         prior_effect: EffectStatus,
     ) -> Self {
         Self {
-            code: code.to_string(),
+            code: Cow::Borrowed(code),
             class: ConnectorErrorClass::Forbidden,
             message: message.into(),
             effect_status: prior_effect,
@@ -305,24 +314,24 @@ impl ConnectorError {
 
     pub fn invalid_input(message: impl Into<String>, details: Option<Value>) -> Self {
         Self {
-            code: codes::INVALID_INPUT.to_string(),
+            code: Cow::Borrowed(codes::INVALID_INPUT),
             class: ConnectorErrorClass::InvalidInput,
             message: message.into(),
             effect_status: EffectStatus::NotStarted,
             retry_advice: RetryAdvice::Never,
             origin: ErrorOrigin::host("validation"),
             retry_after_ms: None,
-            details,
+            details: details.map(Box::new),
         }
     }
 
     pub fn contract_violation(
-        stage: &str,
+        stage: &'static str,
         message: impl Into<String>,
         effect_status: EffectStatus,
     ) -> Self {
         Self {
-            code: codes::CONTRACT_VIOLATION.to_string(),
+            code: Cow::Borrowed(codes::CONTRACT_VIOLATION),
             class: ConnectorErrorClass::ContractViolation,
             message: message.into(),
             effect_status,
@@ -335,7 +344,7 @@ impl ConnectorError {
 
     pub fn unavailable(message: impl Into<String>, effect_status: EffectStatus) -> Self {
         Self {
-            code: codes::UNAVAILABLE.to_string(),
+            code: Cow::Borrowed(codes::UNAVAILABLE),
             class: ConnectorErrorClass::Unavailable,
             message: message.into(),
             effect_status,
@@ -373,31 +382,5 @@ impl ConnectorOutput {
 
     pub fn with_metadata(data: Value, metadata: BTreeMap<String, Value>) -> Self {
         Self { data, metadata }
-    }
-}
-
-/// Host-normalized tagged union result for SDKs and conformance comparison (`V2-10.1`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "lowercase")]
-pub enum ConnectorResult {
-    Success {
-        data: Value,
-        #[serde(default)]
-        metadata: BTreeMap<String, Value>,
-    },
-    Error {
-        error: ConnectorError,
-    },
-}
-
-impl From<Result<ConnectorOutput, ConnectorError>> for ConnectorResult {
-    fn from(res: Result<ConnectorOutput, ConnectorError>) -> Self {
-        match res {
-            Ok(out) => Self::Success {
-                data: out.data,
-                metadata: out.metadata,
-            },
-            Err(error) => Self::Error { error },
-        }
     }
 }

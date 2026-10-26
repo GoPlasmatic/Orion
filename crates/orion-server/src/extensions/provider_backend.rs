@@ -25,8 +25,7 @@ use serde_json::Value;
 use super::admission::RevocationLedger;
 use super::context::{AttemptContext, Invocation};
 use super::contract::{
-    ConnectorError, ConnectorOutput, ConnectorResult, EffectStatus, EffectiveConnectionIdentity,
-    ImplementationKind,
+    ConnectorError, ConnectorOutput, EffectStatus, EffectiveConnectionIdentity, ImplementationKind,
 };
 use super::deployment_store::ImmutableDeploymentStore;
 
@@ -382,23 +381,18 @@ impl ProviderRegistry {
         invocation: &Invocation,
         backend: &dyn ProviderBackend,
         input: Value,
-    ) -> ConnectorResult {
+    ) -> Result<ConnectorOutput, ConnectorError> {
         let prior_effect = invocation.effect_status();
         let conn = invocation.connection();
 
-        if let Err(err) = self.ledger.check_runtime_lease(
+        self.ledger.check_runtime_lease(
             invocation.context().generation_id(),
             &conn.provider.provider_id,
             &conn.connection_id,
             prior_effect,
-        ) {
-            return ConnectorResult::Error { error: err };
-        }
+        )?;
 
-        let attempt = match invocation.next_attempt() {
-            Ok(a) => a,
-            Err(err) => return ConnectorResult::Error { error: err },
-        };
+        let attempt = invocation.next_attempt()?;
 
         match backend
             .invoke(&attempt, invocation.operation(), input)
@@ -406,16 +400,13 @@ impl ProviderRegistry {
         {
             Ok(output) => {
                 invocation.record_effect(EffectStatus::Completed);
-                ConnectorResult::Success {
-                    data: output.data,
-                    metadata: output.metadata,
-                }
+                Ok(output)
             }
             Err(mut err) => {
                 // Never allow a provider error to downgrade prior effect uncertainty (`V2-10.1`).
                 let merged = invocation.record_effect(err.effect_status);
                 err.effect_status = merged;
-                ConnectorResult::Error { error: err }
+                Err(err)
             }
         }
     }
@@ -522,15 +513,12 @@ mod tests {
 
         assert_eq!(
             res,
-            ConnectorResult::Success {
-                data: json!({
-                    "driver": "acme.custom-db",
-                    "operation": "query",
-                    "attempt": 1,
-                    "echo": {"sql": "SELECT 1"}
-                }),
-                metadata: BTreeMap::new(),
-            }
+            Ok(ConnectorOutput::new(json!({
+                "driver": "acme.custom-db",
+                "operation": "query",
+                "attempt": 1,
+                "echo": {"sql": "SELECT 1"}
+            })))
         );
         assert_eq!(inv.effect_status(), EffectStatus::Completed);
     }

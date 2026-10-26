@@ -3,7 +3,7 @@
 //! Dispatches any registered [`ProviderBackend`](crate::extensions::ProviderBackend) (`rust`, `workflow`, or `wasm`)
 //! through [`ProviderRegistry`] under an owned [`RunContext`] / [`AttemptContext`](crate::extensions::context::AttemptContext),
 //! enforcing reserved operation denial (`orion.internal.*`), deadline/cancellation
-//! propagation, and normalized [`ConnectorResult`] / [`ConnectorError`](crate::extensions::ConnectorError) outcomes.
+//! propagation, and normalized [`ConnectorOutput`](crate::extensions::ConnectorOutput) / [`ConnectorError`](crate::extensions::ConnectorError) outcomes.
 
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{Interpolated, Output};
@@ -16,9 +16,8 @@ use super::schema::{FieldKind, FieldSchema};
 use crate::engine::kit::{self, read};
 use crate::engine::{ErrorClass, HandlerError};
 use crate::extensions::{
-    ConnectionReference, ConnectorErrorClass, ConnectorResult, EffectiveConnectionIdentity,
-    ImplementationKind, ProviderReference, ProviderRegistry, RetryAdvice, RunContext,
-    sha256_digest,
+    ConnectionReference, ConnectorErrorClass, EffectiveConnectionIdentity, ImplementationKind,
+    ProviderReference, ProviderRegistry, RetryAdvice, RunContext, sha256_digest,
 };
 
 pub const NAME: &str = "connector_call";
@@ -402,8 +401,8 @@ async fn execute_connector_call(
         .dispatch_attempt(&invocation, backend.as_ref(), input_val)
         .await
     {
-        ConnectorResult::Success { data, .. } => Ok(data),
-        ConnectorResult::Error { error } => Err(connector_error(error)),
+        Ok(output) => Ok(output.data),
+        Err(error) => Err(connector_error(error)),
     }
 }
 

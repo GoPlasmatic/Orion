@@ -12,10 +12,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use serde::{Deserialize, Serialize};
 
-use super::contract::{
-    ConnectorError, ConnectorErrorClass, EffectStatus, ErrorOrigin, ImplementationKind,
-    ProviderReference, RetryAdvice, codes,
-};
+use super::contract::{ConnectorError, EffectStatus, ImplementationKind, ProviderReference, codes};
 
 /// Package admission request checked at install/deployment time (`V2-11.1`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,17 +259,12 @@ impl RevocationLedger {
         prior_effect: EffectStatus,
     ) -> Result<(), ConnectorError> {
         if !self.lease_valid.load(Ordering::SeqCst) {
-            return Err(ConnectorError {
-                code: codes::CONNECTION_FORBIDDEN.to_string(),
-                class: ConnectorErrorClass::Forbidden,
-                message: "Security lease has expired; new external operations are blocked"
-                    .to_string(),
-                effect_status: prior_effect,
-                retry_advice: RetryAdvice::Never,
-                origin: ErrorOrigin::host("admission"),
-                retry_after_ms: None,
-                details: None,
-            });
+            return Err(ConnectorError::forbidden(
+                codes::CONNECTION_FORBIDDEN,
+                "admission",
+                "Security lease has expired; new external operations are blocked",
+                prior_effect,
+            ));
         }
         if Self::revoked_in(&self.revoked_providers, provider_id) {
             return Err(ConnectorError::forbidden(

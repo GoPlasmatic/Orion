@@ -1,6 +1,8 @@
 use super::*;
 use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
-use crate::extensions::contract::{ConnectionReference, ConnectorResult, ProviderReference};
+use crate::extensions::contract::{
+    ConnectionReference, ConnectorError, ConnectorOutput, ProviderReference,
+};
 use std::collections::BTreeSet;
 
 fn make_invocation(
@@ -312,7 +314,7 @@ async fn memory_cache_provider_partitions_by_connection_and_revision_and_evicts(
         json!({"key": "k1", "value": "v1", "ttl_secs": 60}),
     )
     .await;
-    assert!(matches!(res, ConnectorResult::Success { .. }));
+    assert!(res.is_ok());
 
     // Read key "k1" on conn-a revision 1 -> hit!
     let inv_get_r1 = make_invocation(DRIVER_MEMORY_CACHE, "conn-a", 1, "get");
@@ -326,10 +328,7 @@ async fn memory_cache_provider_partitions_by_connection_and_revision_and_evicts(
     .await;
     assert_eq!(
         res_r1,
-        ConnectorResult::Success {
-            data: json!({"hit": true, "value": "v1"}),
-            metadata: BTreeMap::new(),
-        }
+        Ok(ConnectorOutput::new(json!({"hit": true, "value": "v1"})))
     );
 
     // Read key "k1" on conn-a revision 2 -> isolated (miss)!
@@ -344,10 +343,9 @@ async fn memory_cache_provider_partitions_by_connection_and_revision_and_evicts(
     .await;
     assert_eq!(
         res_r2,
-        ConnectorResult::Success {
-            data: json!({"hit": false, "value": Value::Null}),
-            metadata: BTreeMap::new(),
-        }
+        Ok(ConnectorOutput::new(
+            json!({"hit": false, "value": Value::Null})
+        ))
     );
 
     // Read key "k1" on conn-b revision 1 -> isolated (miss)!
@@ -362,10 +360,9 @@ async fn memory_cache_provider_partitions_by_connection_and_revision_and_evicts(
     .await;
     assert_eq!(
         res_b,
-        ConnectorResult::Success {
-            data: json!({"hit": false, "value": Value::Null}),
-            metadata: BTreeMap::new(),
-        }
+        Ok(ConnectorOutput::new(
+            json!({"hit": false, "value": Value::Null})
+        ))
     );
 
     // Evicting "conn-a" via ResourcePoolRegistry clears revision 1.
@@ -381,10 +378,9 @@ async fn memory_cache_provider_partitions_by_connection_and_revision_and_evicts(
     .await;
     assert_eq!(
         res_after,
-        ConnectorResult::Success {
-            data: json!({"hit": false, "value": Value::Null}),
-            metadata: BTreeMap::new(),
-        }
+        Ok(ConnectorOutput::new(
+            json!({"hit": false, "value": Value::Null})
+        ))
     );
 }
 
@@ -757,7 +753,7 @@ async fn dispatch(
     kind: ImplementationKind,
     driver_id: &str,
     input: Value,
-) -> ConnectorResult {
+) -> Result<ConnectorOutput, ConnectorError> {
     let backend = providers.get(kind, driver_id).expect("registered");
     providers
         .dispatch_attempt(invocation, backend.as_ref(), input)

@@ -25,7 +25,7 @@
 //!   quarantined at load.
 //! - **Connectors (Unified Backend Architecture via [`ProviderBackend`])**:
 //!   Supports Direct Rust (`ImplementationKind::Rust`) and Workflow-Group composite
-//!   packages (`ImplementationKind::Workflow`) under one invocation contract ([`ConnectorResult`]),
+//!   packages (`ImplementationKind::Workflow`) under one invocation contract (`Result<`[`ConnectorOutput`]`, `[`ConnectorError`]`>`),
 //!   owned context ([`RunContext`], [`Invocation`], [`AttemptContext`]), and
 //!   optional [`SourceConnectorFacet`] (`open` / `poll` / `settle` / `close`).
 //!   Composed backends are frozen; packages admitted at runtime live in the
@@ -39,10 +39,6 @@
 //!   [`CompositionBuilder::with_package_verifier`], and its edition via
 //!   [`CompositionBuilder::with_edition`]. The revocation ledger and security
 //!   lease are core: [`Admission`] checks them whatever the verifier says.
-
-// `ConnectorError` intentionally carries structured `ErrorOrigin`, `EffectStatus`,
-// `RetryAdvice`, and optional JSON `details` inline per the v2 connector contract (`V2-10.1`).
-#![allow(clippy::result_large_err)]
 
 pub mod admission;
 pub mod authoring;
@@ -78,9 +74,9 @@ pub use context::{
     CancellationScope, ChargeVector, Invocation, Reservation, RunContext, WorkLease,
 };
 pub use contract::{
-    ConnectionReference, ConnectorError, ConnectorErrorClass, ConnectorOutput, ConnectorResult,
-    EffectStatus, EffectiveConnectionIdentity, ErrorOrigin, ImplementationKind, OriginKind,
-    ProviderReference, RetryAdvice, codes,
+    ConnectionReference, ConnectorError, ConnectorErrorClass, ConnectorOutput, EffectStatus,
+    EffectiveConnectionIdentity, ErrorOrigin, ImplementationKind, OriginKind, ProviderReference,
+    RetryAdvice, codes,
 };
 pub use deployment_store::{
     ArchiveEntryInput, ArtifactObjectRow, ArtifactState, CandidatePlan, CanonicalManifest,

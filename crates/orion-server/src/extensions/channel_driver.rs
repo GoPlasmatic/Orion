@@ -283,21 +283,23 @@ impl ChannelDriverRegistry {
     }
 
     /// The driver serving `protocol`, or the field error naming the protocols
-    /// this node does serve.
-    pub fn resolve(&self, protocol: &str) -> Result<Arc<dyn ChannelDriver>, FieldError> {
+    /// this node does serve (boxed: the error is large and the path is cold).
+    pub fn resolve(&self, protocol: &str) -> Result<Arc<dyn ChannelDriver>, Box<FieldError>> {
         self.get(protocol).ok_or_else(|| {
             let registered = self.protocol_ids();
-            FieldError::new(
-                "channel.protocol",
-                "INVALID",
-                format!(
-                    "unknown protocol '{protocol}': no channel driver serves it on this node \
+            Box::new(
+                FieldError::new(
+                    "channel.protocol",
+                    "INVALID",
+                    format!(
+                        "unknown protocol '{protocol}': no channel driver serves it on this node \
                      (registered: {})",
-                    registered.join(", ")
-                ),
+                        registered.join(", ")
+                    ),
+                )
+                .with_expected(Value::from(registered))
+                .with_got(Value::String(protocol.to_string())),
             )
-            .with_expected(Value::from(registered))
-            .with_got(Value::String(protocol.to_string()))
         })
     }
 
@@ -314,7 +316,7 @@ impl ChannelDriverRegistry {
     ) -> Vec<FieldError> {
         let driver = match self.resolve(fields.protocol) {
             Ok(driver) => driver,
-            Err(unknown) => return vec![unknown],
+            Err(unknown) => return vec![*unknown],
         };
         let mut out = driver.validate_fields(fields);
         // A driver that names `channel_type` itself (cron does) has said it

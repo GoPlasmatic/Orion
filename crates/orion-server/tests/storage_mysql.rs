@@ -548,7 +548,7 @@ async fn mysql_provider_call(
     provider: &orion::extensions::MysqlProviderBackend,
     operation: &str,
     input: serde_json::Value,
-) -> Result<orion::extensions::ConnectorOutput, Box<orion::extensions::ConnectorError>> {
+) -> Result<orion::extensions::ConnectorOutput, orion::extensions::ConnectorError> {
     use orion::extensions::{
         AdmittedRun, AuthorityGrant, BudgetLimits, ConnectionReference, DRIVER_MYSQL,
         EffectiveConnectionIdentity, ProviderBackend, ProviderReference,
@@ -592,10 +592,7 @@ async fn mysql_provider_call(
         .start_invocation(connection, identity, operation, None, 1)
         .expect("invocation starts");
     let attempt = invocation.next_attempt().expect("an attempt");
-    provider
-        .invoke(&attempt, operation, input)
-        .await
-        .map_err(Box::new)
+    provider.invoke(&attempt, operation, input).await
 }
 
 /// The built-in MySQL provider against a real server: a write and a read

@@ -27,7 +27,7 @@ pub fn validate_create_channel(
         .map_err(|unknown| OrionError::Validation {
             code: "VALIDATION_ERROR",
             message: unknown.message.clone(),
-            details: vec![unknown],
+            details: vec![*unknown],
         })?;
     // `transport_config` is a free-form blob with no strict parse of its own,
     // so an uncompiled `$from` in it would be stored verbatim and read as a
