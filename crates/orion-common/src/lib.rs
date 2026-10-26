@@ -7,7 +7,8 @@
 //! recorders ([`metrics`]), the per-request identity and W3C trace
 //! propagation ([`request_context`], [`trace_context`]), the bounded egress
 //! body reader ([`http_body`]), the node-wide native work scheduler
-//! ([`native_work`]) and the build's version ([`version`]).
+//! ([`native_work`]), the SSRF guard for outbound requests ([`ssrf`]) and the
+//! build's version ([`version`]).
 //!
 //! Nothing in this crate names a module above it — the crate boundary is what
 //! enforces that. **Nothing here is covered by semver**: the crate exists for
@@ -25,6 +26,7 @@ pub mod native_work;
 pub mod platform_routes;
 pub mod request_context;
 pub mod signatures;
+pub mod ssrf;
 pub mod text;
 pub mod trace_context;
 pub mod version;

@@ -193,22 +193,7 @@ pub struct ChannelRuntimeConfig {
     pub metrics: crate::metrics::ChannelMetrics,
 }
 
-/// A channel the registry refused to load, and why.
-///
-/// Two classes produce one:
-/// - **Config invariants (any mode).** A `config_json` that no longer parses
-///   (N3) or a `validation_logic` that no longer compiles (N4) would load the
-///   channel with its guards silently absent — serving unvalidated,
-///   unthrottled traffic on the strength of a log line. Both are checked at
-///   create/update time, so a failure here means the stored row is corrupt.
-/// - **Backend degradation (cluster mode only).** A dedup/response-cache
-///   backend that would fall back to per-node memory is a correctness loss in
-///   a cluster but an acceptable degradation on one node.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ChannelLoadIssue {
-    pub channel: String,
-    pub reason: String,
-}
+pub use crate::engine::ChannelLoadIssue;
 
 /// Why a channel is quarantined, and which rows it is: the reason, plus the
 /// identities a caller matches on (`package apply` checks its own members by

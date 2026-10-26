@@ -225,7 +225,7 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     // compiles a row: a workflow a node would quarantine is refused here, and
     // the run speaks the serving engine's expressions. Unbounded: an offline
     // run has no `[engine]` config to read a budget from.
-    let compiler = orion::engine::offline::offline_compiler(secrets, plugin_functions)?;
+    let compiler = orion::runtime::functions::offline_compiler(secrets, plugin_functions)?;
     let engine = orion::engine::offline::single_engine(&compiler, &json)?;
     let layers: Vec<std::sync::Arc<dyn dataflow_rs::function::CallLayer>> =
         vec![std::sync::Arc::new(

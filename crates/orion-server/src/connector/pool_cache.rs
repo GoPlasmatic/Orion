@@ -153,7 +153,7 @@ impl SqlPoolCache {
                 // the create path — a cached pool was checked when it was
                 // opened, and re-resolving per query would put a DNS round trip
                 // on the hot path.
-                crate::validation::check_db_endpoint(connector_name, config).await?;
+                crate::connector::endpoints::check_db_endpoint(connector_name, config).await?;
 
                 let timeout = Duration::from_millis(connect_timeout);
                 // The same classifier the server's own `[storage]` URL goes
@@ -207,7 +207,7 @@ impl Default for SqlPoolCache {
 }
 
 #[async_trait::async_trait]
-impl crate::extensions::ConnectionPoolCache for SqlPoolCache {
+impl orion_extension_api::ConnectionPoolCache for SqlPoolCache {
     fn cache_id(&self) -> &str {
         "sql_pool"
     }

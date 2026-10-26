@@ -1,6 +1,8 @@
 pub mod cache_backend;
+pub mod cache_namespace;
 pub mod circuit_breaker;
 mod config;
+pub mod endpoints;
 pub mod kind;
 pub(crate) mod lru_cache;
 mod masking;
@@ -28,4 +30,7 @@ pub use masking::{
 /// testing it takes a connector *load*.
 #[cfg(test)]
 pub(crate) use registry::test_support;
-pub use registry::{ConnectorRegistry, ResolveIssue, StoredConnector, resolve_connector_config};
+pub use registry::{
+    ConnectorRegistry, ConnectorSnapshot, PINNED_CONNECTORS, ResolveIssue, StoredConnector,
+    resolve_connector_config,
+};

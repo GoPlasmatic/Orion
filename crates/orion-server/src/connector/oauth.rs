@@ -76,7 +76,7 @@ pub struct OAuthRuntimeDeps {
     pub repo: Arc<dyn OAuthStateRepository>,
     /// Cross-node single-flight for refresh-token rotation. `None` on a
     /// single node, where the per-connector mutex already serialises.
-    pub lease: Option<Arc<crate::cluster::JobLeaseGate>>,
+    pub lease: Option<Arc<crate::storage::repositories::job_lease::JobLeaseGate>>,
 }
 
 /// A token-acquisition failure, classified for the estate's retry taxonomy.
@@ -782,7 +782,7 @@ async fn request_token_inner(
     // endpoint — it is admin-authored config, but the check is cheap and the
     // opt-out is the connector's existing one.
     if !allow_private_urls
-        && let Err(msg) = crate::validation::validate_url_not_private(endpoint.token_url).await
+        && let Err(msg) = orion_common::ssrf::validate_url_not_private(endpoint.token_url).await
     {
         return Err(OAuthError::Config(format!("SSRF protection: {msg}")));
     }

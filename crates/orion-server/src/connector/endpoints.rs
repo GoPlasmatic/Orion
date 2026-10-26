@@ -26,7 +26,7 @@
 
 use crate::connector::{ConnectorConfig, DbConnectorConfig};
 use crate::errors::OrionError;
-use crate::validation::ssrf::validate_hostport_not_private;
+use orion_common::ssrf::validate_hostport_not_private;
 
 /// Schemes a `db` connector may use for a SQL backend. `sqlite` opens a local
 /// file rather than a socket — it is allowed because a single-node SQLite

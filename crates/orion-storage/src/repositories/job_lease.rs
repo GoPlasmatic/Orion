@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use crate::storage::repositories::cluster::ClusterRepository;
+use crate::repositories::cluster::ClusterRepository;
 
 pub struct JobLeaseGate {
     repo: Arc<dyn ClusterRepository>,
@@ -31,7 +31,7 @@ impl JobLeaseGate {
         {
             Ok(held) => held,
             Err(e) => {
-                crate::metrics::record_error("job_lease");
+                orion_common::metrics::record_error("job_lease");
                 tracing::warn!(job, error = %e, "Job lease check failed; skipping tick");
                 false
             }
@@ -42,9 +42,9 @@ impl JobLeaseGate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::errors::OrionError;
-    use crate::storage::repositories::cluster::EpochRow;
+    use crate::repositories::cluster::EpochRow;
     use async_trait::async_trait;
+    use orion_common::errors::OrionError;
 
     /// Stub repository whose lease call answers a canned result (T15). The
     /// other trait methods are unreachable from `JobLeaseGate`.

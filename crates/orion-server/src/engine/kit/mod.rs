@@ -40,6 +40,9 @@ use dataflow_rs::program::{AuthoredPath, IssueCode, Severity};
 use dataflow_rs::{Ctx, Issue, Outcome};
 
 use crate::connector::ConnectorRegistry;
+use crate::engine::functions::cache_invalidate::NamespaceInvalidator;
+use crate::engine::functions::channel_call::ChannelCallHost;
+use crate::engine::functions::connector_call::ConnectorCallHost;
 use crate::engine::functions::schema;
 use crate::engine::{HandlerDeps, ResolvedSecrets};
 
@@ -359,22 +362,27 @@ pub fn test_exprs() -> ExprEngine {
 }
 
 /// Inert dependencies for every function: empty pools and registries, a
-/// client, the default configuration, and an empty generation. Enough to
+/// client, the default configuration, and hosts that serve nothing. Enough to
 /// register every real function with no `AppState`, for a registry that
 /// runs offline, where a stubbed call never reaches a dependency.
+///
+/// The hosts default to [`NoChannels`], [`LocalNamespaces`] and
+/// [`NoProviders`]; the offline tools hand it the node-shaped ones with
+/// [`OfflineDeps::with_hosts`], so a `connector_call` to a built-in provider
+/// is still checked at compile.
 pub struct OfflineDeps {
     registry: Arc<ConnectorRegistry>,
     client: reqwest::Client,
-    runtime: Arc<crate::runtime::RuntimeHandle>,
     exprs: ExprEngine,
     jwks: Arc<crate::jwt::jwks::JwksCache>,
     engine_config: crate::config::EngineConfig,
     query_config: crate::config::QueryConfig,
     write_config: crate::config::WriteConfig,
     cache_pool: Arc<crate::connector::cache_backend::CachePool>,
-    channel_loader: Arc<crate::channel::ChannelLoader>,
     sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
-    providers: crate::extensions::ProviderRegistry,
+    channel_calls: Arc<dyn ChannelCallHost>,
+    namespaces: Arc<dyn NamespaceInvalidator>,
+    connector_calls: Arc<dyn ConnectorCallHost>,
 }
 
 impl OfflineDeps {
@@ -388,10 +396,6 @@ impl OfflineDeps {
             registry: Arc::new(ConnectorRegistry::new(
                 engine_config.circuit_breaker.clone(),
             )),
-            runtime: Arc::new(crate::runtime::RuntimeHandle::new(
-                Arc::new(crate::channel::ChannelSnapshot::empty()),
-                crate::engine::FunctionRegistry::builtin().clone(),
-            )),
             exprs: test_exprs(),
             jwks: Arc::new(crate::jwt::jwks::JwksCache::new(client.clone(), false)),
             query_config: crate::config::QueryConfig::default(),
@@ -400,16 +404,26 @@ impl OfflineDeps {
                 engine_config.cache_cleanup_interval_secs,
                 engine_config.max_memory_cache_entries,
             )),
-            channel_loader: Arc::new(crate::channel::ChannelLoader::new()),
             sql_pool_cache: Arc::new(crate::connector::pool_cache::SqlPoolCache::new(entries)),
-            providers: crate::extensions::CompositionRoot::community()
-                .build_in_memory()
-                .unwrap_or_else(|e| unreachable!("community composes: {e}"))
-                .providers()
-                .clone(),
+            channel_calls: Arc::new(NoChannels),
+            namespaces: Arc::new(LocalNamespaces),
+            connector_calls: Arc::new(NoProviders),
             client,
             engine_config,
         }
+    }
+
+    /// The same, with these hosts.
+    pub fn with_hosts(
+        mut self,
+        channel_calls: Arc<dyn ChannelCallHost>,
+        namespaces: Arc<dyn NamespaceInvalidator>,
+        connector_calls: Arc<dyn ConnectorCallHost>,
+    ) -> Self {
+        self.channel_calls = channel_calls;
+        self.namespaces = namespaces;
+        self.connector_calls = connector_calls;
+        self
     }
 
     /// The dependencies, as `register_functions` takes them.
@@ -417,17 +431,80 @@ impl OfflineDeps {
         HandlerDeps {
             registry: Arc::clone(&self.registry),
             client: self.client.clone(),
-            runtime: Arc::clone(&self.runtime),
+            channel_calls: Arc::clone(&self.channel_calls),
             exprs: self.exprs.clone(),
             jwks: Arc::clone(&self.jwks),
             engine_config: &self.engine_config,
             query_config: &self.query_config,
             write_config: &self.write_config,
             cache_pool: Arc::clone(&self.cache_pool),
-            channel_loader: Arc::clone(&self.channel_loader),
+            namespaces: Arc::clone(&self.namespaces),
             sql_pool_cache: Arc::clone(&self.sql_pool_cache),
-            providers: self.providers.clone(),
+            connector_calls: Arc::clone(&self.connector_calls),
         }
+    }
+}
+
+/// A node with no channels: every `channel_call` target is not found.
+pub struct NoChannels;
+
+impl ChannelCallHost for NoChannels {
+    fn resolve(
+        &self,
+        target: &str,
+    ) -> Result<
+        Box<dyn crate::engine::functions::channel_call::ChannelCallTarget>,
+        crate::engine::HandlerError,
+    > {
+        Err(crate::engine::functions::channel_call::not_found(target))
+    }
+}
+
+/// A node's own response-cache stores, with no cluster store beside them: a
+/// bump reaches every in-memory response cache the pool holds.
+pub struct LocalNamespaces;
+
+#[async_trait::async_trait]
+impl NamespaceInvalidator for LocalNamespaces {
+    async fn invalidate_namespaces(
+        &self,
+        cache_pool: &crate::connector::cache_backend::CachePool,
+        namespaces: &[String],
+        source: &'static str,
+    ) -> Result<usize, crate::errors::OrionError> {
+        let targets = cache_pool
+            .memory_backends_for(crate::connector::cache_backend::CachePurpose::ResponseCache);
+        crate::connector::cache_namespace::invalidate(&targets, namespaces, source).await?;
+        Ok(targets.len())
+    }
+}
+
+/// A node with no providers and no deployment: nothing is registered, and a
+/// call is refused as one made outside a served run.
+pub struct NoProviders;
+
+#[async_trait::async_trait]
+impl ConnectorCallHost for NoProviders {
+    fn literal_input_keys(
+        &self,
+        _kind: orion_extension_api::ImplementationKind,
+        _target: &str,
+        _operation: &str,
+    ) -> &'static [&'static str] {
+        &[]
+    }
+
+    async fn invoke(
+        &self,
+        call: crate::engine::functions::connector_call::ConnectorInvocation<'_>,
+    ) -> Result<serde_json::Value, crate::engine::HandlerError> {
+        Err(crate::engine::functions::connector_call::forbidden(
+            format!(
+                "CONNECTOR_CONNECTION_FORBIDDEN: connector_call runs only inside a served run; \
+             '{}' on '{}' was called outside one",
+                call.config.operation, call.config.connection
+            ),
+        ))
     }
 }
 

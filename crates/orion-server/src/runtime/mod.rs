@@ -21,6 +21,8 @@
 pub mod authority;
 pub mod definitions;
 pub mod deployment_gc;
+pub mod execute;
+pub mod functions;
 pub mod generation;
 pub mod limiter_prune;
 pub mod load_issues;
@@ -28,6 +30,7 @@ pub mod reload;
 pub mod tasks;
 pub mod workflow_providers;
 
+pub use execute::execute_admitted_on_generation;
 pub use generation::{RuntimeGeneration, RuntimeHandle};
 pub use reload::{check_candidate, reconcile_deployment_revision};
 pub use tasks::{Criticality, Shutdown, TaskGuard, TaskRegistry, TaskReport, TaskState};
@@ -51,18 +54,24 @@ pub fn build_registry(state: &crate::server::state::AppState) -> dataflow_rs::Re
 }
 
 pub fn handler_deps(state: &crate::server::state::AppState) -> crate::engine::HandlerDeps<'_> {
+    let hosts = functions::NodeHosts::new(
+        state.runtime.clone(),
+        state.exprs.clone(),
+        state.channel_loader.clone(),
+        state.composition.providers().clone(),
+    );
     crate::engine::HandlerDeps {
         registry: state.connector_registry.clone(),
         client: state.http_client.clone(),
-        runtime: state.runtime.clone(),
+        channel_calls: hosts.channel_calls,
         exprs: state.exprs.clone(),
         jwks: state.jwks.clone(),
         engine_config: &state.config.engine,
         query_config: &state.config.query,
         write_config: &state.config.write,
         cache_pool: state.caches.cache_pool.clone(),
-        channel_loader: state.channel_loader.clone(),
+        namespaces: hosts.namespaces,
         sql_pool_cache: state.caches.sql_pool_cache.clone(),
-        providers: state.composition.providers().clone(),
+        connector_calls: hosts.connector_calls,
     }
 }

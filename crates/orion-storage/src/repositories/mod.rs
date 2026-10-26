@@ -2,6 +2,7 @@ pub mod audit_logs;
 pub mod cluster;
 pub mod cron;
 pub mod helpers;
+pub mod job_lease;
 pub mod oauth_state;
 pub mod shared_state;
 pub mod trace_dlq;

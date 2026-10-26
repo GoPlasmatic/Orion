@@ -436,7 +436,7 @@ impl CustomOperator for UrlDecode {
         // Shared with route-parameter decoding, which returns `None` on both
         // failure modes. Note this does **not** treat `+` as a space: that is
         // form-encoding, and the correct inverse of RFC 3986 leaves it alone.
-        let decoded = crate::channel::routing::percent_decode_segment(input).ok_or_else(|| {
+        let decoded = orion_common::text::percent_decode_segment(input).ok_or_else(|| {
             Error::custom_message(
                 "url_decode: invalid input — a malformed %XX sequence, or bytes that are not \
                  valid UTF-8"

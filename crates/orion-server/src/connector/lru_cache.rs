@@ -362,7 +362,7 @@ impl<V: Clone> LruCache<V> {
 }
 
 #[async_trait::async_trait]
-impl<V: Clone + Send + Sync + 'static> crate::extensions::ConnectionPoolCache for LruCache<V> {
+impl<V: Clone + Send + Sync + 'static> orion_extension_api::ConnectionPoolCache for LruCache<V> {
     fn cache_id(&self) -> &str {
         self.cache_label
     }

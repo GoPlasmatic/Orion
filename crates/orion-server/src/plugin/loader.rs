@@ -326,9 +326,16 @@ fn load_stage(e: &super::runtime::LoadError) -> &'static str {
     }
 }
 
+impl crate::engine::IssueNotes for PluginSet {
+    fn annotate_issue(&self, issue: &Issue, workflow: &serde_json::Value, reason: &mut String) {
+        PluginSet::annotate_issue(self, issue, workflow, reason);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::loader::testing::*;
     use dataflow_rs::def::parse;
     use dataflow_rs::program::CompileOptions;
     use serde_json::{Value, json};
@@ -449,5 +456,65 @@ mod tests {
             "acme.codec.parse",
         );
         assert_eq!(set.unavailable_named_by(&off_the_path, &workflow), None);
+    }
+
+    /// The plugin functions' load refusals (O9), over the test fixture's
+    /// component: the same rule, a Rejected issue quarantining its channel
+    /// with its code and path.
+    #[tokio::test]
+    async fn every_named_plugin_load_break_quarantines_its_channel() {
+        use serde_json::json;
+        const COMPONENT: &[u8] = include_bytes!("../../tests/fixtures/plugins/fixture.wasm");
+        const MANIFEST: &str = include_str!("../../tests/fixtures/plugins/fixture.toml");
+        let config = crate::config::PluginsConfig {
+            enabled: true,
+            ..crate::config::PluginsConfig::default()
+        };
+        let runtime = crate::plugin::WasmRuntime::new(&config).expect("the sandbox");
+        let loaded = runtime.load_blocking(COMPONENT).expect("the fixture loads");
+        let manifest = crate::plugin::Manifest::parse(MANIFEST).expect("the manifest");
+        let binding = crate::engine::PluginBinding {
+            id: manifest.name.clone(),
+            version: 1,
+            digest: loaded.digest.clone(),
+            abi: crate::plugin::ABI.to_string(),
+        };
+        let limits = crate::plugin::Limits::effective(&config, &manifest.name);
+        let functions = manifest
+            .entries(&binding)
+            .into_iter()
+            .zip(&manifest.functions)
+            .map(|(entry, decl)| {
+                let handler = crate::plugin::PluginFunctionHandler::new(
+                    std::sync::Arc::new(entry),
+                    loaded.clone(),
+                    runtime.clone(),
+                    limits,
+                );
+                crate::plugin::PluginFunction::new(handler, decl.runtime_fields())
+            })
+            .collect();
+        let engines = Engines::orion_with(exprs_with_a_secret(), functions);
+
+        let identity = "test.fixture.identity";
+        let upper = "test.fixture.upper";
+        #[rustfmt::skip]
+        let rows = [
+            row("O9, no output and no default root", upper, json!({"text": "x"}), "INPUT_PARSE", ".output"),
+            row("O9, an empty output", identity, json!({"message": 1, "output": ""}), "INVALID_PATH", ".output"),
+            row("O9, a blank output", identity, json!({"message": 1, "output": "  "}), "INVALID_PATH", ".output"),
+            row("O9, an output that is not a path", identity, json!({"message": 1, "output": "result"}), "INVALID_PATH", ".output"),
+            row("O9, a folded constant not of its kind", upper, json!({"text": ["a"], "output": "data.x"}), "INPUT_PARSE", ".text"),
+            row("O9, a secret in an interpolated field", identity, json!({"message": {"a": {"secret": "s"}}}), "SECRET_IN_DOCUMENT", ".message"),
+            row("O9, a malformed var in a resolvable field", identity, json!({"message": {"var": 5}}), "INVALID_PATH", ".message"),
+            row("O9, a secret read in a template field (K53)", upper, json!({"text": {"secret": "s"}, "output": "data.x"}), "SECRET_IN_MESSAGE_WRITE", ".text"),
+        ];
+        assert_quarantined(&engines, &rows);
+
+        // The control: the fixture's functions load when used as declared.
+        assert_eq!(
+            reason_for(&engines, identity, &json!({"message": {"var": "data.x"}})),
+            None
+        );
     }
 }

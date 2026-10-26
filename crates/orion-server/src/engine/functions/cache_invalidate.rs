@@ -22,8 +22,8 @@ use dataflow_rs::{Ctx, Expr, Function, Outcome, Path};
 
 use super::connector_helpers::to_exec_error;
 use super::schema::{FieldKind, FieldSchema};
-use crate::channel::cache_namespace;
 use crate::connector::cache_backend::CachePool;
+use crate::connector::cache_namespace;
 use crate::engine::kit::{self, read};
 use crate::engine::{ErrorClass, HandlerError};
 
@@ -50,10 +50,24 @@ fn check_namespaces(namespaces: &[String]) -> Result<(), HandlerError> {
     Ok(())
 }
 
+/// The bump `cache_invalidate` and the admin route both make, in every store a
+/// response-cache entry could be in. The channel estate implements it: only it
+/// knows which stores its channels cache in.
+#[async_trait::async_trait]
+pub trait NamespaceInvalidator: Send + Sync {
+    /// Bump `namespaces` in every store, answering how many stores it reached.
+    async fn invalidate_namespaces(
+        &self,
+        cache_pool: &CachePool,
+        namespaces: &[String],
+        source: &'static str,
+    ) -> Result<usize, crate::errors::OrionError>;
+}
+
 /// The bump, in every store a response-cache entry could be in: how many
 /// stores it reached.
 async fn invalidate(
-    loader: &crate::channel::ChannelLoader,
+    loader: &dyn NamespaceInvalidator,
     pool: &CachePool,
     namespaces: &[String],
 ) -> Result<usize, HandlerError> {
@@ -82,7 +96,9 @@ pub struct CacheInvalidateConfig {
 /// `CacheInvalidateHandler` makes, read in the same order, its errors under
 /// its name as 1.12's were.
 pub struct CacheInvalidateFunction {
-    pub channel_loader: Arc<crate::channel::ChannelLoader>,
+    /// Which stores a namespace's entries could be in: the serving
+    /// channels', which only the channel estate knows.
+    pub channel_loader: Arc<dyn NamespaceInvalidator>,
     pub cache_pool: Arc<CachePool>,
 }
 
@@ -106,7 +122,7 @@ impl CacheInvalidateFunction {
             .as_ref()
             .map(|out| kit::output_path(ctx, out, Some(&kit::DATA)))
             .transpose()?;
-        let stores = invalidate(&self.channel_loader, &self.cache_pool, &namespaces).await?;
+        let stores = invalidate(&*self.channel_loader, &self.cache_pool, &namespaces).await?;
         Ok(output.map(|path| {
             let answer = OwnedDataValue::Object(vec![
                 ("namespaces".to_string(), namespaces.len().into()),
@@ -163,8 +179,8 @@ pub(super) const CACHE_INVALIDATE_FIELDS: &[FieldSchema] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel::cache_namespace::version_key;
     use crate::connector::cache_backend::CachePurpose;
+    use crate::connector::cache_namespace::version_key;
     use crate::engine::functions::twin::{self, Seen};
     use dataflow_rs::function::testing;
     use dataflow_rs::program::{IssueCode, Severity};
@@ -178,7 +194,7 @@ mod tests {
     /// cache, made as a channel's first cached response makes it.
     struct Stores {
         pool: Arc<CachePool>,
-        loader: Arc<crate::channel::ChannelLoader>,
+        loader: Arc<kit::LocalNamespaces>,
     }
 
     fn stores() -> Stores {
@@ -186,7 +202,7 @@ mod tests {
         pool.default_memory(CachePurpose::ResponseCache);
         Stores {
             pool,
-            loader: Arc::new(crate::channel::ChannelLoader::new()),
+            loader: Arc::new(kit::LocalNamespaces),
         }
     }
 

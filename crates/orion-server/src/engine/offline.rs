@@ -5,14 +5,14 @@
 //! the engine a node serves with, from the message a node builds, so their
 //! verdict is the serving engine's. What differs is the registry: the test
 //! endpoint compiles on the node's own (live connectors), the CLI on
-//! [`offline_compiler`]'s, whose connector functions a
+//! `runtime::functions::offline_compiler`'s, whose connector functions a
 //! [`StubLayer`](super::functions::stub::StubLayer) answers instead.
 
 use std::sync::Arc;
 
 use dataflow_rs::function::CallLayer;
 use dataflow_rs::observe::{Observer, TraceOptions};
-use dataflow_rs::program::{CompileOptions, Compiler};
+use dataflow_rs::program::Compiler;
 use dataflow_rs::run::{AuditMode, RunOptions};
 use serde_json::Value;
 
@@ -30,38 +30,10 @@ pub fn single_engine(compiler: &Compiler, json: &Value) -> Result<dataflow_rs::E
         let id = json.get("id").and_then(Value::as_str).unwrap_or("workflow");
         OrionError::validation(format!(
             "workflow '{id}' has an unusable task: {}",
-            super::loader::refusal(&issues, &crate::plugin::PluginSet::empty(), json)
+            super::loader::refusal(&issues, &super::NoIssueNotes, json)
         ))
     })?;
     Ok(super::serving_engine(compiler.link([compiled.workflow])))
-}
-
-/// The registry an offline run compiles on: every Orion function over inert
-/// dependencies, the expressions reading `secrets`, and the `plugins` loaded
-/// from their components.
-///
-/// # Errors
-///
-/// A validation error when the expressions do not build, or a plugin function
-/// is refused registration.
-pub fn offline_compiler(
-    secrets: &super::ResolvedSecrets,
-    plugins: Vec<crate::plugin::PluginFunction>,
-) -> Result<Compiler, OrionError> {
-    let exprs = super::operators::orion_exprs(secrets, 0)
-        .map_err(|e| OrionError::validation(format!("the offline expression engine: {e}")))?;
-    let offline = super::kit::OfflineDeps::new();
-    let mut deps = offline.deps();
-    deps.exprs = exprs;
-    let mut registry = super::serving_registry(deps);
-    let refused = super::register_plugin_functions(&mut registry, plugins);
-    if !refused.is_empty() {
-        return Err(OrionError::validation(format!(
-            "plugin function(s) could not be registered: {}",
-            refused.join(", ")
-        )));
-    }
-    Ok(registry.compiler(CompileOptions::default()))
 }
 
 /// How much of an offline run is traced.

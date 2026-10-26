@@ -15,7 +15,6 @@ use dataflow_rs::program::{
 };
 use serde_json::Value;
 
-use crate::plugin::PluginSet;
 use crate::storage::models::{Channel, Workflow};
 
 /// Filter channels based on include/exclude glob patterns from [`ChannelFilterConfig`].
@@ -214,7 +213,7 @@ pub fn serving_engine_with_policy(
 /// One issue as a quarantine reason names it: the step it sits in, its code,
 /// its authored path and its message, then, for a task naming a function of
 /// a plugin that did not load, the plugin and why.
-fn describe(issue: &Issue, plugins: &PluginSet, json: &Value) -> String {
+fn describe(issue: &Issue, plugins: &dyn IssueNotes, json: &Value) -> String {
     let step = match (issue.step_kind, issue.step_id.as_deref()) {
         (Some(kind), Some(id)) if !id.is_empty() => {
             let kind = match kind {
@@ -234,8 +233,8 @@ fn describe(issue: &Issue, plugins: &PluginSet, json: &Value) -> String {
 }
 
 /// The quarantine reason of a workflow dataflow-rs 4 refused: every issue
-/// that [quarantines](quarantines) it, described.
-pub(crate) fn refusal(issues: &[Issue], plugins: &PluginSet, json: &Value) -> String {
+/// that [`quarantines`] it, described.
+pub fn refusal(issues: &[Issue], plugins: &dyn IssueNotes, json: &Value) -> String {
     issues
         .iter()
         .filter(|issue| quarantines(issue))
@@ -276,8 +275,6 @@ fn log_findings(workflow: &Workflow, compiled: &Compiled) {
 /// silently skipped. Callers feed these into `ChannelLoader::build`, which
 /// quarantines the channel: previously it stayed registered in the route
 /// table with no workflow behind it, so requests got an opaque engine error.
-///
-/// [`ChannelLoadIssue`]: crate::channel::ChannelLoadIssue
 pub fn build_engine_workflows(
     channels: &[Channel],
     workflows: &[Workflow],
@@ -296,7 +293,7 @@ pub fn build_engine_workflows(
 
     for channel in channels {
         let Some(ref wf_id) = channel.workflow_id else {
-            loaded.issues.push(crate::channel::ChannelLoadIssue {
+            loaded.issues.push(ChannelLoadIssue {
                 channel: channel.name.clone(),
                 reason: "channel has no workflow_id".to_string(),
             });
@@ -304,7 +301,7 @@ pub fn build_engine_workflows(
         };
 
         let Some(wf_versions) = workflow_map.get(wf_id) else {
-            loaded.issues.push(crate::channel::ChannelLoadIssue {
+            loaded.issues.push(ChannelLoadIssue {
                 channel: channel.name.clone(),
                 reason: format!("workflow '{wf_id}' not found among active workflows"),
             });
@@ -313,7 +310,7 @@ pub fn build_engine_workflows(
 
         match load_channel(channel, wf_id, wf_versions, load) {
             Ok(compiled) => loaded.workflows.extend(compiled),
-            Err(reason) => loaded.issues.push(crate::channel::ChannelLoadIssue {
+            Err(reason) => loaded.issues.push(ChannelLoadIssue {
                 channel: channel.name.clone(),
                 reason,
             }),
@@ -321,6 +318,39 @@ pub fn build_engine_workflows(
     }
 
     loaded
+}
+
+/// A channel the registry refused to load, and why.
+///
+/// Two classes produce one:
+/// - **Config invariants (any mode).** A `config_json` that no longer parses
+///   (N3) or a `validation_logic` that no longer compiles (N4) would load the
+///   channel with its guards silently absent — serving unvalidated,
+///   unthrottled traffic on the strength of a log line. Both are checked at
+///   create/update time, so a failure here means the stored row is corrupt.
+/// - **Backend degradation (cluster mode only).** A dedup/response-cache
+///   backend that would fall back to per-node memory is a correctness loss in
+///   a cluster but an acceptable degradation on one node.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ChannelLoadIssue {
+    pub channel: String,
+    pub reason: String,
+}
+
+/// What a refusal can add about a function a task names and this build does
+/// not have: a plugin set says which plugin it belongs to and why that plugin
+/// did not load. The engine knows nothing of plugins, so it asks.
+pub trait IssueNotes {
+    /// Append to `reason` what is known about the function `issue` names in
+    /// `workflow`, if anything.
+    fn annotate_issue(&self, issue: &Issue, workflow: &Value, reason: &mut String);
+}
+
+/// Nothing to add: no plugins are loaded.
+pub struct NoIssueNotes;
+
+impl IssueNotes for NoIssueNotes {
+    fn annotate_issue(&self, _issue: &Issue, _workflow: &Value, _reason: &mut String) {}
 }
 
 /// What [`build_engine_workflows`] loads against, from one generation's
@@ -331,7 +361,7 @@ pub struct EngineLoad<'a> {
     pub compiler: &'a Compiler,
     /// The generation's plugins, which name the plugin a refused task's
     /// function belongs to and why it did not load.
-    pub plugins: &'a PluginSet,
+    pub plugins: &'a dyn IssueNotes,
 }
 
 /// What [`build_engine_workflows`] produced.
@@ -340,7 +370,7 @@ pub struct LoadedWorkflows {
     /// The workflows that loaded, compiled, for the generation's program.
     pub workflows: Vec<CompiledWorkflow>,
     /// Every channel that did not load, and why.
-    pub issues: Vec<crate::channel::ChannelLoadIssue>,
+    pub issues: Vec<ChannelLoadIssue>,
 }
 
 /// One channel's workflows, compiled, or its quarantine reason.
@@ -505,27 +535,56 @@ pub fn workflow_json(
     Ok(json)
 }
 
+/// The loader's test fixtures: every Orion function on a compiler, channels
+/// and workflows to load on it, and the named load breaks held to their
+/// quarantines. The plugin host's tests load its functions through them.
 #[cfg(test)]
-mod tests {
+#[allow(clippy::unwrap_used, clippy::panic)]
+pub mod testing {
     use super::*;
+
+    /// No functions: what [`Engines::orion`] adds beside Orion's own.
+    pub struct NoFunction;
+
+    impl dataflow_rs::Function for NoFunction {
+        type Config = ();
+
+        fn spec(&self) -> dataflow_rs::function::FunctionSpec {
+            dataflow_rs::function::FunctionSpec::default()
+        }
+
+        async fn call(
+            &self,
+            _ctx: &mut dataflow_rs::Ctx<'_>,
+            _cfg: &(),
+        ) -> dataflow_rs::Result<dataflow_rs::Outcome> {
+            unreachable!("never registered")
+        }
+    }
+
+    impl crate::engine::NamedFunction for NoFunction {
+        fn name(&self) -> &str {
+            unreachable!("never registered")
+        }
+    }
 
     /// Every Orion function over inert dependencies, as a generation builds
     /// its registry.
-    struct Engines {
-        compiler: Compiler,
-        plugins: PluginSet,
+    pub struct Engines {
+        pub compiler: Compiler,
+        plugins: NoIssueNotes,
         _offline: crate::engine::kit::OfflineDeps,
     }
 
     impl Engines {
-        fn orion() -> Self {
-            Self::orion_with(crate::engine::kit::test_exprs(), Vec::new())
+        pub fn orion() -> Self {
+            Self::orion_with::<NoFunction>(crate::engine::kit::test_exprs(), Vec::new())
         }
 
         /// Every Orion function on `exprs`, and each plugin function.
-        fn orion_with(
+        pub fn orion_with<F: crate::engine::NamedFunction>(
             exprs: dataflow_rs::expr::ExprEngine,
-            plugins: Vec<crate::plugin::PluginFunction>,
+            plugins: Vec<F>,
         ) -> Self {
             let offline = crate::engine::kit::OfflineDeps::new();
             let mut registry = dataflow_rs::Registry::new(exprs);
@@ -533,22 +592,22 @@ mod tests {
             crate::engine::register_plugin_functions(&mut registry, plugins);
             Self {
                 compiler: registry.compiler(dataflow_rs::program::CompileOptions::default()),
-                plugins: PluginSet::empty(),
+                plugins: NoIssueNotes,
                 _offline: offline,
             }
         }
 
         /// The built-ins alone, which is all the `log` fixtures need.
-        fn bare() -> Self {
+        pub fn bare() -> Self {
             let registry = dataflow_rs::Registry::new(crate::engine::kit::test_exprs());
             Self {
                 compiler: registry.compiler(dataflow_rs::program::CompileOptions::default()),
-                plugins: PluginSet::empty(),
+                plugins: NoIssueNotes,
                 _offline: crate::engine::kit::OfflineDeps::new(),
             }
         }
 
-        fn load(&self, channels: &[Channel], workflows: &[Workflow]) -> LoadedWorkflows {
+        pub fn load(&self, channels: &[Channel], workflows: &[Workflow]) -> LoadedWorkflows {
             build_engine_workflows(
                 channels,
                 workflows,
@@ -560,11 +619,144 @@ mod tests {
         }
     }
 
+    pub fn make_channel(name: &str) -> Channel {
+        Channel {
+            tags_json: "[]".to_string(),
+            channel_id: name.to_string(),
+            name: name.to_string(),
+            version: 1,
+            status: crate::storage::models::EntityStatus::Active
+                .as_str()
+                .to_string(),
+            channel_type: "sync".to_string(),
+            protocol: "http".to_string(),
+            methods_json: Some("POST".to_string()),
+            workflow_id: None,
+            topic: None,
+            consumer_group: None,
+            route_pattern: None,
+            description: None,
+            transport_config_json: "{}".to_string(),
+            config_json: "{}".to_string(),
+            priority: 0,
+            created_at: chrono::NaiveDateTime::default(),
+            updated_at: chrono::NaiveDateTime::default(),
+        }
+    }
+
+    pub fn make_workflow(wf_id: &str, version: i64, rollout: i64) -> Workflow {
+        Workflow {
+            workflow_id: wf_id.to_string(),
+            version,
+            name: format!("{wf_id}-v{version}"),
+            description: None,
+            priority: 0,
+            status: "active".to_string(),
+            rollout_percentage: rollout,
+            condition_json: "true".to_string(),
+            tasks_json:
+                r#"[{"id":"t1","name":"log","function":{"name":"log","input":{"message":"x"}}}]"#
+                    .to_string(),
+            tags_json: "[]".to_string(),
+            loop_json: None,
+            continue_on_error: false,
+            created_at: chrono::NaiveDateTime::default(),
+            updated_at: chrono::NaiveDateTime::default(),
+        }
+    }
+
+    pub fn workflow_with_raw_tasks(wf_id: &str, tasks_json: &str) -> Workflow {
+        let mut wf = make_workflow(wf_id, 1, 100);
+        wf.tasks_json = tasks_json.to_string();
+        wf
+    }
+
+    /// One named load break: a task's input dataflow-rs 4 refuses at load,
+    /// and the issue the channel's quarantine reason names for it.
+    pub struct Break {
+        /// The break, and the task whose report names it.
+        pub cite: &'static str,
+        pub function: &'static str,
+        pub input: Value,
+        /// The issue's code.
+        pub code: &'static str,
+        /// Its path below the task's `function.input`.
+        pub at: &'static str,
+    }
+
+    pub fn row(
+        cite: &'static str,
+        function: &'static str,
+        input: Value,
+        code: &'static str,
+        at: &'static str,
+    ) -> Break {
+        Break {
+            cite,
+            function,
+            input,
+            code,
+            at,
+        }
+    }
+
+    /// The quarantine reason of a channel whose one workflow is one task
+    /// calling `function` with `input`, or `None` when it loads.
+    pub fn reason_for(engines: &Engines, function: &str, input: &Value) -> Option<String> {
+        let mut channel = make_channel("breaks");
+        channel.workflow_id = Some("wf-breaks".to_string());
+        let task = serde_json::json!([
+            {"id": "t1", "name": "t1", "function": {"name": function, "input": input}}
+        ]);
+        let wf = workflow_with_raw_tasks("wf-breaks", &task.to_string());
+        let loaded = engines.load(&[channel], &[wf]);
+        loaded.issues.first().map(|issue| issue.reason.clone())
+    }
+
+    /// Holds each row to its quarantine, reporting every miss at once.
+    pub fn assert_quarantined(engines: &Engines, rows: &[Break]) {
+        let mut misses = Vec::new();
+        for row in rows {
+            let expected = format!("{} at tasks[0].function.input{}", row.code, row.at);
+            let reason = reason_for(engines, row.function, &row.input);
+            if std::env::var_os("ORION_PRINT_BREAKS").is_some() {
+                eprintln!("{}: {reason:?}", row.cite);
+            }
+            match reason {
+                Some(reason) if reason.contains(&expected) => {}
+                other => misses.push(format!(
+                    "{} ({} {}): expected `{expected}`, got {other:?}",
+                    row.cite, row.function, row.input
+                )),
+            }
+        }
+        assert!(misses.is_empty(), "{}", misses.join("\n"));
+    }
+
+    /// Orion's expressions with the secret `s` declared, so a row's
+    /// `{"secret": "s"}` is refused for where it sits and not as unknown,
+    /// and `{"secret": "nope"}` is the undeclared one.
+    pub fn exprs_with_a_secret() -> dataflow_rs::expr::ExprEngine {
+        let mut values = serde_json::Map::new();
+        values.insert("s".to_string(), Value::String("v".to_string()));
+        crate::engine::operators::orion_exprs(
+            &crate::engine::ResolvedSecrets::from_values(values),
+            0,
+        )
+        .expect("Orion's expressions")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::*;
+    use super::*;
+
     /// [`Engines::bare`]'s load, as `(the workflows, the issues)`.
     fn load(
         channels: &[Channel],
         workflows: &[Workflow],
-    ) -> (Vec<CompiledWorkflow>, Vec<crate::channel::ChannelLoadIssue>) {
+    ) -> (Vec<CompiledWorkflow>, Vec<ChannelLoadIssue>) {
         let loaded = Engines::bare().load(channels, workflows);
         (loaded.workflows, loaded.issues)
     }
@@ -639,52 +831,6 @@ mod tests {
         assert!(glob_match("*orders*", "internal-orders-debug"));
         assert!(!glob_match("a*b*c", "a-x-c-y-b"));
         assert!(glob_match("**", "anything"));
-    }
-
-    fn make_channel(name: &str) -> Channel {
-        Channel {
-            tags_json: "[]".to_string(),
-            channel_id: name.to_string(),
-            name: name.to_string(),
-            version: 1,
-            status: crate::storage::models::EntityStatus::Active
-                .as_str()
-                .to_string(),
-            channel_type: "sync".to_string(),
-            protocol: crate::extensions::channel_driver::PROTOCOL_HTTP.to_string(),
-            methods_json: Some("POST".to_string()),
-            workflow_id: None,
-            topic: None,
-            consumer_group: None,
-            route_pattern: None,
-            description: None,
-            transport_config_json: "{}".to_string(),
-            config_json: "{}".to_string(),
-            priority: 0,
-            created_at: chrono::NaiveDateTime::default(),
-            updated_at: chrono::NaiveDateTime::default(),
-        }
-    }
-
-    fn make_workflow(wf_id: &str, version: i64, rollout: i64) -> Workflow {
-        Workflow {
-            workflow_id: wf_id.to_string(),
-            version,
-            name: format!("{wf_id}-v{version}"),
-            description: None,
-            priority: 0,
-            status: "active".to_string(),
-            rollout_percentage: rollout,
-            condition_json: "true".to_string(),
-            tasks_json:
-                r#"[{"id":"t1","name":"log","function":{"name":"log","input":{"message":"x"}}}]"#
-                    .to_string(),
-            tags_json: "[]".to_string(),
-            loop_json: None,
-            continue_on_error: false,
-            created_at: chrono::NaiveDateTime::default(),
-            updated_at: chrono::NaiveDateTime::default(),
-        }
     }
 
     /// F30: rollout percentages that don't sum to 100 quarantine the channel
@@ -879,12 +1025,6 @@ mod tests {
     }
 
     // -- F41: a malformed task input quarantines its channel, not the engine --
-
-    fn workflow_with_raw_tasks(wf_id: &str, tasks_json: &str) -> Workflow {
-        let mut wf = make_workflow(wf_id, 1, 100);
-        wf.tasks_json = tasks_json.to_string();
-        wf
-    }
 
     #[test]
     fn unregistered_custom_function_quarantines_only_its_channel() {
@@ -1170,68 +1310,6 @@ mod tests {
 
     // ---- The named load breaks, each a quarantine (CHANGELOG, Unreleased) --
 
-    /// One named load break: a task's input dataflow-rs 4 refuses at load,
-    /// and the issue the channel's quarantine reason names for it.
-    struct Break {
-        /// The break, and the task whose report names it.
-        cite: &'static str,
-        function: &'static str,
-        input: Value,
-        /// The issue's code.
-        code: &'static str,
-        /// Its path below the task's `function.input`.
-        at: &'static str,
-    }
-
-    fn row(
-        cite: &'static str,
-        function: &'static str,
-        input: Value,
-        code: &'static str,
-        at: &'static str,
-    ) -> Break {
-        Break {
-            cite,
-            function,
-            input,
-            code,
-            at,
-        }
-    }
-
-    /// The quarantine reason of a channel whose one workflow is one task
-    /// calling `function` with `input`, or `None` when it loads.
-    fn reason_for(engines: &Engines, function: &str, input: &Value) -> Option<String> {
-        let mut channel = make_channel("breaks");
-        channel.workflow_id = Some("wf-breaks".to_string());
-        let task = serde_json::json!([
-            {"id": "t1", "name": "t1", "function": {"name": function, "input": input}}
-        ]);
-        let wf = workflow_with_raw_tasks("wf-breaks", &task.to_string());
-        let loaded = engines.load(&[channel], &[wf]);
-        loaded.issues.first().map(|issue| issue.reason.clone())
-    }
-
-    /// Holds each row to its quarantine, reporting every miss at once.
-    fn assert_quarantined(engines: &Engines, rows: &[Break]) {
-        let mut misses = Vec::new();
-        for row in rows {
-            let expected = format!("{} at tasks[0].function.input{}", row.code, row.at);
-            let reason = reason_for(engines, row.function, &row.input);
-            if std::env::var_os("ORION_PRINT_BREAKS").is_some() {
-                eprintln!("{}: {reason:?}", row.cite);
-            }
-            match reason {
-                Some(reason) if reason.contains(&expected) => {}
-                other => misses.push(format!(
-                    "{} ({} {}): expected `{expected}`, got {other:?}",
-                    row.cite, row.function, row.input
-                )),
-            }
-        }
-        assert!(misses.is_empty(), "{}", misses.join("\n"));
-    }
-
     /// `base` with each key of `extra` set over it.
     fn over(mut base: Value, extra: Value) -> Value {
         let Value::Object(extra) = extra else {
@@ -1243,19 +1321,6 @@ mod tests {
         base
     }
 
-    /// Orion's expressions with the secret `s` declared, so a row's
-    /// `{"secret": "s"}` is refused for where it sits and not as unknown,
-    /// and `{"secret": "nope"}` is the undeclared one.
-    fn exprs_with_a_secret() -> dataflow_rs::expr::ExprEngine {
-        let mut values = serde_json::Map::new();
-        values.insert("s".to_string(), Value::String("v".to_string()));
-        crate::engine::operators::orion_exprs(
-            &crate::engine::ResolvedSecrets::from_values(values),
-            0,
-        )
-        .expect("Orion's expressions")
-    }
-
     /// Every load refusal the cutover brings for Orion's own functions, each
     /// quarantining its channel with its code and path in the reason: 1.12
     /// failed every call on each, or refused it when the workflow was
@@ -1264,7 +1329,7 @@ mod tests {
     #[tokio::test]
     async fn every_named_load_break_quarantines_its_channel() {
         use serde_json::json;
-        let engines = Engines::orion_with(exprs_with_a_secret(), Vec::new());
+        let engines = Engines::orion_with::<NoFunction>(exprs_with_a_secret(), Vec::new());
         let hmac = |extra| {
             over(
                 json!({"op": "hmac", "algorithm": "sha256", "data": "x", "key": "k",
@@ -1380,66 +1445,6 @@ mod tests {
             row("break 2", "map", json!({"mappings": [{"path": "data.x", "logic": 1}], "mapings": []}), "LIKELY_TYPO", ".mapings"),
         ];
         assert_quarantined(&engines, &rows);
-    }
-
-    /// The plugin functions' load refusals (O9), over the test fixture's
-    /// component: the same rule, a Rejected issue quarantining its channel
-    /// with its code and path.
-    #[tokio::test]
-    async fn every_named_plugin_load_break_quarantines_its_channel() {
-        use serde_json::json;
-        const COMPONENT: &[u8] = include_bytes!("../../tests/fixtures/plugins/fixture.wasm");
-        const MANIFEST: &str = include_str!("../../tests/fixtures/plugins/fixture.toml");
-        let config = crate::config::PluginsConfig {
-            enabled: true,
-            ..crate::config::PluginsConfig::default()
-        };
-        let runtime = crate::plugin::WasmRuntime::new(&config).expect("the sandbox");
-        let loaded = runtime.load_blocking(COMPONENT).expect("the fixture loads");
-        let manifest = crate::plugin::Manifest::parse(MANIFEST).expect("the manifest");
-        let binding = crate::engine::PluginBinding {
-            id: manifest.name.clone(),
-            version: 1,
-            digest: loaded.digest.clone(),
-            abi: crate::plugin::ABI.to_string(),
-        };
-        let limits = crate::plugin::Limits::effective(&config, &manifest.name);
-        let functions = manifest
-            .entries(&binding)
-            .into_iter()
-            .zip(&manifest.functions)
-            .map(|(entry, decl)| {
-                let handler = crate::plugin::PluginFunctionHandler::new(
-                    std::sync::Arc::new(entry),
-                    loaded.clone(),
-                    runtime.clone(),
-                    limits,
-                );
-                crate::plugin::PluginFunction::new(handler, decl.runtime_fields())
-            })
-            .collect();
-        let engines = Engines::orion_with(exprs_with_a_secret(), functions);
-
-        let identity = "test.fixture.identity";
-        let upper = "test.fixture.upper";
-        #[rustfmt::skip]
-        let rows = [
-            row("O9, no output and no default root", upper, json!({"text": "x"}), "INPUT_PARSE", ".output"),
-            row("O9, an empty output", identity, json!({"message": 1, "output": ""}), "INVALID_PATH", ".output"),
-            row("O9, a blank output", identity, json!({"message": 1, "output": "  "}), "INVALID_PATH", ".output"),
-            row("O9, an output that is not a path", identity, json!({"message": 1, "output": "result"}), "INVALID_PATH", ".output"),
-            row("O9, a folded constant not of its kind", upper, json!({"text": ["a"], "output": "data.x"}), "INPUT_PARSE", ".text"),
-            row("O9, a secret in an interpolated field", identity, json!({"message": {"a": {"secret": "s"}}}), "SECRET_IN_DOCUMENT", ".message"),
-            row("O9, a malformed var in a resolvable field", identity, json!({"message": {"var": 5}}), "INVALID_PATH", ".message"),
-            row("O9, a secret read in a template field (K53)", upper, json!({"text": {"secret": "s"}, "output": "data.x"}), "SECRET_IN_MESSAGE_WRITE", ".text"),
-        ];
-        assert_quarantined(&engines, &rows);
-
-        // The control: the fixture's functions load when used as declared.
-        assert_eq!(
-            reason_for(&engines, identity, &json!({"message": {"var": "data.x"}})),
-            None
-        );
     }
 
     // ---- one workflow, compiled as a generation compiles it ---------------

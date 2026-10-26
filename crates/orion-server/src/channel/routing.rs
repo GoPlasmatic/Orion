@@ -1,3 +1,4 @@
+pub(crate) use orion_common::text::percent_decode_segment;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -279,38 +280,6 @@ fn parse_route_pattern(pattern: &str) -> Vec<RouteSegment> {
             }
         })
         .collect()
-}
-
-/// Percent-decode one path segment exactly once (RFC 3986 §2.1). Returns
-/// `None` when a `%` is not followed by two hex digits, or when the decoded
-/// bytes are not valid UTF-8 — both are malformed request paths, answered
-/// with 400 by [`RouteTable::match_route`]. Also used by the data plane's
-/// single-segment channel-name fallback so an encoded name spelling reaches
-/// the same channel as its decoded one (N10).
-///
-/// The no-`%` case — every static segment of every request — borrows rather
-/// than copying: `match_segments` only needs an owned value in the `Param`
-/// arm, so allocating one per segment on the data-plane path would be
-/// discarded after a single comparison.
-pub(crate) fn percent_decode_segment(segment: &str) -> Option<Cow<'_, str>> {
-    if !segment.contains('%') {
-        return Some(Cow::Borrowed(segment));
-    }
-    let bytes = segment.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' {
-            let hi = bytes.get(i + 1).and_then(|b| (*b as char).to_digit(16))?;
-            let lo = bytes.get(i + 2).and_then(|b| (*b as char).to_digit(16))?;
-            out.push((hi * 16 + lo) as u8);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(out).ok().map(Cow::Owned)
 }
 
 /// Split a request path on **raw** `/` separators, then percent-decode each

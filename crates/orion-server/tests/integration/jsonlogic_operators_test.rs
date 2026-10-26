@@ -460,7 +460,7 @@ async fn a_task_guarded_by(logic: &Value, expected: &Value) -> bool {
     store.insert(name.to_string(), json!(value));
 
     let secrets = orion::engine::ResolvedSecrets::from_values(store);
-    let compiler = orion::engine::offline::offline_compiler(&secrets, Vec::new())
+    let compiler = orion::runtime::functions::offline_compiler(&secrets, Vec::new())
         .expect("a registry declaring the secret builds");
     let workflow = json!({
         "id": "secret_op", "name": "secret_op", "channel": "c", "status": "active",

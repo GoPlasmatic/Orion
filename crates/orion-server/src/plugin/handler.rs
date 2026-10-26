@@ -479,6 +479,12 @@ impl ExprVisitor for Authored<'_> {
     }
 }
 
+impl crate::engine::NamedFunction for PluginFunction {
+    fn name(&self) -> &str {
+        PluginFunction::name(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

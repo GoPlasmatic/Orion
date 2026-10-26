@@ -17,11 +17,10 @@ use crate::storage::DbPool;
 use crate::storage::repositories::cluster::{ClusterRepository, SqlClusterRepository};
 use crate::storage::repositories::shared_state::SqlSharedState;
 
-pub mod job_lease;
 pub mod reconcile;
 pub mod shared_store;
 
-pub use job_lease::JobLeaseGate;
+pub use crate::storage::repositories::job_lease::JobLeaseGate;
 pub use reconcile::{reconcile_v2_state_once, start_cluster_tasks, start_v2_reconciler};
 
 pub struct ClusterRuntime {

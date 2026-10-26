@@ -207,19 +207,19 @@ pub mod utils;
 
 pub use budget::{RunBudgetLimits, RunBudgetSnapshot, SharedRunAccountant};
 pub use error::{ErrorClass, HTTP_ERROR, HandlerError, HttpFailure, http_error, http_status};
-pub use execute::{ExecOpts, Execution, RunOutcome, execute_admitted_on_generation};
+pub use execute::{ExecOpts, Execution, RunOutcome, execute_on};
 pub use functions::registry::{
     CatalogueEntry, FieldSpec, FunctionEntry, FunctionRegistry, PluginBinding,
 };
 pub use functions::schema::ConnectorRule;
 pub use handlers::{
-    HandlerDeps, is_reserved_function_name, register_functions, register_plugin_functions,
-    serving_registry,
+    HandlerDeps, NamedFunction, is_reserved_function_name, register_functions,
+    register_plugin_functions, serving_registry,
 };
 pub use loader::{
-    EngineLoad, LoadedWorkflows, build_engine_workflows, compile_row, filter_channels,
-    name_v3_spellings, parse_options, quarantines, serving_engine, serving_engine_with_policy,
-    workflow_json,
+    ChannelLoadIssue, EngineLoad, IssueNotes, LoadedWorkflows, NoIssueNotes,
+    build_engine_workflows, compile_row, filter_channels, name_v3_spellings, parse_options,
+    quarantines, serving_engine, serving_engine_with_policy, workflow_json,
 };
 pub use observer::MetricsObserver;
 pub use refs::{

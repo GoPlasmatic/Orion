@@ -758,7 +758,7 @@ async fn compile_engine(
             workflows,
             &crate::engine::EngineLoad {
                 compiler: &compiler,
-                plugins: &plugins,
+                plugins: &*plugins,
             },
         );
         let engine = crate::engine::serving_engine(compiler.link(loaded.workflows));
@@ -784,7 +784,7 @@ async fn compile_engine(
             workflows,
             &crate::engine::EngineLoad {
                 compiler: &compiler,
-                plugins: &current.plugins,
+                plugins: &*current.plugins,
             },
         );
         let program = compiler.link(loaded.workflows);

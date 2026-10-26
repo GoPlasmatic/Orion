@@ -438,10 +438,11 @@ mod tests {
         Vec<RecordedCall>,
         Option<dataflow_rs::Error>,
     ) {
-        use crate::engine::offline::{OfflineRun, offline_compiler, run_single, single_engine};
+        use crate::engine::offline::{OfflineRun, run_single, single_engine};
 
-        let compiler = offline_compiler(&crate::engine::ResolvedSecrets::empty(), Vec::new())
-            .expect("the offline registry builds");
+        let offline = crate::engine::kit::OfflineDeps::new();
+        let compiler = crate::engine::serving_registry(offline.deps())
+            .compiler(dataflow_rs::program::CompileOptions::default());
         let workflow = json!({
             "id": "w", "name": "w", "channel": "c", "status": "active",
             "condition": true, "tasks": tasks,

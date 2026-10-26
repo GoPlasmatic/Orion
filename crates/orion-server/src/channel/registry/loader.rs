@@ -923,3 +923,15 @@ impl ChannelLoader {
         snapshot
     }
 }
+
+#[async_trait::async_trait]
+impl crate::engine::functions::cache_invalidate::NamespaceInvalidator for ChannelLoader {
+    async fn invalidate_namespaces(
+        &self,
+        cache_pool: &CachePool,
+        namespaces: &[String],
+        source: &'static str,
+    ) -> Result<usize, crate::errors::OrionError> {
+        ChannelLoader::invalidate_namespaces(self, cache_pool, namespaces, source).await
+    }
+}

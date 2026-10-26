@@ -16,7 +16,7 @@
 //! `jwks_url` is authored input (`jwt_verify` takes it as a task field), so a
 //! definition could reach an internal HTTPS host through the one egress path
 //! that neither pinned its lookups nor consulted
-//! [`crate::validation::validate_url_not_private`]. The cache now hangs off
+//! [`orion_common::ssrf::validate_url_not_private`]. The cache now hangs off
 //! `AppState`, is constructed with the serving client, and address-checks
 //! every fetch.
 
@@ -254,7 +254,7 @@ impl JwksCache {
         run: Option<Instant>,
     ) -> Result<(FetchedKeys, Duration), String> {
         if !self.allow_private {
-            crate::validation::validate_url_not_private(url).await?;
+            orion_common::ssrf::validate_url_not_private(url).await?;
         }
         let request = self.client.get(url);
         let request = match fetch_timeout(run) {

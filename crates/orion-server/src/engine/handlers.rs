@@ -26,12 +26,10 @@ use crate::connector::ConnectorRegistry;
 pub struct HandlerDeps<'a> {
     pub registry: Arc<ConnectorRegistry>,
     pub client: reqwest::Client,
-    /// The live serving generation, for the one handler that dispatches back
-    /// into the node (`channel_call`): it needs the target channel's guards
-    /// and an engine to run it on, and both come off one load.
-    pub runtime: Arc<crate::runtime::RuntimeHandle>,
-    /// The process's expression engine (I188), for `channel_call`: the
-    /// target channel's guards were compiled on it and evaluate on it.
+    /// The node `channel_call` dispatches back into: the target channel's
+    /// guards and an engine to run it on, both from one generation.
+    pub channel_calls: Arc<dyn functions::channel_call::ChannelCallHost>,
+    /// The process's expression engine (I188), which the registry is built on.
     pub exprs: dataflow_rs::expr::ExprEngine,
     /// The instance's JWKS cache — `jwt_verify`'s key source, shared with the
     /// channel `jwt` auth mode so both see one issuer rotation at once.
@@ -40,12 +38,13 @@ pub struct HandlerDeps<'a> {
     pub query_config: &'a crate::config::QueryConfig,
     pub write_config: &'a crate::config::WriteConfig,
     pub cache_pool: Arc<crate::connector::cache_backend::CachePool>,
-    /// The channel loader, for `cache_invalidate`: it knows which stores a
+    /// The channel estate, for `cache_invalidate`: it knows which stores a
     /// response cache can resolve to, the cluster's shared one included.
-    pub channel_loader: Arc<crate::channel::ChannelLoader>,
+    pub namespaces: Arc<dyn functions::cache_invalidate::NamespaceInvalidator>,
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
-    /// The node's v2 provider registry (`rust`, `workflow`, `wasm`) for `connector_call`.
-    pub providers: crate::extensions::ProviderRegistry,
+    /// The node's providers and its deployment's authority, for
+    /// `connector_call`.
+    pub connector_calls: Arc<dyn functions::connector_call::ConnectorCallHost>,
 }
 
 /// Register Orion's functions, each under its 1.12 name (F48).
@@ -58,16 +57,16 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
     let HandlerDeps {
         registry: connectors,
         client,
-        runtime,
-        exprs,
+        channel_calls,
+        exprs: _,
         jwks,
         engine_config,
         query_config,
         write_config,
         cache_pool,
-        channel_loader,
+        namespaces,
         sql_pool_cache,
-        providers,
+        connector_calls,
     } = deps;
 
     registry.register(
@@ -82,8 +81,7 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
     registry.register(
         channel_call::NAME,
         channel_call::ChannelCallFunction {
-            runtime: runtime.clone(),
-            exprs,
+            host: channel_calls,
             max_call_depth: engine_config.max_channel_call_depth,
             default_timeout_ms: engine_config.default_channel_call_timeout_ms,
         },
@@ -158,11 +156,17 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
     registry.register(
         cache_invalidate::NAME,
         cache_invalidate::CacheInvalidateFunction {
-            channel_loader,
+            channel_loader: namespaces,
             cache_pool,
         },
     );
-    functions::connector_call::register_connector_call(registry, providers, connectors);
+    registry.register(
+        functions::connector_call::NAME,
+        functions::connector_call::ConnectorCallFunction {
+            host: connector_calls,
+            registry: connectors,
+        },
+    );
 }
 
 /// The dataflow-rs 4 `Registry` a generation compiles and runs on, before
@@ -193,10 +197,13 @@ pub fn serving_registry(deps: HandlerDeps<'_>) -> dataflow_rs::Registry {
 /// uploaded manifest cannot hold one, its functions living under its
 /// reverse-domain name; only a stored row that skipped the upload's check
 /// can.
-pub fn register_plugin_functions(
+pub fn register_plugin_functions<F>(
     registry: &mut dataflow_rs::Registry,
-    functions: impl IntoIterator<Item = crate::plugin::PluginFunction>,
-) -> Vec<String> {
+    functions: impl IntoIterator<Item = F>,
+) -> Vec<String>
+where
+    F: NamedFunction,
+{
     let mut refused = Vec::new();
     for function in functions {
         let name = function.name().to_string();
@@ -210,6 +217,13 @@ pub fn register_plugin_functions(
         }
     }
     refused
+}
+
+/// A function that knows the name it registers under: a plugin's, whose name
+/// its manifest gives.
+pub trait NamedFunction: dataflow_rs::Function {
+    /// The name the function registers under.
+    fn name(&self) -> &str;
 }
 
 /// Whether `Registry::register` refuses `name` with a panic (I43, amended

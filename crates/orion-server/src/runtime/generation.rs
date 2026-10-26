@@ -250,6 +250,23 @@ impl RuntimeHandle {
     }
 }
 
+/// Run `fut` pinned to `generation`: [`PINNED_GENERATION`] for the run's
+/// in-process calls and guard stores, and, when the generation carries one,
+/// its connector snapshot ([`crate::connector::PINNED_CONNECTORS`]) for every
+/// connector lookup the run makes.
+pub async fn pin<F: std::future::Future>(generation: Arc<RuntimeGeneration>, fut: F) -> F::Output {
+    let connectors = generation.connectors.clone();
+    let pinned = PINNED_GENERATION.scope(generation, fut);
+    match connectors {
+        Some(snapshot) => {
+            crate::connector::PINNED_CONNECTORS
+                .scope(snapshot, pinned)
+                .await
+        }
+        None => pinned.await,
+    }
+}
+
 /// An empty handle for unit tests elsewhere in the crate: the boot generation,
 /// with no engine and an estate with no channels.
 #[cfg(test)]

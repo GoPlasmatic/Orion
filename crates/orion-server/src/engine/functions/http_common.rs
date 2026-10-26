@@ -359,7 +359,7 @@ pub async fn execute_request(
         // host:port is validated even for private-allowed connectors.
         let own_endpoint = same_endpoint(&current, &original);
         if !(http_config.allow_private_urls && own_endpoint)
-            && let Err(msg) = crate::validation::validate_url_not_private(current.as_str()).await
+            && let Err(msg) = orion_common::ssrf::validate_url_not_private(current.as_str()).await
         {
             return Err(execution(format!("SSRF protection: {msg}")));
         }

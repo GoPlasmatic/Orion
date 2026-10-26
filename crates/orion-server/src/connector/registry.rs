@@ -9,6 +9,16 @@ use tokio::sync::{Mutex, RwLock};
 use super::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use super::config::ConnectorConfig;
 
+/// An immutable connector estate: every config by name.
+pub type ConnectorSnapshot = Arc<HashMap<String, Arc<ConnectorConfig>>>;
+
+tokio::task_local! {
+    /// The connector estate of the generation a run executes on (`TD-07`).
+    /// The runtime scopes it around an admitted run whose generation carries
+    /// a snapshot; [`ConnectorRegistry::get`] reads it before the live map.
+    pub static PINNED_CONNECTORS: ConnectorSnapshot;
+}
+
 /// Monotonic counter for LRU tracking of circuit breaker access.
 static BREAKER_ACCESS_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -479,15 +489,13 @@ impl ConnectorRegistry {
 
     /// Get a connector config by name.
     ///
-    /// When executing inside an admitted root run (`PINNED_GENERATION`) that
-    /// carries an immutable connector snapshot (`TD-07`), resolves from the
-    /// pinned generation's snapshot so connector tasks within one run observe a
-    /// consistent connector estate across concurrent reloads.
+    /// When executing inside a run pinned to a connector snapshot
+    /// ([`PINNED_CONNECTORS`], `TD-07`), resolves from that snapshot so
+    /// connector tasks within one run observe a consistent connector estate
+    /// across concurrent reloads.
     pub async fn get(&self, name: &str) -> Option<Arc<ConnectorConfig>> {
-        if let Ok(pinned) = crate::runtime::generation::PINNED_GENERATION.try_with(Arc::clone)
-            && let Some(ref pinned_connectors) = pinned.connectors
-        {
-            return pinned_connectors.get(name).cloned();
+        if let Ok(pinned) = PINNED_CONNECTORS.try_with(|snapshot| snapshot.get(name).cloned()) {
+            return pinned;
         }
         self.configs.load().get(name).cloned()
     }
@@ -696,9 +704,9 @@ pub async fn resolve_connector_config(
     // checked here, on the final value; the private-address check
     // stays on the request and pool-open paths, which resolve DNS
     // and see every redirect.
-    if let Err(e) = crate::validation::endpoints::validate_endpoint_schemes(
+    if let Err(e) = crate::connector::endpoints::validate_endpoint_schemes(
         &config,
-        crate::validation::endpoints::EndpointPhase::Load,
+        crate::connector::endpoints::EndpointPhase::Load,
     ) {
         tracing::warn!(
             connector_id = %id,

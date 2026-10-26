@@ -3014,6 +3014,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-opentelemetry",
+ "url",
  "uuid",
 ]
 

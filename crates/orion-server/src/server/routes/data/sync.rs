@@ -660,7 +660,7 @@ pub(super) async fn process_sync_for_channel(
         // The shared post-admission step: message build, engine snapshot, the
         // deadline arm, the `has_errors` rule and the two metrics. What stays here
         // is response shaping and persistence.
-        let execution = crate::engine::execute_admitted_on_generation(
+        let execution = crate::runtime::execute_admitted_on_generation(
             &generation,
             channel,
             &data,

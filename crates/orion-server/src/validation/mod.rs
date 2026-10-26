@@ -2,9 +2,9 @@ pub(crate) mod channels;
 pub(crate) mod common;
 mod connectors;
 pub(crate) mod cron;
-pub mod endpoints;
+pub use crate::connector::endpoints;
 pub mod packages;
-pub mod ssrf;
+pub use orion_common::ssrf;
 mod workflows;
 
 pub use channels::{validate_channel_id, validate_create_channel};

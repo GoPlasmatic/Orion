@@ -301,19 +301,27 @@ pub async fn build_engine_components(
     let providers = composition.providers().clone();
 
     // The node's live components, as every function gets them.
-    let handler_deps = || crate::engine::HandlerDeps {
-        registry: connector_registry.clone(),
-        client: http_client.clone(),
-        runtime: runtime.clone(),
-        exprs: exprs.clone(),
-        jwks: jwks.clone(),
-        engine_config: &config.engine,
-        query_config: &config.query,
-        write_config: &config.write,
-        cache_pool: cache_pool.clone(),
-        channel_loader: channel_loader.clone(),
-        sql_pool_cache: sql_pool_cache.clone(),
-        providers: providers.clone(),
+    let handler_deps = || {
+        let hosts = crate::runtime::functions::NodeHosts::new(
+            runtime.clone(),
+            exprs.clone(),
+            channel_loader.clone(),
+            providers.clone(),
+        );
+        crate::engine::HandlerDeps {
+            registry: connector_registry.clone(),
+            client: http_client.clone(),
+            channel_calls: hosts.channel_calls,
+            exprs: exprs.clone(),
+            jwks: jwks.clone(),
+            engine_config: &config.engine,
+            query_config: &config.query,
+            write_config: &config.write,
+            cache_pool: cache_pool.clone(),
+            namespaces: hosts.namespaces,
+            sql_pool_cache: sql_pool_cache.clone(),
+            connector_calls: hosts.connector_calls,
+        }
     };
     let registry = crate::engine::serving_registry(handler_deps());
 

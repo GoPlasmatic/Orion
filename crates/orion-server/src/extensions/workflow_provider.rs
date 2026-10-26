@@ -837,7 +837,7 @@ impl ProviderBackend for WorkflowProviderBackend {
         let execution = PACKAGE_INVOCATION
             .scope(
                 invocation,
-                crate::engine::execute::execute_on(
+                crate::engine::execute_on(
                     &engine,
                     operation,
                     &input,
