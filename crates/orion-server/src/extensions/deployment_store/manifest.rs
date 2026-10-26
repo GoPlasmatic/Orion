@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::DeploymentError;
+use super::{DeploymentError, DeploymentErrorKind};
 use crate::extensions::package_identity::{canonical_bytes, sha256_digest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -44,13 +44,13 @@ impl EntityRef {
     pub fn validate(&self) -> Result<(), DeploymentError> {
         if self.id.is_empty() || self.id.starts_with("sha256:") {
             return Err(DeploymentError::new(
-                "ENTITY_REF_INVALID",
+                DeploymentErrorKind::EntityRefInvalid,
                 "entity id must be non-empty and must not be a digest",
             ));
         }
         if self.revision == 0 {
             return Err(DeploymentError::new(
-                "ENTITY_REF_INVALID",
+                DeploymentErrorKind::EntityRefInvalid,
                 "entity integer revision must be >= 1",
             ));
         }
@@ -71,20 +71,20 @@ impl ProviderRef {
     pub fn validate(&self) -> Result<(), DeploymentError> {
         if self.publisher.is_empty() || self.provider_id.is_empty() {
             return Err(DeploymentError::new(
-                "PROVIDER_REF_INVALID",
+                DeploymentErrorKind::ProviderRefInvalid,
                 "publisher and provider_id are required",
             ));
         }
         // Reject integer revision confusion: version must contain '.' (SemVer) and not be a bare integer or digest.
         if !self.version.contains('.') || self.version.starts_with("sha256:") {
             return Err(DeploymentError::new(
-                "PROVIDER_REF_INVALID",
+                DeploymentErrorKind::ProviderRefInvalid,
                 "provider version must be a semantic version string, not an integer revision or digest",
             ));
         }
         if !self.digest.starts_with("sha256:") || self.digest.len() != 71 {
             return Err(DeploymentError::new(
-                "PROVIDER_REF_INVALID",
+                DeploymentErrorKind::ProviderRefInvalid,
                 "provider digest must be sha256:<64 hex chars>",
             ));
         }
@@ -104,7 +104,7 @@ pub struct RolloutInterval {
 pub fn validate_rollout_partition(intervals: &[RolloutInterval]) -> Result<(), DeploymentError> {
     if intervals.is_empty() {
         return Err(DeploymentError::new(
-            "ROLLOUT_PARTITION_INVALID",
+            DeploymentErrorKind::RolloutPartitionInvalid,
             "at least one rollout interval is required",
         ));
     }
@@ -115,19 +115,19 @@ pub fn validate_rollout_partition(intervals: &[RolloutInterval]) -> Result<(), D
     for interval in &sorted {
         if interval.workflow_revision == 0 || !seen_revisions.insert(interval.workflow_revision) {
             return Err(DeploymentError::new(
-                "ROLLOUT_PARTITION_INVALID",
+                DeploymentErrorKind::RolloutPartitionInvalid,
                 "duplicate or zero workflow revision in rollout",
             ));
         }
         if interval.start_bucket >= interval.end_bucket || interval.end_bucket > 100 {
             return Err(DeploymentError::new(
-                "ROLLOUT_PARTITION_INVALID",
+                DeploymentErrorKind::RolloutPartitionInvalid,
                 "invalid bucket bounds",
             ));
         }
         if interval.start_bucket != cursor {
             return Err(DeploymentError::new(
-                "ROLLOUT_PARTITION_INVALID",
+                DeploymentErrorKind::RolloutPartitionInvalid,
                 format!(
                     "rollout intervals have gap or overlap at bucket {cursor} vs {}",
                     interval.start_bucket
@@ -138,7 +138,7 @@ pub fn validate_rollout_partition(intervals: &[RolloutInterval]) -> Result<(), D
     }
     if cursor != 100 {
         return Err(DeploymentError::new(
-            "ROLLOUT_PARTITION_INVALID",
+            DeploymentErrorKind::RolloutPartitionInvalid,
             format!("rollout intervals end at {cursor}, expected 100"),
         ));
     }
@@ -175,7 +175,7 @@ impl CanonicalManifest {
     pub fn canonicalize_and_verify(&self) -> Result<(Vec<u8>, String), DeploymentError> {
         if self.schema_version != 2 {
             return Err(DeploymentError::new(
-                "MANIFEST_VERSION_UNSUPPORTED",
+                DeploymentErrorKind::ManifestVersionUnsupported,
                 "deployment manifest schema_version must be 2",
             ));
         }
@@ -190,7 +190,7 @@ impl CanonicalManifest {
                 p.version.clone(),
             )) {
                 return Err(DeploymentError::new(
-                    "MANIFEST_DUPLICATE_PROVIDER",
+                    DeploymentErrorKind::ManifestDuplicateProvider,
                     format!(
                         "duplicate provider {}/{}@{}",
                         p.publisher, p.provider_id, p.version
@@ -211,7 +211,7 @@ impl CanonicalManifest {
                 && !provider_digests.contains(pkg)
             {
                 return Err(DeploymentError::new(
-                    "MANIFEST_OWNER_MISSING",
+                    DeploymentErrorKind::ManifestOwnerMissing,
                     format!("owning_package '{pkg}' is not in manifest providers"),
                 ));
             }
@@ -219,7 +219,7 @@ impl CanonicalManifest {
                 && prev_owner != &m.owning_package
             {
                 return Err(DeploymentError::new(
-                    "MANIFEST_OWNERSHIP_CONFLICT",
+                    DeploymentErrorKind::ManifestOwnershipConflict,
                     format!(
                         "conflicting ownership for {}:{}",
                         m.entity.kind.as_str(),
@@ -238,7 +238,7 @@ impl CanonicalManifest {
                     .is_some()
                 {
                     return Err(DeploymentError::new(
-                        "MANIFEST_DUPLICATE_SINGLETON",
+                        DeploymentErrorKind::ManifestDuplicateSingleton,
                         format!(
                             "multiple revisions of singleton {}:{}",
                             m.entity.kind.as_str(),
@@ -248,7 +248,7 @@ impl CanonicalManifest {
                 }
             } else if !all_entities.insert(m.entity.clone()) {
                 return Err(DeploymentError::new(
-                    "MANIFEST_DUPLICATE_MEMBER",
+                    DeploymentErrorKind::ManifestDuplicateMember,
                     format!(
                         "duplicate workflow revision {}:{}",
                         m.entity.id, m.entity.revision
@@ -267,7 +267,7 @@ impl CanonicalManifest {
             for req in &m.requires {
                 if !all_entities.contains(req) {
                     return Err(DeploymentError::new(
-                        "MANIFEST_MISSING_REQUIREMENT",
+                        DeploymentErrorKind::ManifestMissingRequirement,
                         format!(
                             "{}:{} requires missing {}:{}:v{}",
                             m.entity.kind.as_str(),
@@ -355,8 +355,9 @@ impl CanonicalManifest {
         root.insert("providers".into(), Value::Array(providers_json));
         root.insert("schema_version".into(), json!(self.schema_version));
 
-        let bytes = canonical_bytes(&Value::Object(root))
-            .map_err(|e| DeploymentError::new("MANIFEST_CANONICAL_ERROR", e.code))?;
+        let bytes = canonical_bytes(&Value::Object(root)).map_err(|e| {
+            DeploymentError::new(DeploymentErrorKind::ManifestCanonicalError, e.code)
+        })?;
         let digest = sha256_digest(&bytes);
         Ok((bytes, digest))
     }

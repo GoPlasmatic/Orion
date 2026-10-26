@@ -634,15 +634,26 @@ async fn mysql_foundation_provider_runs_bound_statements() {
 
     // The revision names the server with no userinfo (sqlx connects as
     // `root`), so the public-config credential screen admits it.
+    // The store's own tables live wherever the node's state database is;
+    // the provider reads the revision from the store's catalog.
+    let state_db = orion::storage::init_pool(&orion::config::StorageConfig {
+        url: "sqlite::memory:".to_string(),
+        max_connections: 1,
+        ..Default::default()
+    })
+    .await
+    .expect("state database");
     let store = ImmutableDeploymentStore::default();
     store
-        .store_connection_revision(
+        .store_connection_revision_in_db(
+            &state_db,
             "orders-mysql",
             1,
             &builtin_provider_digest(DRIVER_MYSQL).expect("a built-in driver"),
             json!({"connection_string": url}),
             Default::default(),
         )
+        .await
         .expect("connection revision stored");
     let provider = MysqlProviderBackend::with_deployment_store(4, store).with_limits(SqlLimits {
         max_rows: 2,

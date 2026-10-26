@@ -15,7 +15,8 @@ use serde_json::{Value, json};
 
 use super::{deployment_err_response, principal_id};
 use crate::extensions::deployment_store::{
-    CanonicalManifest, DeploymentError, DeploymentReceipt, DeploymentRevisionRow,
+    CanonicalManifest, DeploymentError, DeploymentErrorKind, DeploymentReceipt,
+    DeploymentRevisionRow,
 };
 use crate::extensions::reconciler::ConvergenceTarget;
 use crate::server::admin_auth::AdminPrincipal;
@@ -26,6 +27,13 @@ use crate::server::state::AppState;
 pub struct ConvergenceQuery {
     /// Convergence evaluation scope (`this-node` or `observed`).
     pub target: Option<String>,
+}
+
+/// A stored time as the wire carries it: ISO 8601, as every other admin
+/// timestamp serialises; empty for a value never read back.
+fn wire_time(at: Option<chrono::NaiveDateTime>) -> String {
+    at.map(|t| t.format("%Y-%m-%dT%H:%M:%S%.f").to_string())
+        .unwrap_or_default()
 }
 
 fn receipt_to_dto(receipt: &DeploymentReceipt) -> DeploymentReceiptResponse {
@@ -40,7 +48,7 @@ fn receipt_to_dto(receipt: &DeploymentReceipt) -> DeploymentReceiptResponse {
         epoch: receipt.epoch,
         receiving_node_id: receipt.receiving_node_id.clone(),
         replayed: false,
-        created_at: String::new(),
+        created_at: wire_time(receipt.created_at),
     }
 }
 
@@ -53,7 +61,7 @@ fn revision_row_to_dto(row: &DeploymentRevisionRow) -> DeploymentRevisionRespons
         reason: row.reason.clone(),
         created_by: row.created_by.clone(),
         members_compacted: row.members_compacted,
-        created_at: String::new(),
+        created_at: wire_time(row.created_at),
     }
 }
 
@@ -80,7 +88,7 @@ pub(crate) async fn create_deployment_plan(
         Ok(m) => m,
         Err(e) => {
             return deployment_err_response(DeploymentError::new(
-                "INVALID_MANIFEST_JSON",
+                DeploymentErrorKind::InvalidManifestJson,
                 e.to_string(),
             ));
         }
@@ -152,7 +160,7 @@ pub(crate) async fn get_deployments_summary(State(state): State<AppState>) -> im
     let revisions = store
         .list_revisions()
         .iter()
-        .map(revision_row_to_dto)
+        .map(|r| revision_row_to_dto(r))
         .collect();
     Json(DeploymentsSummaryResponse {
         head_revision: head_rev,
@@ -190,7 +198,7 @@ pub(crate) async fn apply_deployment(
         Ok(m) => m,
         Err(e) => {
             return deployment_err_response(DeploymentError::new(
-                "INVALID_MANIFEST_JSON",
+                DeploymentErrorKind::InvalidManifestJson,
                 e.to_string(),
             ));
         }
@@ -212,7 +220,7 @@ pub(crate) async fn apply_deployment(
         && expected_digest != &plan.candidate_digest
     {
         return deployment_err_response(DeploymentError::new(
-            "REVIEWED_DIGEST_MISMATCH",
+            DeploymentErrorKind::ReviewedDigestMismatch,
             format!(
                 "reviewed_manifest_digest '{expected_digest}' does not match candidate manifest digest '{}'",
                 plan.candidate_digest
@@ -276,7 +284,9 @@ async fn refuse_unbuildable(
 ) -> Result<(), DeploymentError> {
     crate::runtime::check_candidate(state, &plan.candidate_manifest)
         .await
-        .map_err(|e| DeploymentError::new("DEPLOYMENT_WOULD_NOT_BUILD", e.to_string()))
+        .map_err(|e| {
+            DeploymentError::new(DeploymentErrorKind::DeploymentWouldNotBuild, e.to_string())
+        })
 }
 
 /// Build `revision` on this node, and say how that went: the node's

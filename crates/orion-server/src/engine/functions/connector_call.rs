@@ -349,9 +349,9 @@ async fn execute_connector_call(
                 ));
             }
             ProviderReference {
-                provider_id: pkg.provider_id,
-                version: pkg.version,
-                package_digest: pkg.package_digest,
+                provider_id: pkg.provider_id.clone(),
+                version: pkg.version.clone(),
+                package_digest: pkg.package_digest.clone(),
             }
         }
         // A provider built into this binary has no uploaded package: the
@@ -535,17 +535,29 @@ mod tests {
         call: testing::Call<ConnectorCallFunction>,
     ) -> testing::Called {
         let mut grant = AuthorityGrant::default();
+        let pool = crate::storage::test_sqlite_pool().await;
         for (connection, operation) in grants {
-            let _ = root
-                .providers()
-                .deployment_store()
-                .store_connection_revision(
+            // A revision the test stored itself is kept: revisions are
+            // immutable, and a second store of revision 1 would be refused.
+            let store = root.providers().deployment_store();
+            if store.get_connection(connection, 1).is_some() {
+                grant
+                    .allowed_operations
+                    .entry((*connection).to_string())
+                    .or_default()
+                    .insert((*operation).to_string());
+                continue;
+            }
+            let _ = store
+                .store_connection_revision_in_db(
+                    &pool,
                     connection,
                     1,
                     &digest_for(connection),
                     json!({}),
                     Default::default(),
-                );
+                )
+                .await;
             grant
                 .allowed_operations
                 .entry((*connection).to_string())
@@ -608,15 +620,18 @@ mod tests {
     #[tokio::test]
     async fn retryable_failures_trip_the_connection_breaker() {
         let root = community();
+        let pool = crate::storage::test_sqlite_pool().await;
         root.providers()
             .deployment_store()
-            .store_connection_revision(
+            .store_connection_revision_in_db(
+                &pool,
                 "dead-db",
                 1,
                 &digest_for("dead-db"),
                 json!({"connection_string": "postgres://127.0.0.1:1/nothing"}),
                 Default::default(),
             )
+            .await
             .expect("revision stored");
         let func = ConnectorCallFunction {
             providers: root.providers().clone(),

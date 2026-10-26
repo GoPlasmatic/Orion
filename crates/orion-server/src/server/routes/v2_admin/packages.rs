@@ -60,6 +60,17 @@ fn package_row_to_summary(
 pub(crate) async fn list_connector_packages(State(state): State<AppState>) -> impl IntoResponse {
     let raw_packages = state.deployments.list_packages();
     let raw_admissions = state.deployments.list_admissions();
+    let digests: Vec<String> = raw_packages
+        .iter()
+        .map(|p| p.package_digest.clone())
+        .collect();
+    // One read for every package's artifact state; a failed read answers
+    // each as active, as a package with no artifact row does.
+    let states = state
+        .deployments
+        .artifact_states(&state.db_pool, &digests)
+        .await
+        .unwrap_or_default();
     let admissions: Vec<ProviderAdmissionDto> = raw_admissions
         .iter()
         .map(|a| ProviderAdmissionDto {
@@ -77,11 +88,7 @@ pub(crate) async fn list_connector_packages(State(state): State<AppState>) -> im
                 .find(|a| a.package_digest == p.package_digest);
             let admitted = adm.is_some_and(|a| !a.revoked);
             let revoked = adm.is_some_and(|a| a.revoked);
-            let artifact_state = match state
-                .deployments
-                .get_artifact(&p.package_digest)
-                .map(|a| a.state)
-            {
+            let artifact_state = match states.get(&p.package_digest) {
                 Some(ArtifactState::Draining) => "draining",
                 Some(ArtifactState::Deleted) => "deleted",
                 _ => "active",
@@ -161,7 +168,8 @@ pub(crate) async fn upload_connector_package(
     let mut admission_dto = None;
     if req.admit {
         let problems =
-            crate::runtime::workflow_providers::admission_problems(&state, &row.package_digest);
+            crate::runtime::workflow_providers::admission_problems(&state, &row.package_digest)
+                .await;
         if !problems.is_empty() {
             return crate::runtime::workflow_providers::refusal("admission refused", problems);
         }
@@ -185,7 +193,7 @@ pub(crate) async fn upload_connector_package(
             }
             Err(e) => return deployment_err_response(e),
         }
-        crate::runtime::workflow_providers::sync(&state);
+        crate::runtime::workflow_providers::sync(&state).await;
     }
 
     crate::server::routes::admin::audit_log(
@@ -233,7 +241,7 @@ pub(crate) async fn admit_connector_package(
     req: Option<Json<AdmitPackageRequest>>,
 ) -> impl IntoResponse {
     let lock = req.and_then(|Json(r)| r.lock);
-    let problems = crate::runtime::workflow_providers::admission_problems(&state, &digest);
+    let problems = crate::runtime::workflow_providers::admission_problems(&state, &digest).await;
     if !problems.is_empty() {
         return crate::runtime::workflow_providers::refusal("admission refused", problems);
     }
@@ -248,7 +256,7 @@ pub(crate) async fn admit_connector_package(
         .await
     {
         Ok(adm) => {
-            crate::runtime::workflow_providers::sync(&state);
+            crate::runtime::workflow_providers::sync(&state).await;
             crate::server::routes::admin::audit_log(
                 &state.audit_queue,
                 &principal,
@@ -308,7 +316,7 @@ pub(crate) async fn revoke_connector_package(
                 .admission()
                 .ledger()
                 .revoke_digest(&digest);
-            crate::runtime::workflow_providers::sync(&state);
+            crate::runtime::workflow_providers::sync(&state).await;
             crate::server::routes::admin::audit_log(
                 &state.audit_queue,
                 &principal,

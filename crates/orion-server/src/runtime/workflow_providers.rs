@@ -37,12 +37,17 @@ pub fn host(state: &AppState) -> WorkflowHost {
 /// # Errors
 ///
 /// The package's problems, one line.
-pub fn backend(state: &AppState, digest: &str) -> Result<Arc<WorkflowProviderBackend>, String> {
+pub async fn backend(
+    state: &AppState,
+    digest: &str,
+) -> Result<Arc<WorkflowProviderBackend>, String> {
     let store = &state.deployments;
     let row = store
         .get_package(digest)
         .ok_or_else(|| format!("package {digest} is not uploaded"))?;
-    let package = WorkflowPackage::from_store(store, &row).map_err(|p| describe(&p))?;
+    let package = WorkflowPackage::from_store(store, &state.db_pool, &row)
+        .await
+        .map_err(|p| describe(&p))?;
     let backend = WorkflowProviderBackend::new(package, host(state));
     backend
         .check(&state.runtime.load().plugins)
@@ -54,7 +59,7 @@ pub fn backend(state: &AppState, digest: &str) -> Result<Arc<WorkflowProviderBac
 /// and unregister every registered one that no longer is. A package that
 /// fails its checks stays unregistered, logged; a connection over it then
 /// fails the build that deploys it.
-pub fn sync(state: &AppState) {
+pub async fn sync(state: &AppState) {
     let store = &state.deployments;
     let providers = state.composition.providers();
     let serving: BTreeSet<String> = store
@@ -71,7 +76,7 @@ pub fn sync(state: &AppState) {
                     .ledger()
                     .is_digest_revoked(&p.package_digest)
         })
-        .map(|p| p.package_digest)
+        .map(|p| p.package_digest.clone())
         .collect();
     let registered = providers.admitted_ids(ImplementationKind::Workflow);
 
@@ -80,7 +85,7 @@ pub fn sync(state: &AppState) {
         tracing::info!(package = %digest, "workflow provider package unregistered");
     }
     for digest in serving.difference(&registered) {
-        match backend(state, digest) {
+        match backend(state, digest).await {
             Ok(backend) => {
                 let provider = backend.package().provider.provider_id.clone();
                 match providers.admit(backend as Arc<dyn ProviderBackend>) {
@@ -141,7 +146,7 @@ pub fn upload_problems(
 /// What admitting the stored package `digest` would be refused for, read
 /// back from the store: a package stored by another node or another binary
 /// is held to this node's checks too. Empty for any other kind of package.
-pub fn admission_problems(
+pub async fn admission_problems(
     state: &AppState,
     digest: &str,
 ) -> Vec<crate::extensions::PackageProblem> {
@@ -152,7 +157,7 @@ pub fn admission_problems(
     else {
         return Vec::new();
     };
-    let package = match WorkflowPackage::from_store(store, &row) {
+    let package = match WorkflowPackage::from_store(store, &state.db_pool, &row).await {
         Ok(package) => package,
         Err(problems) => return problems,
     };

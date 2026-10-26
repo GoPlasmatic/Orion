@@ -407,9 +407,9 @@ async fn backdate_artifact(pool: &DbPool, digest: &str) {
 /// The deployment store's collector on this backend: an unreferenced
 /// artifact inside the grace window — measured on the database clock — is
 /// left alone; outside it, it drains on one pass and its bytes are deleted on
-/// the next; what the head names is never touched; and a node whose own copy
-/// still says active revives a deleted artifact when it uploads it again,
-/// because inside the transaction the database row wins.
+/// the next; what the head names is never touched; and any node uploading
+/// the bytes again revives the deleted row, because the upload is judged
+/// against the database row, not against anything a node holds.
 async fn the_artifact_collector_judges_its_grace_on_the_database_clock(
     backend: &str,
     pool: &DbPool,
@@ -419,6 +419,7 @@ async fn the_artifact_collector_judges_its_grace_on_the_database_clock(
     let policy = Admission::community();
     let node_a = ImmutableDeploymentStore::new("contract-gc-a");
     let node_b = ImmutableDeploymentStore::new("contract-gc-b");
+    node_a.load_from_db_pool(pool).await.expect("load");
     let deployed = node_a
         .store_definition_artifact_in_db(pool, b"contract-gc-wf".to_vec())
         .await
@@ -441,15 +442,17 @@ async fn the_artifact_collector_judges_its_grace_on_the_database_clock(
         .await
         .expect("store")
         .digest;
-    // Node B reads the store (and so holds the orphan as active) before
-    // node A collects it.
-    node_b
-        .store_definition_artifact_in_db(pool, b"contract-gc-b".to_vec())
-        .await
-        .expect("store");
+    let reader = &node_b;
+    let state = |digest: String| async move {
+        reader
+            .fetch_artifact(pool, &digest)
+            .await
+            .expect("read artifact")
+            .map(|a| (a.state, a.bytes.is_some()))
+    };
     assert_eq!(
-        node_b.get_artifact(&orphan).map(|a| a.state),
-        Some(ArtifactState::Active),
+        state(orphan.clone()).await,
+        Some((ArtifactState::Active, true)),
         "{backend}"
     );
 
@@ -474,26 +477,27 @@ async fn the_artifact_collector_judges_its_grace_on_the_database_clock(
     assert!(pass.deleted.contains(&orphan), "{backend}: {pass:?}");
     assert!(!pass.deleted.contains(&deployed.digest), "{backend}");
 
-    let fresh = ImmutableDeploymentStore::new("contract-gc-reader");
-    fresh.load_from_db_pool(pool).await.expect("load");
-    let row = fresh.get_artifact(&orphan).expect("tombstone kept");
-    assert_eq!(row.state, ArtifactState::Deleted, "{backend}");
-    assert!(row.bytes.is_none(), "{backend}: the bytes are gone");
-    let head_def = fresh.get_artifact(&deployed.digest).expect("deployed");
-    assert_eq!(head_def.state, ArtifactState::Active, "{backend}");
-    assert!(head_def.bytes.is_some(), "{backend}");
+    assert_eq!(
+        state(orphan.clone()).await,
+        Some((ArtifactState::Deleted, false)),
+        "{backend}: the tombstone is kept and the bytes are gone"
+    );
+    assert_eq!(
+        state(deployed.digest.clone()).await,
+        Some((ArtifactState::Active, true)),
+        "{backend}"
+    );
 
-    // Node B's copy still says active; uploading the bytes again must revive
-    // the database row, not answer from the stale copy.
+    // Another node uploading the bytes again revives the database row.
     node_b
         .store_definition_artifact_in_db(pool, b"contract-gc-orphan".to_vec())
         .await
         .expect("re-upload");
-    let fresh = ImmutableDeploymentStore::new("contract-gc-reader-2");
-    fresh.load_from_db_pool(pool).await.expect("load");
-    let row = fresh.get_artifact(&orphan).expect("revived");
-    assert_eq!(row.state, ArtifactState::Active, "{backend}");
-    assert!(row.bytes.is_some(), "{backend}");
+    assert_eq!(
+        state(orphan.clone()).await,
+        Some((ArtifactState::Active, true)),
+        "{backend}: revived"
+    );
     // ... with a fresh grace window.
     let pass = gc(&node_a).await;
     assert!(!pass.draining.contains(&orphan), "{backend}: {pass:?}");

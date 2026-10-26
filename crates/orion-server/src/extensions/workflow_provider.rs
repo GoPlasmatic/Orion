@@ -348,21 +348,27 @@ impl WorkflowPackage {
     ///
     /// Every problem found; a file the inventory lists that is not stored is
     /// one.
-    pub fn from_store(
+    pub async fn from_store(
         store: &ImmutableDeploymentStore,
+        pool: &crate::storage::DbPool,
         row: &ProviderPackageRow,
     ) -> Result<Self, Vec<PackageProblem>> {
-        let mut files = BTreeMap::new();
-        for file in row.manifest_json["implementation"]["workflows"]
+        let workflows: Vec<&str> = row.manifest_json["implementation"]["workflows"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
-        {
-            if let Some(bytes) = store.package_file(&row.package_digest, file) {
-                files.insert(file.to_string(), bytes);
-            }
-        }
+            .collect();
+        let files = store
+            .package_files(pool, &row.package_digest, &workflows)
+            .await
+            .map_err(|e| {
+                vec![PackageProblem::new(
+                    "",
+                    orion_api::error::field_codes::INVALID,
+                    format!("the package's files could not be read: {e}"),
+                )]
+            })?;
         Self::from_files(
             ProviderReference {
                 provider_id: row.provider_id.clone(),
@@ -1182,7 +1188,7 @@ fn target_problem(
                     target.connection_id, pkg.provider_id
                 ));
             }
-            Some(pkg) => pkg.provider_id,
+            Some(pkg) => pkg.provider_id.clone(),
             None => {
                 return Some(format!(
                     "connection '{}' names provider '{}', which is not uploaded",
@@ -1260,9 +1266,9 @@ pub fn manifest_dependencies(
                 },
                 None => match store.get_package(&target_row.provider_digest) {
                     Some(pkg) => ProviderReference {
-                        provider_id: pkg.provider_id,
-                        version: pkg.version,
-                        package_digest: pkg.package_digest,
+                        provider_id: pkg.provider_id.clone(),
+                        version: pkg.version.clone(),
+                        package_digest: pkg.package_digest.clone(),
                     },
                     None => {
                         return Err(format!(

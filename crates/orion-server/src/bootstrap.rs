@@ -1066,7 +1066,7 @@ pub async fn assemble(
         .await
         .map_err(|e| format!("reading the committed deployments failed: {e}"))?;
     crate::cluster::reconcile::sync_v2_revocations(&state);
-    crate::runtime::workflow_providers::sync(&state);
+    crate::runtime::workflow_providers::sync(&state).await;
     let (head_rev, _) = state.deployments.current_head();
     if head_rev > 0 {
         crate::runtime::reconcile_deployment_revision(&state, head_rev)

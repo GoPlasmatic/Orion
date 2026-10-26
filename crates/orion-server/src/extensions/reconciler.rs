@@ -8,7 +8,9 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
-use super::deployment_store::{DeploymentError, EntityRef, ImmutableDeploymentStore};
+use super::deployment_store::{
+    DeploymentError, DeploymentErrorKind, EntityRef, ImmutableDeploymentStore,
+};
 
 pub const MIN_BACKOFF_MS: u64 = 250;
 pub const MAX_BACKOFF_MS: u64 = 30_000;
@@ -191,7 +193,7 @@ impl NodeReconciler {
         // 1. Read candidate manifest outside lock
         let rev_row = self.store.get_revision(candidate_revision).ok_or_else(|| {
             DeploymentError::new(
-                "CANDIDATE_REVISION_MISSING",
+                DeploymentErrorKind::CandidateRevisionMissing,
                 format!("revision {candidate_revision} not found"),
             )
         })?;
@@ -209,7 +211,7 @@ impl NodeReconciler {
                     node.backoff_delay_ms =
                         compute_reconcile_backoff_ms(node.backoff_attempt, candidate_revision);
                     node.last_error = Some(format!("{code}: {message}"));
-                    return Err(DeploymentError::new(code, message));
+                    return Err(DeploymentError::from_code(code, message));
                 }
                 CandidateBuildIssue::PerEntityExternal { entity, reason } => {
                     quarantined.push(QuarantinedEntity { entity, reason });
@@ -229,7 +231,7 @@ impl NodeReconciler {
         if candidate_revision < node.desired_revision || candidate_revision <= node.applied_revision
         {
             return Err(DeploymentError::new(
-                "CANDIDATE_SUPERSEDED",
+                DeploymentErrorKind::CandidateSuperseded,
                 format!(
                     "candidate revision {candidate_revision} is superseded (applied={}, desired={})",
                     node.applied_revision, node.desired_revision
@@ -239,7 +241,7 @@ impl NodeReconciler {
 
         // 4. Atomic swap & applied-state update
         node.applied_revision = candidate_revision;
-        node.applied_manifest_digest = Some(rev_row.manifest_digest);
+        node.applied_manifest_digest = Some(rev_row.manifest_digest.clone());
         node.configuration_degraded = !quarantined.is_empty();
         node.quarantined_entities = quarantined;
         node.last_error = None;
@@ -356,7 +358,7 @@ impl NodeReconciler {
                 .bind(&retained_json)
                 .execute(p)
                 .await
-                .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
+                .map_err(|e| DeploymentError::new(DeploymentErrorKind::DbWrite, e.to_string()))?;
             }
             crate::storage::DbPool::Postgres(p) => {
                 sqlx::query(
@@ -381,7 +383,7 @@ impl NodeReconciler {
                 .bind(&retained_json)
                 .execute(p)
                 .await
-                .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
+                .map_err(|e| DeploymentError::new(DeploymentErrorKind::DbWrite, e.to_string()))?;
             }
             crate::storage::DbPool::Mysql(p) => {
                 sqlx::query(
@@ -406,7 +408,7 @@ impl NodeReconciler {
                 .bind(&retained_json)
                 .execute(p)
                 .await
-                .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
+                .map_err(|e| DeploymentError::new(DeploymentErrorKind::DbWrite, e.to_string()))?;
             }
         }
         Ok(())
@@ -424,27 +426,42 @@ impl NodeReconciler {
             crate::storage::DbPool::Sqlite(p) => match sqlx::query_as(query_sql).fetch_all(p).await
             {
                 Ok(r) => r,
-                Err(e) if e.to_string().contains("no such table") => {
+                Err(e) if crate::storage::is_undefined_table(&e) => {
                     return Ok(self.observed_node_ids());
                 }
-                Err(e) => return Err(DeploymentError::new("DB_READ_ERROR", e.to_string())),
+                Err(e) => {
+                    return Err(DeploymentError::new(
+                        DeploymentErrorKind::DbRead,
+                        e.to_string(),
+                    ));
+                }
             },
             crate::storage::DbPool::Postgres(p) => {
                 match sqlx::query_as(query_sql).fetch_all(p).await {
                     Ok(r) => r,
-                    Err(e) if e.to_string().contains("does not exist") => {
+                    Err(e) if crate::storage::is_undefined_table(&e) => {
                         return Ok(self.observed_node_ids());
                     }
-                    Err(e) => return Err(DeploymentError::new("DB_READ_ERROR", e.to_string())),
+                    Err(e) => {
+                        return Err(DeploymentError::new(
+                            DeploymentErrorKind::DbRead,
+                            e.to_string(),
+                        ));
+                    }
                 }
             }
             crate::storage::DbPool::Mysql(p) => {
                 match sqlx::query_as(query_sql).fetch_all(p).await {
                     Ok(r) => r,
-                    Err(e) if e.to_string().contains("doesn't exist") => {
+                    Err(e) if crate::storage::is_undefined_table(&e) => {
                         return Ok(self.observed_node_ids());
                     }
-                    Err(e) => return Err(DeploymentError::new("DB_READ_ERROR", e.to_string())),
+                    Err(e) => {
+                        return Err(DeploymentError::new(
+                            DeploymentErrorKind::DbRead,
+                            e.to_string(),
+                        ));
+                    }
                 }
             }
         };
@@ -504,8 +521,9 @@ mod tests {
     use crate::extensions::Admission;
     use crate::extensions::deployment_store::{CanonicalManifest, EntityKind, ManifestMember};
 
-    #[test]
-    fn reconciler_quarantines_per_entity_discards_superseded_and_enforces_lease() {
+    #[tokio::test]
+    async fn reconciler_quarantines_per_entity_discards_superseded_and_enforces_lease() {
+        let pool = crate::storage::test_sqlite_pool().await;
         let store = ImmutableDeploymentStore::new("node-a");
         let policy = Admission::community();
         let reconciler = NodeReconciler::new(store.clone(), "node-a", "boot-1");
@@ -523,7 +541,8 @@ mod tests {
                         revision: rev,
                     },
                     definition_digest: store
-                        .store_definition_artifact(format!("ch-{rev}").into_bytes())
+                        .store_definition_artifact_in_db(&pool, format!("ch-{rev}").into_bytes())
+                        .await
                         .unwrap()
                         .digest,
                     owning_package: None,
@@ -531,9 +550,17 @@ mod tests {
                     rollouts: Vec::new(),
                 }],
             };
-            let plan = store.plan_candidate(rev - 1, m).unwrap();
+            let plan = store.plan_candidate_in_db(&pool, rev - 1, m).await.unwrap();
             store
-                .apply_candidate("admin", &format!("k-{rev}"), &plan, "deploy", &policy)
+                .apply_candidate_in_db(
+                    &pool,
+                    "admin",
+                    &format!("k-{rev}"),
+                    &plan,
+                    "deploy",
+                    &policy,
+                )
+                .await
                 .unwrap();
         }
 
@@ -615,9 +642,10 @@ mod tests {
             provider_lock_digest: None,
             members: Vec::new(),
         };
-        let plan = store_a.plan_candidate(0, m).unwrap();
+        let plan = store_a.plan_candidate_in_db(&db_pool, 0, m).await.unwrap();
         let receipt = store_a
-            .apply_candidate("admin", "idem-obs", &plan, "deploy", &policy)
+            .apply_candidate_in_db(&db_pool, "admin", "idem-obs", &plan, "deploy", &policy)
+            .await
             .unwrap();
         assert_eq!(receipt.receiving_node_id, "node-alpha");
 

@@ -121,7 +121,24 @@ async fn manifest_definitions(
 
     // Every member is read from the definition it names, and from nowhere
     // else: a member whose definition is missing, inactive, or of another
-    // kind fails the build rather than serving something else.
+    // kind fails the build rather than serving something else. All of them
+    // are read in one round trip.
+    let digests: Vec<String> = manifest
+        .members
+        .iter()
+        .filter(|m| {
+            matches!(
+                m.entity.kind,
+                EntityKind::Channel | EntityKind::Workflow | EntityKind::Plugin
+            )
+        })
+        .map(|m| m.definition_digest.clone())
+        .collect();
+    let stored = state
+        .deployments
+        .fetch_artifacts(&state.db_pool, &digests)
+        .await
+        .map_err(|e| OrionError::internal(format!("reading the manifest's definitions: {e}")))?;
     let definition = |member: &ManifestMember| -> Result<Definition, OrionError> {
         let what = || {
             format!(
@@ -131,16 +148,14 @@ async fn manifest_definitions(
                 member.entity.revision
             )
         };
-        let artifact = state
-            .deployments
-            .get_artifact(&member.definition_digest)
-            .ok_or_else(|| {
-                OrionError::validation(format!(
-                    "{}: definition '{}' is not stored",
-                    what(),
-                    member.definition_digest
-                ))
-            })?;
+        // Two members may name one definition, so it is borrowed, not taken.
+        let artifact = stored.get(&member.definition_digest).ok_or_else(|| {
+            OrionError::validation(format!(
+                "{}: definition '{}' is not stored",
+                what(),
+                member.definition_digest
+            ))
+        })?;
         if artifact.state != ArtifactState::Active {
             return Err(OrionError::validation(format!(
                 "{}: definition '{}' is not ACTIVE",
@@ -148,14 +163,14 @@ async fn manifest_definitions(
                 member.definition_digest
             )));
         }
-        let bytes = artifact.bytes.ok_or_else(|| {
+        let bytes = artifact.bytes.as_deref().ok_or_else(|| {
             OrionError::validation(format!(
                 "{}: definition '{}' has no stored bytes",
                 what(),
                 member.definition_digest
             ))
         })?;
-        let parsed = super::definitions::parse(&bytes)
+        let parsed = super::definitions::parse(bytes)
             .map_err(|e| OrionError::validation(format!("{}: {e}", what())))?;
         if parsed.kind() != member.entity.kind.as_str() {
             return Err(OrionError::validation(format!(
@@ -237,7 +252,7 @@ async fn manifest_definitions(
                         m.entity.id, m.entity.revision
                     )));
                 }
-                workflow_package_serves(state, &conn)?;
+                workflow_package_serves(state, &conn).await?;
             }
             EntityKind::Source => {}
         }
@@ -288,7 +303,7 @@ async fn manifest_definitions(
 /// A connection over a workflow provider package is deployed only while the
 /// package is admitted, still passes the hermetic check it passed at upload,
 /// and is registered on this node.
-fn workflow_package_serves(
+async fn workflow_package_serves(
     state: &AppState,
     conn: &crate::extensions::deployment_store::ConnectionRevisionRow,
 ) -> Result<(), crate::errors::OrionError> {
@@ -322,8 +337,12 @@ fn workflow_package_serves(
             what()
         )));
     }
-    if let Err(problems) =
-        crate::extensions::workflow_provider::WorkflowPackage::from_store(store, &package)
+    if let Err(problems) = crate::extensions::workflow_provider::WorkflowPackage::from_store(
+        store,
+        &state.db_pool,
+        &package,
+    )
+    .await
     {
         return Err(OrionError::validation(format!(
             "{}, which this node refuses: {}",
@@ -467,16 +486,24 @@ async fn build_and_publish(
     let result = async {
         let manifest = state
             .deployments
-            .get_revision(revision)
-            .map(|rev| rev.manifest)
+            .revision(&state.db_pool, revision)
+            .await
+            .map_err(|e| crate::errors::OrionError::internal(e.to_string()))?
+            .map(|rev| rev.manifest.clone())
             .ok_or_else(|| {
                 crate::errors::OrionError::NotFound(format!(
                     "Deployment revision {revision} not found"
                 ))
             })?;
-        // The admitted workflow packages are registered before anything
-        // that deploys a connection over one is built.
-        super::workflow_providers::sync(state);
+        // What the manifest names and a peer stored is read in first, and
+        // the admitted workflow packages are registered before anything that
+        // deploys a connection over one is built.
+        state
+            .deployments
+            .load_for_manifest(&state.db_pool, &manifest)
+            .await
+            .map_err(|e| crate::errors::OrionError::internal(e.to_string()))?;
+        super::workflow_providers::sync(state).await;
         // Registry replacement belongs to the same serialized operation as
         // channel construction.
         state
@@ -804,7 +831,12 @@ pub async fn check_candidate(
     state: &AppState,
     manifest: &crate::extensions::deployment_store::CanonicalManifest,
 ) -> Result<(), crate::errors::OrionError> {
-    super::workflow_providers::sync(state);
+    state
+        .deployments
+        .load_for_manifest(&state.db_pool, manifest)
+        .await
+        .map_err(|e| crate::errors::OrionError::internal(e.to_string()))?;
+    super::workflow_providers::sync(state).await;
     let ManifestDefinitions {
         channels,
         workflows,

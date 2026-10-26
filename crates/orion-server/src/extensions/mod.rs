@@ -84,9 +84,10 @@ pub use contract::{
 };
 pub use deployment_store::{
     ArchiveEntryInput, ArtifactObjectRow, ArtifactState, CandidatePlan, CanonicalManifest,
-    ConnectionRevisionRow, DeploymentError, DeploymentReceipt, DeploymentRevisionRow, EntityKind,
-    EntityRef, ImmutableDeploymentStore, ManifestMember, ProviderAdmissionRow, ProviderPackageRow,
-    ProviderRef, RolloutInterval, validate_rollout_partition,
+    ConnectionRevisionRow, DeploymentError, DeploymentErrorKind, DeploymentReceipt,
+    DeploymentRevisionRow, EntityKind, EntityRef, ImmutableDeploymentStore, ManifestMember,
+    ProviderAdmissionRow, ProviderPackageRow, ProviderRef, RolloutInterval,
+    validate_rollout_partition,
 };
 pub use foundation::{
     COMMUNITY_RUST_DRIVERS, DRIVER_HTTP, DRIVER_MEMORY_CACHE, DRIVER_MYSQL, DRIVER_POSTGRESQL,

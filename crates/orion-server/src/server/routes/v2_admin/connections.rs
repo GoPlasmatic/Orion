@@ -55,7 +55,7 @@ fn connection_row_to_dto(row: &ConnectionRevisionRow) -> ConnectionRevisionRespo
 pub(crate) async fn list_connections(State(state): State<AppState>) -> impl IntoResponse {
     let raw = state.deployments.list_connections();
     let connections: Vec<ConnectionRevisionResponse> =
-        raw.iter().map(connection_row_to_dto).collect();
+        raw.iter().map(|r| connection_row_to_dto(r)).collect();
     Json(ConnectionsListResponse {
         count: connections.len(),
         connections,
@@ -505,9 +505,9 @@ fn probe_dependencies(
             },
             None => match store.get_package(&row.provider_digest) {
                 Some(pkg) => ProviderReference {
-                    provider_id: pkg.provider_id,
-                    version: pkg.version,
-                    package_digest: pkg.package_digest,
+                    provider_id: pkg.provider_id.clone(),
+                    version: pkg.version.clone(),
+                    package_digest: pkg.package_digest.clone(),
                 },
                 None => continue,
             },

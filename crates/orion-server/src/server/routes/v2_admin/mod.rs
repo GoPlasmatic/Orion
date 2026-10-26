@@ -100,26 +100,14 @@ pub fn v2_admin_routes(
 }
 
 pub(super) fn deployment_err_response(err: DeploymentError) -> (StatusCode, Json<Value>) {
-    let status = match err.code.as_str() {
-        "PACKAGE_NOT_FOUND"
-        | "ADMISSION_NOT_FOUND"
-        | "BASE_REVISION_NOT_FOUND"
-        | "ROLLBACK_TARGET_NOT_FOUND"
-        | "CONNECTION_REVISION_NOT_FOUND" => StatusCode::NOT_FOUND,
-        "PUBLISHER_VERSION_CONFLICT"
-        | "IMMUTABLE_CONTENT_CONFLICT"
-        | "IMMUTABLE_CONNECTION_CONFLICT"
-        | "IDEMPOTENCY_KEY_CONFLICT"
-        | "DEPLOYMENT_HEAD_CONFLICT"
-        | "REVIEWED_DIGEST_MISMATCH" => StatusCode::CONFLICT,
-        "PROVIDER_NOT_ADMITTED" | "PROVIDER_REVOKED" | "ADMISSION_INVALIDATED" => {
-            StatusCode::FORBIDDEN
-        }
-        "DB_TRANSACTION_ERROR" | "DB_WRITE_ERROR" | "DB_COMMIT_ERROR" | "DB_READ_ERROR" => {
-            StatusCode::SERVICE_UNAVAILABLE
-        }
-        "CORRUPT_PERSISTED_STATE" => StatusCode::INTERNAL_SERVER_ERROR,
-        _ => StatusCode::BAD_REQUEST,
+    use crate::extensions::deployment_store::ErrorClass;
+    let status = match err.class() {
+        ErrorClass::NotFound => StatusCode::NOT_FOUND,
+        ErrorClass::Conflict => StatusCode::CONFLICT,
+        ErrorClass::Forbidden => StatusCode::FORBIDDEN,
+        ErrorClass::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+        ErrorClass::Corrupt => StatusCode::INTERNAL_SERVER_ERROR,
+        ErrorClass::Invalid => StatusCode::BAD_REQUEST,
     };
     (
         status,

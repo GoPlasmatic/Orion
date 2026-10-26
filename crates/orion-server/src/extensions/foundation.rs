@@ -176,7 +176,7 @@ fn refuse_input_target(input: &Value, keys: &[&str]) -> Result<(), ConnectorErro
 fn governed_connection(
     store: Option<&super::deployment_store::ImmutableDeploymentStore>,
     identity: &EffectiveConnectionIdentity,
-) -> Option<super::deployment_store::ConnectionRevisionRow> {
+) -> Option<std::sync::Arc<super::deployment_store::ConnectionRevisionRow>> {
     let store = store?;
     store
         .get_connection(&identity.connection_id, identity.revision)

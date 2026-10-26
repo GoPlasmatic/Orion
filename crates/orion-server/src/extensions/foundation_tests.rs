@@ -46,14 +46,16 @@ fn make_invocation(
 
 /// A store holding revision 1 of `conn_id` with `public_config` and the
 /// `(path, reference)` secret locators.
-fn with_connection(
+async fn with_connection(
     conn_id: &str,
     public_config: Value,
     secret_locators: &[(&str, &str)],
 ) -> crate::extensions::ImmutableDeploymentStore {
+    let pool = crate::storage::test_sqlite_pool().await;
     let store = crate::extensions::ImmutableDeploymentStore::default();
     store
-        .store_connection_revision(
+        .store_connection_revision_in_db(
+            &pool,
             conn_id,
             1,
             "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -63,6 +65,7 @@ fn with_connection(
                 .map(|(path, reference)| (path.to_string(), reference.to_string()))
                 .collect(),
         )
+        .await
         .expect("connection revision stored");
     store
 }
@@ -88,8 +91,10 @@ async fn sql_rows_are_capped_and_a_secret_locator_must_be_a_reference() {
 
     // A literal where a reference belongs is refused when the revision is
     // stored, so it never reaches a provider.
+    let pool = crate::storage::test_sqlite_pool().await;
     let refused = crate::extensions::ImmutableDeploymentStore::default()
-        .store_connection_revision(
+        .store_connection_revision_in_db(
+            &pool,
             "pg-literal",
             1,
             "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -100,6 +105,7 @@ async fn sql_rows_are_capped_and_a_secret_locator_must_be_a_reference() {
             )]
             .into(),
         )
+        .await
         .expect_err("a literal locator is refused");
     assert_eq!(refused.code, "CONNECTION_SECRET_LOCATOR_INVALID");
 }
@@ -256,7 +262,8 @@ async fn mysql_provider_refuses_input_targets_and_non_literal_statements() {
             "mysql-conn",
             json!({"connection_string": "postgres://127.0.0.1:1/app"}),
             &[],
-        ),
+        )
+        .await,
     );
     let err = mysql
         .invoke(&attempt, "query", json!({"sql": "SELECT 1"}))
@@ -271,7 +278,8 @@ async fn mysql_provider_refuses_input_targets_and_non_literal_statements() {
             "mysql-conn",
             json!({"connection_string": "mysql://127.0.0.1:1/app"}),
             &[],
-        ),
+        )
+        .await,
     );
     let inv = make_invocation(DRIVER_MYSQL, "mysql-conn", 1, "execute");
     let attempt = inv.next_attempt().unwrap();
@@ -409,7 +417,8 @@ async fn http_ssrf_guard_and_live_sqlite_execution() {
         "http-conn",
         json!({"url": "http://169.254.169.254/latest"}),
         &[],
-    );
+    )
+    .await;
     let http = HttpProviderBackend::with_deployment_store(store);
     let ssrf_err = http
         .invoke(&attempt, "get", json!({"path": "/meta-data"}))
@@ -446,7 +455,8 @@ async fn http_ssrf_guard_and_live_sqlite_execution() {
             "pg-conn",
             json!({"connection_string": "postgres://127.0.0.1:1/nonexistent"}),
             &[],
-        ),
+        )
+        .await,
     );
     let pg_inv_w = make_invocation(DRIVER_POSTGRESQL, "pg-conn", 1, "execute");
     let pg_attempt_w = pg_inv_w.next_attempt().unwrap();
@@ -677,11 +687,9 @@ async fn http_auth_needs_a_secret_locator_for_its_credential() {
             vec![("auth.password", "env://ORION_TEST_HTTP_TOKEN")],
         ),
     ] {
-        let http = HttpProviderBackend::with_deployment_store(with_connection(
-            "http-conn",
-            config,
-            &locators,
-        ));
+        let http = HttpProviderBackend::with_deployment_store(
+            with_connection("http-conn", config, &locators).await,
+        );
         let err = http
             .invoke(&attempt, "get", json!({"path": "/"}))
             .await
@@ -698,8 +706,9 @@ async fn http_auth_needs_a_secret_locator_for_its_credential() {
 /// A connection's configuration as a provider reads it: each locator placed
 /// at its path; and a locator is refused where it would shadow a public
 /// value or is not a dotted path.
-#[test]
-fn locators_are_placed_at_their_paths() {
+#[tokio::test]
+async fn locators_are_placed_at_their_paths() {
+    let pool = crate::storage::test_sqlite_pool().await;
     let store = with_connection(
         "c",
         json!({"url": "https://x.example", "auth": {"type": "bearer"}}),
@@ -707,7 +716,8 @@ fn locators_are_placed_at_their_paths() {
             ("auth.token", "env://TOKEN"),
             ("extra.deep.key", "vault://k#v"),
         ],
-    );
+    )
+    .await;
     let row = store.get_connection("c", 1).expect("stored");
     assert_eq!(
         row.config_with_locators(),
@@ -726,13 +736,15 @@ fn locators_are_placed_at_their_paths() {
         (json!({}), "trailing."),
     ] {
         let err = crate::extensions::ImmutableDeploymentStore::default()
-            .store_connection_revision(
+            .store_connection_revision_in_db(
+                &pool,
                 "c",
                 1,
                 "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 public,
                 [(path.to_string(), "env://X".to_string())].into(),
             )
+            .await
             .expect_err("refused");
         assert_eq!(err.code, "CONNECTION_SECRET_LOCATOR_INVALID", "{path}");
     }

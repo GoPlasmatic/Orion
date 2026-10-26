@@ -92,7 +92,9 @@ pub(crate) async fn get_definition(
 ) -> Result<Json<Definition>, OrionError> {
     let bytes = state
         .deployments
-        .get_artifact(&digest)
+        .fetch_artifact(&state.db_pool, &digest)
+        .await
+        .map_err(|e| OrionError::internal(e.to_string()))?
         .and_then(|row| row.bytes)
         .ok_or_else(|| OrionError::NotFound(format!("no definition is stored as '{digest}'")))?;
     // A stored artifact that is not a definition — a connection's

@@ -145,7 +145,7 @@ pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
     }
 
     sync_v2_revocations(state);
-    crate::runtime::workflow_providers::sync(state);
+    crate::runtime::workflow_providers::sync(state).await;
 
     state.reconciler.renew_security_lease(
         now_ms,
