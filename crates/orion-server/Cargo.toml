@@ -67,6 +67,7 @@ harness = true
 workspace = true
 
 [dependencies]
+# The crates the server is assembled from; it adds bootstrap and the operator subcommands.
 orion-authoring.workspace = true
 orion-common.workspace = true
 orion-engine.workspace = true
@@ -74,148 +75,44 @@ orion-http.workspace = true
 orion-plugin-host.workspace = true
 orion-runtime.workspace = true
 orion-storage.workspace = true
-orion-definitions.workspace = true
-orion-extension-api.workspace = true
-# dataflow-rs 4 selects the JSONLogic extension families (string, array,
-# math, control, error handling, object) on its ExprEngineBuilder at runtime;
-# only `datetime` still needs a Cargo feature, and `budget` enables the
-# `engine.ops_budget` ceiling. The vocabulary that results is
-# docs/src/reference/expressions.md#available-operators, asserted against the
-# engine by jsonlogic_operators_test. A budget crossed in a condition fails
-# closed to `false`, which is why it is not on by default.
+# `datetime` operators and the `engine.ops_budget` ceiling (docs/src/reference/expressions.md).
 dataflow-rs = { version = "4.0.1", features = ["datetime", "budget"] }
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path", "multipart"] }
-# `uuid`, `json` and `bigdecimal` are what let the connector decoders read a
-# real Postgres row (#309). Before native decoding, connector queries went
-# through `sqlx::Any`, whose `AnyTypeInfoKind` has nine variants and no way to
-# spell `uuid`, `jsonb`, `numeric` or an array — so a `SELECT *` over any
-# ordinary schema failed the task with a 500, and only when a row existed.
-# `chrono` was already on for the server's own store and covers the date/time
-# family. The `Any` backend itself is unused (no `sqlx::Any` in the crate), so
-# the `any` feature here and `sqlx-any` on `sea-query-sqlx` are both dropped.
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "sqlite", "postgres", "mysql"] }
-# Postgres NUMERIC is arbitrary precision and JSON has no equivalent. Decoding
-# through f64 would silently round a money column, so the value is read exactly
-# here and the lossy step is the one the author asks for (`numeric_as`).
-bigdecimal = "0.4"
-sea-query = { version = "1.0", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
-# `sea-query-binder` was superseded by `sea-query-sqlx` upstream. 0.9.x is the
-# line that tracks sqlx 0.9; it declares Rust 1.94, comfortably under the 1.98
-# the plugin sandbox already pins, so it is the binder version and the sqlx
-# version that move together — bumping one without the other does not resolve.
-# It lists `jiff-sqlx` (Unlicense OR MIT) as an optional dependency behind
-# `with-jiff`, which is off here — so the crate lands in Cargo.lock but is
-# never compiled, and `cargo deny` clears it via the MIT arm of that
-# expression (`Unlicense` is not in deny.toml's allowlist).
-# `default-features = false` on sea-query also opts out of 1.0's new `itoa`
-# (integer-formatting fast path) and `audit` defaults; neither is needed.
-sea-query-sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "with-chrono", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
-tower-http = { version = "0.7", features = ["trace", "cors", "request-id", "catch-panic", "compression-gzip"] }
 toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
 clap = { version = "4", default-features = false, features = ["std", "derive", "env", "help", "usage", "error-context"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi", "tracing-log", "env-filter", "json"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# The path of a deserialization error, for typing a definition around the
-# `var://` references it cannot resolve (`config::vars::parse_with_unresolved_vars`).
-serde_path_to_error = "0.1"
-# The Orion version range a definition set declares (`package.requires.orion`).
-semver = "1"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
-# Cron channels (docs/src/guides/patterns/scheduled-workflows.md): the six-field
-# expression parser, and the IANA time-zone table the local calendar times it
-# produces are resolved against.
-#
-# `cron` enumerates *wall-clock* instants and Orion resolves local -> UTC
-# itself (`channel::cron::CronDescriptor::fires_between`), so the documented
-# DST rules — a nonexistent local time does not fire, a repeated one fires
-# twice — are Orion's code rather than a dependency's behaviour.
-#
-# `chrono-tz` is already in the tree via datalogic-rs's `datetime` operators,
-# so the version must track the one dataflow-rs links or the lock file grows a
-# second copy of a 400 kB zone table.
-cron = "0.17"
-chrono-tz = "0.10"
-# The shared wire contract (DTOs, enums, error envelope, import report). The
-# server enables `utoipa` so the shared types publish in its OpenAPI document.
-orion-api = { workspace = true, features = ["utoipa"] }
-# The shared admin-API transport — drives `orion-server package` promotion
-# against a remote instance; the same client orion-cli ships.
-orion-client.workspace = true
-thiserror = "2"
-async-trait = "0.1"
-metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
-url = "2"
-ipnet = "2"
-sha2 = "0.11"
-# Optional encryption at rest for connectors.config_json (H3):
-# storage.connector_encryption_key turns it on. AES-256-GCM from RustCrypto —
-# pure Rust, no linkage to the system OpenSSL.
-aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc", "getrandom"] }
-# Channel `auth.mode = "hmac"`: webhook signature verification over the raw
-# request body. 0.13 tracks `digest` 0.11, the same major `sha2` 0.11 uses —
-# both are Orion's direct deps on one digest line. (`digest` 0.10 is already in
-# the tree transitively via `sha2` 0.10 under cranelift-codegen and sqlx-core,
-# so there is no second-major to avoid.)
-hmac = "0.13"
-hex = "0.4"
-# Webhook signatures are hex (Stripe, GitHub) or base64 (Shopify); both
-# encodings are accepted, so both decoders are needed.
-base64 = "0.23"
-# Request bodies as reqwest sends them: `Bytes` clones are refcount bumps,
-# so the per-attempt body attach in http_common never copies the payload.
-bytes = "1"
-rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
-governor = { version = "0.10", default-features = false, features = ["dashmap", "std"] }
-dashmap = "6"
-# The connection-pool LRU (`connector/lru_cache.rs`): a recency-ordered map, so
-# a hit and an eviction are O(1). Already in the tree through sqlx.
-hashlink = "0.11"
-# Wait-free publication of the ChannelRegistry snapshot: every data-plane
-# request reads it, and the only writer stores a finished value (N17).
-arc-swap = "1"
-tower = { version = "0.5", default-features = false, features = ["util"] }
-utoipa = { version = "6", features = ["axum_extras", "chrono"] }
-# The workspace patches this to upstream's unpublished ZIP 9 security fix.
-# For air-gapped / offline builds (`TD-35`), point `SWAGGER_UI_DOWNLOAD_URL` at
-# a local `file:///.../v5.17.14.zip` archive so `utoipa-swagger-ui`'s build.rs
-# never attempts a live GitHub download.
-utoipa-swagger-ui = { version = "10", features = ["axum"] }
-
-futures = { version = "0.3", default-features = false, features = ["alloc"] }
-
-# TLS support. `rustls` is a direct dependency only so `server::tls` can install
-# a process-level CryptoProvider: the graph enables both `rustls/aws-lc-rs`
-# (axum-server, reqwest) and `rustls/ring` (sqlx), which makes rustls
-# refuse to pick one on its own.
+# TLS serving (`server.tls`).
 axum-server = { version = "0.8", features = ["tls-rustls"] }
-rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std"] }
-# Ed25519 for `[plugins.trust]` signature verification. The same provider
-# rustls already links, so this adds no second crypto implementation.
-aws-lc-rs = "1"
-
-# OpenTelemetry
-opentelemetry = { version = "0.33", default-features = false, features = ["trace"] }
+# OpenTelemetry export (`tracing.enabled`).
 opentelemetry_sdk = { version = "0.33", default-features = false, features = ["rt-tokio", "trace"] }
-opentelemetry-otlp = { version = "0.33", default-features = false, features = ["grpc-tonic", "trace"] }
 tracing-opentelemetry = { version = "0.34", default-features = false }
 
-# TCP socket configuration
-socket2 = "0.6"
-sha1 = "0.11"
-md-5 = "0.11"
-argon2 = "0.6.0"
-bcrypt = "0.19.3"
-# aws_lc_rs: the same crypto backend the in-tree rustls stack uses — one
-# provider, not two.
-jsonwebtoken = { version = "11.1.0", features = ["aws_lc_rs"] }
-
 [dev-dependencies]
+# What the integration suites drive directly; the server itself names none of it.
+orion-extension-api.workspace = true
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path", "multipart"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "sqlite", "postgres", "mysql"] }
+sea-query = { version = "1.0", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
+sea-query-sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "with-chrono", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
+serde = { version = "1", features = ["derive"] }
+orion-api = { workspace = true, features = ["utoipa"] }
+orion-client.workspace = true
+async-trait = "0.1"
+url = "2"
+sha2 = "0.11"
+hmac = "0.13"
+hex = "0.4"
+base64 = "0.23"
+tower = { version = "0.5", default-features = false, features = ["util"] }
+utoipa = { version = "6", features = ["axum_extras", "chrono"] }
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
+jsonwebtoken = { version = "11.1.0", features = ["aws_lc_rs"] }
 # fmt_examples_test prints the diff an unformatted example needs.
 similar = "3"
 # The test helpers orion-common keeps for this crate's unit tests.
