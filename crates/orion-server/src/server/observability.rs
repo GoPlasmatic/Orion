@@ -1,16 +1,23 @@
 use std::borrow::Cow;
 use std::time::Instant;
 
-use axum::extract::{MatchedPath, Request};
+use axum::extract::{MatchedPath, Request, State};
 use axum::http::header;
 use axum::middleware::Next;
 use axum::response::Response;
 
 use crate::metrics;
 
-/// HTTP metrics middleware that records request count, duration, and emits a
-/// structured access log line per request.
+/// Whether [`http_metrics_middleware`] writes its access-log line —
+/// `logging.access_log`, read once when the router is built.
+#[derive(Debug, Clone, Copy)]
+pub struct AccessLog(pub bool);
+
+/// HTTP metrics middleware that records request count, duration, and — when
+/// `logging.access_log` is on — emits a structured access log line per
+/// request.
 pub async fn http_metrics_middleware(
+    State(AccessLog(access_log)): State<AccessLog>,
     matched_path: Option<MatchedPath>,
     req: Request,
     next: Next,
@@ -19,14 +26,25 @@ pub async fn http_metrics_middleware(
     // cheaper than the `to_string()` this used to do — and `as_str()` below
     // then costs nothing. Only an extension method allocates.
     let method = req.method().clone();
-    // The requested target, for the access-log line. Borrowed from
-    // `matched_path`, which outlives the response. Only the unmatched fallback
+    // The requested target and request id, for the access-log line, read
+    // only when there is a line to write. The path is borrowed from
+    // `matched_path`, which outlives the response; only the unmatched fallback
     // allocates, and it has to: it reads from `req`, which moves into
-    // `next.run` below.
-    let path: Cow<'_, str> = match matched_path.as_ref() {
-        Some(m) => Cow::Borrowed(m.as_str()),
-        None => Cow::Owned(req.uri().path().to_string()),
-    };
+    // `next.run` below. The request id was set by SetRequestIdLayer (inner
+    // layer, runs before us), and is owned for the same reason.
+    let access = access_log.then(|| {
+        let path: Cow<'_, str> = match matched_path.as_ref() {
+            Some(m) => Cow::Borrowed(m.as_str()),
+            None => Cow::Owned(req.uri().path().to_string()),
+        };
+        let request_id = req
+            .headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("-")
+            .to_string();
+        (path, request_id)
+    });
 
     // The metric label, distinct from the access-log `path` above. An
     // unmatched request (a 404, a scanner probe) has no route template, and
@@ -36,38 +54,29 @@ pub async fn http_metrics_middleware(
     // unmatched request shares one `unmatched` series instead.
     let metric_path: &str = matched_path.as_ref().map_or("unmatched", |m| m.as_str());
 
-    // Request id set by SetRequestIdLayer (inner layer, runs before us).
-    //
-    // Owned rather than borrowed: `req` moves into `next.run(req)` below, so a
-    // borrow of its headers cannot survive to the log line after the response.
-    let request_id = req
-        .headers()
-        .get("x-request-id")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("-")
-        .to_string();
-
     let start = Instant::now();
     let response = next.run(req).await;
     let duration = start.elapsed().as_secs_f64();
 
     let status = response.status().as_u16();
 
-    let content_length = response
-        .headers()
-        .get(header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("-");
+    if let Some((path, request_id)) = access {
+        let content_length = response
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("-");
 
-    tracing::info!(
-        request_id = %request_id,
-        http.method = %method.as_str(),
-        http.route = %path,
-        http.status_code = status,
-        http.response_content_length = %content_length,
-        duration_ms = format_args!("{:.2}", duration * 1000.0),
-        "HTTP request"
-    );
+        tracing::info!(
+            request_id = %request_id,
+            http.method = %method.as_str(),
+            http.route = %path,
+            http.status_code = status,
+            http.response_content_length = %content_length,
+            duration_ms = format_args!("{:.2}", duration * 1000.0),
+            "HTTP request"
+        );
+    }
 
     metrics::record_http_request(method.as_str(), metric_path, status, duration);
 

@@ -12,6 +12,7 @@ The `[logging]` and `[metrics]` sections: log level and format, and where Promet
 [logging]
 level = "info"
 format = "pretty"
+access_log = true
 
 [metrics]
 enabled = false
@@ -30,6 +31,7 @@ listener, keeping the last scrape of a draining node available for
 |---|---|---|---|
 | `logging.level` | `"info"` | `ORION_LOGGING__LEVEL` | `trace`, `debug`, `info`, `warn`, `error`. `RUST_LOG=orion=debug` gives per-crate control. |
 | `logging.format` | `"pretty"` | `ORION_LOGGING__FORMAT` | `json` wherever logs are collected by anything other than a human. |
+| `logging.access_log` | `true` | `ORION_LOGGING__ACCESS_LOG` | One `INFO` line per HTTP request: method, matched route, status, response length, duration and request id. It is written by the HTTP metrics layer, so it also needs `metrics.enabled = true`. Turn it off where a load balancer or ingress already logs every request. |
 | `metrics.enabled` | `false` | `ORION_METRICS__ENABLED` | Enable to collect metrics and serve them at `GET /metrics`. With this off the route is not registered at all: `/metrics` answers `404` rather than `200` with a permanently empty body. |
 | `metrics.bind_addr` | — | `ORION_METRICS__BIND_ADDR` | A dedicated `host:port` for an **unauthenticated** listener serving only `GET /metrics`. Unset keeps the endpoint on the main listener, where `admin_auth` guards it. Requires `metrics.enabled = true`; set on its own it raises no listener and startup warns. Refused at startup if it would contend with `server.host`/`server.port` — same port counts as contention whenever either side is a wildcard address. |
 

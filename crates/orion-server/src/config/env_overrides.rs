@@ -225,6 +225,7 @@ where
 
     // Logging
     ov!(logging.level: String);
+    ov!(logging.access_log: bool);
     ov_enum!(
         "ORION_LOGGING__FORMAT",
         logging.format,

@@ -135,7 +135,8 @@ pub fn build_router(state: AppState) -> Router {
     // metrics crate's macros, so we skip the layer entirely). Inner to
     // SetRequestIdLayer so it can read the id it logs.
     let router = if state.config.metrics.enabled {
-        router.layer(axum::middleware::from_fn(
+        router.layer(axum::middleware::from_fn_with_state(
+            observability::AccessLog(state.config.logging.access_log),
             observability::http_metrics_middleware,
         ))
     } else {

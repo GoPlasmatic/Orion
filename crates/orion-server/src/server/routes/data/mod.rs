@@ -104,7 +104,11 @@ and its sibling fields are discarded.",
         (status = 504, description = "Workflow exceeded the channel's `timeout_ms`", body = ErrorResponse),
     )
 )]
+// DEBUG, not INFO: at the default level an INFO span here was a second
+// per-request event beside the access-log line, which already carries the
+// route, status and duration. Raise the level to see it.
 #[tracing::instrument(
+    level = "debug",
     skip(state, uri, headers, peer, query_params, body),
     fields(path = %uri.path())
 )]

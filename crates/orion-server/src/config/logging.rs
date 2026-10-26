@@ -10,6 +10,12 @@ const VALID_LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
 pub struct LoggingConfig {
     pub level: String,
     pub format: LogFormat,
+    /// Emit one `INFO` access-log line per HTTP request (method, matched
+    /// route, status, response length, duration, request id). Written by the
+    /// HTTP metrics layer, so it needs `metrics.enabled` as well. On by
+    /// default; turn it off where a load balancer or ingress already logs
+    /// every request, to save the formatting and the write on the hot path.
+    pub access_log: bool,
 }
 
 impl Default for LoggingConfig {
@@ -17,6 +23,7 @@ impl Default for LoggingConfig {
         Self {
             level: "info".to_string(),
             format: LogFormat::Pretty,
+            access_log: true,
         }
     }
 }

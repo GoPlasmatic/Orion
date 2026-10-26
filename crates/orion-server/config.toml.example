@@ -422,6 +422,8 @@
 [logging]
 # level = "info"                # trace, debug, info, warn, error
 # format = "pretty"             # pretty or json — use json wherever logs are collected
+# access_log = true             # One INFO line per HTTP request (needs metrics.enabled). Turn off
+                                # where a load balancer or ingress already logs every request.
 
 [metrics]
 # enabled = false               # Collect metrics and serve them at GET /metrics. With this off the
