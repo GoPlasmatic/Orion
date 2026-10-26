@@ -664,7 +664,7 @@ impl ChannelLoader {
         // `/health`, exactly as an active plugin row is on a node with the
         // sandbox off.
         let cron = match channel.protocol.as_str() {
-            p if p == crate::storage::models::ChannelProtocol::Cron.as_str() => {
+            crate::extensions::channel_driver::PROTOCOL_CRON => {
                 if !deps.cron_enabled {
                     tracing::error!(
                         channel = %channel.name,

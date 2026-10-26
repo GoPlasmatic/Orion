@@ -87,61 +87,14 @@ impl<'de> Deserialize<'de> for ChannelType {
 }
 
 /// A channel's `protocol`, lowercased: the name of the channel driver that
-/// serves it. Deliberately a string rather than [`ChannelProtocol`] — the set
-/// of protocols is whatever drivers the node's composition root registers, so
+/// serves it. Deliberately a string rather than an enum — the set of
+/// protocols is whatever drivers the node's composition registers, so
 /// an unknown one is refused by validation, by field, naming the registered
 /// ones, not by this parse.
 pub fn deserialize_protocol<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<String, D::Error> {
     Ok(String::deserialize(deserializer)?.to_ascii_lowercase())
-}
-
-// -- Channel protocol enum --
-/// The protocols the Community channel drivers serve.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-#[serde(rename_all = "lowercase")]
-pub enum ChannelProtocol {
-    Rest,
-    Http,
-    /// A schedule rather than a caller: the channel declares a cron expression
-    /// in its `transport_config` and a supervised reconciler materialises
-    /// durable occurrences the workers execute. Registers no HTTP route, and
-    /// must be `channel_type: "async"`.
-    Cron,
-}
-
-impl ChannelProtocol {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Rest => "rest",
-            Self::Http => "http",
-            Self::Cron => "cron",
-        }
-    }
-}
-
-impl std::fmt::Display for ChannelProtocol {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-// Case-insensitive deserialize matching ChannelType's behaviour.
-impl<'de> Deserialize<'de> for ChannelProtocol {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(deserializer)?;
-        match s.to_ascii_lowercase().as_str() {
-            "rest" => Ok(Self::Rest),
-            "http" => Ok(Self::Http),
-            "cron" => Ok(Self::Cron),
-            other => Err(serde::de::Error::unknown_variant(
-                other,
-                &["rest", "http", "cron"],
-            )),
-        }
-    }
 }
 
 // -- Trace status constants --
@@ -205,37 +158,6 @@ mod tests {
     fn test_valid_channel_types() {
         assert!(VALID_CHANNEL_TYPES.contains(&CHANNEL_TYPE_SYNC));
         assert!(VALID_CHANNEL_TYPES.contains(&CHANNEL_TYPE_ASYNC));
-    }
-
-    #[test]
-    fn test_channel_protocol_as_str() {
-        assert_eq!(ChannelProtocol::Rest.as_str(), "rest");
-        assert_eq!(ChannelProtocol::Http.as_str(), "http");
-        assert_eq!(ChannelProtocol::Cron.as_str(), "cron");
-    }
-
-    #[test]
-    fn test_channel_protocol_display() {
-        assert_eq!(ChannelProtocol::Rest.to_string(), "rest");
-        assert_eq!(ChannelProtocol::Http.to_string(), "http");
-        assert_eq!(ChannelProtocol::Cron.to_string(), "cron");
-    }
-
-    #[test]
-    fn test_channel_protocol_serde_roundtrip() {
-        let rest: ChannelProtocol = serde_json::from_str(r#""rest""#).expect("test");
-        assert_eq!(rest, ChannelProtocol::Rest);
-        let http: ChannelProtocol = serde_json::from_str(r#""http""#).expect("test");
-        assert_eq!(http, ChannelProtocol::Http);
-        let cron: ChannelProtocol = serde_json::from_str(r#""cron""#).expect("test");
-        assert_eq!(cron, ChannelProtocol::Cron);
-        // Case-insensitive, like every other enum on this wire.
-        let upper: ChannelProtocol = serde_json::from_str(r#""CRON""#).expect("test");
-        assert_eq!(upper, ChannelProtocol::Cron);
-        // Invalid protocol should fail
-        assert!(serde_json::from_str::<ChannelProtocol>(r#""grpc""#).is_err());
-        // Kafka left Community: a stored or authored `kafka` is unknown here.
-        assert!(serde_json::from_str::<ChannelProtocol>(r#""kafka""#).is_err());
     }
 
     #[test]

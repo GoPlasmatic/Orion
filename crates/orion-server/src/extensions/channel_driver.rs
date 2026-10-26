@@ -28,6 +28,13 @@ use serde_json::Value;
 
 use crate::errors::FieldError;
 
+/// The `"rest"` protocol id.
+pub const PROTOCOL_REST: &str = "rest";
+/// The `"http"` protocol id.
+pub const PROTOCOL_HTTP: &str = "http";
+/// The `"cron"` protocol id.
+pub const PROTOCOL_CRON: &str = "cron";
+
 /// Capabilities declared by a native Rust [`ChannelDriver`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelDriverCapabilities {
@@ -79,7 +86,7 @@ pub struct RestChannelDriver;
 
 impl ChannelDriver for RestChannelDriver {
     fn protocol_id(&self) -> &'static str {
-        "rest"
+        PROTOCOL_REST
     }
 
     fn capabilities(&self) -> ChannelDriverCapabilities {
@@ -101,7 +108,7 @@ pub struct HttpChannelDriver;
 
 impl ChannelDriver for HttpChannelDriver {
     fn protocol_id(&self) -> &'static str {
-        "http"
+        PROTOCOL_HTTP
     }
 
     fn capabilities(&self) -> ChannelDriverCapabilities {
@@ -161,7 +168,7 @@ pub struct CronChannelDriver;
 
 impl ChannelDriver for CronChannelDriver {
     fn protocol_id(&self) -> &'static str {
-        "cron"
+        PROTOCOL_CRON
     }
 
     fn capabilities(&self) -> ChannelDriverCapabilities {

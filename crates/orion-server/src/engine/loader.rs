@@ -651,9 +651,7 @@ mod tests {
                 .as_str()
                 .to_string(),
             channel_type: "sync".to_string(),
-            protocol: crate::storage::models::ChannelProtocol::Http
-                .as_str()
-                .to_string(),
+            protocol: crate::extensions::channel_driver::PROTOCOL_HTTP.to_string(),
             methods_json: Some("POST".to_string()),
             workflow_id: None,
             topic: None,
