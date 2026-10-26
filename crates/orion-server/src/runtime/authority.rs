@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
+use crate::extensions::ConnectionReference;
 use crate::extensions::context::AuthorityGrant;
 use crate::extensions::deployment_store::{CanonicalManifest, EntityKind};
 use crate::storage::models::Workflow;
@@ -23,6 +24,13 @@ pub struct ConnectorAuthority {
     /// The revision of each connection the manifest deploys: the one a call
     /// resolves, never a later revision stored since.
     connections: BTreeMap<String, u64>,
+    /// What each connection over a workflow provider package may call as
+    /// its dependencies, keyed by
+    /// [`dependency_key`](crate::extensions::workflow_provider::dependency_key):
+    /// the bound connection at the revision the member requires, and the
+    /// operations the package declares for the alias. A package invocation
+    /// derives its dependency calls from these; no workflow is granted them.
+    dependencies: BTreeMap<String, (ConnectionReference, BTreeSet<String>)>,
 }
 
 impl ConnectorAuthority {
@@ -69,7 +77,19 @@ impl ConnectorAuthority {
         Self {
             by_workflow,
             connections,
+            dependencies: BTreeMap::new(),
         }
+    }
+
+    /// This authority, with the dependencies the manifest's connections over
+    /// workflow packages bind
+    /// ([`manifest_dependencies`](crate::extensions::workflow_provider::manifest_dependencies)).
+    pub fn with_dependencies(
+        mut self,
+        dependencies: BTreeMap<String, (ConnectionReference, BTreeSet<String>)>,
+    ) -> Self {
+        self.dependencies = dependencies;
+        self
     }
 
     /// One workflow's grant, for tests that need a generation with one; each
@@ -83,6 +103,7 @@ impl ConnectorAuthority {
                 .map(|c| (c.clone(), 1))
                 .collect(),
             by_workflow: BTreeMap::from([(engine_id.to_string(), grant)]),
+            dependencies: BTreeMap::new(),
         }
     }
 
@@ -96,12 +117,18 @@ impl ConnectorAuthority {
         self.by_workflow.get(engine_id)
     }
 
-    /// Everything any workflow may call: a run's ceiling.
+    /// Everything any workflow may call, and every package dependency: a
+    /// run's ceiling.
     pub fn union(&self) -> AuthorityGrant {
         let mut all = AuthorityGrant::default();
         for grant in self.by_workflow.values() {
             all.extend(grant);
         }
+        all.declared_dependencies.extend(
+            self.dependencies
+                .iter()
+                .map(|(key, dep)| (key.clone(), dep.clone())),
+        );
         all
     }
 }

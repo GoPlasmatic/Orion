@@ -156,19 +156,13 @@ pub fn verify_community_assembly(root: &CompositionRoot) -> CommunityAssemblyRep
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
-    use crate::extensions::contract::{
-        ConnectionReference, ConnectorResult, EffectiveConnectionIdentity, ProviderReference,
-    };
-    use crate::extensions::foundation::DRIVER_MEMORY_CACHE;
+    use crate::extensions::contract::ProviderReference;
     use crate::extensions::workflow_provider::{
-        BindingSlotSpec, CompiledWorkflowProviderGraph, WorkflowGroupManifest,
-        WorkflowGroupProviderBackend, WorkflowGroupStep, WorkflowNodeDef,
+        WorkflowHost, WorkflowPackage, WorkflowProviderBackend,
     };
     use serde_json::json;
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
     use std::sync::Arc;
-    use std::time::{Duration, Instant};
 
     #[test]
     fn default_community_assembly_passes_boundary_audit() {
@@ -231,62 +225,41 @@ mod tests {
             && v.component == "kafka"));
     }
 
-    #[tokio::test]
-    async fn community_assembly_admits_and_runs_a_workflow_package() {
+    #[test]
+    fn a_workflow_package_backend_keeps_the_assembly_compliant() {
         let root = CompositionRoot::community();
-
-        // 1. Compile and register a custom Workflow-Group connector on the Community root
-        //    that delegates to the Community `org.orion.memory-cache` foundation provider.
-        let wf_provider_ref = ProviderReference {
+        let provider = ProviderReference {
             provider_id: "community.composite-cache".to_string(),
             version: "2.0.0".to_string(),
-            package_digest:
-                "sha256:8888888888888888888888888888888888888888888888888888888888888888"
-                    .to_string(),
+            package_digest: format!("sha256:{}", "88".repeat(32)),
         };
-        let mut workflows = BTreeMap::new();
-        workflows.insert(
-            "cache_write_entry".to_string(),
-            WorkflowNodeDef {
-                id: "cache_write_entry".to_string(),
-                steps: vec![WorkflowGroupStep::InvokeSlot {
-                    binding_slot: "cache_slot".to_string(),
-                    operation: "set".to_string(),
-                    input: json!({
-                        "key": "assembly:test",
-                        "value": { "status": "ok" }
-                    }),
-                    output_key: "cache_result".to_string(),
-                }],
+        let manifest = json!({
+            "implementation": {
+                "kind": "workflow",
+                "entries": {"cache.write": "entry"},
+                "workflows": ["workflows/entry.json"],
             },
-        );
-        let mut binding_slots = BTreeMap::new();
-        binding_slots.insert(
-            "cache_slot".to_string(),
-            BindingSlotSpec {
-                slot: "cache_slot".to_string(),
-                provider_id: DRIVER_MEMORY_CACHE.to_string(),
-                implementation: ImplementationKind::Rust,
-                required_operations: BTreeSet::from(["set".to_string()]),
+            "dependencies": [],
+        });
+        let files = BTreeMap::from([(
+            "workflows/entry.json".to_string(),
+            serde_json::to_vec(&json!({"id": "entry", "name": "entry", "tasks": [{"id": "t", "name": "t", "function": {"name": "map", "input": {"mappings": [{"path": "data.x", "logic": 1}]}}}]}))
+                .expect("serializes"),
+        )]);
+        let package = WorkflowPackage::from_files(provider.clone(), &manifest, &files)
+            .expect("the package is hermetic");
+        let backend = Arc::new(WorkflowProviderBackend::new(
+            package,
+            WorkflowHost {
+                providers: root.providers.clone(),
+                jwks: Arc::new(crate::jwt::jwks::JwksCache::new(
+                    reqwest::Client::new(),
+                    false,
+                )),
+                ops_budget: 0,
             },
-        );
-        let wf_manifest = WorkflowGroupManifest {
-            provider: wf_provider_ref.clone(),
-            entries: BTreeMap::from([("cache_write".to_string(), "cache_write_entry".to_string())]),
-            workflows,
-            sub_channels: BTreeMap::new(),
-            binding_slots,
-            source_entries: None,
-        };
-        let compiled_wf =
-            CompiledWorkflowProviderGraph::compile(wf_manifest).expect("compile workflow group");
-        let wf_backend = Arc::new(WorkflowGroupProviderBackend::new(
-            compiled_wf,
-            root.providers.clone(),
-            root.admission.clone(),
         ));
-
-        let root = root.with_provider_backend(wf_backend);
+        let root = root.with_provider_backend(backend);
 
         // The assembly stays Community-compliant with a custom workflow provider.
         let report = verify_community_assembly(&root);
@@ -297,74 +270,7 @@ mod tests {
         );
         assert_eq!(
             report.registered_workflow_providers,
-            vec!["community.composite-cache"]
+            vec![provider.package_digest]
         );
-
-        // Execute the custom provider through the unified ProviderRegistry.
-        let wf_conn = ConnectionReference {
-            connection_id: "composite-conn".to_string(),
-            revision: 1,
-            provider: wf_provider_ref.clone(),
-        };
-        let cache_conn = ConnectionReference {
-            connection_id: "local-cache".to_string(),
-            revision: 1,
-            provider: ProviderReference {
-                provider_id: DRIVER_MEMORY_CACHE.to_string(),
-                version: "2.0.0".to_string(),
-                package_digest:
-                    "sha256:9999999999999999999999999999999999999999999999999999999999999999"
-                        .to_string(),
-            },
-        };
-        let authority = AuthorityGrant {
-            allowed_operations: BTreeMap::from([(
-                "composite-conn".to_string(),
-                BTreeSet::from(["cache_write".to_string()]),
-            )]),
-            declared_dependencies: BTreeMap::from([(
-                "cache_slot".to_string(),
-                (cache_conn, BTreeSet::from(["set".to_string()])),
-            )]),
-            allowed_channels: BTreeSet::new(),
-        };
-
-        let run = AdmittedRun::admit(
-            "run-v2-11-3",
-            1,
-            Instant::now() + Duration::from_secs(10),
-            BudgetLimits::default(),
-            authority,
-        );
-
-        let inv1 = run
-            .context()
-            .start_invocation(
-                wf_conn,
-                EffectiveConnectionIdentity {
-                    provider_digest: wf_provider_ref.package_digest.clone(),
-                    connection_id: "composite-conn".to_string(),
-                    revision: 1,
-                    secret_hash: "sha256:0000".to_string(),
-                },
-                "cache_write",
-                None,
-                1,
-            )
-            .expect("wf invocation");
-        let res1 = root
-            .providers
-            .dispatch_attempt(
-                root.admission.as_ref(),
-                &inv1,
-                ImplementationKind::Workflow,
-                "community.composite-cache",
-                json!({}),
-            )
-            .await;
-        let ConnectorResult::Success { data: data1, .. } = res1 else {
-            panic!("expected workflow success, got {res1:?}");
-        };
-        assert_eq!(data1["cache_result"]["stored"], json!(true));
     }
 }

@@ -6,8 +6,10 @@
 //!   `orion.postgresql`, `orion.sqlite`, `orion.memory-cache` in Community;
 //!   `orion.mysql`, `orion.mongodb`, `orion.redis`, `orion.elasticsearch`,
 //!   `orion.kafka`, `orion.smtp`, `orion.s3` in Enterprise).
-//! - **Workflow-Group (`ImplementationKind::Workflow`)**: Composite packages combining
-//!   private workflows, internal sub-channels, and declared connector `binding_slot`s.
+//! - **Workflow (`ImplementationKind::Workflow`)**: an uploaded package whose
+//!   operations are dataflow workflows, one per operation, run hermetically
+//!   ([`crate::extensions::workflow_provider`]) and registered by digest once
+//!   admitted.
 //!
 //! `ImplementationKind::Wasm` is still a package kind a manifest may declare,
 //! but no Wasm backend is registered, so a call to one finds no provider.
@@ -206,6 +208,16 @@ impl ProviderRegistry {
         if let Ok(mut guard) = self.backends.write() {
             guard.insert((backend.kind(), backend.driver_id().to_string()), backend);
         }
+    }
+
+    /// Remove the backend registered under `(kind, driver_id)`, answering
+    /// whether there was one. A call already holding it finishes; the next
+    /// lookup finds nothing.
+    pub fn unregister(&self, kind: ImplementationKind, driver_id: &str) -> bool {
+        self.backends
+            .write()
+            .map(|mut guard| guard.remove(&(kind, driver_id.to_string())).is_some())
+            .unwrap_or(false)
     }
 
     /// Look up a registered [`ProviderBackend`].

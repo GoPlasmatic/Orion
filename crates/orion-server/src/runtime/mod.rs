@@ -26,6 +26,7 @@ pub mod limiter_prune;
 pub mod load_issues;
 pub mod reload;
 pub mod tasks;
+pub mod workflow_providers;
 
 pub use generation::{RuntimeGeneration, RuntimeHandle};
 pub use reload::{check_candidate, reconcile_deployment_revision};

@@ -529,11 +529,15 @@ pub enum ProviderSubcommand {
         version: String,
         /// Implementation kind: `rust` (the default), `workflow` or `wasm`.
         ///
-        /// Only a `rust` package runs: it names a native provider compiled into
-        /// the node, and runs on a node that registers a backend under its
-        /// provider id (`orion-cli deployments capabilities` lists them). A
-        /// `workflow` or `wasm` package is accepted and can be admitted, but no
-        /// Community node executes either kind yet.
+        /// A `rust` package names a native provider compiled into the node, and
+        /// runs on a node that registers a backend under its provider id. A
+        /// `workflow` package runs on every node once admitted: one dataflow
+        /// workflow per operation, held to the hermetic rules (the dataflow
+        /// built-ins, `crypto`, `jwt_sign`, `jwt_verify`, plugin functions, and
+        /// `connector_call` only on its declared dependencies; no secrets, no
+        /// helper workflows). A `wasm` package is accepted and can be admitted,
+        /// but no Community node executes it yet. `orion-cli deployments
+        /// capabilities` lists the registered backends.
         #[arg(long, default_value = "rust")]
         kind: String,
     },

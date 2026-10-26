@@ -110,9 +110,7 @@ pub use source_runner::{
     SourceLeaseCoordinator, SourcePartitionClaim, SourcePartitionKey, SourceRunnerLimits,
 };
 pub use workflow_provider::{
-    BindingSlotSpec, CompiledWorkflowProviderGraph, SubChannelDef, TransitiveCapabilityReport,
-    WorkflowGraphCompileError, WorkflowGroupManifest, WorkflowGroupProviderBackend,
-    WorkflowGroupStep, WorkflowNodeDef, WorkflowSourceEntries,
+    PackageDependency, PackageProblem, WorkflowHost, WorkflowPackage, WorkflowProviderBackend,
 };
 
 /// Composition root assembling the node's channel drivers, connector provider

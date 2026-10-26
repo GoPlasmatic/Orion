@@ -202,6 +202,20 @@ pub struct ProviderPackageRow {
     pub inventory_json: Value,
 }
 
+impl ProviderPackageRow {
+    /// The id the package's backend registers under on the
+    /// [`ProviderRegistry`](crate::extensions::ProviderRegistry): its digest
+    /// for a `workflow` or `wasm` package, which only that version's bytes
+    /// can name, and its provider id for a `rust` package, whose backend is
+    /// built into the binary.
+    pub fn backend_id(&self) -> &str {
+        match self.implementation {
+            ImplementationKind::Rust => &self.provider_id,
+            ImplementationKind::Workflow | ImplementationKind::Wasm => &self.package_digest,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderAdmissionRow {
     pub package_digest: String,
@@ -221,6 +235,12 @@ pub struct ConnectionRevisionRow {
     /// `vault://`, …). Never a secret itself, and never a path
     /// `public_config` already holds.
     pub secret_locators: std::collections::BTreeMap<String, String>,
+    /// Over a `workflow` provider package: which connection each of the
+    /// package's declared dependency aliases calls (`alias -> connection_id`).
+    /// The deployment member for this connection requires each bound
+    /// connection, so a build deploys them together. Empty otherwise.
+    #[serde(default)]
+    pub bindings: std::collections::BTreeMap<String, String>,
     pub configuration_digest: String,
 }
 
@@ -268,15 +288,41 @@ pub fn place_locators(
 /// its public settings and where each secret comes from, in the general
 /// canonical form (a connector's settings hold booleans and fractions the
 /// package encoder refuses).
+///
+/// `bindings` are covered only when there are some, so a revision without any
+/// keeps the digest it had before bindings existed.
 pub(super) fn connection_config_bytes(
     public_config: &Value,
     secret_locators: &std::collections::BTreeMap<String, String>,
+    bindings: &std::collections::BTreeMap<String, String>,
 ) -> Vec<u8> {
-    crate::canonical::canonical_json(&serde_json::json!({
+    let mut doc = serde_json::json!({
         "public_config": public_config,
         "secret_locators": secret_locators,
-    }))
-    .into_bytes()
+    });
+    if !bindings.is_empty() {
+        doc["bindings"] = serde_json::json!(bindings);
+    }
+    crate::canonical::canonical_json(&doc).into_bytes()
+}
+
+/// A binding map as the `bindings_json` column holds it: canonical JSON, or
+/// NULL when there is none.
+pub(super) fn bindings_column(
+    bindings: &std::collections::BTreeMap<String, String>,
+) -> Option<String> {
+    (!bindings.is_empty()).then(|| crate::canonical::canonical_json(&serde_json::json!(bindings)))
+}
+
+/// The map a `bindings_json` column holds, read strictly.
+pub(super) fn bindings_from_column(
+    column: Option<String>,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    match column {
+        None => Ok(Default::default()),
+        Some(text) => serde_json::from_str(&text)
+            .map_err(|e| format!("bindings_json is not an alias map: {e}")),
+    }
 }
 
 /// A secret locator map as the `secret_locators_json` column holds it: canonical
@@ -583,6 +629,18 @@ impl ImmutableDeploymentStore {
     /// declares for `slot`: its `configuration_schema`, or an operation's
     /// `input_schema`. `None` when no package is stored under that digest;
     /// `Ok` when the manifest declares no schema there.
+    /// The bytes of the file `path` an uploaded package's inventory lists.
+    pub fn package_file(&self, package_digest: &str, path: &str) -> Option<Vec<u8>> {
+        let package = self.get_package(package_digest)?;
+        let sha = package.inventory_json["files"]
+            .as_array()?
+            .iter()
+            .find(|entry| entry["path"] == path)?["sha256"]
+            .as_str()?
+            .to_string();
+        self.get_artifact(&format!("sha256:{sha}"))?.bytes
+    }
+
     pub fn check_package_instance(
         &self,
         package_digest: &str,
@@ -1131,12 +1189,34 @@ impl ImmutableDeploymentStore {
         public_config: Value,
         secret_locators: std::collections::BTreeMap<String, String>,
     ) -> Result<ConnectionRevisionRow, DeploymentError> {
+        self.store_connection_revision_with_bindings(
+            connection_id,
+            revision,
+            provider_digest,
+            public_config,
+            secret_locators,
+            Default::default(),
+        )
+    }
+
+    /// [`Self::store_connection_revision`], with the dependency `bindings` of
+    /// a connection over a `workflow` provider package.
+    pub fn store_connection_revision_with_bindings(
+        &self,
+        connection_id: &str,
+        revision: u64,
+        provider_digest: &str,
+        public_config: Value,
+        secret_locators: std::collections::BTreeMap<String, String>,
+        bindings: std::collections::BTreeMap<String, String>,
+    ) -> Result<ConnectionRevisionRow, DeploymentError> {
         let (row, cfg_digest, cfg_bytes) = Self::prepare_connection_revision(
             connection_id,
             revision,
             provider_digest,
             public_config,
             secret_locators,
+            bindings,
         )?;
         let mut g = self.inner.lock().expect("store lock");
         Self::finish_store_connection_revision(&mut g, row, cfg_digest, cfg_bytes)
@@ -1148,6 +1228,7 @@ impl ImmutableDeploymentStore {
         provider_digest: &str,
         public_config: Value,
         secret_locators: std::collections::BTreeMap<String, String>,
+        bindings: std::collections::BTreeMap<String, String>,
     ) -> Result<(ConnectionRevisionRow, String, Vec<u8>), DeploymentError> {
         if revision == 0 {
             return Err(DeploymentError::new(
@@ -1162,7 +1243,7 @@ impl ImmutableDeploymentStore {
         // The digest covers where each secret comes from as well as the
         // public settings, in the general canonical form (a connector's
         // settings hold booleans and fractions the package encoder refuses).
-        let cfg_bytes = connection_config_bytes(&public_config, &secret_locators);
+        let cfg_bytes = connection_config_bytes(&public_config, &secret_locators, &bindings);
         let cfg_digest = sha256_digest(&cfg_bytes);
         let row = ConnectionRevisionRow {
             connection_id: connection_id.to_string(),
@@ -1170,6 +1251,7 @@ impl ImmutableDeploymentStore {
             provider_digest: provider_digest.to_string(),
             public_config,
             secret_locators,
+            bindings,
             configuration_digest: cfg_digest.clone(),
         };
         Ok((row, cfg_digest, cfg_bytes))

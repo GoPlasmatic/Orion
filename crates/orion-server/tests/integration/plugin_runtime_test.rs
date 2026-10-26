@@ -687,6 +687,12 @@ async fn a_compile_waits_for_a_native_work_slot() {
         .expect("the task joins")
         .expect("it compiles once the slot frees");
     assert_eq!(loaded.size, COMPONENT.len());
+    // The job's thread holds its slot until it returns, a moment after it
+    // has handed the caller its result.
+    let released = Instant::now() + Duration::from_secs(5);
+    while native.in_flight() > 0 && Instant::now() < released {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
     assert_eq!(native.in_flight(), 0, "the compile gave its slot back");
 }
 

@@ -35,6 +35,7 @@ fn connection_row_to_dto(row: &ConnectionRevisionRow) -> ConnectionRevisionRespo
         config: row.public_config.clone(),
         public_config: row.public_config.clone(),
         secret_locators: row.secret_locators.clone(),
+        bindings: row.bindings.clone(),
         config_fingerprint: row.configuration_digest.clone(),
         configuration_digest: row.configuration_digest.clone(),
     }
@@ -67,7 +68,7 @@ pub(crate) async fn list_connections(State(state): State<AppState>) -> impl Into
     path = "/api/v2/admin/connections",
     tag = "Connections",
     summary = "Create an immutable connection revision",
-    description = "Refuses a raw secret in public_config and a malformed secret locator, then judges the configuration as the node will read it — public_config with each secret reference at its locator path, the references unresolved. Over a built-in driver it is typed and checked as the connector it serves (`http`, `db` or `cache`), exactly as `orion-server compile` checks it; over an uploaded provider package it must satisfy the package's declared `configuration_schema`. A refusal names each problem by field in `details`. Then persists an immutable, content-addressed connection revision.",
+    description = "Refuses a raw secret in public_config and a malformed secret locator, then judges the configuration as the node will read it — public_config with each secret reference at its locator path, the references unresolved. Over a built-in driver it is typed and checked as the connector it serves (`http`, `db` or `cache`), exactly as `orion-server compile` checks it; over an uploaded provider package it must satisfy the package's declared `configuration_schema`. Over a `workflow` provider package, `bindings` must bind each dependency alias the package declares to a stored connection over a built-in or rust provider (the one the dependency names, when it names one), and nothing else; a deployment member for the connection must then require each bound connection. A refusal names each problem by field in `details`. Then persists an immutable, content-addressed connection revision.",
     request_body = CreateConnectionRevisionRequest,
     responses(
         (status = 201, description = "Connection revision created", body = CreateConnectionRevisionResponse),
@@ -88,7 +89,17 @@ pub(crate) async fn create_connection_revision(
     ) {
         return deployment_err_response(e).into_response();
     }
-    let problems = config_problems(&state, &req);
+    let mut problems = config_problems(&state, &req);
+    problems.extend(
+        crate::extensions::workflow_provider::binding_problems(
+            &state.composition.deployments,
+            &req.connection_id,
+            &req.provider_digest,
+            &req.bindings,
+        )
+        .into_iter()
+        .map(|p| FieldError::new(p.path, p.code, p.message)),
+    );
     if !problems.is_empty() {
         return OrionError::Validation {
             code: orion_api::error::codes::VALIDATION_ERROR,
@@ -103,13 +114,14 @@ pub(crate) async fn create_connection_revision(
     match state
         .composition
         .deployments
-        .store_connection_revision_in_db(
+        .store_connection_revision_with_bindings_in_db(
             &state.db_pool,
             &req.connection_id,
             req.revision,
             &req.provider_digest,
             req.public_config,
             req.secret_locators,
+            req.bindings,
         )
         .await
     {
@@ -313,7 +325,7 @@ pub(crate) async fn probe_connection(
     let driver_id = req
         .driver_id
         .clone()
-        .or_else(|| stored_pkg.as_ref().map(|p| p.provider_id.clone()))
+        .or_else(|| stored_pkg.as_ref().map(|p| p.backend_id().to_string()))
         .unwrap_or_else(|| connection_id.clone());
 
     let Some(backend) = state.composition.providers.get(kind, &driver_id) else {
@@ -378,9 +390,15 @@ pub(crate) async fn probe_connection(
         connection_id.clone(),
         ["probe".to_string()].into_iter().collect(),
     );
+    // The connection's own dependencies, each at its latest revision: what a
+    // provider's health check may reach through them.
+    let declared_dependencies = stored_conn
+        .as_ref()
+        .map(|conn| probe_dependencies(&state, conn))
+        .unwrap_or_default();
     let grant = AuthorityGrant {
         allowed_operations,
-        declared_dependencies: BTreeMap::new(),
+        declared_dependencies,
         allowed_channels: BTreeSet::new(),
     };
     let admitted = AdmittedRun::admit(
@@ -457,6 +475,63 @@ pub(crate) async fn probe_connection(
             )
         }
     }
+}
+
+/// The dependencies `conn`'s bindings name, keyed as a run's authority keys
+/// them, each bound connection at its latest stored revision with the
+/// operations the package declares for the alias. A binding to a connection
+/// that is not stored, or to a provider that is not, is left out.
+fn probe_dependencies(
+    state: &AppState,
+    conn: &ConnectionRevisionRow,
+) -> BTreeMap<String, (ConnectionReference, BTreeSet<String>)> {
+    use crate::extensions::workflow_provider::{declared_dependencies, dependency_key};
+    let store = &state.composition.deployments;
+    let Some(package) = store.get_package(&conn.provider_digest) else {
+        return BTreeMap::new();
+    };
+    let dependencies = declared_dependencies(&package.manifest_json);
+    let connections = store.list_connections();
+    let mut out = BTreeMap::new();
+    for (alias, target) in &conn.bindings {
+        let Some(row) = connections
+            .iter()
+            .filter(|c| &c.connection_id == target)
+            .max_by_key(|c| c.revision)
+        else {
+            continue;
+        };
+        let provider = match crate::extensions::foundation::builtin_driver(&row.provider_digest) {
+            Some(driver) => ProviderReference {
+                provider_id: driver.to_string(),
+                version: crate::version::ORION_VERSION.to_string(),
+                package_digest: row.provider_digest.clone(),
+            },
+            None => match store.get_package(&row.provider_digest) {
+                Some(pkg) => ProviderReference {
+                    provider_id: pkg.provider_id,
+                    version: pkg.version,
+                    package_digest: pkg.package_digest,
+                },
+                None => continue,
+            },
+        };
+        out.insert(
+            dependency_key(&conn.connection_id, alias),
+            (
+                ConnectionReference {
+                    connection_id: target.clone(),
+                    revision: row.revision,
+                    provider,
+                },
+                dependencies
+                    .get(alias)
+                    .map(|d| d.operations.clone())
+                    .unwrap_or_default(),
+            ),
+        );
+    }
+    out
 }
 
 /// What a built-in probe did, and why it failed when it did.

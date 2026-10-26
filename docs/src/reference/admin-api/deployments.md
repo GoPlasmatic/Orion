@@ -75,7 +75,7 @@ The answer always carries the trace. A run that stopped short still answers `200
 
 ## Connections
 
-A connection revision is the configuration a provider runs with: `{connection_id, revision, provider_digest, public_config, secret_locators}`. `(connection_id, revision)` is immutable. Sending the same pair again with the same content answers the stored revision, and with different content a `409`.
+A connection revision is the configuration a provider runs with: `{connection_id, revision, provider_digest, public_config, secret_locators, bindings}`. `(connection_id, revision)` is immutable. Sending the same pair again with the same content answers the stored revision, and with different content a `409`.
 
 `public_config` holds the settings. A secret-shaped key (`password`, `token`, `secret`, …), an `Authorization` value or credentials in a URL are refused there. A key naming an endpoint, ending `_url`, `_uri` or `_endpoint`, is not secret-shaped, so OAuth2's `token_url` stays public; its value is still screened for credentials. `secret_locators` maps a dotted config path to a secret reference such as `env://ORDERS_DB_URL` or `vault://secret/data/db#url`. The reference is placed at its path when the connection is used, and resolved there. A locator's path may not be one `public_config` already sets.
 
@@ -99,7 +99,21 @@ curl -s -X POST http://localhost:8080/api/v2/admin/connections \
 curl -s http://localhost:8080/api/v2/admin/connections | jq '.connections[] | {connection_id, revision}'
 ```
 
-The answer carries the revision's `configuration_digest`, taken over its public settings and its locators. A manifest names the revision by it.
+The answer carries the revision's `configuration_digest`, taken over its public settings, its locators and its bindings. A manifest names the revision by it.
+
+### Bindings
+
+A connection over a [workflow provider package](../functions/connector_call.md#workflow-provider-packages) also carries `bindings`: which connection each dependency alias the package declares calls, as `{"alias": "connection_id"}`. Every declared alias must be bound and nothing else may be. Each target must be a stored connection over a built-in driver or a `rust` provider, the one the dependency names in its `id` when it names one; a connection over another workflow package cannot be a dependency. A problem is refused with a `400` naming `bindings.<alias>`. A connection over any other provider takes no bindings.
+
+```bash
+curl -s -X POST http://localhost:8080/api/v2/admin/connections \
+  -H 'Content-Type: application/json' \
+  -d '{"connection_id": "crm", "revision": 1, "provider_digest": "sha256:…",
+       "public_config": {"endpoint": "https://crm.example"},
+       "bindings": {"cache": "cache-main"}}'
+```
+
+The connection's manifest member must `require` each connection it binds, at the revision the call should use, so a deployment carries them together. A build refuses a binding its member does not require, naming it.
 
 A connection over a built-in driver is also a connector to the built-in functions. `http_call`, `db_read`, `data_query`, `cache_read` and the rest name it by its connection id.
 
@@ -150,7 +164,7 @@ A manifest lists the members a deployment deploys:
 }
 ```
 
-A workflow, channel or plugin member's `definition_digest` names a stored definition. A connection member's is the revision's `configuration_digest`. A channel `requires` its workflow. A workflow `requires` the connections it uses. Through `connector_call` it may call only connections it requires, and only the operations its own `connector_call` tasks name; requiring a connection grants nothing else. Every requirement must be a member of the same manifest.
+A workflow, channel or plugin member's `definition_digest` names a stored definition. A connection member's is the revision's `configuration_digest`. A channel `requires` its workflow. A workflow `requires` the connections it uses. Through `connector_call` it may call only connections it requires, and only the operations its own `connector_call` tasks name; requiring a connection grants nothing else. A connection over a workflow provider package `requires` the connections its [bindings](#bindings) name; only that package's own calls reach them. Every requirement must be a member of the same manifest.
 
 ## Plan and apply
 

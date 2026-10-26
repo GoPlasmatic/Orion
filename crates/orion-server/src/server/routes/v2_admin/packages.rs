@@ -103,7 +103,7 @@ pub(crate) async fn list_connector_packages(State(state): State<AppState>) -> im
     path = "/api/v2/admin/connector-packages",
     tag = "Providers",
     summary = "Upload a verified connector provider package",
-    description = "Verifies archive bounds, digests, and publisher/version immutability, then stores the package in the deployment store.",
+    description = "Verifies archive bounds, digests, and publisher/version immutability, then stores the package in the deployment store. A `workflow` package is also held to the hermetic rules — one entry workflow per operation, only the dataflow built-ins, `crypto`, `jwt_sign`, `jwt_verify`, plugin functions and `connector_call` on its declared dependencies, and no secret node or reference — and refused with `details` naming each problem by file and path.",
     request_body = UploadPackageRequest,
     responses(
         (status = 201, description = "Package uploaded", body = UploadPackageResponse),
@@ -129,6 +129,12 @@ pub(crate) async fn upload_connector_package(
             );
         }
     };
+    // A workflow package is held to the hermetic rules before anything is
+    // stored.
+    let problems = crate::runtime::workflow_providers::upload_problems(&state, &files);
+    if !problems.is_empty() {
+        return crate::runtime::workflow_providers::refusal("package refused", problems);
+    }
     if !files.contains_key("inventory.json")
         && let Ok(packed) = pack_provider_package(&files)
     {
@@ -156,6 +162,11 @@ pub(crate) async fn upload_connector_package(
 
     let mut admission_dto = None;
     if req.admit {
+        let problems =
+            crate::runtime::workflow_providers::admission_problems(&state, &row.package_digest);
+        if !problems.is_empty() {
+            return crate::runtime::workflow_providers::refusal("admission refused", problems);
+        }
         match state
             .composition
             .deployments
@@ -177,6 +188,7 @@ pub(crate) async fn upload_connector_package(
             }
             Err(e) => return deployment_err_response(e),
         }
+        crate::runtime::workflow_providers::sync(&state);
     }
 
     crate::server::routes::admin::audit_log(
@@ -206,7 +218,7 @@ pub(crate) async fn upload_connector_package(
     path = "/api/v2/admin/connector-packages/{digest}/admit",
     tag = "Providers",
     summary = "Admit an uploaded connector provider package",
-    description = "Evaluates the active edition admission policy against the uploaded package and records a durable admission fingerprint.",
+    description = "Evaluates the active edition admission policy against the uploaded package and records a durable admission fingerprint. A `workflow` package is checked against the hermetic rules again first, and once admitted is registered as a provider backend under its digest.",
     params(
         ("digest" = String, Path, description = "Package SHA-256 digest (`sha256:<64-hex>`)")
     ),
@@ -224,6 +236,10 @@ pub(crate) async fn admit_connector_package(
     req: Option<Json<AdmitPackageRequest>>,
 ) -> impl IntoResponse {
     let lock = req.and_then(|Json(r)| r.lock);
+    let problems = crate::runtime::workflow_providers::admission_problems(&state, &digest);
+    if !problems.is_empty() {
+        return crate::runtime::workflow_providers::refusal("admission refused", problems);
+    }
     match state
         .composition
         .deployments
@@ -236,6 +252,7 @@ pub(crate) async fn admit_connector_package(
         .await
     {
         Ok(adm) => {
+            crate::runtime::workflow_providers::sync(&state);
             crate::server::routes::admin::audit_log(
                 &state.audit_queue,
                 &principal,
@@ -267,7 +284,7 @@ pub(crate) async fn admit_connector_package(
     path = "/api/v2/admin/connector-packages/{digest}/revoke",
     tag = "Providers",
     summary = "Revoke an admitted connector provider package",
-    description = "Marks the package digest as revoked in the deployment store and runtime admission policy, blocking new invocations and deployments.",
+    description = "Marks the package digest as revoked in the deployment store and runtime admission policy, blocking new invocations and deployments. A `workflow` package's backend is unregistered.",
     params(
         ("digest" = String, Path, description = "Package SHA-256 digest (`sha256:<64-hex>`)")
     ),
@@ -292,6 +309,7 @@ pub(crate) async fn revoke_connector_package(
     {
         Ok(()) => {
             state.composition.admission.revoke_digest(&digest);
+            crate::runtime::workflow_providers::sync(&state);
             crate::server::routes::admin::audit_log(
                 &state.audit_queue,
                 &principal,

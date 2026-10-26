@@ -407,6 +407,7 @@ mod tests {
             provider_digest: upload_resp.digest.clone(),
             public_config: json!({"endpoint": "https://cache.example.com"}),
             secret_locators: Default::default(),
+            bindings: Default::default(),
         };
         let (status, conn_resp): (_, CreateConnectionRevisionResponse) =
             send_post(&app, paths::V2_CONNECTIONS, &conn_req).await;

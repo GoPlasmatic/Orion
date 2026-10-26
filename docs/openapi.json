@@ -750,7 +750,7 @@
           "Connections"
         ],
         "summary": "Create an immutable connection revision",
-        "description": "Refuses a raw secret in public_config and a malformed secret locator, then judges the configuration as the node will read it — public_config with each secret reference at its locator path, the references unresolved. Over a built-in driver it is typed and checked as the connector it serves (`http`, `db` or `cache`), exactly as `orion-server compile` checks it; over an uploaded provider package it must satisfy the package's declared `configuration_schema`. A refusal names each problem by field in `details`. Then persists an immutable, content-addressed connection revision.",
+        "description": "Refuses a raw secret in public_config and a malformed secret locator, then judges the configuration as the node will read it — public_config with each secret reference at its locator path, the references unresolved. Over a built-in driver it is typed and checked as the connector it serves (`http`, `db` or `cache`), exactly as `orion-server compile` checks it; over an uploaded provider package it must satisfy the package's declared `configuration_schema`. Over a `workflow` provider package, `bindings` must bind each dependency alias the package declares to a stored connection over a built-in or rust provider (the one the dependency names, when it names one), and nothing else; a deployment member for the connection must then require each bound connection. A refusal names each problem by field in `details`. Then persists an immutable, content-addressed connection revision.",
         "operationId": "create_connection_revision",
         "requestBody": {
           "content": {
@@ -1006,7 +1006,7 @@
           "Providers"
         ],
         "summary": "Upload a verified connector provider package",
-        "description": "Verifies archive bounds, digests, and publisher/version immutability, then stores the package in the deployment store.",
+        "description": "Verifies archive bounds, digests, and publisher/version immutability, then stores the package in the deployment store. A `workflow` package is also held to the hermetic rules — one entry workflow per operation, only the dataflow built-ins, `crypto`, `jwt_sign`, `jwt_verify`, plugin functions and `connector_call` on its declared dependencies, and no secret node or reference — and refused with `details` naming each problem by file and path.",
         "operationId": "upload_connector_package",
         "requestBody": {
           "content": {
@@ -1096,7 +1096,7 @@
           "Providers"
         ],
         "summary": "Admit an uploaded connector provider package",
-        "description": "Evaluates the active edition admission policy against the uploaded package and records a durable admission fingerprint.",
+        "description": "Evaluates the active edition admission policy against the uploaded package and records a durable admission fingerprint. A `workflow` package is checked against the hermetic rules again first, and once admitted is registered as a provider backend under its digest.",
         "operationId": "admit_connector_package",
         "parameters": [
           {
@@ -1194,7 +1194,7 @@
           "Providers"
         ],
         "summary": "Revoke an admitted connector provider package",
-        "description": "Marks the package digest as revoked in the deployment store and runtime admission policy, blocking new invocations and deployments.",
+        "description": "Marks the package digest as revoked in the deployment store and runtime admission policy, blocking new invocations and deployments. A `workflow` package's backend is unregistered.",
         "operationId": "revoke_connector_package",
         "parameters": [
           {
@@ -4131,6 +4131,16 @@
         "type": "object",
         "description": "Summary of an immutable connection revision (`GET /api/v2/admin/connections`).",
         "properties": {
+          "bindings": {
+            "type": "object",
+            "description": "Over a `workflow` provider package: the connection each of the\npackage's dependency aliases calls (`alias -> connection_id`).",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "config": {},
           "config_fingerprint": {
             "type": "string"
@@ -4307,6 +4317,16 @@
           "provider_digest"
         ],
         "properties": {
+          "bindings": {
+            "type": "object",
+            "description": "Over a `workflow` provider package: which connection each of the\npackage's declared dependency aliases calls (`alias -> connection_id`).\nEvery alias must be bound, and each target must be a stored\nconnection; a deployment member for this connection must require each\nbound connection. Empty for any other provider.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "connection_id": {
             "type": "string"
           },

@@ -170,10 +170,23 @@ pub fn scaffold_provider_package(
     match implementation {
         ImplementationKind::Rust => {}
         ImplementationKind::Workflow => {
+            // The operation's entry workflow: it runs on the call's input
+            // as `data`, and `data` when it finishes is the result. This one
+            // answers the `id` it was given; `item.get`'s output schema asks
+            // for nothing more.
             let wf = json!({
                 "id": "entry",
                 "name": "entry",
-                "tasks": []
+                "tasks": [{
+                    "id": "answer",
+                    "name": "Answer with the id",
+                    "function": {
+                        "name": "map",
+                        "input": {
+                            "mappings": [{"path": "data.id", "logic": {"var": "data.id"}}]
+                        }
+                    }
+                }]
             });
             files.insert(
                 "workflows/entry.json".to_string(),
@@ -250,6 +263,24 @@ pub fn lint_provider_package(files: &BTreeMap<String, Vec<u8>>) -> PackageLintRe
         check_manifest_bundle(&manifest, &file_list, &schema_files)
     {
         errors.push(format!("{code}: {location}"));
+    }
+
+    if implementation == "workflow"
+        && let Err(problems) = super::workflow_provider::WorkflowPackage::from_files(
+            super::contract::ProviderReference {
+                provider_id: provider_id.clone(),
+                version: version.clone(),
+                package_digest: String::new(),
+            },
+            &manifest,
+            files,
+        )
+    {
+        errors.extend(
+            problems
+                .into_iter()
+                .map(|p| format!("WORKFLOW_PACKAGE_{}: {}: {}", p.code, p.path, p.message)),
+        );
     }
 
     PackageLintReport {

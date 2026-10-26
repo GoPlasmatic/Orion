@@ -868,6 +868,7 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
         .await
         .map_err(|e| format!("reading the committed deployments failed: {e}"))?;
     crate::cluster::reconcile::sync_v2_revocations(&state);
+    crate::runtime::workflow_providers::sync(&state);
     let (head_rev, _) = state.composition.deployments.current_head();
     if head_rev > 0 {
         crate::runtime::reconcile_deployment_revision(&state, head_rev)

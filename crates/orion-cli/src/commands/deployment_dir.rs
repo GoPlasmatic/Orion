@@ -383,6 +383,7 @@ pub async fn prepare(
                                 provider_digest: connection.provider_digest.clone(),
                                 public_config: connection.public_config.clone(),
                                 secret_locators: connection.secret_locators.clone(),
+                                bindings: Default::default(),
                             },
                         )
                         .await

@@ -1,537 +1,787 @@
-//! Workflow-Group composite connector compiler and provider backend (`V2-12.1`–`V2-12.4`).
+//! Workflow provider packages: a connector whose operations are dataflow
+//! workflows, run hermetically.
 //!
-//! Enables combining private workflows, optional internal sub-channels, and
-//! declared connector `binding_slot` dependencies into a hermetic connector
-//! package (`ImplementationKind::Workflow`) that implements [`ProviderBackend`]
-//! and [`SourceConnectorFacet`].
+//! A package with `implementation.kind = "workflow"` names one workflow file
+//! per operation (`implementation.entries`: operation → workflow id,
+//! `implementation.workflows`: the files). Once admitted, it is a
+//! [`ProviderBackend`] registered under its digest, and a `connector_call`
+//! against a connection over it runs the operation's workflow on Orion's
+//! engine: the same parse ([`crate::engine::parse_options`]), compile
+//! ([`crate::engine::compile_row`]) and run ([`crate::engine::execute`]) every
+//! channel's workflow goes through, with Orion's operators. The input is the
+//! message's payload and starting `data`; the result is `data` when the
+//! workflow finishes.
 //!
-//! Guarantees:
-//! - **Private Digest Namespace (`V2-12.1`)**: Internal workflows and sub-channels
-//!   are scoped under `__provider::{package_digest}::*` and never appear in
-//!   application HTTP routing or public workflow enumeration.
-//! - **Static Closure & Cycle Verification (`V2-12.2`)**: Rejects missing entries,
-//!   undeclared helpers/sub-channels, undeclared `binding_slot`s, capability
-//!   expansion, and call-graph cycles at compile time before admission.
-//! - **Isolated Invocation State & Scoped Dependencies (`V2-12.3`, `V2-12.4`)**:
-//!   Each invocation runs on a fresh state envelope and dispatches declared
-//!   `binding_slot` calls through [`Invocation::derive_dependency`](crate::extensions::context::Invocation::derive_dependency) and
-//!   [`ProviderRegistry::dispatch_attempt`], sharing the root budget and deadline.
+//! **Hermetic.** A package is code someone else may have written, so what its
+//! workflows may reach is closed:
+//!
+//! - the dataflow built-ins ([`dataflow_rs::def::BUILTIN_FUNCTIONS`]), the
+//!   self-contained Orion functions ([`PACKAGE_HOST_FUNCTIONS`] without
+//!   `connector_call`), and plugin functions, which import nothing;
+//! - `connector_call` only on an alias the manifest declares under
+//!   `dependencies`, with an operation that dependency lists. The
+//!   connection the alias calls is the deployer's choice, made in the
+//!   connection revision's `bindings`, and the call is a dependency of the
+//!   package's own invocation ([`Invocation::derive_dependency`]): it shares
+//!   the caller's budget and deadline and reaches nothing else;
+//! - no `{"secret": …}` node and no secret reference (`env://…`) anywhere.
+//!
+//! Every other Orion function — `http_call`, `db_*`, `data_*`, `cache_*`,
+//! `channel_call` — reaches the deployment's own connections or channels by
+//! name, and is refused. [`WorkflowPackage::from_files`] states all of it, at
+//! upload and admission and again at every build that deploys a connection
+//! over the package, and the package's registry ([`package_registry`]) holds
+//! only the functions above, on an expression engine with no secrets, so a
+//! document that slipped past the check still could not call or read
+//! anything else. The message a package workflow runs on carries no
+//! `metadata` (no `[vars]`).
+//!
+//! **No helpers.** Each operation is one entry workflow; a workflow no
+//! operation enters is refused, as is a manifest declaring helpers or
+//! sub-channels. Shared logic belongs in the package's authoring, as
+//! compile-time fragments.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
-use serde::{Deserialize, Serialize};
+use dataflow_rs::datavalue::OwnedDataValue;
+use dataflow_rs::expr::{Interpolated, Output};
+use dataflow_rs::function::{FunctionConfig, FunctionSpec, Prepare};
+use dataflow_rs::program::{AuthoredPath, IssueCode};
+use dataflow_rs::{Ctx, Function, Issue, Outcome};
 use serde_json::{Value, json};
 
-use super::admission::AdmissionPolicy;
-use super::context::AttemptContext;
+use super::context::{AttemptContext, Invocation};
 use super::contract::{
-    ConnectorError, ConnectorOutput, ConnectorResult, ImplementationKind, ProviderReference, codes,
+    ConnectionReference, ConnectorError, ConnectorErrorClass, ConnectorOutput, ConnectorResult,
+    EffectStatus, ErrorOrigin, ImplementationKind, ProviderReference, RetryAdvice, codes,
 };
-use super::provider_backend::{
-    BoxProviderFuture, ProviderBackend, ProviderRegistry, SourceBatchItem, SourceConnectorFacet,
-    SourcePollBatch, SourceSettlement,
+use super::deployment_store::{
+    ConnectionRevisionRow, ImmutableDeploymentStore, PackageSchema, ProviderPackageRow,
 };
+use super::provider_backend::{BoxProviderFuture, ProviderBackend, ProviderRegistry};
 
-/// Declared connector dependency slot inside a Workflow-Group manifest (`V2-12.2`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BindingSlotSpec {
-    pub slot: String,
-    pub provider_id: String,
-    pub implementation: ImplementationKind,
-    pub required_operations: BTreeSet<String>,
-}
+/// The Orion functions a package workflow may name. `crypto`, `jwt_sign` and
+/// `jwt_verify` need no connection; `connector_call` is the package's own,
+/// bound to its declared dependencies. Every other Orion function is refused.
+pub const PACKAGE_HOST_FUNCTIONS: [&str; 4] =
+    ["crypto", "jwt_sign", "jwt_verify", "connector_call"];
 
-/// A step inside a private workflow of a Workflow-Group package (`V2-12.2`–`V2-12.4`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "step_kind", rename_all = "snake_case")]
-pub enum WorkflowGroupStep {
-    /// Pure data projection / transform merging fields into the isolated output object.
-    Transform { output_key: String, template: Value },
-    /// Call another private helper workflow in the same package.
-    CallHelper { helper_id: String },
-    /// Dispatch through a bundled internal sub-channel in the same package.
-    CallSubChannel { sub_channel_id: String },
-    /// Invoke an external connector bound to `binding_slot` (`V2-12.4`).
-    InvokeSlot {
-        binding_slot: String,
-        operation: String,
-        input: Value,
-        output_key: String,
-    },
-}
+/// The keys `implementation` may carry in a workflow package.
+const IMPLEMENTATION_KEYS: [&str; 3] = ["kind", "entries", "workflows"];
 
-/// Private workflow definition inside a Workflow-Group package.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkflowNodeDef {
-    pub id: String,
-    pub steps: Vec<WorkflowGroupStep>,
-}
-
-/// Internal sub-channel bundled inside a Workflow-Group package (`V2-12.1`).
-///
-/// Sub-channels never register on the application `RouteTable`; they are
-/// addressable only by private workflows inside the same package digest.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SubChannelDef {
-    pub id: String,
-    pub target_workflow_id: String,
-}
-
-/// Optional source facet entry workflows (`open`, `poll`, `settle`, `close`) for
-/// a Workflow-Group connector (`V2-15`, §5.1 & §7.2 of `v2-design.md`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkflowSourceEntries {
-    pub open_workflow_id: String,
-    pub poll_workflow_id: String,
-    pub settle_workflow_id: String,
-    pub close_workflow_id: String,
-}
-
-/// Input specification for compiling a Workflow-Group composite connector (`V2-12.1`, `V2-12.2`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkflowGroupManifest {
-    pub provider: ProviderReference,
-    /// Map from exported operation name to private entry workflow ID.
-    pub entries: BTreeMap<String, String>,
-    /// Private entry and helper workflows bundled in the package.
-    pub workflows: BTreeMap<String, WorkflowNodeDef>,
-    /// Optional internal sub-channels bundled in the package.
-    #[serde(default)]
-    pub sub_channels: BTreeMap<String, SubChannelDef>,
-    /// Declared connector binding slots (`binding_slot -> spec`).
-    #[serde(default)]
-    pub binding_slots: BTreeMap<String, BindingSlotSpec>,
-    /// Optional source facet workflow entries.
-    pub source_entries: Option<WorkflowSourceEntries>,
-}
-
-/// Static compile-time capability summary for one exported operation (`V2-12.2`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransitiveCapabilityReport {
-    pub operation: String,
-    pub namespaced_entry: String,
-    pub reachable_workflows: BTreeSet<String>,
-    pub reachable_sub_channels: BTreeSet<String>,
-    /// Map of `binding_slot -> operations` transitively invoked by this operation.
-    pub required_slot_operations: BTreeMap<String, BTreeSet<String>>,
-}
-
-/// Compile-time error when validating a [`WorkflowGroupManifest`] (`V2-12.2`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkflowGraphCompileError {
+/// One problem with a workflow package, by where it was written: the file
+/// and the path inside it (`connector.json:implementation.entries.item.get`,
+/// `workflows/entry.json:tasks[0].function.name`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageProblem {
+    pub path: String,
+    /// A field code from `orion_api::error::field_codes`.
     pub code: &'static str,
     pub message: String,
 }
 
-impl std::fmt::Display for WorkflowGraphCompileError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.code, self.message)
-    }
-}
-
-impl std::error::Error for WorkflowGraphCompileError {}
-
-/// Hermetically compiled Workflow-Group graph keyed by package digest (`V2-12.1`, `V2-12.2`).
-#[derive(Debug, Clone)]
-pub struct CompiledWorkflowProviderGraph {
-    pub provider: ProviderReference,
-    pub entries: BTreeMap<String, String>,
-    pub namespaced_workflows: BTreeMap<String, String>,
-    pub namespaced_sub_channels: BTreeMap<String, String>,
-    pub workflows: BTreeMap<String, WorkflowNodeDef>,
-    pub sub_channels: BTreeMap<String, SubChannelDef>,
-    pub binding_slots: BTreeMap<String, BindingSlotSpec>,
-    pub source_entries: Option<WorkflowSourceEntries>,
-    pub capability_reports: BTreeMap<String, TransitiveCapabilityReport>,
-}
-
-impl CompiledWorkflowProviderGraph {
-    /// Format a package-private namespaced identifier that cannot collide across digests (`V2-12.1`).
-    pub fn namespaced_id(package_digest: &str, kind: &str, local_id: &str) -> String {
-        format!("__provider::{package_digest}::{kind}::{local_id}")
-    }
-
-    /// Statically validate and compile a [`WorkflowGroupManifest`] (`V2-12.1`, `V2-12.2`).
-    ///
-    /// Enforces:
-    /// 1. Non-empty operation entries mapping to defined private workflows.
-    /// 2. Closed helper and internal sub-channel references (no undeclared targets).
-    /// 3. Closed `binding_slot` references and operation grants (no capability expansion).
-    /// 4. Acyclic call graph across private workflows and internal sub-channels.
-    pub fn compile(manifest: WorkflowGroupManifest) -> Result<Self, WorkflowGraphCompileError> {
-        if manifest.entries.is_empty() {
-            return Err(WorkflowGraphCompileError {
-                code: "WORKFLOW_GROUP_NO_ENTRIES",
-                message: "Workflow-group provider must declare at least one operation entry"
-                    .to_string(),
-            });
-        }
-
-        let digest = &manifest.provider.package_digest;
-        let mut namespaced_workflows = BTreeMap::new();
-        for wf_id in manifest.workflows.keys() {
-            namespaced_workflows.insert(
-                wf_id.clone(),
-                Self::namespaced_id(digest, "workflow", wf_id),
-            );
-        }
-
-        let mut namespaced_sub_channels = BTreeMap::new();
-        for (sc_id, sc_def) in &manifest.sub_channels {
-            if !manifest.workflows.contains_key(&sc_def.target_workflow_id) {
-                return Err(WorkflowGraphCompileError {
-                    code: "WORKFLOW_GROUP_UNDECLARED_HELPER",
-                    message: format!(
-                        "Internal sub-channel '{sc_id}' targets undeclared workflow '{}'",
-                        sc_def.target_workflow_id
-                    ),
-                });
-            }
-            namespaced_sub_channels.insert(
-                sc_id.clone(),
-                Self::namespaced_id(digest, "sub_channel", sc_id),
-            );
-        }
-
-        // Validate source entries if present.
-        if let Some(ref src) = manifest.source_entries {
-            for (role, wf_id) in [
-                ("open", &src.open_workflow_id),
-                ("poll", &src.poll_workflow_id),
-                ("settle", &src.settle_workflow_id),
-                ("close", &src.close_workflow_id),
-            ] {
-                if !manifest.workflows.contains_key(wf_id) {
-                    return Err(WorkflowGraphCompileError {
-                        code: "WORKFLOW_GROUP_MISSING_SOURCE_ENTRY",
-                        message: format!(
-                            "Source facet '{role}' entry references missing workflow '{wf_id}'"
-                        ),
-                    });
-                }
-            }
-        }
-
-        // Validate every workflow step's edges and slot grants.
-        for (wf_id, wf_def) in &manifest.workflows {
-            for step in &wf_def.steps {
-                match step {
-                    WorkflowGroupStep::Transform { .. } => {}
-                    WorkflowGroupStep::CallHelper { helper_id } => {
-                        if !manifest.workflows.contains_key(helper_id) {
-                            return Err(WorkflowGraphCompileError {
-                                code: "WORKFLOW_GROUP_UNDECLARED_HELPER",
-                                message: format!(
-                                    "Workflow '{wf_id}' calls undeclared helper workflow '{helper_id}'"
-                                ),
-                            });
-                        }
-                    }
-                    WorkflowGroupStep::CallSubChannel { sub_channel_id } => {
-                        if !manifest.sub_channels.contains_key(sub_channel_id) {
-                            return Err(WorkflowGraphCompileError {
-                                code: "WORKFLOW_GROUP_UNDECLARED_SUB_CHANNEL",
-                                message: format!(
-                                    "Workflow '{wf_id}' calls undeclared internal sub-channel '{sub_channel_id}'"
-                                ),
-                            });
-                        }
-                    }
-                    WorkflowGroupStep::InvokeSlot {
-                        binding_slot,
-                        operation,
-                        ..
-                    } => {
-                        let Some(slot_spec) = manifest.binding_slots.get(binding_slot) else {
-                            return Err(WorkflowGraphCompileError {
-                                code: "WORKFLOW_GROUP_UNDECLARED_SLOT",
-                                message: format!(
-                                    "Workflow '{wf_id}' references undeclared binding_slot '{binding_slot}'"
-                                ),
-                            });
-                        };
-                        if !slot_spec.required_operations.contains(operation) {
-                            return Err(WorkflowGraphCompileError {
-                                code: "WORKFLOW_GROUP_CAPABILITY_EXPANSION",
-                                message: format!(
-                                    "Workflow '{wf_id}' invokes operation '{operation}' not declared on binding_slot '{binding_slot}'"
-                                ),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        // Validate each entry and build transitive capability reports + check cycles.
-        let mut capability_reports = BTreeMap::new();
-        for (op_name, entry_wf_id) in &manifest.entries {
-            if !manifest.workflows.contains_key(entry_wf_id) {
-                return Err(WorkflowGraphCompileError {
-                    code: "WORKFLOW_GROUP_MISSING_ENTRY",
-                    message: format!(
-                        "Operation '{op_name}' references missing entry workflow '{entry_wf_id}'"
-                    ),
-                });
-            }
-
-            let mut visiting = BTreeSet::new();
-            let mut visited = BTreeSet::new();
-            let mut reachable_sub_channels = BTreeSet::new();
-            let mut required_slot_operations: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-
-            Self::traverse_graph(
-                entry_wf_id,
-                &manifest,
-                &mut visiting,
-                &mut visited,
-                &mut reachable_sub_channels,
-                &mut required_slot_operations,
-            )?;
-
-            let namespaced_entry = namespaced_workflows
-                .get(entry_wf_id)
-                .cloned()
-                .unwrap_or_default();
-            capability_reports.insert(
-                op_name.clone(),
-                TransitiveCapabilityReport {
-                    operation: op_name.clone(),
-                    namespaced_entry,
-                    reachable_workflows: visited,
-                    reachable_sub_channels,
-                    required_slot_operations,
-                },
-            );
-        }
-
-        Ok(Self {
-            provider: manifest.provider,
-            entries: manifest.entries,
-            namespaced_workflows,
-            namespaced_sub_channels,
-            workflows: manifest.workflows,
-            sub_channels: manifest.sub_channels,
-            binding_slots: manifest.binding_slots,
-            source_entries: manifest.source_entries,
-            capability_reports,
-        })
-    }
-
-    fn traverse_graph(
-        wf_id: &str,
-        manifest: &WorkflowGroupManifest,
-        visiting: &mut BTreeSet<String>,
-        visited: &mut BTreeSet<String>,
-        reachable_sub_channels: &mut BTreeSet<String>,
-        required_slot_operations: &mut BTreeMap<String, BTreeSet<String>>,
-    ) -> Result<(), WorkflowGraphCompileError> {
-        if visiting.contains(wf_id) {
-            return Err(WorkflowGraphCompileError {
-                code: "WORKFLOW_GROUP_CYCLE_DETECTED",
-                message: format!("Cycle detected in workflow-group call graph at '{wf_id}'"),
-            });
-        }
-        if visited.contains(wf_id) {
-            return Ok(());
-        }
-
-        visiting.insert(wf_id.to_string());
-        if let Some(wf) = manifest.workflows.get(wf_id) {
-            for step in &wf.steps {
-                match step {
-                    WorkflowGroupStep::Transform { .. } => {}
-                    WorkflowGroupStep::CallHelper { helper_id } => {
-                        Self::traverse_graph(
-                            helper_id,
-                            manifest,
-                            visiting,
-                            visited,
-                            reachable_sub_channels,
-                            required_slot_operations,
-                        )?;
-                    }
-                    WorkflowGroupStep::CallSubChannel { sub_channel_id } => {
-                        reachable_sub_channels.insert(sub_channel_id.clone());
-                        if let Some(sc) = manifest.sub_channels.get(sub_channel_id) {
-                            Self::traverse_graph(
-                                &sc.target_workflow_id,
-                                manifest,
-                                visiting,
-                                visited,
-                                reachable_sub_channels,
-                                required_slot_operations,
-                            )?;
-                        }
-                    }
-                    WorkflowGroupStep::InvokeSlot {
-                        binding_slot,
-                        operation,
-                        ..
-                    } => {
-                        required_slot_operations
-                            .entry(binding_slot.clone())
-                            .or_default()
-                            .insert(operation.clone());
-                    }
-                }
-            }
-        }
-        visiting.remove(wf_id);
-        visited.insert(wf_id.to_string());
-        Ok(())
-    }
-}
-
-/// Workflow-Group composite connector provider backend (`V2-12.3`, `V2-12.4`).
-pub struct WorkflowGroupProviderBackend {
-    graph: CompiledWorkflowProviderGraph,
-    providers: ProviderRegistry,
-    admission: Arc<dyn AdmissionPolicy>,
-}
-
-impl WorkflowGroupProviderBackend {
-    pub fn new(
-        graph: CompiledWorkflowProviderGraph,
-        providers: ProviderRegistry,
-        admission: Arc<dyn AdmissionPolicy>,
-    ) -> Self {
+impl PackageProblem {
+    fn new(path: impl Into<String>, code: &'static str, message: impl Into<String>) -> Self {
         Self {
-            graph,
-            providers,
-            admission,
+            path: path.into(),
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for PackageProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.path, self.message)
+    }
+}
+
+/// The problems as one line, for a log or an error message.
+pub fn describe(problems: &[PackageProblem]) -> String {
+    problems
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// A dependency a workflow package declares: the alias its `connector_call`
+/// tasks name and the operations they may call on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageDependency {
+    pub alias: String,
+    /// The provider id the bound connection must run on, when declared.
+    pub provider_id: Option<String>,
+    pub operations: BTreeSet<String>,
+}
+
+/// An operation's entry workflow: the file it came from and the document,
+/// with the operation as its channel.
+#[derive(Debug, Clone)]
+pub struct PackageWorkflow {
+    pub file: String,
+    pub document: Value,
+}
+
+/// A workflow package, checked: one entry workflow per operation, every task
+/// within the hermetic set.
+#[derive(Debug, Clone)]
+pub struct WorkflowPackage {
+    pub provider: ProviderReference,
+    pub entries: BTreeMap<String, PackageWorkflow>,
+    pub dependencies: BTreeMap<String, PackageDependency>,
+}
+
+/// The dependencies `manifest` declares, by alias.
+pub fn declared_dependencies(manifest: &Value) -> BTreeMap<String, PackageDependency> {
+    manifest["dependencies"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|dep| {
+            let alias = dep["alias"].as_str()?.to_string();
+            Some((
+                alias.clone(),
+                PackageDependency {
+                    alias,
+                    provider_id: dep["id"].as_str().map(str::to_string),
+                    operations: dep["operations"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect(),
+                },
+            ))
+        })
+        .collect()
+}
+
+impl WorkflowPackage {
+    /// Read and check the package `manifest` describes from its `files`.
+    ///
+    /// # Errors
+    ///
+    /// Every problem found, each naming where it was written.
+    pub fn from_files(
+        provider: ProviderReference,
+        manifest: &Value,
+        files: &BTreeMap<String, Vec<u8>>,
+    ) -> Result<Self, Vec<PackageProblem>> {
+        use orion_api::error::field_codes::{INVALID, REQUIRED, TYPE_MISMATCH, UNKNOWN_FIELD};
+
+        let mut problems = Vec::new();
+        let implementation = &manifest["implementation"];
+        if let Some(obj) = implementation.as_object() {
+            for key in obj.keys() {
+                if IMPLEMENTATION_KEYS.contains(&key.as_str()) {
+                    continue;
+                }
+                let message = if matches!(
+                    key.as_str(),
+                    "helpers" | "sub_channels" | "subchannels" | "binding_slots"
+                ) {
+                    format!(
+                        "a workflow package declares no `{key}`: each operation is one entry \
+                         workflow, and shared logic belongs in compile-time fragments"
+                    )
+                } else {
+                    format!(
+                        "`implementation` of a workflow package takes `kind`, `entries` and \
+                         `workflows`, not `{key}`"
+                    )
+                };
+                problems.push(PackageProblem::new(
+                    format!("connector.json:implementation.{key}"),
+                    UNKNOWN_FIELD,
+                    message,
+                ));
+            }
+        }
+
+        // Every listed file, parsed and keyed by its workflow id.
+        let mut by_id: BTreeMap<String, (String, Value)> = BTreeMap::new();
+        let listed = implementation["workflows"].as_array();
+        if listed.is_none() {
+            problems.push(PackageProblem::new(
+                "connector.json:implementation.workflows",
+                REQUIRED,
+                "a workflow package lists its workflow files under `implementation.workflows`",
+            ));
+        }
+        for (i, entry) in listed.into_iter().flatten().enumerate() {
+            let Some(file) = entry.as_str() else {
+                problems.push(PackageProblem::new(
+                    format!("connector.json:implementation.workflows[{i}]"),
+                    TYPE_MISMATCH,
+                    "a workflow file is named by its path in the package",
+                ));
+                continue;
+            };
+            let Some(bytes) = files.get(file) else {
+                problems.push(PackageProblem::new(
+                    format!("connector.json:implementation.workflows[{i}]"),
+                    REQUIRED,
+                    format!("the package has no file '{file}'"),
+                ));
+                continue;
+            };
+            let document: Value = match serde_json::from_slice(bytes) {
+                Ok(doc) => doc,
+                Err(e) => {
+                    problems.push(PackageProblem::new(file, INVALID, format!("not JSON: {e}")));
+                    continue;
+                }
+            };
+            let Some(id) = document["id"].as_str().map(str::to_string) else {
+                problems.push(PackageProblem::new(
+                    format!("{file}:id"),
+                    REQUIRED,
+                    "a package workflow carries its `id`, which `implementation.entries` names",
+                ));
+                continue;
+            };
+            if by_id.contains_key(&id) {
+                problems.push(PackageProblem::new(
+                    format!("{file}:id"),
+                    INVALID,
+                    format!("two workflow files declare the id '{id}'"),
+                ));
+                continue;
+            }
+            by_id.insert(id, (file.to_string(), document));
+        }
+
+        // One entry workflow per operation, and no workflow that is not one.
+        let mut entries = BTreeMap::new();
+        let mut entered: BTreeMap<&str, &str> = BTreeMap::new();
+        match implementation["entries"].as_object() {
+            None => problems.push(PackageProblem::new(
+                "connector.json:implementation.entries",
+                REQUIRED,
+                "a workflow package maps each operation to its entry workflow under \
+                 `implementation.entries`",
+            )),
+            Some(map) => {
+                for (operation, target) in map {
+                    let at = format!("connector.json:implementation.entries.{operation}");
+                    let Some(workflow_id) = target.as_str() else {
+                        problems.push(PackageProblem::new(
+                            at,
+                            TYPE_MISMATCH,
+                            "an entry names a workflow id",
+                        ));
+                        continue;
+                    };
+                    let Some((file, document)) = by_id.get(workflow_id) else {
+                        problems.push(PackageProblem::new(
+                            at,
+                            INVALID,
+                            format!("no listed workflow file declares the id '{workflow_id}'"),
+                        ));
+                        continue;
+                    };
+                    if let Some(other) = entered.insert(workflow_id, operation) {
+                        problems.push(PackageProblem::new(
+                            at,
+                            INVALID,
+                            format!(
+                                "workflow '{workflow_id}' is already the entry of '{other}': \
+                                 each operation has an entry workflow of its own"
+                            ),
+                        ));
+                        continue;
+                    }
+                    entries.insert(
+                        operation.clone(),
+                        PackageWorkflow {
+                            file: file.clone(),
+                            document: document.clone(),
+                        },
+                    );
+                }
+            }
+        }
+        for (id, (file, _)) in &by_id {
+            if !entered.contains_key(id.as_str()) {
+                problems.push(PackageProblem::new(
+                    file.clone(),
+                    INVALID,
+                    format!(
+                        "workflow '{id}' is the entry of no operation: a workflow package has no \
+                         helper workflows, and shared logic belongs in compile-time fragments"
+                    ),
+                ));
+            }
+        }
+
+        let dependencies = declared_dependencies(manifest);
+        for (operation, workflow) in &mut entries {
+            problems.extend(check_workflow(
+                &workflow.file,
+                &workflow.document,
+                &dependencies,
+            ));
+            if let Some(doc) = workflow.document.as_object_mut() {
+                doc.insert("channel".to_string(), json!(operation));
+            }
+        }
+
+        if problems.is_empty() {
+            Ok(Self {
+                provider,
+                entries,
+                dependencies,
+            })
+        } else {
+            Err(problems)
         }
     }
 
-    pub fn compiled_graph(&self) -> &CompiledWorkflowProviderGraph {
-        &self.graph
+    /// The package `row` as the store holds it: its files read back from its
+    /// inventory, then checked as at upload.
+    ///
+    /// # Errors
+    ///
+    /// Every problem found; a file the inventory lists that is not stored is
+    /// one.
+    pub fn from_store(
+        store: &ImmutableDeploymentStore,
+        row: &ProviderPackageRow,
+    ) -> Result<Self, Vec<PackageProblem>> {
+        let mut files = BTreeMap::new();
+        for file in row.manifest_json["implementation"]["workflows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            if let Some(bytes) = store.package_file(&row.package_digest, file) {
+                files.insert(file.to_string(), bytes);
+            }
+        }
+        Self::from_files(
+            ProviderReference {
+                provider_id: row.provider_id.clone(),
+                version: row.version.clone(),
+                package_digest: row.package_digest.clone(),
+            },
+            &row.manifest_json,
+            &files,
+        )
+    }
+}
+
+/// The problems with one package workflow: its own parse, its channel, and
+/// every task against the hermetic set.
+fn check_workflow(
+    file: &str,
+    document: &Value,
+    dependencies: &BTreeMap<String, PackageDependency>,
+) -> Vec<PackageProblem> {
+    use orion_api::error::field_codes::{INVALID, UNKNOWN_FUNCTION, UNRESOLVED_SECRET_REF};
+
+    let mut problems = Vec::new();
+    let at = |path: &str| format!("{file}:{path}");
+
+    let parsed = dataflow_rs::def::parse(document, crate::engine::parse_options());
+    let mut issues = parsed.issues;
+    crate::engine::name_v3_spellings(document, &mut issues);
+    for issue in issues.iter().filter(|i| crate::engine::quarantines(i)) {
+        problems.push(PackageProblem::new(
+            at(&issue.path.to_string()),
+            INVALID,
+            issue.message.clone(),
+        ));
+    }
+    if document.get("channel").is_some() {
+        problems.push(PackageProblem::new(
+            at("channel"),
+            INVALID,
+            "a package workflow is addressed by its operation and names no channel",
+        ));
     }
 
-    async fn execute_workflow_node(
-        &self,
-        ctx: &AttemptContext,
-        wf_id: &str,
-        state: &mut serde_json::Map<String, Value>,
-    ) -> Result<(), ConnectorError> {
-        ctx.run_context()
-            .check_live(ctx.invocation().effect_status())?;
-        let Some(wf) = self.graph.workflows.get(wf_id) else {
-            return Err(ConnectorError::contract_violation(
-                "dispatch",
-                format!("Compiled workflow '{wf_id}' missing from provider graph"),
-                ctx.invocation().effect_status(),
-            ));
+    secrets_in(document, "", &mut |path| {
+        problems.push(PackageProblem::new(
+            at(path),
+            UNRESOLVED_SECRET_REF,
+            "a package workflow reads no secret: neither a `{\"secret\": …}` node nor a secret \
+             reference. Key material reaches it through its input or a dependency",
+        ));
+    });
+
+    let steps = crate::engine::walk_steps(&document["tasks"], document.get("loop"));
+    for (path, task) in steps.tasks {
+        let function = &task["function"];
+        let Some(name) = function["name"].as_str() else {
+            continue;
         };
+        let name_at = at(&format!("{path}.function.name"));
+        if dataflow_rs::def::BUILTIN_FUNCTIONS.contains(&name) {
+            continue;
+        }
+        if name == crate::engine::functions::connector_call::NAME {
+            problems.extend(check_dependency_call(
+                &at(&format!("{path}.function.input")),
+                &function["input"],
+                dependencies,
+            ));
+            continue;
+        }
+        if PACKAGE_HOST_FUNCTIONS.contains(&name) {
+            continue;
+        }
+        if crate::engine::FunctionRegistry::builtin().contains(name) {
+            problems.push(PackageProblem::new(
+                name_at,
+                INVALID,
+                format!(
+                    "task '{}' calls `{name}`, which a package workflow may not: it reaches the \
+                     deployment's own connections or channels by name. A package workflow calls \
+                     the dataflow built-ins, `crypto`, `jwt_sign`, `jwt_verify`, plugin \
+                     functions, and `connector_call` on its declared dependencies",
+                    task["id"].as_str().unwrap_or_default()
+                ),
+            ));
+            continue;
+        }
+        // A plugin function is named `<plugin>.<label>`; the build compiles
+        // it against the plugins the generation serves.
+        if !name.contains('.') {
+            problems.push(PackageProblem::new(
+                name_at,
+                UNKNOWN_FUNCTION,
+                format!(
+                    "task '{}' calls `{name}`, which is neither a dataflow built-in, an Orion \
+                     function a package may call, nor a plugin function",
+                    task["id"].as_str().unwrap_or_default()
+                ),
+            ));
+        }
+    }
+    problems
+}
 
-        for step in &wf.steps {
-            ctx.run_context()
-                .check_live(ctx.invocation().effect_status())?;
-            match step {
-                WorkflowGroupStep::Transform {
-                    output_key,
-                    template,
-                } => {
-                    let resolved = if template == &json!("$input") {
-                        state.get("input").cloned().unwrap_or(Value::Null)
-                    } else {
-                        template.clone()
+/// A package workflow's `connector_call`: an alias the manifest declares,
+/// with an operation that dependency lists, and nothing that picks the
+/// provider, which the binding decides.
+fn check_dependency_call(
+    at: &str,
+    input: &Value,
+    dependencies: &BTreeMap<String, PackageDependency>,
+) -> Vec<PackageProblem> {
+    use orion_api::error::field_codes::{INVALID, REQUIRED};
+
+    let mut problems = Vec::new();
+    for key in ["kind", "target_id"] {
+        if input.get(key).is_some() {
+            problems.push(PackageProblem::new(
+                format!("{at}.{key}"),
+                INVALID,
+                format!(
+                    "a package's `connector_call` names a dependency alias, and the \
+                     connection it is bound to decides the provider: drop `{key}`"
+                ),
+            ));
+        }
+    }
+    let Some(alias) = input["connection"].as_str() else {
+        problems.push(PackageProblem::new(
+            format!("{at}.connection"),
+            REQUIRED,
+            "a package's `connector_call` names one of the package's dependency aliases",
+        ));
+        return problems;
+    };
+    let Some(dependency) = dependencies.get(alias) else {
+        let declared: Vec<&str> = dependencies.keys().map(String::as_str).collect();
+        problems.push(PackageProblem::new(
+            format!("{at}.connection"),
+            INVALID,
+            format!(
+                "'{alias}' is not a dependency the package declares (declared: {declared:?}): \
+                 a package workflow calls only what its manifest's `dependencies` name"
+            ),
+        ));
+        return problems;
+    };
+    match input["operation"].as_str() {
+        Some(operation) if dependency.operations.contains(operation) => {}
+        Some(operation) => problems.push(PackageProblem::new(
+            format!("{at}.operation"),
+            INVALID,
+            format!(
+                "dependency '{alias}' declares the operations {:?}, not '{operation}'",
+                dependency.operations
+            ),
+        )),
+        None => problems.push(PackageProblem::new(
+            format!("{at}.operation"),
+            REQUIRED,
+            "a `connector_call` names its operation",
+        )),
+    }
+    problems
+}
+
+/// Report, by path, every `{"secret": …}` node and every secret reference
+/// string in `value`.
+fn secrets_in(value: &Value, path: &str, found: &mut dyn FnMut(&str)) {
+    match value {
+        Value::Object(map) => {
+            if map.len() == 1 && map.contains_key("secret") {
+                found(path);
+                return;
+            }
+            for (key, child) in map {
+                let child_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                secrets_in(child, &child_path, found);
+            }
+        }
+        Value::Array(items) => {
+            for (i, child) in items.iter().enumerate() {
+                secrets_in(child, &format!("{path}[{i}]"), found);
+            }
+        }
+        Value::String(s) if crate::connector::secrets::is_secret_reference(s) => found(path),
+        _ => {}
+    }
+}
+
+/// The key of a dependency in a run's authority: the package connection and
+/// the alias, so two connections over packages with the same alias never
+/// reach each other's binding.
+pub fn dependency_key(connection_id: &str, alias: &str) -> String {
+    format!("{connection_id}::{alias}")
+}
+
+tokio::task_local! {
+    /// The package invocation a package workflow is running for: what its
+    /// `connector_call` tasks derive their dependency calls from.
+    static PACKAGE_INVOCATION: Invocation;
+}
+
+/// What a workflow package's backend needs from the node beside the package.
+#[derive(Clone)]
+pub struct WorkflowHost {
+    /// The node's provider registry, which a dependency call dispatches on.
+    pub providers: ProviderRegistry,
+    /// The JWKS cache `jwt_verify` reads keys through.
+    pub jwks: Arc<crate::jwt::jwks::JwksCache>,
+    /// `engine.ops_budget`, on the package's expression engine too.
+    pub ops_budget: u64,
+}
+
+/// The registry a package's workflows compile and run on: the dataflow
+/// built-ins, `crypto`, `jwt_sign`, `jwt_verify`, the package's own
+/// `connector_call` and `plugins`' functions, on an expression engine with no
+/// secrets. Nothing else is registered, so nothing else can run.
+///
+/// # Errors
+///
+/// When the expression engine cannot be built.
+pub fn package_registry(
+    host: &WorkflowHost,
+    dependencies: &BTreeMap<String, PackageDependency>,
+    plugins: &crate::plugin::PluginSet,
+) -> Result<dataflow_rs::Registry, String> {
+    use crate::engine::functions::{crypto, jwt_sign, jwt_verify};
+    let exprs = crate::engine::operators::orion_exprs(
+        &crate::engine::ResolvedSecrets::empty(),
+        host.ops_budget,
+    )
+    .map_err(|e| e.to_string())?;
+    let mut registry = dataflow_rs::Registry::new(exprs);
+    registry.register(crypto::NAME, crypto::CryptoFunction);
+    registry.register(jwt_sign::NAME, jwt_sign::JwtSignFunction);
+    registry.register(
+        jwt_verify::NAME,
+        jwt_verify::JwtVerifyFunction {
+            jwks: host.jwks.clone(),
+        },
+    );
+    registry.register(
+        crate::engine::functions::connector_call::NAME,
+        DependencyCall {
+            dependencies: Arc::new(dependencies.clone()),
+            providers: host.providers.clone(),
+        },
+    );
+    crate::engine::register_plugin_functions(&mut registry, plugins.functions().cloned());
+    Ok(registry)
+}
+
+/// A workflow package as a provider backend, registered under its digest.
+pub struct WorkflowProviderBackend {
+    package: WorkflowPackage,
+    host: WorkflowHost,
+    /// The engine compiled for the last generation it ran under: a package
+    /// links the plugin functions that generation serves.
+    engine: Mutex<Option<(u64, Arc<dataflow_rs::Engine>)>>,
+}
+
+impl WorkflowProviderBackend {
+    pub fn new(package: WorkflowPackage, host: WorkflowHost) -> Self {
+        Self {
+            package,
+            host,
+            engine: Mutex::new(None),
+        }
+    }
+
+    pub fn package(&self) -> &WorkflowPackage {
+        &self.package
+    }
+
+    /// Compile every operation's workflow against `plugins`.
+    ///
+    /// # Errors
+    ///
+    /// Each workflow the engine refused, with its issues.
+    pub fn compile(
+        &self,
+        plugins: &crate::plugin::PluginSet,
+    ) -> Result<dataflow_rs::Engine, Vec<PackageProblem>> {
+        self.compile_with(plugins, false)
+    }
+
+    /// [`Self::compile`]'s verdict for an upload or an admission, which may
+    /// come before the plugins the package calls are deployed: a task naming
+    /// a plugin function `plugins` does not serve is left for the build that
+    /// runs it, and everything else must compile.
+    ///
+    /// # Errors
+    ///
+    /// Each problem the engine found that is not such a task.
+    pub fn check(&self, plugins: &crate::plugin::PluginSet) -> Result<(), Vec<PackageProblem>> {
+        self.compile_with(plugins, true).map(|_| ())
+    }
+
+    fn compile_with(
+        &self,
+        plugins: &crate::plugin::PluginSet,
+        plugins_pending: bool,
+    ) -> Result<dataflow_rs::Engine, Vec<PackageProblem>> {
+        let registry =
+            package_registry(&self.host, &self.package.dependencies, plugins).map_err(|e| {
+                vec![PackageProblem::new(
+                    "implementation",
+                    orion_api::error::field_codes::INVALID,
+                    e,
+                )]
+            })?;
+        let compiler = registry.compiler(dataflow_rs::program::CompileOptions::default());
+        let mut compiled = Vec::with_capacity(self.package.entries.len());
+        let mut problems = Vec::new();
+        for workflow in self.package.entries.values() {
+            match crate::engine::compile_row(&compiler, &workflow.document) {
+                Ok(c) => compiled.push(c.workflow),
+                Err(issues) => {
+                    let pending = |issue: &&Issue| {
+                        plugins_pending
+                            && issue.code == IssueCode::UnknownFunction
+                            && plugin_named_by(&workflow.document, issue.step_id.as_deref())
                     };
-                    if let Some(out_obj) = state.get_mut("output").and_then(Value::as_object_mut) {
-                        out_obj.insert(output_key.clone(), resolved);
-                    }
-                }
-                WorkflowGroupStep::CallHelper { helper_id } => {
-                    Box::pin(self.execute_workflow_node(ctx, helper_id, state)).await?;
-                }
-                WorkflowGroupStep::CallSubChannel { sub_channel_id } => {
-                    let Some(sc) = self.graph.sub_channels.get(sub_channel_id) else {
-                        return Err(ConnectorError::contract_violation(
-                            "dispatch",
-                            format!("Internal sub-channel '{sub_channel_id}' not found"),
-                            ctx.invocation().effect_status(),
+                    for issue in issues
+                        .iter()
+                        .filter(|i| crate::engine::quarantines(i))
+                        .filter(|i| !pending(i))
+                    {
+                        problems.push(PackageProblem::new(
+                            format!("{}:{}", workflow.file, issue.path),
+                            orion_api::error::field_codes::INVALID,
+                            issue.message.clone(),
                         ));
-                    };
-                    Box::pin(self.execute_workflow_node(ctx, &sc.target_workflow_id, state))
-                        .await?;
-                }
-                WorkflowGroupStep::InvokeSlot {
-                    binding_slot,
-                    operation,
-                    input,
-                    output_key,
-                } => {
-                    let Some(slot_spec) = self.graph.binding_slots.get(binding_slot) else {
-                        return Err(ConnectorError::forbidden(
-                            codes::DEPENDENCY_UNDECLARED,
-                            "dispatch",
-                            format!("Undeclared binding_slot '{binding_slot}'"),
-                            ctx.invocation().effect_status(),
-                        ));
-                    };
-
-                    // Derive child invocation with inherited generation, clamped deadline,
-                    // shared root budget, and reduced authority (`V2-12.4`, `V2-05.1`).
-                    let child_inv = ctx.invocation().derive_dependency(
-                        binding_slot,
-                        ctx.invocation().effective_identity().clone(),
-                        operation.clone(),
-                        ctx.run_context().deadline(),
-                        ctx.run_context().budget().limits(),
-                        1,
-                    )?;
-
-                    let step_input = if input == &json!("$input") {
-                        state.get("input").cloned().unwrap_or(Value::Null)
-                    } else {
-                        input.clone()
-                    };
-
-                    let res = self
-                        .providers
-                        .dispatch_attempt(
-                            self.admission.as_ref(),
-                            &child_inv,
-                            slot_spec.implementation,
-                            &slot_spec.provider_id,
-                            step_input,
-                        )
-                        .await;
-
-                    match res {
-                        ConnectorResult::Success { data, .. } => {
-                            if let Some(out_obj) =
-                                state.get_mut("output").and_then(Value::as_object_mut)
-                            {
-                                out_obj.insert(output_key.clone(), data);
-                            }
-                        }
-                        ConnectorResult::Error { error } => return Err(error),
                     }
                 }
             }
         }
-        Ok(())
+        if !problems.is_empty() {
+            return Err(problems);
+        }
+        Ok(crate::engine::serving_engine(compiler.link(compiled)))
+    }
+
+    /// The engine for `generation`, compiled once per generation.
+    fn engine_for(
+        &self,
+        generation: &crate::runtime::RuntimeGeneration,
+    ) -> Result<Arc<dataflow_rs::Engine>, ConnectorError> {
+        let mut cached = self.engine.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((id, engine)) = cached.as_ref()
+            && *id == generation.id
+        {
+            return Ok(Arc::clone(engine));
+        }
+        let engine = Arc::new(self.compile(&generation.plugins).map_err(|problems| {
+            ConnectorError::contract_violation(
+                "compile",
+                format!(
+                    "workflow package '{}' does not compile on this generation: {}",
+                    self.package.provider.provider_id,
+                    describe(&problems)
+                ),
+                EffectStatus::NotStarted,
+            )
+        })?);
+        *cached = Some((generation.id, Arc::clone(&engine)));
+        Ok(engine)
     }
 }
 
-impl ProviderBackend for WorkflowGroupProviderBackend {
+/// Whether the task `step_id` in `document` names a plugin-shaped function
+/// (`<plugin>.<label>`).
+fn plugin_named_by(document: &Value, step_id: Option<&str>) -> bool {
+    let Some(step_id) = step_id else {
+        return false;
+    };
+    crate::engine::leaf_tasks(&document["tasks"], document.get("loop"))
+        .into_iter()
+        .find(|task| task["id"] == step_id)
+        .and_then(|task| task["function"]["name"].as_str())
+        .is_some_and(|name| name.contains('.'))
+}
+
+/// A package workflow's failure, as the caller's `connector_call` reports it.
+fn workflow_failed(message: String, effect: EffectStatus) -> ConnectorError {
+    ConnectorError {
+        code: "PROVIDER_WORKFLOW_FAILED".to_string(),
+        class: ConnectorErrorClass::ProviderFailure,
+        message,
+        effect_status: effect,
+        retry_advice: RetryAdvice::Never,
+        origin: ErrorOrigin::provider("workflow"),
+        retry_after_ms: None,
+        details: None,
+    }
+}
+
+impl ProviderBackend for WorkflowProviderBackend {
     fn kind(&self) -> ImplementationKind {
         ImplementationKind::Workflow
     }
 
     fn driver_id(&self) -> &str {
-        &self.graph.provider.provider_id
+        &self.package.provider.package_digest
     }
 
     fn validate_config(&self, config: &Value) -> Result<(), ConnectorError> {
-        if !config.is_object() {
-            return Err(ConnectorError::invalid_input(
-                "Workflow-group connector config must be a JSON object",
+        if config.is_object() {
+            Ok(())
+        } else {
+            Err(ConnectorError::invalid_input(
+                "a workflow package's connection configuration is a JSON object",
                 None,
-            ));
+            ))
         }
-        Ok(())
     }
 
     fn invoke<'a>(
@@ -541,408 +791,683 @@ impl ProviderBackend for WorkflowGroupProviderBackend {
         input: Value,
     ) -> BoxProviderFuture<'a, Result<ConnectorOutput, ConnectorError>> {
         Box::pin(async move {
-            ctx.run_context()
-                .check_live(ctx.invocation().effect_status())?;
-            let Some(entry_wf_id) = self.graph.entries.get(operation) else {
+            let effect = ctx.invocation().effect_status();
+            ctx.run_context().check_live(effect)?;
+            if !self.package.entries.contains_key(operation) {
                 return Err(ConnectorError::forbidden(
                     codes::OPERATION_FORBIDDEN,
                     "dispatch",
                     format!(
-                        "Workflow-group provider '{}' exports no operation '{operation}'",
-                        self.driver_id()
+                        "workflow package '{}' exports no operation '{operation}'",
+                        self.package.provider.provider_id
                     ),
-                    ctx.invocation().effect_status(),
-                ));
-            };
-
-            // Isolated per-invocation message state (`V2-12.3`).
-            let mut state = serde_json::Map::new();
-            state.insert("input".to_string(), input);
-            state.insert("output".to_string(), Value::Object(serde_json::Map::new()));
-
-            self.execute_workflow_node(ctx, entry_wf_id, &mut state)
-                .await?;
-
-            let Some(output) = state.remove("output") else {
-                return Err(ConnectorError::contract_violation(
-                    "output_validation",
-                    "Workflow-group entry produced no output object",
-                    ctx.invocation().effect_status(),
-                ));
-            };
-            if !output.is_object() || output.as_object().is_some_and(|m| m.is_empty()) {
-                return Err(ConnectorError::contract_violation(
-                    "output_validation",
-                    "Workflow-group entry produced an empty or non-object output",
-                    ctx.invocation().effect_status(),
+                    effect,
                 ));
             }
-
-            let mut metadata = BTreeMap::new();
-            metadata.insert(
-                "provider_digest".to_string(),
-                json!(self.graph.provider.package_digest),
-            );
-            Ok(ConnectorOutput::with_metadata(output, metadata))
+            let generation = crate::runtime::generation::PINNED_GENERATION
+                .try_with(Arc::clone)
+                .map_err(|_| {
+                    ConnectorError::contract_violation(
+                        "dispatch",
+                        "a workflow package runs only inside a served run",
+                        effect,
+                    )
+                })?;
+            let engine = self.engine_for(&generation)?;
+            let remaining = ctx
+                .run_context()
+                .deadline()
+                .saturating_duration_since(Instant::now());
+            let opts = crate::engine::ExecOpts {
+                timeout_ms: Some(
+                    u64::try_from(remaining.as_millis())
+                        .unwrap_or(u64::MAX)
+                        .max(1),
+                ),
+                ..Default::default()
+            };
+            let execution = PACKAGE_INVOCATION
+                .scope(
+                    ctx.invocation().clone(),
+                    crate::engine::execute::execute_on(
+                        &engine,
+                        operation,
+                        &input,
+                        &json!({}),
+                        opts,
+                        generation.run_budget_limits,
+                    ),
+                )
+                .await;
+            let effect = ctx.invocation().effect_status();
+            match execution.outcome {
+                crate::engine::RunOutcome::Ok => {
+                    let mut metadata = BTreeMap::new();
+                    metadata.insert(
+                        "provider_digest".to_string(),
+                        json!(self.package.provider.package_digest),
+                    );
+                    Ok(ConnectorOutput::with_metadata(execution.data(), metadata))
+                }
+                crate::engine::RunOutcome::Timeout(_) => {
+                    Err(ConnectorError::deadline_exceeded(effect))
+                }
+                crate::engine::RunOutcome::WorkflowErrors(summary) => Err(workflow_failed(
+                    format!("operation '{operation}' failed: {summary}"),
+                    effect,
+                )),
+                crate::engine::RunOutcome::EngineError(e) => Err(workflow_failed(
+                    format!("operation '{operation}' failed: {e}"),
+                    effect,
+                )),
+            }
         })
-    }
-
-    fn as_source(&self) -> Option<&dyn SourceConnectorFacet> {
-        self.graph
-            .source_entries
-            .as_ref()
-            .map(|_| self as &dyn SourceConnectorFacet)
     }
 }
 
-impl SourceConnectorFacet for WorkflowGroupProviderBackend {
-    fn open<'a>(
-        &'a self,
-        ctx: &'a AttemptContext,
-        checkpoint: Option<Value>,
-    ) -> BoxProviderFuture<'a, Result<Value, ConnectorError>> {
-        Box::pin(async move {
-            let Some(ref src) = self.graph.source_entries else {
-                return Err(ConnectorError::forbidden(
-                    codes::OPERATION_FORBIDDEN,
-                    "dispatch",
-                    "Workflow-group provider declares no source facet",
-                    ctx.invocation().effect_status(),
-                ));
-            };
-            let mut state = serde_json::Map::new();
-            state.insert(
-                "input".to_string(),
-                json!({"checkpoint": checkpoint.unwrap_or(Value::Null)}),
-            );
-            state.insert("output".to_string(), Value::Object(serde_json::Map::new()));
-            self.execute_workflow_node(ctx, &src.open_workflow_id, &mut state)
-                .await?;
-            Ok(state.remove("output").unwrap_or_else(|| json!({})))
-        })
+/// `connector_call` inside a package workflow: a call on one of the
+/// package's dependency aliases, dispatched as a dependency of the package's
+/// own invocation to the connection the deployer bound it to.
+#[derive(Clone)]
+pub struct DependencyCall {
+    dependencies: Arc<BTreeMap<String, PackageDependency>>,
+    providers: ProviderRegistry,
+}
+
+#[derive(Debug, FunctionConfig)]
+pub struct DependencyCallConfig {
+    /// The dependency alias the package declares.
+    pub connection: String,
+    /// An operation that dependency lists.
+    pub operation: String,
+    /// The operation's input, rendered from the message.
+    pub input: Option<Interpolated>,
+    /// Where the operation's result is written (default `data`).
+    #[output(default = "data")]
+    pub output: Output,
+}
+
+impl Function for DependencyCall {
+    type Config = DependencyCallConfig;
+
+    fn spec(&self) -> FunctionSpec {
+        crate::engine::kit::spec(crate::engine::functions::connector_call::NAME)
     }
 
-    fn poll<'a>(
-        &'a self,
-        ctx: &'a AttemptContext,
-        cursor: &'a Value,
-        max_items: u32,
-    ) -> BoxProviderFuture<'a, Result<SourcePollBatch, ConnectorError>> {
-        Box::pin(async move {
-            let Some(ref src) = self.graph.source_entries else {
-                return Err(ConnectorError::forbidden(
-                    codes::OPERATION_FORBIDDEN,
-                    "dispatch",
-                    "Workflow-group provider declares no source facet",
-                    ctx.invocation().effect_status(),
-                ));
-            };
-            let mut state = serde_json::Map::new();
-            state.insert(
-                "input".to_string(),
-                json!({"cursor": cursor, "max_items": max_items}),
+    /// The alias and the operation, refused here too: a document that
+    /// slipped past the package check still compiles to nothing it may not
+    /// call.
+    fn prepare(&self, cfg: &mut DependencyCallConfig, _p: &Prepare<'_>) -> Result<(), Vec<Issue>> {
+        let refuse = |field: &str, message: String| {
+            let mut at = AuthoredPath::root();
+            at.push(field);
+            Err(vec![Issue::new(IssueCode::InputParse, at, message)])
+        };
+        let Some(dependency) = self.dependencies.get(&cfg.connection) else {
+            return refuse(
+                "connection",
+                format!(
+                    "'{}' is not a dependency the package declares",
+                    cfg.connection
+                ),
             );
-            state.insert("output".to_string(), Value::Object(serde_json::Map::new()));
-            self.execute_workflow_node(ctx, &src.poll_workflow_id, &mut state)
-                .await?;
-            Ok(SourcePollBatch {
-                items: Vec::<SourceBatchItem>::new(),
-                next_checkpoint: state.remove("output"),
-            })
-        })
+        };
+        if !dependency.operations.contains(&cfg.operation) {
+            return refuse(
+                "operation",
+                format!(
+                    "dependency '{}' does not declare the operation '{}'",
+                    cfg.connection, cfg.operation
+                ),
+            );
+        }
+        Ok(())
     }
 
-    fn settle<'a>(
-        &'a self,
-        ctx: &'a AttemptContext,
-        delivery_id: &'a str,
-        settlement: SourceSettlement,
-    ) -> BoxProviderFuture<'a, Result<(), ConnectorError>> {
-        Box::pin(async move {
-            let Some(ref src) = self.graph.source_entries else {
-                return Err(ConnectorError::forbidden(
-                    codes::OPERATION_FORBIDDEN,
-                    "dispatch",
-                    "Workflow-group provider declares no source facet",
-                    ctx.invocation().effect_status(),
-                ));
-            };
-            let mut state = serde_json::Map::new();
-            state.insert(
-                "input".to_string(),
-                json!({"delivery_id": delivery_id, "settlement": settlement}),
-            );
-            state.insert("output".to_string(), Value::Object(serde_json::Map::new()));
-            self.execute_workflow_node(ctx, &src.settle_workflow_id, &mut state)
-                .await?;
-            Ok(())
-        })
+    async fn call(
+        &self,
+        ctx: &mut Ctx<'_>,
+        cfg: &DependencyCallConfig,
+    ) -> dataflow_rs::Result<Outcome> {
+        let output =
+            crate::engine::kit::output_path(ctx, &cfg.output, Some(&crate::engine::kit::DATA))?;
+        let input = match &cfg.input {
+            Some(doc) => crate::engine::kit::rendered(ctx, doc)?,
+            None => json!({}),
+        };
+        let parent = PACKAGE_INVOCATION.try_with(Clone::clone).map_err(|_| {
+            crate::engine::HandlerError::new(
+                crate::engine::ErrorClass::CallerInput,
+                "CONNECTOR_CONNECTION_FORBIDDEN: a package's connector_call runs only inside \
+                 its package's invocation",
+            )
+        })?;
+        let data = dispatch_dependency(&self.providers, &parent, cfg, input)
+            .await
+            .map_err(crate::engine::functions::connector_call::connector_error)?;
+        ctx.set(&output, OwnedDataValue::from(&data))?;
+        Ok(Outcome::Ok)
     }
+}
 
-    fn close<'a>(
-        &'a self,
-        ctx: &'a AttemptContext,
-        cursor: Value,
-    ) -> BoxProviderFuture<'a, Result<(), ConnectorError>> {
-        Box::pin(async move {
-            let Some(ref src) = self.graph.source_entries else {
-                return Err(ConnectorError::forbidden(
-                    codes::OPERATION_FORBIDDEN,
-                    "dispatch",
-                    "Workflow-group provider declares no source facet",
-                    ctx.invocation().effect_status(),
+/// One dependency call: the alias resolved to the connection the run's
+/// authority binds it to, a dependency invocation derived from `parent`, and
+/// the dispatch.
+async fn dispatch_dependency(
+    providers: &ProviderRegistry,
+    parent: &Invocation,
+    cfg: &DependencyCallConfig,
+    input: Value,
+) -> Result<Value, ConnectorError> {
+    let effect = parent.effect_status();
+    let key = dependency_key(&parent.connection().connection_id, &cfg.connection);
+    let Some((bound, _)) = parent
+        .context()
+        .authority()
+        .declared_dependencies
+        .get(&key)
+        .cloned()
+    else {
+        return Err(ConnectorError::forbidden(
+            codes::DEPENDENCY_UNDECLARED,
+            "dispatch",
+            format!(
+                "connection '{}' binds no connection to the alias '{}' in this deployment",
+                parent.connection().connection_id,
+                cfg.connection
+            ),
+            effect,
+        ));
+    };
+    let Some(store) = providers.deployment_store() else {
+        return Err(ConnectorError::forbidden(
+            codes::CONNECTION_FORBIDDEN,
+            "dispatch",
+            "this node has no deployment store to resolve a dependency against",
+            effect,
+        ));
+    };
+    let target = dependency_target(&store, &bound, &cfg.operation, &input, effect)?;
+    let child = parent.derive_dependency(
+        &key,
+        target.identity,
+        cfg.operation.clone(),
+        parent.context().deadline(),
+        parent.context().budget().limits(),
+        2,
+    )?;
+    match providers
+        .dispatch_attempt(
+            providers.admission_policy().as_ref(),
+            &child,
+            target.kind,
+            &target.backend_id,
+            input,
+        )
+        .await
+    {
+        ConnectorResult::Success { data, .. } => Ok(data),
+        ConnectorResult::Error { error } => Err(error),
+    }
+}
+
+/// Where a dependency call dispatches: the backend and the identity it runs
+/// under.
+struct DependencyTarget {
+    kind: ImplementationKind,
+    backend_id: String,
+    identity: super::contract::EffectiveConnectionIdentity,
+}
+
+fn dependency_target(
+    store: &ImmutableDeploymentStore,
+    bound: &ConnectionReference,
+    operation: &str,
+    input: &Value,
+    effect: EffectStatus,
+) -> Result<DependencyTarget, ConnectorError> {
+    let Some(row) = store.get_connection(&bound.connection_id, bound.revision) else {
+        return Err(ConnectorError::forbidden(
+            codes::CONNECTION_FORBIDDEN,
+            "dispatch",
+            format!(
+                "dependency connection '{}' revision {} is not stored",
+                bound.connection_id, bound.revision
+            ),
+            effect,
+        ));
+    };
+    let identity = crate::engine::functions::connector_call::effective_identity(&row);
+    let digest = &bound.provider.package_digest;
+    if let Some(driver) = super::foundation::builtin_driver(digest) {
+        return Ok(DependencyTarget {
+            kind: ImplementationKind::Rust,
+            backend_id: driver.to_string(),
+            identity,
+        });
+    }
+    let Some(package) = store.get_package(digest) else {
+        return Err(ConnectorError::forbidden(
+            codes::CONNECTION_FORBIDDEN,
+            "dispatch",
+            format!("dependency provider package '{digest}' is not uploaded"),
+            effect,
+        ));
+    };
+    if store.get_admission(digest).is_none_or(|a| a.revoked) {
+        return Err(ConnectorError::forbidden(
+            codes::CONNECTION_FORBIDDEN,
+            "dispatch",
+            format!(
+                "dependency provider package '{}' ({digest}) is not admitted",
+                package.provider_id
+            ),
+            effect,
+        ));
+    }
+    if let Some(Err(finding)) =
+        store.check_package_instance(digest, PackageSchema::OperationInput(operation), input)
+    {
+        return Err(ConnectorError::invalid_input(
+            format!(
+                "'{operation}' on dependency '{}': the input does not satisfy provider '{}''s \
+                 input_schema ({} refused it)",
+                bound.connection_id, package.provider_id, finding.location
+            ),
+            Some(json!({"pointer": finding.instance_path, "keyword": finding.location})),
+        ));
+    }
+    Ok(DependencyTarget {
+        kind: package.implementation,
+        backend_id: package.backend_id().to_string(),
+        identity,
+    })
+}
+
+/// The problems with `row`'s `bindings` as a connection over the package
+/// `provider_digest` names, for its revision create: every declared alias
+/// bound, nothing else bound, and each target a stored connection over a
+/// provider other than a workflow package (a dependency's own dependencies
+/// are not carried, so a package cannot call another), running on the
+/// provider the dependency names when it names one.
+pub fn binding_problems(
+    store: &ImmutableDeploymentStore,
+    connection_id: &str,
+    provider_digest: &str,
+    bindings: &BTreeMap<String, String>,
+) -> Vec<PackageProblem> {
+    use orion_api::error::field_codes::{INVALID, REQUIRED, UNKNOWN_FIELD};
+
+    let package = store
+        .get_package(provider_digest)
+        .filter(|p| p.implementation == ImplementationKind::Workflow);
+    let Some(package) = package else {
+        if bindings.is_empty() {
+            return Vec::new();
+        }
+        return vec![PackageProblem::new(
+            "bindings",
+            INVALID,
+            "only a connection over a workflow provider package binds dependencies",
+        )];
+    };
+    let dependencies = declared_dependencies(&package.manifest_json);
+    let mut problems = Vec::new();
+    for alias in dependencies.keys() {
+        if !bindings.contains_key(alias) {
+            problems.push(PackageProblem::new(
+                format!("bindings.{alias}"),
+                REQUIRED,
+                format!(
+                    "provider '{}' declares the dependency '{alias}': bind it to a connection",
+                    package.provider_id
+                ),
+            ));
+        }
+    }
+    let connections = store.list_connections();
+    for (alias, target) in bindings {
+        let at = format!("bindings.{alias}");
+        let Some(dependency) = dependencies.get(alias) else {
+            problems.push(PackageProblem::new(
+                at,
+                UNKNOWN_FIELD,
+                format!(
+                    "provider '{}' declares no dependency '{alias}'",
+                    package.provider_id
+                ),
+            ));
+            continue;
+        };
+        if target == connection_id {
+            problems.push(PackageProblem::new(
+                at,
+                INVALID,
+                "a connection cannot be its own dependency",
+            ));
+            continue;
+        }
+        let Some(latest) = connections
+            .iter()
+            .filter(|c| &c.connection_id == target)
+            .max_by_key(|c| c.revision)
+        else {
+            problems.push(PackageProblem::new(
+                at,
+                INVALID,
+                format!("no connection '{target}' is stored"),
+            ));
+            continue;
+        };
+        if let Some(problem) = target_problem(store, latest, dependency) {
+            problems.push(PackageProblem::new(at, INVALID, problem));
+        }
+    }
+    problems
+}
+
+/// Why `target` cannot serve `dependency`, if it cannot.
+fn target_problem(
+    store: &ImmutableDeploymentStore,
+    target: &ConnectionRevisionRow,
+    dependency: &PackageDependency,
+) -> Option<String> {
+    let provider_id = match super::foundation::builtin_driver(&target.provider_digest) {
+        Some(driver) => driver.to_string(),
+        None => match store.get_package(&target.provider_digest) {
+            Some(pkg) if pkg.implementation == ImplementationKind::Workflow => {
+                return Some(format!(
+                    "connection '{}' runs on the workflow package '{}': a dependency is a \
+                     connection over a built-in or rust provider",
+                    target.connection_id, pkg.provider_id
+                ));
+            }
+            Some(pkg) => pkg.provider_id,
+            None => {
+                return Some(format!(
+                    "connection '{}' names provider '{}', which is not uploaded",
+                    target.connection_id, target.provider_digest
+                ));
+            }
+        },
+    };
+    match &dependency.provider_id {
+        Some(wanted) if wanted != &provider_id => Some(format!(
+            "dependency '{}' runs on '{wanted}', and connection '{}' on '{provider_id}'",
+            dependency.alias, target.connection_id
+        )),
+        _ => None,
+    }
+}
+
+/// What a manifest's connections over workflow packages depend on, keyed by
+/// [`dependency_key`]: each binding's target at the revision the member
+/// requires, with the operations the dependency declares.
+///
+/// # Errors
+///
+/// A binding whose target the member does not require, or that names a
+/// connection the store does not hold at that revision.
+pub fn manifest_dependencies(
+    store: &ImmutableDeploymentStore,
+    manifest: &super::deployment_store::CanonicalManifest,
+) -> Result<BTreeMap<String, (ConnectionReference, BTreeSet<String>)>, String> {
+    use super::deployment_store::EntityKind;
+
+    let mut out = BTreeMap::new();
+    for member in &manifest.members {
+        if member.entity.kind != EntityKind::Connection {
+            continue;
+        }
+        let Some(row) = store.get_connection(&member.entity.id, member.entity.revision) else {
+            continue;
+        };
+        if row.bindings.is_empty() {
+            continue;
+        }
+        let Some(package) = store.get_package(&row.provider_digest) else {
+            return Err(format!(
+                "connection '{}' binds dependencies over provider '{}', which is not uploaded",
+                row.connection_id, row.provider_digest
+            ));
+        };
+        let dependencies = declared_dependencies(&package.manifest_json);
+        for (alias, target) in &row.bindings {
+            let Some(required) = member
+                .requires
+                .iter()
+                .find(|r| r.kind == EntityKind::Connection && &r.id == target)
+            else {
+                return Err(format!(
+                    "connection '{}' binds '{alias}' to connection '{target}', which its \
+                     deployment member does not require: add a requirement on connection \
+                     '{target}'",
+                    row.connection_id
                 ));
             };
-            let mut state = serde_json::Map::new();
-            state.insert("input".to_string(), json!({"cursor": cursor}));
-            state.insert("output".to_string(), Value::Object(serde_json::Map::new()));
-            self.execute_workflow_node(ctx, &src.close_workflow_id, &mut state)
-                .await?;
-            Ok(())
-        })
+            let Some(target_row) = store.get_connection(target, required.revision) else {
+                return Err(format!(
+                    "connection '{}' binds '{alias}' to connection '{target}' revision {}, \
+                     which is not stored",
+                    row.connection_id, required.revision
+                ));
+            };
+            let provider = match super::foundation::builtin_driver(&target_row.provider_digest) {
+                Some(driver) => ProviderReference {
+                    provider_id: driver.to_string(),
+                    version: crate::version::ORION_VERSION.to_string(),
+                    package_digest: target_row.provider_digest.clone(),
+                },
+                None => match store.get_package(&target_row.provider_digest) {
+                    Some(pkg) => ProviderReference {
+                        provider_id: pkg.provider_id,
+                        version: pkg.version,
+                        package_digest: pkg.package_digest,
+                    },
+                    None => {
+                        return Err(format!(
+                            "connection '{target}' names provider '{}', which is not uploaded",
+                            target_row.provider_digest
+                        ));
+                    }
+                },
+            };
+            let operations = dependencies
+                .get(alias)
+                .map(|d| d.operations.clone())
+                .unwrap_or_default();
+            out.insert(
+                dependency_key(&row.connection_id, alias),
+                (
+                    ConnectionReference {
+                        connection_id: target.clone(),
+                        revision: required.revision,
+                        provider,
+                    },
+                    operations,
+                ),
+            );
+        }
     }
+    Ok(out)
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::extensions::CompositionRoot;
-    use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
-    use crate::extensions::contract::{ConnectionReference, EffectiveConnectionIdentity};
-    use crate::extensions::foundation::{DRIVER_HTTP, DRIVER_MEMORY_CACHE};
-    use std::time::{Duration, Instant};
 
-    fn sample_provider_ref() -> ProviderReference {
+    fn provider() -> ProviderReference {
         ProviderReference {
-            provider_id: "acme.crm-composite".to_string(),
+            provider_id: "acme.crm".to_string(),
             version: "1.0.0".to_string(),
-            package_digest:
-                "sha256:abababababababababababababababababababababababababababababababab"
-                    .to_string(),
+            package_digest: format!("sha256:{}", "ab".repeat(32)),
         }
     }
 
-    #[test]
-    fn rejects_cycles_undeclared_helpers_and_capability_expansion() {
-        let mut workflows = BTreeMap::new();
-        workflows.insert(
-            "entry_a".to_string(),
-            WorkflowNodeDef {
-                id: "entry_a".to_string(),
-                steps: vec![WorkflowGroupStep::CallHelper {
-                    helper_id: "helper_b".to_string(),
-                }],
-            },
-        );
-        workflows.insert(
-            "helper_b".to_string(),
-            WorkflowNodeDef {
-                id: "helper_b".to_string(),
-                steps: vec![WorkflowGroupStep::CallHelper {
-                    helper_id: "entry_a".to_string(),
-                }],
-            },
-        );
-
-        let cyclic = WorkflowGroupManifest {
-            provider: sample_provider_ref(),
-            entries: BTreeMap::from([("sync_contact".to_string(), "entry_a".to_string())]),
-            workflows,
-            sub_channels: BTreeMap::new(),
-            binding_slots: BTreeMap::new(),
-            source_entries: None,
-        };
-        let err = CompiledWorkflowProviderGraph::compile(cyclic).expect_err("cycle must fail");
-        assert_eq!(err.code, "WORKFLOW_GROUP_CYCLE_DETECTED");
-
-        // Test capability expansion on a binding_slot (requesting "delete" when only "get" is declared).
-        let mut wf_cap = BTreeMap::new();
-        wf_cap.insert(
-            "entry".to_string(),
-            WorkflowNodeDef {
-                id: "entry".to_string(),
-                steps: vec![WorkflowGroupStep::InvokeSlot {
-                    binding_slot: "http_slot".to_string(),
-                    operation: "delete".to_string(),
-                    input: json!({"path": "/contacts/1"}),
-                    output_key: "res".to_string(),
-                }],
-            },
-        );
-        let mut slots = BTreeMap::new();
-        slots.insert(
-            "http_slot".to_string(),
-            BindingSlotSpec {
-                slot: "http_slot".to_string(),
-                provider_id: DRIVER_HTTP.to_string(),
-                implementation: ImplementationKind::Rust,
-                required_operations: BTreeSet::from(["get".to_string()]),
-            },
-        );
-        let cap_expansion = WorkflowGroupManifest {
-            provider: sample_provider_ref(),
-            entries: BTreeMap::from([("remove".to_string(), "entry".to_string())]),
-            workflows: wf_cap,
-            sub_channels: BTreeMap::new(),
-            binding_slots: slots,
-            source_entries: None,
-        };
-        let err = CompiledWorkflowProviderGraph::compile(cap_expansion)
-            .expect_err("capability expansion must fail");
-        assert_eq!(err.code, "WORKFLOW_GROUP_CAPABILITY_EXPANSION");
+    fn manifest(entries: Value, workflows: Value) -> Value {
+        json!({
+            "implementation": {"kind": "workflow", "entries": entries, "workflows": workflows},
+            "dependencies": [
+                {"kind": "provider", "alias": "cache", "id": "org.orion.memory-cache",
+                 "requires": ">=2", "operations": ["cache.get"]}
+            ],
+        })
     }
 
-    #[tokio::test]
-    async fn executes_composite_workflow_with_sub_channel_and_binding_slot() {
-        let root = CompositionRoot::community();
+    fn files(docs: &[(&str, Value)]) -> BTreeMap<String, Vec<u8>> {
+        docs.iter()
+            .map(|(path, doc)| (path.to_string(), serde_json::to_vec(doc).unwrap()))
+            .collect()
+    }
 
-        // Build a composite Workflow-Group connector that:
-        // 1. Calls an internal sub-channel ("normalize_sub") -> "normalize_wf"
-        // 2. Invokes the Community foundation `org.orion.http` connector via `binding_slot: "upstream_api"`
-        let mut workflows = BTreeMap::new();
-        workflows.insert(
-            "fetch_contact_entry".to_string(),
-            WorkflowNodeDef {
-                id: "fetch_contact_entry".to_string(),
-                steps: vec![
-                    WorkflowGroupStep::CallSubChannel {
-                        sub_channel_id: "normalize_sub".to_string(),
-                    },
-                    WorkflowGroupStep::InvokeSlot {
-                        binding_slot: "upstream_api".to_string(),
-                        operation: "set".to_string(),
-                        input: json!({"key": "contact:123", "value": "synced"}),
-                        output_key: "upstream_response".to_string(),
-                    },
-                ],
-            },
-        );
-        workflows.insert(
-            "normalize_wf".to_string(),
-            WorkflowNodeDef {
-                id: "normalize_wf".to_string(),
-                steps: vec![WorkflowGroupStep::Transform {
-                    output_key: "normalized_input".to_string(),
-                    template: json!("$input"),
-                }],
-            },
-        );
+    fn paths(problems: &[PackageProblem]) -> Vec<&str> {
+        problems.iter().map(|p| p.path.as_str()).collect()
+    }
 
-        let mut sub_channels = BTreeMap::new();
-        sub_channels.insert(
-            "normalize_sub".to_string(),
-            SubChannelDef {
-                id: "normalize_sub".to_string(),
-                target_workflow_id: "normalize_wf".to_string(),
-            },
-        );
-
-        let mut binding_slots = BTreeMap::new();
-        binding_slots.insert(
-            "upstream_api".to_string(),
-            BindingSlotSpec {
-                slot: "upstream_api".to_string(),
-                provider_id: DRIVER_MEMORY_CACHE.to_string(),
-                implementation: ImplementationKind::Rust,
-                required_operations: BTreeSet::from(["set".to_string()]),
-            },
-        );
-
-        let manifest = WorkflowGroupManifest {
-            provider: sample_provider_ref(),
-            entries: BTreeMap::from([(
-                "get_contact".to_string(),
-                "fetch_contact_entry".to_string(),
-            )]),
-            workflows,
-            sub_channels,
-            binding_slots,
-            source_entries: None,
-        };
-
-        let compiled = CompiledWorkflowProviderGraph::compile(manifest).expect("compiles cleanly");
+    /// The allowlist, task by task: a host function that reaches the
+    /// deployment by name is refused naming the task, a secret node or
+    /// reference anywhere is refused, and `connector_call` is held to the
+    /// declared dependencies.
+    #[test]
+    fn a_package_workflow_reaches_only_the_hermetic_set() {
+        let doc = json!({"id": "entry", "name": "entry", "tasks": [
+            {"id": "ok-map", "name": "m", "function": {"name": "map", "input": {"mappings": [
+                {"path": "data.x", "logic": 1}]}}},
+            {"id": "ok-hash", "name": "h", "function": {"name": "crypto", "input": {
+                "op": "hash", "algorithm": "sha256", "data": "x", "output": "data.h"}}},
+            {"id": "egress", "name": "e", "function": {"name": "http_call", "input": {
+                "connector": "orders-api", "method": "GET"}}},
+            {"id": "peek", "name": "p", "function": {"name": "channel_call", "input": {
+                "channel": "admin"}}},
+            {"id": "keyed", "name": "k", "function": {"name": "crypto", "input": {
+                "op": "hmac", "algorithm": "sha256", "data": "x",
+                "key": {"secret": "partner"}, "output": "data.mac"}}},
+            {"id": "env", "name": "v", "function": {"name": "map", "input": {"mappings": [
+                {"path": "data.k", "logic": "env://AWS_SECRET_ACCESS_KEY"}]}}},
+            {"id": "dep-ok", "name": "d", "function": {"name": "connector_call", "input": {
+                "connection": "cache", "operation": "cache.get", "input": {"key": "k"}}}},
+            {"id": "dep-op", "name": "d", "function": {"name": "connector_call", "input": {
+                "connection": "cache", "operation": "cache.set"}}},
+            {"id": "dep-alias", "name": "d", "function": {"name": "connector_call", "input": {
+                "connection": "orders-db", "operation": "query", "target_id": "org.orion.sqlite"}}},
+        ]});
+        let problems = WorkflowPackage::from_files(
+            provider(),
+            &manifest(
+                json!({"item.get": "entry"}),
+                json!(["workflows/entry.json"]),
+            ),
+            &files(&[("workflows/entry.json", doc)]),
+        )
+        .expect_err("refused");
+        let at = paths(&problems);
+        for refused in [
+            "workflows/entry.json:tasks[2].function.name",
+            "workflows/entry.json:tasks[3].function.name",
+            "workflows/entry.json:tasks[4].function.input.key",
+            "workflows/entry.json:tasks[5].function.input.mappings[0].logic",
+            "workflows/entry.json:tasks[7].function.input.operation",
+            "workflows/entry.json:tasks[8].function.input.connection",
+            "workflows/entry.json:tasks[8].function.input.target_id",
+        ] {
+            assert!(at.contains(&refused), "{refused} refused: {problems:#?}");
+        }
+        assert_eq!(at.len(), 7, "nothing else is refused: {problems:#?}");
         assert!(
-            compiled.namespaced_workflows["fetch_contact_entry"]
-                .starts_with("__provider::sha256:abab")
+            problems
+                .iter()
+                .any(|p| p.message.contains("task 'egress' calls `http_call`")),
+            "{problems:#?}"
+        );
+    }
+
+    /// One entry workflow per operation: a workflow no operation enters is a
+    /// helper and refused, as is a manifest declaring helpers.
+    #[test]
+    fn a_package_has_no_helpers() {
+        let tasks = json!([{"id": "t", "name": "t", "function": {"name": "map", "input": {"mappings": [{"path": "data.x", "logic": 1}]}}}]);
+        let entry = json!({"id": "entry", "name": "entry", "tasks": tasks});
+        let helper = json!({"id": "helper", "name": "helper", "tasks": tasks});
+        let mut m = manifest(
+            json!({"item.get": "entry"}),
+            json!(["workflows/entry.json", "workflows/helper.json"]),
+        );
+        m["implementation"]["helpers"] = json!(["helper"]);
+        let problems = WorkflowPackage::from_files(
+            provider(),
+            &m,
+            &files(&[
+                ("workflows/entry.json", entry.clone()),
+                ("workflows/helper.json", helper),
+            ]),
+        )
+        .expect_err("refused");
+        assert_eq!(
+            paths(&problems),
+            vec![
+                "connector.json:implementation.helpers",
+                "workflows/helper.json"
+            ],
+            "{problems:#?}"
         );
 
-        let wf_backend = Arc::new(WorkflowGroupProviderBackend::new(
-            compiled,
-            root.providers.clone(),
-            root.admission.clone(),
-        ));
-        root.providers.register(wf_backend);
+        let ok = WorkflowPackage::from_files(
+            provider(),
+            &manifest(
+                json!({"item.get": "entry"}),
+                json!(["workflows/entry.json"]),
+            ),
+            &files(&[("workflows/entry.json", entry)]),
+        )
+        .expect("one entry per operation is accepted");
+        assert_eq!(ok.entries["item.get"].document["channel"], "item.get");
+    }
 
-        // Set up run context authorizing both the composite connector and its declared `upstream_api` dependency slot.
-        let composite_conn = ConnectionReference {
-            connection_id: "crm-conn".to_string(),
-            revision: 1,
-            provider: sample_provider_ref(),
+    /// Defence in depth: even a document that skipped the package check
+    /// cannot call a deployment-reaching function or read a secret, because
+    /// the package's registry holds neither.
+    #[test]
+    fn the_package_registry_cannot_reach_the_deployment_or_its_secrets() {
+        let host = WorkflowHost {
+            providers: ProviderRegistry::new(),
+            jwks: Arc::new(crate::jwt::jwks::JwksCache::new(
+                reqwest::Client::new(),
+                false,
+            )),
+            ops_budget: 0,
         };
-        let http_conn = ConnectionReference {
-            connection_id: "cache-conn".to_string(),
-            revision: 1,
-            provider: ProviderReference {
-                provider_id: DRIVER_MEMORY_CACHE.to_string(),
-                version: "2.0.0".to_string(),
-                package_digest:
-                    "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
-                        .to_string(),
-            },
-        };
-        let eff_id = EffectiveConnectionIdentity {
-            provider_digest: composite_conn.provider.package_digest.clone(),
-            connection_id: "crm-conn".to_string(),
-            revision: 1,
-            secret_hash: "sha256:9999".to_string(),
-        };
-
-        let mut allowed_operations = BTreeMap::new();
-        allowed_operations.insert(
-            "crm-conn".to_string(),
-            BTreeSet::from(["get_contact".to_string()]),
-        );
-        let mut declared_dependencies = BTreeMap::new();
-        declared_dependencies.insert(
-            "upstream_api".to_string(),
-            (http_conn, BTreeSet::from(["set".to_string()])),
-        );
-
-        let run = AdmittedRun::admit(
-            "run-composite",
-            1,
-            Instant::now() + Duration::from_secs(30),
-            BudgetLimits::default(),
-            AuthorityGrant {
-                allowed_operations,
-                declared_dependencies,
-                allowed_channels: BTreeSet::new(),
-            },
-        );
-        let inv = run
-            .context()
-            .start_invocation(composite_conn, eff_id, "get_contact", None, 2)
-            .expect("composite invocation starts");
-
-        let res = root
-            .providers
-            .dispatch_attempt(
-                root.admission.as_ref(),
-                &inv,
-                ImplementationKind::Workflow,
-                "acme.crm-composite",
-                json!({"contact_id": "123"}),
+        let registry =
+            package_registry(&host, &BTreeMap::new(), &crate::plugin::PluginSet::empty())
+                .expect("the registry builds");
+        let compiler = registry.compiler(dataflow_rs::program::CompileOptions::default());
+        let compile = |task: Value| {
+            crate::engine::compile_row(
+                &compiler,
+                &json!({"id": "w", "name": "w", "channel": "op", "tasks": [task]}),
             )
-            .await;
-
-        let ConnectorResult::Success { data, .. } = res else {
-            panic!("expected composite workflow success, got {res:?}");
         };
-        assert_eq!(data["normalized_input"], json!({"contact_id": "123"}));
-        assert_eq!(data["upstream_response"]["stored"], true);
-        assert_eq!(data["upstream_response"]["key"], "contact:123");
-        // Verify both parent attempt and child dependency attempt debited the shared root budget!
-        assert_eq!(run.context().budget().snapshot().spent_attempts, 2);
+        let egress = compile(
+            json!({"id": "e", "name": "e", "function": {"name": "http_call",
+            "input": {"connector": "orders-api", "method": "GET"}}}),
+        )
+        .err()
+        .unwrap_or_default();
+        assert!(!egress.is_empty(), "http_call is not registered");
+        assert!(
+            egress.iter().any(|i| i.code == IssueCode::UnknownFunction),
+            "{egress:?}"
+        );
+        let secret = compile(
+            json!({"id": "k", "name": "k", "function": {"name": "crypto",
+            "input": {"op": "hmac", "algorithm": "sha256", "data": "x",
+                      "key": {"secret": "partner_hmac"}, "output": "data.mac"}}}),
+        );
+        assert!(secret.is_err(), "no secret resolves on a package's engine");
+        let pure = compile(
+            json!({"id": "h", "name": "h", "function": {"name": "crypto",
+            "input": {"op": "hash", "algorithm": "sha256", "data": "x", "output": "data.h"}}}),
+        );
+        assert!(pure.is_ok(), "{:?}", pure.err());
     }
 }

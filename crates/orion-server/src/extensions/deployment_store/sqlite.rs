@@ -63,6 +63,10 @@ fn receipt_from_row(row: PersistedOperationTuple, legacy_node: &str) -> Deployme
         receiving_node_id: receiving_node_id.unwrap_or_else(|| legacy_node.to_string()),
     }
 }
+/// A `connection_revisions` row as read: id, revision, provider digest,
+/// `public_config_json`, `secret_locators_json`, `bindings_json`.
+type PersistedConnectionTuple = (String, i64, String, String, Option<String>, Option<String>);
+
 type PersistedPackageTuple = (
     String,
     String,
@@ -307,7 +311,7 @@ impl ImmutableDeploymentStore {
         staged: &mut DeploymentState,
         art_rows: Vec<PersistedArtifactTuple>,
         pkg_rows: Vec<PersistedPackageTuple>,
-        conn_rows: Vec<(String, i64, String, String, Option<String>)>,
+        conn_rows: Vec<PersistedConnectionTuple>,
     ) -> Result<(), DeploymentError> {
         for (digest, size_bytes, state_str, drain_epoch, payload_bytes) in art_rows {
             let state = match state_str.as_str() {
@@ -391,7 +395,9 @@ impl ImmutableDeploymentStore {
                     inventory_json,
                 });
         }
-        for (connection_id, rev, provider_digest, cfg_str, secret_locator) in conn_rows {
+        for (connection_id, rev, provider_digest, cfg_str, secret_locator, bindings_col) in
+            conn_rows
+        {
             let revision = rev.max(1) as u64;
             let public_config: Value = serde_json::from_str(&cfg_str).map_err(|e| {
                 corrupt(format!(
@@ -403,7 +409,13 @@ impl ImmutableDeploymentStore {
                     "connection '{connection_id}' revision {revision}: {e}"
                 ))
             })?;
-            let cfg_bytes = super::connection_config_bytes(&public_config, &secret_locators);
+            let bindings = super::bindings_from_column(bindings_col).map_err(|e| {
+                corrupt(format!(
+                    "connection '{connection_id}' revision {revision}: {e}"
+                ))
+            })?;
+            let cfg_bytes =
+                super::connection_config_bytes(&public_config, &secret_locators, &bindings);
             let configuration_digest = sha256_digest(&cfg_bytes);
             staged
                 .artifacts
@@ -424,6 +436,7 @@ impl ImmutableDeploymentStore {
                     provider_digest,
                     public_config,
                     secret_locators,
+                    bindings,
                     configuration_digest,
                 });
         }
@@ -533,8 +546,8 @@ impl ImmutableDeploymentStore {
         .fetch_all(&mut **tx)
         .await
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
-        let conn_rows: Vec<(String, i64, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locators_json FROM connection_revisions",
+        let conn_rows: Vec<PersistedConnectionTuple> = sqlx::query_as(
+            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locators_json, bindings_json FROM connection_revisions",
         )
         .fetch_all(&mut **tx)
         .await
@@ -646,8 +659,8 @@ impl ImmutableDeploymentStore {
         .fetch_all(&mut **tx)
         .await
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
-        let conn_rows: Vec<(String, i64, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locators_json FROM connection_revisions",
+        let conn_rows: Vec<PersistedConnectionTuple> = sqlx::query_as(
+            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locators_json, bindings_json FROM connection_revisions",
         )
         .fetch_all(&mut **tx)
         .await
@@ -759,8 +772,8 @@ impl ImmutableDeploymentStore {
         .fetch_all(&mut **tx)
         .await
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
-        let conn_rows: Vec<(String, i64, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locators_json FROM connection_revisions",
+        let conn_rows: Vec<PersistedConnectionTuple> = sqlx::query_as(
+            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locators_json, bindings_json FROM connection_revisions",
         )
         .fetch_all(&mut **tx)
         .await
@@ -843,8 +856,8 @@ impl ImmutableDeploymentStore {
             let cfg_str = serde_json::to_string(&conn.public_config)
                 .map_err(|e| DeploymentError::new("SERIALIZE_ERROR", e.to_string()))?;
             sqlx::query(
-                "INSERT INTO connection_revisions (connection_id, revision, provider_digest, public_config_json, secret_locators_json) \
-                 VALUES ($1, $2, $3, $4, $5) \
+                "INSERT INTO connection_revisions (connection_id, revision, provider_digest, public_config_json, secret_locators_json, bindings_json) \
+                 VALUES ($1, $2, $3, $4, $5, $6) \
                  ON CONFLICT(connection_id, revision) DO NOTHING",
             )
             .bind(&conn.connection_id)
@@ -852,6 +865,7 @@ impl ImmutableDeploymentStore {
             .bind(&conn.provider_digest)
             .bind(cfg_str)
             .bind(super::locators_column(&conn.secret_locators))
+            .bind(super::bindings_column(&conn.bindings))
             .execute(&mut **tx)
             .await
             .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
@@ -1138,14 +1152,15 @@ impl ImmutableDeploymentStore {
             let cfg_str = serde_json::to_string(&conn.public_config)
                 .map_err(|e| DeploymentError::new("SERIALIZE_ERROR", e.to_string()))?;
             sqlx::query(
-                "INSERT IGNORE INTO connection_revisions (connection_id, revision, provider_digest, public_config_json, secret_locators_json) \
-                 VALUES (?, ?, ?, ?, ?)",
+                "INSERT IGNORE INTO connection_revisions (connection_id, revision, provider_digest, public_config_json, secret_locators_json, bindings_json) \
+                 VALUES (?, ?, ?, ?, ?, ?)",
             )
             .bind(&conn.connection_id)
             .bind(conn.revision as i64)
             .bind(&conn.provider_digest)
             .bind(cfg_str)
             .bind(super::locators_column(&conn.secret_locators))
+            .bind(super::bindings_column(&conn.bindings))
             .execute(&mut **tx)
             .await
             .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
@@ -1432,8 +1447,8 @@ impl ImmutableDeploymentStore {
             let cfg_str = serde_json::to_string(&conn.public_config)
                 .map_err(|e| DeploymentError::new("SERIALIZE_ERROR", e.to_string()))?;
             sqlx::query(
-                "INSERT INTO connection_revisions (connection_id, revision, provider_digest, public_config_json, secret_locators_json) \
-                 VALUES (?1, ?2, ?3, ?4, ?5) \
+                "INSERT INTO connection_revisions (connection_id, revision, provider_digest, public_config_json, secret_locators_json, bindings_json) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
                  ON CONFLICT(connection_id, revision) DO NOTHING",
             )
             .bind(&conn.connection_id)
@@ -1441,6 +1456,7 @@ impl ImmutableDeploymentStore {
             .bind(&conn.provider_digest)
             .bind(cfg_str)
             .bind(super::locators_column(&conn.secret_locators))
+            .bind(super::bindings_column(&conn.bindings))
             .execute(&mut **tx)
             .await
             .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
@@ -1912,12 +1928,38 @@ impl ImmutableDeploymentStore {
         public_config: Value,
         secret_locators: std::collections::BTreeMap<String, String>,
     ) -> Result<ConnectionRevisionRow, DeploymentError> {
+        self.store_connection_revision_with_bindings_in_db(
+            pool,
+            connection_id,
+            revision,
+            provider_digest,
+            public_config,
+            secret_locators,
+            Default::default(),
+        )
+        .await
+    }
+
+    /// [`Self::store_connection_revision_in_db`], with the dependency
+    /// `bindings` of a connection over a `workflow` provider package.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn store_connection_revision_with_bindings_in_db(
+        &self,
+        pool: &crate::storage::DbPool,
+        connection_id: &str,
+        revision: u64,
+        provider_digest: &str,
+        public_config: Value,
+        secret_locators: std::collections::BTreeMap<String, String>,
+        bindings: std::collections::BTreeMap<String, String>,
+    ) -> Result<ConnectionRevisionRow, DeploymentError> {
         let (row, cfg_digest, cfg_bytes) = Self::prepare_connection_revision(
             connection_id,
             revision,
             provider_digest,
             public_config,
             secret_locators,
+            bindings,
         )?;
         self.transactional_mutate(pool, move |staged| {
             Self::finish_store_connection_revision(staged, row, cfg_digest, cfg_bytes)
@@ -2176,8 +2218,8 @@ impl ImmutableDeploymentStore {
         .await
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
 
-        let conn_rows: Vec<(String, i64, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locators_json FROM connection_revisions",
+        let conn_rows: Vec<PersistedConnectionTuple> = sqlx::query_as(
+            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locators_json, bindings_json FROM connection_revisions",
         )
         .fetch_all(pool)
         .await
@@ -2239,8 +2281,8 @@ impl ImmutableDeploymentStore {
         .await
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
 
-        let conn_rows: Vec<(String, i64, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locators_json FROM connection_revisions",
+        let conn_rows: Vec<PersistedConnectionTuple> = sqlx::query_as(
+            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locators_json, bindings_json FROM connection_revisions",
         )
         .fetch_all(pool)
         .await
@@ -2306,8 +2348,8 @@ impl ImmutableDeploymentStore {
         .await
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
 
-        let conn_rows: Vec<(String, i64, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locators_json FROM connection_revisions",
+        let conn_rows: Vec<PersistedConnectionTuple> = sqlx::query_as(
+            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locators_json, bindings_json FROM connection_revisions",
         )
         .fetch_all(pool)
         .await
@@ -2332,7 +2374,7 @@ impl ImmutableDeploymentStore {
         rev_rows: Vec<PersistedRevisionTuple>,
         pkg_rows: Vec<PersistedPackageTuple>,
         adm_rows: Vec<(String, String, String, bool)>,
-        conn_rows: Vec<(String, i64, String, String, Option<String>)>,
+        conn_rows: Vec<PersistedConnectionTuple>,
         op_rows: Vec<PersistedOperationTuple>,
     ) -> Result<(), DeploymentError> {
         let mut g = self.inner.lock().expect("store lock");
@@ -2456,7 +2498,9 @@ impl ImmutableDeploymentStore {
             );
         }
 
-        for (connection_id, rev, provider_digest, cfg_str, secret_locator) in conn_rows {
+        for (connection_id, rev, provider_digest, cfg_str, secret_locator, bindings_col) in
+            conn_rows
+        {
             let revision = rev.max(1) as u64;
             let public_config: Value = serde_json::from_str(&cfg_str).map_err(|e| {
                 DeploymentError::new(
@@ -2472,7 +2516,14 @@ impl ImmutableDeploymentStore {
                     format!("connection '{connection_id}' rev {revision}: {e}"),
                 )
             })?;
-            let cfg_bytes = super::connection_config_bytes(&public_config, &secret_locators);
+            let bindings = super::bindings_from_column(bindings_col).map_err(|e| {
+                DeploymentError::new(
+                    "CORRUPT_PERSISTED_STATE",
+                    format!("connection '{connection_id}' rev {revision}: {e}"),
+                )
+            })?;
+            let cfg_bytes =
+                super::connection_config_bytes(&public_config, &secret_locators, &bindings);
             let configuration_digest = sha256_digest(&cfg_bytes);
             g.artifacts
                 .entry(configuration_digest.clone())
@@ -2491,6 +2542,7 @@ impl ImmutableDeploymentStore {
                     provider_digest,
                     public_config,
                     secret_locators,
+                    bindings,
                     configuration_digest,
                 },
             );

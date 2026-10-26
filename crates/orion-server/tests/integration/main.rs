@@ -132,3 +132,4 @@ mod v2_definitions_test;
 mod v2_replica_reconciliation_test;
 mod vault_test;
 mod workflow_lifecycle_test;
+mod workflow_package_test;

@@ -231,16 +231,20 @@ async fn execute_connector_call(
     }
 
     let impl_kind = implementation_kind(kind).ok_or_else(|| unknown_kind(kind))?;
-    let target_id = cfg.target_id.as_deref().unwrap_or(connection).to_string();
+    let mut target_id = cfg.target_id.as_deref().unwrap_or(connection).to_string();
+    // An uploaded `workflow` or `wasm` package registers under its digest,
+    // which the connection's revision names: with no `target_id` the target
+    // is resolved from it below.
+    let target_from_connection = impl_kind != ImplementationKind::Rust && cfg.target_id.is_none();
 
-    let Some(_backend) = providers.get(impl_kind, &target_id) else {
+    if !target_from_connection && providers.get(impl_kind, &target_id).is_none() {
         return Err(HandlerError::new(
             ErrorClass::Backend,
             format!(
                 "CONNECTOR_PROVIDER_NOT_FOUND: provider ({impl_kind:?}, '{target_id}') is not registered"
             ),
         ));
-    };
+    }
 
     let run_ctx = ACTIVE_RUN_CONTEXT.try_with(Clone::clone).map_err(|_| {
         forbidden(format!(
@@ -299,6 +303,26 @@ async fn execute_connector_call(
                     ),
                 ));
             }
+            if impl_kind != ImplementationKind::Rust {
+                if pkg.implementation != impl_kind {
+                    return Err(forbidden(format!(
+                        "CONNECTOR_CONNECTION_FORBIDDEN: connection '{connection}' runs on the \
+                         {} package '{}', not a {} one",
+                        pkg.implementation.as_str(),
+                        pkg.provider_id,
+                        impl_kind.as_str()
+                    )));
+                }
+                if !target_from_connection && target_id != pkg.backend_id() {
+                    return Err(forbidden(format!(
+                        "CONNECTOR_CONNECTION_FORBIDDEN: connection '{connection}' runs on \
+                         package '{}' ({}), not '{target_id}'",
+                        pkg.provider_id,
+                        pkg.backend_id()
+                    )));
+                }
+                target_id = pkg.backend_id().to_string();
+            }
             // The input the package declares for this operation, checked
             // before anything is dispatched to the provider.
             if let Some(Err(finding)) = store.check_package_instance(
@@ -312,7 +336,7 @@ async fn execute_connector_call(
                 } else {
                     format!("`input.{field}`")
                 };
-                return Err(connector_err_to_handler(
+                return Err(connector_error(
                     crate::extensions::ConnectorError::invalid_input(
                         format!(
                             "'{operation}' on '{connection}': {at} does not satisfy provider \
@@ -359,21 +383,7 @@ async fn execute_connector_call(
         },
     };
 
-    let effective_conn = EffectiveConnectionIdentity {
-        provider_digest: provider.package_digest.clone(),
-        connection_id: connection.to_string(),
-        revision: conn_row.revision,
-        // Of where the secrets come from, never of a secret: a revision
-        // reading another vault path is another identity.
-        secret_hash: if conn_row.secret_locators.is_empty() {
-            String::new()
-        } else {
-            sha256_digest(
-                crate::canonical::canonical_json(&serde_json::json!(conn_row.secret_locators))
-                    .as_bytes(),
-            )
-        },
-    };
+    let effective_conn = effective_identity(&conn_row);
     let conn_ref = ConnectionReference {
         connection_id: connection.to_string(),
         revision: conn_row.revision,
@@ -382,7 +392,7 @@ async fn execute_connector_call(
 
     let invocation = run_ctx
         .start_invocation(conn_ref, effective_conn, operation, idempotency_key, 2)
-        .map_err(connector_err_to_handler)?;
+        .map_err(connector_error)?;
 
     let admission = providers.admission_policy();
     match providers
@@ -396,7 +406,29 @@ async fn execute_connector_call(
         .await
     {
         ConnectorResult::Success { data, .. } => Ok(data),
-        ConnectorResult::Error { error } => Err(connector_err_to_handler(error)),
+        ConnectorResult::Error { error } => Err(connector_error(error)),
+    }
+}
+
+/// The identity a call over `conn_row` runs under: its provider, the
+/// connection and revision, and a hash of where its secrets come from —
+/// never of a secret, and a revision reading another vault path is another
+/// identity.
+pub(crate) fn effective_identity(
+    conn_row: &crate::extensions::deployment_store::ConnectionRevisionRow,
+) -> EffectiveConnectionIdentity {
+    EffectiveConnectionIdentity {
+        provider_digest: conn_row.provider_digest.clone(),
+        connection_id: conn_row.connection_id.clone(),
+        revision: conn_row.revision,
+        secret_hash: if conn_row.secret_locators.is_empty() {
+            String::new()
+        } else {
+            sha256_digest(
+                crate::canonical::canonical_json(&serde_json::json!(conn_row.secret_locators))
+                    .as_bytes(),
+            )
+        },
     }
 }
 
@@ -420,7 +452,8 @@ fn implementation_kind(kind: Option<&str>) -> Option<ImplementationKind> {
     ImplementationKind::parse(kind.unwrap_or("rust"))
 }
 
-fn connector_err_to_handler(err: crate::extensions::ConnectorError) -> HandlerError {
+/// A connector failure as the task error it is reported as.
+pub(crate) fn connector_error(err: crate::extensions::ConnectorError) -> HandlerError {
     let class = match err.class {
         ConnectorErrorClass::InvalidInput
         | ConnectorErrorClass::Unauthorized

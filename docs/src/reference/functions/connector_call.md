@@ -36,6 +36,38 @@ A connection revision names its provider by package digest. The built-in drivers
 
 `kind` must be `rust`, `workflow` or `wasm`. Any other value is refused when the task loads.
 
+### Workflow provider packages
+
+An uploaded provider package whose `implementation.kind` is `workflow` serves each of its operations with a dataflow workflow, and runs it on this node's engine with Orion's operators. Once the package is admitted it is registered under its digest; revoking it unregisters it, and a node that restarts registers every admitted package again from the store. Call one with `kind: "workflow"`. The `target_id` is the package digest the connection's revision names, so it may be left out:
+
+```json
+{
+  "name": "connector_call",
+  "input": {
+    "connection": "crm",
+    "kind": "workflow",
+    "operation": "item.get",
+    "input": { "id": { "var": "data.id" } },
+    "output": "data.item"
+  }
+}
+```
+
+The operation's `input` is the workflow's payload and its starting `data`, and the result is `data` when the workflow finishes. A workflow that fails its tasks fails the call with `PROVIDER_WORKFLOW_FAILED`; one past the call's deadline with `CONNECTOR_DEADLINE_EXCEEDED`.
+
+The manifest maps each operation to one entry workflow, `implementation.entries` (`operation → workflow id`), and lists the workflow files under `implementation.workflows`. A package workflow names no `channel`; its operation addresses it. There are no helper workflows and no sub-channels: a workflow that is no operation's entry, or an `implementation` key other than `kind`, `entries` and `workflows`, is refused. Share logic between operations with compile-time fragments.
+
+A package is code someone else may have written, so what its workflows may do is closed. A package workflow may call:
+
+- the dataflow built-ins: `map`, `validation`, `filter`, `log`, `parse_json`, `parse_xml`, `publish_json` and `publish_xml`;
+- `crypto`, `jwt_sign` and `jwt_verify`;
+- plugin functions, which import nothing;
+- `connector_call`, on a dependency alias its manifest declares under `dependencies`, with one of the `operations` that dependency lists, and no `kind` or `target_id`.
+
+Every other function is refused, because each one reaches the deployment's own connections or channels by name: `http_call`, `db_read`, `db_write`, `data_query`, `data_write`, the `cache_*` functions, `cache_invalidate` and `channel_call`. A `{"secret": …}` node or a secret reference such as `env://…` anywhere in a package workflow is refused too. These rules are checked when the package is uploaded, when it is admitted, and again whenever a deployment that serves a connection over it is built. Each refusal is a `400` whose `details` name the file and the path, such as `workflows/entry.json:tasks[2].function.name`. The engine a package runs on holds only the functions above, on an expression engine with no secrets. Its messages carry no `metadata` and no `[vars]`. A document that slipped past the check still could not reach anything else.
+
+A dependency call goes to the connection the package's connection [binds](../admin-api/deployments.md#bindings) the alias to, as a dependency of the package's own invocation: it shares the caller's deadline and budget, and the bound connection is reachable from that package's calls and from nothing else.
+
 ### The foundation SQL and HTTP providers
 
 The Community providers `org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite` and `org.orion.http` take their target from the connection revision, never from `input`. An `input` carrying `connection_string`, `url` or `base_url` is refused with `CONNECTOR_CONNECTION_FORBIDDEN`. A revision's `public_config` names the target (`connection_string`, or `url` for HTTP) and never holds a credential: a credential-shaped key or value there is refused when the revision is created. `org.orion.mysql` serves MySQL and MariaDB and takes a `mysql://` or `mariadb://` connection string; any other scheme is refused with `CONNECTOR_INVALID_INPUT`.

@@ -78,6 +78,15 @@ struct ManifestDefinitions {
     workflows: Vec<crate::storage::models::Workflow>,
     plugins: Vec<crate::storage::models::Plugin>,
     plugin_components: std::collections::HashMap<String, Vec<u8>>,
+    /// What the manifest's connections over workflow packages may call as
+    /// their dependencies.
+    dependencies: std::collections::BTreeMap<
+        String,
+        (
+            crate::extensions::ConnectionReference,
+            std::collections::BTreeSet<String>,
+        ),
+    >,
 }
 
 async fn manifest_definitions(
@@ -226,6 +235,7 @@ async fn manifest_definitions(
                         m.entity.id, m.entity.revision
                     )));
                 }
+                workflow_package_serves(state, &conn)?;
             }
             EntityKind::Source => {}
         }
@@ -260,12 +270,78 @@ async fn manifest_definitions(
     });
     active_plugins.sort_by(|a, b| a.plugin_id.cmp(&b.plugin_id));
 
+    let dependencies = crate::extensions::workflow_provider::manifest_dependencies(
+        &state.composition.deployments,
+        manifest,
+    )
+    .map_err(OrionError::validation)?;
+
     Ok(ManifestDefinitions {
         channels: active_channels,
         workflows: active_workflows,
         plugins: active_plugins,
         plugin_components,
+        dependencies,
     })
+}
+
+/// A connection over a workflow provider package is deployed only while the
+/// package is admitted, still passes the hermetic check it passed at upload,
+/// and is registered on this node.
+fn workflow_package_serves(
+    state: &AppState,
+    conn: &crate::extensions::deployment_store::ConnectionRevisionRow,
+) -> Result<(), crate::errors::OrionError> {
+    use crate::errors::OrionError;
+    use crate::extensions::ImplementationKind;
+
+    let store = &state.composition.deployments;
+    let Some(package) = store
+        .get_package(&conn.provider_digest)
+        .filter(|p| p.implementation == ImplementationKind::Workflow)
+    else {
+        return Ok(());
+    };
+    let what = || {
+        format!(
+            "connection '{}' runs on the workflow package '{}' ({})",
+            conn.connection_id, package.provider_id, package.package_digest
+        )
+    };
+    let admitted = store
+        .get_admission(&package.package_digest)
+        .is_some_and(|a| !a.revoked)
+        && !state
+            .composition
+            .admission
+            .is_digest_revoked(&package.package_digest);
+    if !admitted {
+        return Err(OrionError::validation(format!(
+            "{}, which is not admitted",
+            what()
+        )));
+    }
+    if let Err(problems) =
+        crate::extensions::workflow_provider::WorkflowPackage::from_store(store, &package)
+    {
+        return Err(OrionError::validation(format!(
+            "{}, which this node refuses: {}",
+            what(),
+            crate::extensions::workflow_provider::describe(&problems)
+        )));
+    }
+    if state
+        .composition
+        .providers
+        .get(ImplementationKind::Workflow, &package.package_digest)
+        .is_none()
+    {
+        return Err(OrionError::validation(format!(
+            "{}, which is not registered on this node",
+            what()
+        )));
+    }
+    Ok(())
 }
 
 /// Two channels of one deployment claiming one route at one priority would
@@ -399,6 +475,9 @@ async fn build_and_publish(
                     "Deployment revision {revision} not found"
                 ))
             })?;
+        // The admitted workflow packages are registered before anything
+        // that deploys a connection over one is built.
+        super::workflow_providers::sync(state);
         // Registry replacement belongs to the same serialized operation as
         // channel construction.
         state
@@ -410,6 +489,7 @@ async fn build_and_publish(
             workflows: active_workflows,
             plugins: plugin_rows,
             plugin_components,
+            dependencies,
         } = manifest_definitions(state, &manifest).await?;
         let channels = crate::engine::filter_channels(channels, &state.config.channel_filter);
         refuse_route_collisions(
@@ -418,10 +498,10 @@ async fn build_and_publish(
             &state.config.server.data_mounts,
         )?;
         // Each workflow is granted the connections its member requires.
-        let connector_authority = Arc::new(super::authority::ConnectorAuthority::from_manifest(
-            &manifest,
-            &active_workflows,
-        ));
+        let connector_authority = Arc::new(
+            super::authority::ConnectorAuthority::from_manifest(&manifest, &active_workflows)
+                .with_dependencies(dependencies),
+        );
         // The outgoing generation, read once: the base the new engine is built
         // from and the reuse cache the new channel estate is built against.
         // Reading it once is what makes those agree.
@@ -725,11 +805,13 @@ pub async fn check_candidate(
     state: &AppState,
     manifest: &crate::extensions::deployment_store::CanonicalManifest,
 ) -> Result<(), crate::errors::OrionError> {
+    super::workflow_providers::sync(state);
     let ManifestDefinitions {
         channels,
         workflows,
         plugins,
         plugin_components,
+        dependencies: _,
     } = manifest_definitions(state, manifest).await?;
     let channels = crate::engine::filter_channels(channels, &state.config.channel_filter);
     refuse_route_collisions(

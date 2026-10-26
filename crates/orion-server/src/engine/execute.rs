@@ -225,7 +225,11 @@ pub fn serving_message(data: &Value, metadata: &Value) -> dataflow_rs::Message {
     dataflow_rs::Message::from_parts(data.clone(), data, OwnedDataValue::from(metadata))
 }
 
-async fn execute_on(
+/// Run `channel`'s workflows on `engine` over `data`: the message build, the
+/// deadline arm, the run budget and the `has_errors` rule. Every surface that
+/// runs a workflow comes through here, a workflow provider package's
+/// operation included.
+pub(crate) async fn execute_on(
     engine: &dataflow_rs::Engine,
     channel: &str,
     data: &Value,

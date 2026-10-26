@@ -213,6 +213,10 @@ pub struct ConnectionRevisionResponse {
     /// Config path to secret reference (`env://`, `vault://`, …).
     #[serde(default)]
     pub secret_locators: BTreeMap<String, String>,
+    /// Over a `workflow` provider package: the connection each of the
+    /// package's dependency aliases calls (`alias -> connection_id`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bindings: BTreeMap<String, String>,
     #[serde(default)]
     pub config_fingerprint: String,
     #[serde(default)]
@@ -246,6 +250,13 @@ pub struct CreateConnectionRevisionRequest {
     /// `env://ORDERS_DB_URL`. Placed at that path when the connection is used.
     #[serde(default)]
     pub secret_locators: BTreeMap<String, String>,
+    /// Over a `workflow` provider package: which connection each of the
+    /// package's declared dependency aliases calls (`alias -> connection_id`).
+    /// Every alias must be bound, and each target must be a stored
+    /// connection; a deployment member for this connection must require each
+    /// bound connection. Empty for any other provider.
+    #[serde(default)]
+    pub bindings: BTreeMap<String, String>,
 }
 
 /// Response from creating an immutable connection revision (`POST /api/v2/admin/connections`).
