@@ -34,7 +34,7 @@ Three principles shape the setup:
 | Touched what a workflow may name, or how one is screened at load | `cargo test --test integration function_schema_test channel_load_refusal_test` — the create-time gate and the load-time screen are checked against a real engine, not against each other |
 | Touched the authoring layer (`$from`, `use`, a `compile` pass) | `cargo test --test integration compile_test source_form_refusal_test` — a pass's `residue()` is read three ways (empty after compiling, `compile`'s report, the admin API's refusal), so a pass that only satisfies one of them is a passing test away from shipping |
 | Touched `[vars]` / `[secrets]`, or anything a message carries into a trace | `cargo test --test integration secrets_and_vars_test` — the leak sweep asserts a secret reaches no recording surface *and* carries its own controls, so an assertion that stops seeing anything fails rather than passing quietly |
-| Touched a **rider crate** (`orion-api`, `orion-client`, `orion-definitions`, `orion-extension-api`, `orion-plugin-sdk`), including its manifest | `cargo package --locked --workspace` (needs a clean tree) — no version bump: all seven crates share `workspace.package.version` and a release moves it |
+| Touched a **rider crate** (`orion-api`, `orion-client`, `orion-definitions`, `orion-extension-api`, `orion-common`, `orion-plugin-sdk`), including its manifest | `cargo package --locked --workspace` (needs a clean tree) — no version bump: every crate shares `workspace.package.version` and a release moves it |
 | Touched the MSRV surface (new language features) | `cargo +1.98 check --workspace --all-targets` — `just check` does **not** cover this; CI runs it as its own job |
 | Touched the examples | `just workflow-tests` + `./examples/deploy.sh <name>` against a local server (`ORION_PLUGINS__ENABLED=true` for `fixed-width-statement` and `c4-referee`; it needs both binaries, `cargo build -p orion-server -p orion-cli`) |
 | Touched the plugin sandbox, the manifest, the SDK, or the WIT | `cargo test --test integration plugin_runtime_test admin_plugins_test plugin_abi_cases_test plugin_sdk_test`; after a guest or SDK change, `crates/orion-server/tests/fixtures/plugins/build.sh` and `examples/plugins/fixed-width/build.sh` (needs `wasm32-unknown-unknown` + `wasm-tools`) and commit the components — the `plugin-sdk` CI job rebuilds both from source and runs the ABI cases against the fresh bytes |
@@ -42,7 +42,7 @@ Three principles shape the setup:
 
 ## Layer 1 — unit tests (every crate)
 
-Inline `#[cfg(test)]` modules across all seven crates: `orion-server`
+Inline `#[cfg(test)]` modules in every crate: `orion-server`
 (config parsing, error mapping, validation/SSRF, query lowering, the
 definition-set loader and its cross-reference pass, the shared-definition
 `$from`/fragment resolver, the step flattener, …),

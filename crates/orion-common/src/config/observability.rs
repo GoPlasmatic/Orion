@@ -470,7 +470,7 @@ impl CorsConfig {
     /// (`authorization`, `x-api-key`), the dedup guard (`idempotency-key`) and
     /// the request-id layer (`x-request-id`) read, plus the two every JSON
     /// call needs. Config may extend this list, never narrow it.
-    pub(crate) fn base_allowed_headers() -> [axum::http::HeaderName; 6] {
+    pub fn base_allowed_headers() -> [axum::http::HeaderName; 6] {
         [
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,
@@ -482,7 +482,7 @@ impl CorsConfig {
     }
 
     /// The response headers exposed to page scripts on every configuration.
-    pub(crate) fn base_exposed_headers() -> [axum::http::HeaderName; 2] {
+    pub fn base_exposed_headers() -> [axum::http::HeaderName; 2] {
         [
             axum::http::HeaderName::from_static("x-request-id"),
             axum::http::header::RETRY_AFTER,
@@ -494,7 +494,7 @@ impl CorsConfig {
     ///
     /// Entries are validated at startup, so an unparseable name cannot reach
     /// here; `filter_map` is a belt-and-braces no-op rather than a policy.
-    pub(crate) fn effective_allowed_headers(&self) -> Vec<axum::http::HeaderName> {
+    pub fn effective_allowed_headers(&self) -> Vec<axum::http::HeaderName> {
         merge_headers(
             Self::base_allowed_headers().to_vec(),
             &self.additional_allowed_headers,
@@ -503,7 +503,7 @@ impl CorsConfig {
 
     /// Resolve the effective expose-headers list. See
     /// [`Self::effective_allowed_headers`].
-    pub(crate) fn effective_exposed_headers(&self) -> Vec<axum::http::HeaderName> {
+    pub fn effective_exposed_headers(&self) -> Vec<axum::http::HeaderName> {
         merge_headers(
             Self::base_exposed_headers().to_vec(),
             &self.additional_exposed_headers,

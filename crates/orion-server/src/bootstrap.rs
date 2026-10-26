@@ -78,7 +78,7 @@ pub fn init_metrics_handle(
             .then_some(config.cluster.instance_id.as_str())
             .filter(|id| !id.is_empty());
         let handle = crate::metrics::init_metrics_with_instance(instance);
-        crate::metrics::record_build_info();
+        crate::metrics::record_build_info(env!("GIT_HASH"), env!("BUILD_TIMESTAMP"));
         tracing::info!("Prometheus metrics initialized");
         handle
     } else {

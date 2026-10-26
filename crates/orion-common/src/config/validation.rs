@@ -75,7 +75,7 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     // `storage.validate()` above has already established that the URL names a
     // real backend, so this is only the cluster question.
     if config.cluster.enabled
-        && crate::storage::detect_backend(&config.storage.url)? == crate::storage::DbBackend::Sqlite
+        && crate::config::detect_backend(&config.storage.url)? == crate::config::DbBackend::Sqlite
     {
         return Err(OrionError::Config {
             message: "cluster.enabled = true requires postgres:// or mysql:// storage \

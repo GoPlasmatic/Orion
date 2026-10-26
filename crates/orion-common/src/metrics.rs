@@ -11,12 +11,12 @@ static METRICS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Enable or disable metric recording globally. Call once at startup based on
 /// `config.metrics.enabled`. Safe to call again later (e.g., from tests).
-pub(crate) fn set_enabled(enabled: bool) {
+pub fn set_enabled(enabled: bool) {
     METRICS_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
 #[inline(always)]
-pub(crate) fn is_enabled() -> bool {
+pub fn is_enabled() -> bool {
     METRICS_ENABLED.load(Ordering::Relaxed)
 }
 
@@ -125,12 +125,7 @@ pub fn record_oauth_token_request(connector: &str, outcome: &'static str) {
 /// `ok`, `provider_error`, `state_missing`, `code_missing`, `state_invalid`,
 /// `state_mismatch`, `provider_mismatch`, `unknown_provider`, `nonce_mismatch`,
 /// `exchange_rejected`, `exchange_error`, `id_token_rejected`.
-pub fn record_oauth_login(
-    channel: &str,
-    provider: &str,
-    leg: crate::channel::OAuthLeg,
-    outcome: &'static str,
-) {
+pub fn record_oauth_login(channel: &str, provider: &str, leg: &'static str, outcome: &'static str) {
     if !is_enabled() {
         return;
     }
@@ -138,7 +133,7 @@ pub fn record_oauth_login(
         "orion_oauth_login_total",
         "channel" => channel.to_owned(),
         "provider" => provider.to_owned(),
-        "leg" => leg.as_str(),
+        "leg" => leg,
         "outcome" => outcome
     )
     .increment(1);
@@ -209,15 +204,15 @@ pub fn record_error(reason: &'static str) {
 /// `BUILD_TIMESTAMP` surfaced only in `--version`, one boot log line, and the
 /// admin-gated `/health` body, none of which a scrape can join against
 /// (proposal O11).
-pub fn record_build_info() {
+pub fn record_build_info(git_hash: &'static str, build_timestamp: &'static str) {
     if !is_enabled() {
         return;
     }
     gauge!(
         "orion_build_info",
         "version" => env!("CARGO_PKG_VERSION"),
-        "git_hash" => env!("GIT_HASH"),
-        "build_timestamp" => env!("BUILD_TIMESTAMP"),
+        "git_hash" => git_hash,
+        "build_timestamp" => build_timestamp,
     )
     .set(1.0);
 }
@@ -1088,8 +1083,8 @@ pub fn set_audit_queue_depth(depth: f64) {
 /// inside `f` (`rt.block_on(...)`) runs its spawned tasks on this same
 /// thread, so a background writer's `record_*` calls land here too. That is
 /// how `queue::audit_queue` asserts on its drop counter.
-#[cfg(test)]
-pub(crate) fn render_local(f: impl FnOnce()) -> String {
+#[cfg(any(test, feature = "test-support"))]
+pub fn render_local(f: impl FnOnce()) -> String {
     set_enabled(true);
     let recorder = PrometheusBuilder::new().build_recorder();
     let handle = recorder.handle();

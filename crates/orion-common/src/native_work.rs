@@ -4,7 +4,7 @@
 //!
 //! A native job is work that occupies an OS thread for its whole length:
 //! compiling a plugin component with Cranelift on this node, and whatever an
-//! extension built on [`crate::extensions::CompositionRoot`] schedules here.
+//! extension built on `orion_server::extensions::CompositionRoot` schedules here.
 //! `engine.native_work_max_in_flight` bounds how many run at once, and
 //! `engine.native_work_timeout_ms` how long a caller waits for one. A caller
 //! that gives up does not release the slot: the job holds its permit until

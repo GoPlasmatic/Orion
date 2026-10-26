@@ -1,7 +1,5 @@
 use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, Ordering};
 
-use serde::{Deserialize, Serialize};
-
 const STATE_CLOSED: u8 = 0;
 const STATE_OPEN: u8 = 1;
 const STATE_HALF_OPEN: u8 = 2;
@@ -9,27 +7,7 @@ const STATE_HALF_OPEN: u8 = 2;
 /// Concurrent probes admitted per half-open window.
 const PROBE_PERMITS: u32 = 1;
 
-/// Configuration for circuit breakers. Disabled by default.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct CircuitBreakerConfig {
-    pub enabled: bool,
-    pub failure_threshold: u32,
-    pub recovery_timeout_secs: u64,
-    /// Maximum number of tracked circuit breakers. Oldest entries are evicted when exceeded.
-    pub max_breakers: usize,
-}
-
-impl Default for CircuitBreakerConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            failure_threshold: 5,
-            recovery_timeout_secs: 30,
-            max_breakers: 10_000,
-        }
-    }
-}
+pub use orion_common::config::CircuitBreakerConfig;
 
 /// Lock-free circuit breaker using atomics.
 ///

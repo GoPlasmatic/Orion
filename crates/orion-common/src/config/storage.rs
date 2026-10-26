@@ -98,7 +98,7 @@ impl StorageConfig {
         // blessed a URL the startup path refuses, which is the one thing that
         // command exists to prevent. The check belongs to `[storage]`, not to
         // cluster mode.
-        crate::storage::detect_backend(&self.url)?;
+        detect_backend(&self.url)?;
         require_nonzero(self.busy_timeout_ms, "storage.busy_timeout_ms")?;
         require_nonzero(self.acquire_timeout_secs, "storage.acquire_timeout_secs")?;
         // 0 would compact the head's own predecessors away the moment they
@@ -111,9 +111,7 @@ impl StorageConfig {
         // retention policy — leave the field unset to disable pruning.
         // H3: fail at startup, not at the first connector read/write.
         if !self.connector_encryption_key.is_empty() {
-            crate::storage::config_encryption::ConfigCipher::from_hex(
-                &self.connector_encryption_key,
-            )?;
+            crate::config_encryption::ConfigCipher::from_hex(&self.connector_encryption_key)?;
         }
         if self.backup_retention_count == Some(0) {
             return Err(OrionError::Config {
@@ -123,5 +121,39 @@ impl StorageConfig {
             });
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DbBackend {
+    Sqlite,
+    Postgres,
+    Mysql,
+}
+
+impl std::fmt::Display for DbBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sqlite => write!(f, "sqlite"),
+            Self::Postgres => write!(f, "postgres"),
+            Self::Mysql => write!(f, "mysql"),
+        }
+    }
+}
+
+/// Detect the database backend from a connection URL.
+pub fn detect_backend(url: &str) -> Result<DbBackend, OrionError> {
+    if url.starts_with("sqlite:") || url.starts_with("file:") {
+        Ok(DbBackend::Sqlite)
+    } else if url.starts_with("postgres://") || url.starts_with("postgresql://") {
+        Ok(DbBackend::Postgres)
+    } else if url.starts_with("mysql://") || url.starts_with("mariadb://") {
+        Ok(DbBackend::Mysql)
+    } else {
+        Err(OrionError::Config {
+            message: format!(
+                "Unsupported database URL scheme: {url}. Expected sqlite:, postgres://, or mysql://"
+            ),
+        })
     }
 }

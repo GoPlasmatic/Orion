@@ -8,7 +8,7 @@
 //! v1.0 ships two working resolvers: `env://VAR_NAME` reads from the process
 //! environment, and `vault://` reads from HashiCorp Vault when the standard
 //! `VAULT_ADDR`/`VAULT_TOKEN` environment is present. The schemes reserved
-//! for later backends ([`RESERVED_SCHEMES`]) are registered too, but resolve
+//! for later backends (`RESERVED_SCHEMES`) are registered too, but resolve
 //! to a hard error — a reference that cannot be resolved must never reach the
 //! remote system as its own literal text. The cloud backends (`aws-sm://`,
 //! `gcp-sm://`, `azure-kv://`) are deliberately deferred: each means adopting
@@ -27,6 +27,9 @@
 use serde_json::Value;
 
 use crate::errors::OrionError;
+pub use orion_common::config::references::{
+    RESERVED_SCHEMES, is_resolvable_reference, parse_reference,
+};
 
 /// Resolves a `scheme://reference` string to its underlying secret value.
 ///
@@ -79,16 +82,6 @@ impl SecretResolver for EnvSecretResolver {
     }
 }
 
-/// Secret-backend schemes Orion recognises but does not implement yet.
-///
-/// They are registered so that a reference using one fails loudly. Without
-/// this, `vault://secret/db#password` has no matching resolver, passes through
-/// [`resolve_in_place`] untouched, and is handed to the database *as the
-/// password* — the connector then fails authentication with nothing pointing at
-/// the unresolved secret. Implementing one of these means replacing its entry
-/// with a real resolver.
-pub const RESERVED_SCHEMES: &[&str] = &["vault", "aws-sm", "gcp-sm", "azure-kv"];
-
 /// Rejects a reserved scheme with an explanatory error. See
 /// [`RESERVED_SCHEMES`].
 pub struct ReservedSchemeResolver {
@@ -109,25 +102,6 @@ impl SecretResolver for ReservedSchemeResolver {
             ),
         })
     }
-}
-
-/// Whether `s` is a reference to a secret *this build knows how to resolve*.
-///
-/// Used by the masking policy to let a reference survive where a value would
-/// not: `env://STRIPE_KEY` names a variable, it is not a credential, and
-/// masking it breaks `GET /export` → `POST /import` for every connector
-/// authored the recommended way.
-///
-/// The scheme check is the whole point and must stay strict. `parse_reference`
-/// alone recognises *any* `scheme://rest`, which includes
-/// `postgres://user:password@host/db` — treating that as a reference would
-/// exempt real credentials from masking. Only `env://` and the reserved schemes
-/// qualify.
-pub fn is_resolvable_reference(s: &str) -> bool {
-    parse_reference(s).is_some_and(|(scheme, reference)| {
-        !reference.is_empty()
-            && (scheme == EnvSecretResolver.scheme() || RESERVED_SCHEMES.contains(&scheme))
-    })
 }
 
 /// Whether `s` is, as a whole, a reference to a secret: a `scheme://…`
@@ -730,27 +704,6 @@ impl super::VariantParse for ResolvedReferences<'_> {
             }
         }
     }
-}
-
-/// Extract `(scheme, reference)` from a string of the form `scheme://reference`.
-/// The scheme must be lowercase alphanumeric (`+` allowed for future
-/// composite schemes like `aws-sm`). Returns `None` for anything that
-/// doesn't look like a secret reference so plain URLs and connection
-/// strings (e.g. `https://...`, `postgres://...`) are left alone.
-///
-/// **Recognized prefixes:** only schemes that exactly match a registered
-/// resolver are resolved. `https://` is not in the registry and so flows
-/// through untouched.
-pub(crate) fn parse_reference(s: &str) -> Option<(&str, &str)> {
-    let (scheme, rest) = s.split_once("://")?;
-    if scheme.is_empty()
-        || !scheme
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '+')
-    {
-        return None;
-    }
-    Some((scheme, rest))
 }
 
 #[cfg(test)]

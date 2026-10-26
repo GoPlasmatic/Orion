@@ -543,7 +543,7 @@ impl CompiledOAuth2Login {
                     crate::metrics::record_oauth_login(
                         &self.channel,
                         PROVIDER_LABEL_UNKNOWN,
-                        Leg::Authorize,
+                        Leg::Authorize.as_str(),
                         "unknown_provider",
                     );
                 }
@@ -637,7 +637,7 @@ impl CompiledOAuth2Login {
         crate::metrics::record_oauth_login(
             &self.channel,
             provider_label(canonical_slug),
-            Leg::Authorize,
+            Leg::Authorize.as_str(),
             "ok",
         );
         Ok(Redirect {
@@ -816,7 +816,7 @@ impl CompiledOAuth2Login {
             oauth["identity"] = id.clone();
         }
 
-        crate::metrics::record_oauth_login(&self.channel, label, Leg::Callback, "ok");
+        crate::metrics::record_oauth_login(&self.channel, label, Leg::Callback.as_str(), "ok");
         Ok(Grant {
             metadata: oauth,
             identity,
@@ -1039,7 +1039,12 @@ impl CompiledOAuth2Login {
     }
 
     fn count(&self, provider: &str, outcome: &'static str) {
-        crate::metrics::record_oauth_login(&self.channel, provider, Leg::Callback, outcome);
+        crate::metrics::record_oauth_login(
+            &self.channel,
+            provider,
+            Leg::Callback.as_str(),
+            outcome,
+        );
     }
 }
 

@@ -136,7 +136,7 @@ impl PluginsConfig {
         // with a message about the signature, when the mistake is in the
         // config; refused here, where it can be named.
         for (i, key) in self.trust.public_keys.iter().enumerate() {
-            if let Err(reason) = crate::plugin::trust::parse_public_key(key) {
+            if let Err(reason) = crate::crypto::ed25519::parse_public_key(key) {
                 return Err(OrionError::Config {
                     message: format!(
                         "plugins.trust.public_keys[{i}] is not an Ed25519 public key: {reason}"

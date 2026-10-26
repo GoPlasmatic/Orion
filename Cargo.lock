@@ -2981,6 +2981,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "orion-common"
+version = "1.12.0"
+dependencies = [
+ "aes-gcm",
+ "aws-lc-rs",
+ "axum",
+ "base64 0.23.1",
+ "chrono",
+ "ctor",
+ "dashmap",
+ "dataflow-rs",
+ "hex",
+ "hmac",
+ "ipnet",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "orion-api",
+ "rand 0.10.3",
+ "reqwest",
+ "rustls",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "sha2 0.11.1",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-opentelemetry",
+ "uuid",
+]
+
+[[package]]
 name = "orion-definitions"
 version = "1.12.0"
 dependencies = [
@@ -3045,6 +3082,7 @@ dependencies = [
  "opentelemetry_sdk",
  "orion-api",
  "orion-client",
+ "orion-common",
  "orion-definitions",
  "orion-extension-api",
  "proptest",

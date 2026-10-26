@@ -9,7 +9,7 @@
 //! It used to live entirely in `server::trace_context`, which made a workflow
 //! function handler reach up into the HTTP layer to propagate a trace header.
 //! The map helpers are here, below all three; the axum middleware that reads a
-//! request's headers stays in [`crate::server::trace_context`], because that
+//! request's headers stays in `orion_server::server::trace_context`, because that
 //! one really is about HTTP.
 
 use std::collections::HashMap;
@@ -22,7 +22,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 /// Cached propagator — `TraceContextPropagator` is stateless, so a single
 /// instance can be shared across all requests instead of allocating per-request.
-pub(crate) static PROPAGATOR: LazyLock<TraceContextPropagator> =
+pub static PROPAGATOR: LazyLock<TraceContextPropagator> =
     LazyLock::new(TraceContextPropagator::new);
 
 /// [`opentelemetry::propagation::Extractor`] over a plain string map — the

@@ -11,7 +11,7 @@
 //! A parameter would be the obvious alternative, but `IntoResponse::into_response`
 //! takes `self` and nothing else, so there is nowhere to put one. A task-local
 //! is the right mechanism; it was only in the wrong place. The middleware that
-//! *fills* it stays in [`crate::server::request_context`], where the `Request`
+//! *fills* it stays in `orion_server::server::request_context`, where the `Request`
 //! and the trusted-proxy policy are.
 
 /// Longest inbound `x-request-id` carried in the context. The value is
@@ -21,18 +21,18 @@
 /// `error.request_id`. Generous next to the 36-byte UUID we generate, but
 /// bounded. Truncating here does not change the response header, which
 /// `PropagateRequestIdLayer` echoes verbatim.
-pub(crate) const MAX_REQUEST_ID_LEN: usize = 200;
+pub const MAX_REQUEST_ID_LEN: usize = 200;
 
 /// Longest user-agent string persisted in an audit row. Real agents are well
 /// under 200 bytes; the cap exists for the same reason as
 /// [`MAX_REQUEST_ID_LEN`].
-pub(crate) const MAX_USER_AGENT_LEN: usize = 256;
+pub const MAX_USER_AGENT_LEN: usize = 256;
 
 /// The caller-supplied change context (K5): tooling stamps what a mutation
 /// was part of — the packaging CLI sends `package=<name>@<version>` — and the
 /// audit trail records it, making a multi-request apply reconstructible.
 /// Free-form; same cap and reasoning.
-pub(crate) const MAX_CHANGE_CONTEXT_LEN: usize = 256;
+pub const MAX_CHANGE_CONTEXT_LEN: usize = 256;
 
 /// Request-scoped identity of the caller.
 #[derive(Debug, Clone, Default)]

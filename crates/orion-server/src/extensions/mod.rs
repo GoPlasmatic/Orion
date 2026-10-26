@@ -35,7 +35,7 @@ mod community_assembly;
 pub(crate) mod context;
 pub(crate) mod deployment_store;
 pub(crate) mod foundation;
-pub(crate) mod owned_native_work;
+pub(crate) use orion_common::native_work as owned_native_work;
 pub(crate) mod package_identity;
 pub(crate) mod provider_backend;
 pub(crate) mod reconciler;

@@ -249,8 +249,8 @@ impl Preview {
 ///
 /// Returns the URL and a handle yielding how many body bytes the server
 /// actually managed to write.
-#[cfg(test)]
-pub(crate) async fn flood_server(
+#[cfg(any(test, feature = "test-support"))]
+pub async fn flood_server(
     chunk_bytes: usize,
     max_chunks: usize,
 ) -> (String, tokio::task::JoinHandle<usize>) {
@@ -306,8 +306,8 @@ pub(crate) async fn flood_server(
 /// under `cargo llvm-cov`, where instrumentation slows the reader and the peer
 /// got 5,570,560 of 8,388,608 bytes out before it noticed. The percentage is
 /// in the message because it is worth *seeing*; it is not worth asserting.
-#[cfg(test)]
-pub(crate) fn assert_stopped_early(written: usize, attempted: usize, what: &str) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn assert_stopped_early(written: usize, attempted: usize, what: &str) {
     assert!(
         written < attempted,
         "{what}: the peer got to write all {attempted} bytes — the cap must be \

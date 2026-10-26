@@ -2,7 +2,7 @@
 //!
 //! Two callers want the same distance and different windows: unknown
 //! `ORION_*` variables at startup ([`crate::config`]) and unknown task
-//! function names at workflow validation ([`crate::engine`]). The distance is
+//! function names at workflow validation (`orion_server::engine`). The distance is
 //! here so a change to it — Damerau transposition, say, which is the typo
 //! shape both callers care most about — reaches both rather than half.
 //! The *window* policy stays at each call site, where it differs on purpose.
@@ -12,7 +12,7 @@
 /// Both callers compare short names against small candidate sets (~27
 /// function names, ~110 env keys), so this is a few thousand cells on a path
 /// that has already decided to reject its input.
-pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
+pub fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     edit_distance_chars(&a, &b)
@@ -20,7 +20,7 @@ pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
 
 /// [`edit_distance`] over pre-collected chars, so a caller comparing one name
 /// against many candidates collects that name once rather than per candidate.
-pub(crate) fn edit_distance_chars(a: &[char], b: &[char]) -> usize {
+pub fn edit_distance_chars(a: &[char], b: &[char]) -> usize {
     if a.is_empty() {
         return b.len();
     }

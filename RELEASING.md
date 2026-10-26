@@ -17,7 +17,7 @@ name refs explicitly rather than relying on the current branch.
 The workspace has two releasable packages, `orion-server` and `orion-cli`,
 **versioned in lockstep** — as is everything else in the workspace. There is
 one version number, `workspace.package.version` in the root `Cargo.toml`, and
-all seven crates inherit it with `version.workspace = true`. A bare `v*` tag
+every crate inherits it with `version.workspace = true`. A bare `v*` tag
 (e.g. `v1.0.0`, `v1.0.0-rc.1`) is the joint release: dist announces every
 dist-able package sitting at the tagged version, so one tag yields one GitHub
 release carrying both sets of archives, both installers and both tap formulae,
@@ -66,7 +66,7 @@ version disagrees with `crates/orion-cli/Cargo.toml`. A prefixed
 mistake, not a server-only release.
 
 The library crates (`orion-api`, `orion-client`,
-`orion-definitions`, `orion-extension-api`, `orion-plugin-sdk`) are never tagged: crates-publish publishes
+`orion-definitions`, `orion-extension-api`, `orion-common`, `orion-plugin-sdk`) are never tagged: crates-publish publishes
 them automatically as riders — in dependency order, skipping versions already
 on crates.io — right before `orion-server`, since crates.io refuses a crate
 whose dependency it doesn't host. `orion-plugin-sdk` depends on nothing else

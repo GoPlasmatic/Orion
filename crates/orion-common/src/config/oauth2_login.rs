@@ -20,7 +20,7 @@ pub struct OAuth2LoginConfig {
     ///
     /// Off by default. The token URL is authored input that Orion POSTs a
     /// client secret to, so with this off
-    /// [`crate::validation::validate_url_not_private`] runs on every exchange —
+    /// `orion_server::validation::validate_url_not_private` runs on every exchange —
     /// the same treatment a connector's token endpoint gets without
     /// `allow_private_urls`.
     ///

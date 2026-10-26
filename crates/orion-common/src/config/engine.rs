@@ -7,7 +7,7 @@ use crate::errors::OrionError;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EngineConfig {
-    pub circuit_breaker: crate::connector::circuit_breaker::CircuitBreakerConfig,
+    pub circuit_breaker: CircuitBreakerConfig,
     /// Timeout in seconds for the health and readiness database ping.
     pub health_check_timeout_secs: u64,
     /// Maximum nesting depth for channel_call invocations.
@@ -130,9 +130,9 @@ impl Default for EngineConfig {
 }
 
 impl EngineConfig {
-    /// Convert configured `0`-or-positive run budget fields into [`crate::engine::budget::RunBudgetLimits`].
-    pub fn run_budget_limits(&self) -> crate::engine::budget::RunBudgetLimits {
-        crate::engine::budget::RunBudgetLimits {
+    /// Convert configured `0`-or-positive run budget fields into [`RunBudgetLimits`].
+    pub fn run_budget_limits(&self) -> RunBudgetLimits {
+        RunBudgetLimits {
             max_tasks: (self.max_run_tasks > 0).then_some(self.max_run_tasks),
             max_expr_ops: (self.max_run_expr_ops > 0).then_some(self.max_run_expr_ops),
             max_custom_units: (self.max_run_custom_units > 0).then_some(self.max_run_custom_units),
@@ -159,5 +159,52 @@ impl EngineConfig {
         )?;
         require_nonzero(self.native_work_timeout_ms, "engine.native_work_timeout_ms")?;
         Ok(())
+    }
+}
+
+/// Configuration for circuit breakers. Disabled by default.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CircuitBreakerConfig {
+    pub enabled: bool,
+    pub failure_threshold: u32,
+    pub recovery_timeout_secs: u64,
+    /// Maximum number of tracked circuit breakers. Oldest entries are evicted when exceeded.
+    pub max_breakers: usize,
+}
+
+impl Default for CircuitBreakerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            failure_threshold: 5,
+            recovery_timeout_secs: 30,
+            max_breakers: 10_000,
+        }
+    }
+}
+
+/// Optional run-wide resource ceilings enforced by `orion_server::engine::budget::SharedRunAccountant`.
+///
+/// A field set to `None` is tracked without a hard ceiling.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RunBudgetLimits {
+    /// Maximum cumulative task dispatches across the root run and any nested
+    /// child runs sharing this accountant.
+    pub max_tasks: Option<u64>,
+    /// Maximum cumulative expression operations evaluated across the run.
+    pub max_expr_ops: Option<u64>,
+    /// Maximum cumulative custom host units charged via `RunAccountant::charge_custom`.
+    pub max_custom_units: Option<u64>,
+    /// Maximum concurrent in-flight task dispatches (`OccupancyGuard`s alive
+    /// simultaneously).
+    pub max_in_flight: Option<u64>,
+}
+
+impl RunBudgetLimits {
+    /// Whether no ceiling is set. An accountant with these limits can never
+    /// refuse anything, so a run need not carry one at all.
+    pub fn is_unbounded(&self) -> bool {
+        *self == Self::default()
     }
 }

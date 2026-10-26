@@ -38,7 +38,7 @@ use crate::errors::OrionError;
 /// **JSON value**, in place.
 ///
 /// Typed substitution, unlike the `env://` / `vault://` pass in
-/// [`crate::connector::secrets`], which always produces a string. That is not a
+/// `orion_server::connector::secrets`, which always produces a string. That is not a
 /// stylistic difference: the config fields worth parameterising per instance
 /// are mostly numbers — a cache TTL, a rate limit, a concurrency cap — and a
 /// string `"60"` where a `u64` belongs fails to deserialize. A var already has
@@ -217,7 +217,7 @@ pub fn parse_with_unresolved_refs<T: serde::de::DeserializeOwned>(
 
 /// One step of a path into a JSON document.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Seg {
+pub enum Seg {
     Key(String),
     Index(usize),
 }
@@ -225,7 +225,7 @@ pub(crate) enum Seg {
 impl Seg {
     /// `None` for an enum variant or an untracked step: neither addresses a
     /// value in the document, so an error there is nobody's reference.
-    pub(crate) fn from_segment(segment: &serde_path_to_error::Segment) -> Option<Self> {
+    pub fn from_segment(segment: &serde_path_to_error::Segment) -> Option<Self> {
         match segment {
             serde_path_to_error::Segment::Map { key } => Some(Self::Key(key.clone())),
             serde_path_to_error::Segment::Seq { index } => Some(Self::Index(*index)),
@@ -286,7 +286,7 @@ fn names_missing_field(err: &serde_json::Error, key: &str) -> bool {
     message.starts_with("missing field") && message.contains(&format!("`{key}`"))
 }
 
-pub(crate) fn slot_at<'a>(
+pub fn slot_at<'a>(
     doc: &'a mut serde_json::Value,
     path: &[Seg],
 ) -> Option<&'a mut serde_json::Value> {
@@ -322,7 +322,7 @@ fn reference_at(doc: &serde_json::Value, path: &[Seg]) -> String {
         .to_string()
 }
 
-pub(crate) fn display_path(path: &[Seg]) -> String {
+pub fn display_path(path: &[Seg]) -> String {
     let mut out = String::new();
     for seg in path {
         match seg {
@@ -402,7 +402,7 @@ impl SecretsConfig {
     pub(super) fn validate(&self) -> Result<(), OrionError> {
         for (name, reference) in &self.0 {
             validate_name(name, "secrets")?;
-            if !crate::connector::secrets::is_resolvable_reference(reference) {
+            if !crate::config::references::is_resolvable_reference(reference) {
                 return Err(OrionError::Config {
                     message: format!(
                         "secrets.{name} must be a secret reference such as \
@@ -445,7 +445,7 @@ fn validate_name(name: &str, section: &str) -> Result<(), OrionError> {
 fn check_var_value(name: &str, value: &toml::Value) -> Result<(), OrionError> {
     match value {
         toml::Value::String(s) => {
-            if crate::connector::secrets::is_resolvable_reference(s) {
+            if crate::config::references::is_resolvable_reference(s) {
                 return Err(OrionError::Config {
                     message: format!(
                         "vars.{name} is a secret reference, and nothing resolves one on its \

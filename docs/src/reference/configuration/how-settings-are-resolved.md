@@ -72,7 +72,7 @@ Three exemptions cover names that *do* carry the separator, or would:
 - **The reserved `ORION_SECRET_*` namespace**, which Orion never interprets as configuration. Use it for values you reference yourself and cannot declare up front — an `env://ORION_SECRET_DB_PASSWORD` connector secret, for instance, since connectors live in the database rather than the config.
 - **`ORION_ENVIRONMENT`**, the one setting that lives at the top level of the config and so has no separator of its own. It is checked by proximity instead: `ORION_ENVIRONMEN` is refused with a suggestion, because a silently ignored `environment` would leave the instance in `development` with the production checks downgraded to warnings.
 
-Every setting resolves through three layers, in increasing precedence: the struct defaults, the config file passed with `-c`, and `ORION_SECTION__KEY` environment variables. The file may reference the environment two ways, and a misspelled key or variable is a startup error. The defaults on every configuration page are checked against `crates/orion-server/src/config/*.rs` by an integration test.
+Every setting resolves through three layers, in increasing precedence: the struct defaults, the config file passed with `-c`, and `ORION_SECTION__KEY` environment variables. The file may reference the environment two ways, and a misspelled key or variable is a startup error. The defaults on every configuration page are checked against `crates/orion-common/src/config/*.rs` by an integration test.
 
 ## Related
 

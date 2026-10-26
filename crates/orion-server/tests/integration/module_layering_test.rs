@@ -17,9 +17,10 @@
 //! - `connector::smtp_pool` reached into `server::tls` to install a rustls
 //!   crypto provider.
 //!
-//! All five are gone — `runtime/`, `crypto/`, `request_context/` and
-//! `trace_context/` are where those things live now. This test is what stops
-//! them growing back: it is a text scan, deliberately, because the thing it
+//! All five are gone — `runtime/` is where reload lives now, and the shared
+//! primitives (`crypto`, `request_context`, `trace_context`, `errors`,
+//! `config`, …) are the `orion-common` crate, whose crate boundary enforces
+//! their being leaves. This test is what stops the rest growing back: it is a text scan, deliberately, because the thing it
 //! guards is a *convention*, and a convention no one can see is a convention
 //! that erodes.
 
@@ -55,17 +56,6 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
         "storage",
         &["crate::server::", "crate::bootstrap::", "crate::engine::"],
     ),
-    // Every module in the tree produces an `OrionError`, so the error type
-    // cannot depend on any of them.
-    (
-        "errors.rs",
-        &["crate::server::", "crate::bootstrap::", "crate::engine::"],
-    ),
-    // The shared primitives are leaves.
-    (
-        "crypto.rs",
-        &["crate::server::", "crate::engine::", "crate::channel::"],
-    ),
     // The one SQL lexer: read by `db_read`/`db_write` (below `definitions`),
     // by the `$sql` pass and the clippy rules (above `engine`), and by the
     // binary's `sql check`. None of them may reach the others for it.
@@ -77,49 +67,6 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
             "crate::definitions::",
             "crate::connector::",
         ],
-    ),
-    // The version this build is, and the range a set may require: read by
-    // the offline commands.
-    (
-        "version.rs",
-        &[
-            "crate::server::",
-            "crate::engine::",
-            "crate::channel::",
-            "crate::definitions::",
-            "crate::storage::",
-        ],
-    ),
-    // The detached-signature convention is read by the signing CLI: it names
-    // `crypto` and nothing that serves.
-    (
-        "signatures.rs",
-        &[
-            "crate::server::",
-            "crate::engine::",
-            "crate::channel::",
-            "crate::plugin::",
-            "crate::storage::",
-        ],
-    ),
-    // Egress body reading is used by `engine` (http_call, Elasticsearch),
-    // `connector` (OAuth2 token endpoints) and `jwt` (JWKS). None of those may
-    // reach the others, which is why it is a leaf rather than living in the
-    // one that happened to implement it correctly first.
-    (
-        "http_body.rs",
-        &[
-            "crate::server::",
-            "crate::engine::",
-            "crate::channel::",
-            "crate::connector::",
-            "crate::jwt::",
-        ],
-    ),
-    ("trace_context.rs", &["crate::server::", "crate::engine::"]),
-    (
-        "request_context.rs",
-        &["crate::server::", "crate::engine::"],
     ),
     // `runtime::reload` and `runtime::handler_deps` take an `AppState`, so
     // nothing below the HTTP layer may name them. `runtime::tasks` and
@@ -166,16 +113,7 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
 ///
 /// Adding a row here is a decision, not a workaround: it says the edge is the
 /// lesser evil, and the next reader gets to judge that.
-const ALLOWED: &[(&str, &str)] = &[
-    // `config::server` validates that a channel mount does not shadow a
-    // platform route, and the list of platform routes is the router's to know.
-    // Moving it into `config` would split it from the router it describes,
-    // which is the drift this whole family of tests exists to prevent.
-    (
-        "config/server.rs",
-        "crate::server::routes::shadowed_platform_route",
-    ),
-];
+const ALLOWED: &[(&str, &str)] = &[];
 
 fn src_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
@@ -220,7 +158,13 @@ fn no_module_depends_on_a_layer_above_it() {
     let mut violations = Vec::new();
 
     for (module, forbidden) in FORBIDDEN {
-        for file in files_of(module) {
+        let files = files_of(module);
+        // A row naming a module that moved would otherwise pass vacuously.
+        assert!(
+            !files.is_empty(),
+            "FORBIDDEN names `{module}`, which has no source here"
+        );
+        for file in files {
             let text = std::fs::read_to_string(&file).expect("read source");
             let rel = file
                 .strip_prefix(src_dir())

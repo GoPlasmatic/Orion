@@ -142,7 +142,7 @@ impl ServerConfig {
             // cannot occur: every `PLATFORM_ROUTES` entry is single-segment,
             // so a strict prefix of one would have to be `""`, which fails the
             // leading-`/` check above.)
-            if let Some(reserved) = crate::server::routes::shadowed_platform_route(mount) {
+            if let Some(reserved) = crate::platform_routes::shadowed_platform_route(mount) {
                 return Err(err(format!(
                     "server.data_mounts entry '{mount}' collides with the platform \
                      route '{reserved}' — mounting the data plane there would shadow \

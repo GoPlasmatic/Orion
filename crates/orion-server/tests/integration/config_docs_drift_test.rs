@@ -45,7 +45,10 @@ const REFERENCE_DIR: &str = concat!(
     "/../../docs/src/reference/configuration"
 );
 const EXAMPLE_TOML: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml.example");
-const ENV_OVERRIDES_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/config/env_overrides.rs");
+const ENV_OVERRIDES_RS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../orion-common/src/config/env_overrides.rs"
+);
 
 /// Real config fields that have no default value to state: `Option<T>` fields
 /// (unset means "don't send this setting at all") and the element fields of

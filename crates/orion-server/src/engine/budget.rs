@@ -23,30 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use dataflow_rs::Error;
 use dataflow_rs::run::{DispatchKind, OccupancyGuard, RunAccountant, RunOptions};
 
-/// Optional run-wide resource ceilings enforced by [`SharedRunAccountant`].
-///
-/// A field set to `None` is tracked without a hard ceiling.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct RunBudgetLimits {
-    /// Maximum cumulative task dispatches across the root run and any nested
-    /// child runs sharing this accountant.
-    pub max_tasks: Option<u64>,
-    /// Maximum cumulative expression operations evaluated across the run.
-    pub max_expr_ops: Option<u64>,
-    /// Maximum cumulative custom host units charged via [`RunAccountant::charge_custom`].
-    pub max_custom_units: Option<u64>,
-    /// Maximum concurrent in-flight task dispatches (`OccupancyGuard`s alive
-    /// simultaneously).
-    pub max_in_flight: Option<u64>,
-}
-
-impl RunBudgetLimits {
-    /// Whether no ceiling is set. An accountant with these limits can never
-    /// refuse anything, so a run need not carry one at all.
-    pub fn is_unbounded(&self) -> bool {
-        *self == Self::default()
-    }
-}
+pub use orion_common::config::RunBudgetLimits;
 
 /// Point-in-time usage snapshot read from a [`SharedRunAccountant`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

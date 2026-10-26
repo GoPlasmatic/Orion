@@ -16,7 +16,7 @@ pub struct JwtConfig {
     /// Off by default: `jwks_url` is authored input — a channel's `auth` block
     /// or a `jwt_verify` task field — and it is the only egress path in the
     /// runtime that does not go through an operator-configured connector. With
-    /// this off, [`crate::validation::validate_url_not_private`] runs on every
+    /// this off, `orion_server::validation::validate_url_not_private` runs on every
     /// fetch, exactly as it does for `http` connectors without
     /// `allow_private_urls`.
     ///

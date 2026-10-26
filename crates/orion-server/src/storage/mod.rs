@@ -25,7 +25,7 @@
 //! still opened with `PRAGMA foreign_keys = ON` so a future FK takes effect
 //! immediately; see `init_sqlite_pool`.
 
-pub mod config_encryption;
+pub use orion_common::config_encryption;
 pub mod models;
 pub mod repositories;
 pub mod schema;
@@ -47,39 +47,7 @@ use crate::errors::OrionError;
 // Database backend detection — determined at runtime from URL
 // ============================================================
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DbBackend {
-    Sqlite,
-    Postgres,
-    Mysql,
-}
-
-impl std::fmt::Display for DbBackend {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Sqlite => write!(f, "sqlite"),
-            Self::Postgres => write!(f, "postgres"),
-            Self::Mysql => write!(f, "mysql"),
-        }
-    }
-}
-
-/// Detect the database backend from a connection URL.
-pub fn detect_backend(url: &str) -> Result<DbBackend, OrionError> {
-    if url.starts_with("sqlite:") || url.starts_with("file:") {
-        Ok(DbBackend::Sqlite)
-    } else if url.starts_with("postgres://") || url.starts_with("postgresql://") {
-        Ok(DbBackend::Postgres)
-    } else if url.starts_with("mysql://") || url.starts_with("mariadb://") {
-        Ok(DbBackend::Mysql)
-    } else {
-        Err(OrionError::Config {
-            message: format!(
-                "Unsupported database URL scheme: {url}. Expected sqlite:, postgres://, or mysql://"
-            ),
-        })
-    }
-}
+pub use orion_common::config::{DbBackend, detect_backend};
 
 // ============================================================
 // DbPool — enum wrapping concrete pool types

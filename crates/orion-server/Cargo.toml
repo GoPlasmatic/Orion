@@ -67,6 +67,7 @@ harness = true
 workspace = true
 
 [dependencies]
+orion-common.workspace = true
 orion-definitions.workspace = true
 orion-extension-api.workspace = true
 # dataflow-rs 4 selects the JSONLogic extension families (string, array,
@@ -219,6 +220,8 @@ jsonwebtoken = { version = "11.1.0", features = ["aws_lc_rs"] }
 similar = "3"
 
 [dev-dependencies]
+# The test helpers orion-common keeps for this crate's unit tests.
+orion-common = { workspace = true, features = ["test-support"] }
 # test-util (paused clocks, time::advance) is test-only; feature unification
 # gives the in-crate #[cfg(test)] modules access without shipping it in release.
 tokio = { version = "1", features = ["test-util"] }
