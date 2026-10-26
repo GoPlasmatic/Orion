@@ -16,6 +16,7 @@ default_channel_call_timeout_ms = 30000
 max_loop_iterations = 10000
 global_http_timeout_secs = 30
 max_pool_cache_entries = 100
+sqlite_connector_root = "./data/connectors/sqlite"
 cache_cleanup_interval_secs = 60
 max_memory_cache_entries = 100000
 rollout_sticky_header = ""
@@ -49,6 +50,7 @@ Breakers are keyed per channel and connector, so one noisy channel does not trip
 | `engine.max_loop_iterations` | `10000` | `ORION_ENGINE__MAX_LOOP_ITERATIONS` | Ceiling on a workflow [`loop`](../workflows.md#loop)'s `max`, refused at write time. Raise it for a workload that genuinely needs more sweeps; `0` removes the ceiling. |
 | `engine.global_http_timeout_secs` | `30` | `ORION_ENGINE__GLOBAL_HTTP_TIMEOUT_SECS` | Safety net for every outbound HTTP request; shorter connector or task timeouts still win. |
 | `engine.max_pool_cache_entries` | `100` | `ORION_ENGINE__MAX_POOL_CACHE_ENTRIES` | Raise only with more than ~100 distinct external connectors. LRU-evicted. |
+| `engine.sqlite_connector_root` | `"./data/connectors/sqlite"` | `ORION_ENGINE__SQLITE_CONNECTOR_ROOT` | The directory the `org.orion.sqlite` provider (`connector_call`) resolves a connection's database file beneath. The connection names a path relative to it; an absolute path, or a `..` that leaves it, is refused. Point it at a mounted volume in a container. |
 | `engine.cache_cleanup_interval_secs` | `60` | `ORION_ENGINE__CACHE_CLEANUP_INTERVAL_SECS` | Sweep interval for expired in-memory cache entries. |
 | `engine.max_memory_cache_entries` | `100000` | `ORION_ENGINE__MAX_MEMORY_CACHE_ENTRIES` | Per-namespace bound; see [`max_memory_cache_entries`](#max_memory_cache_entries). Lower it on a memory-constrained host. `0` removes the bound. |
 | `engine.rollout_sticky_header` | `""` | `ORION_ENGINE__ROLLOUT_STICKY_HEADER` | Set to the header that identifies a caller (for example `"x-user-id"`) so canary rollouts are stable per caller; see [`rollout_sticky_header`](#rollout_sticky_header). |

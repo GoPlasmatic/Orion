@@ -170,6 +170,9 @@
 # global_http_timeout_secs = 30            # Safety net for every outbound HTTP request;
                                            # shorter connector/task timeouts still win
 # max_pool_cache_entries = 100             # Cached connection pools per external backend (LRU)
+# sqlite_connector_root = "./data/connectors/sqlite"  # Where the org.orion.sqlite provider
+                                           # (connector_call) resolves a connection's file;
+                                           # relative paths only, no `..` out of it
 # cache_cleanup_interval_secs = 60         # Sweep interval for expired cache entries
 # max_memory_cache_entries = 100000        # Per-namespace bound on the in-memory caches: the
                                            # default dedup store, the default response cache, and

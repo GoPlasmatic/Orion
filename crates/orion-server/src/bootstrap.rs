@@ -275,6 +275,7 @@ pub async fn build_engine_components(
             max_rows: usize::try_from(config.query.max_limit).unwrap_or(usize::MAX),
             max_result_bytes: config.query.max_result_bytes,
         },
+        sqlite_root: std::path::PathBuf::from(&config.engine.sqlite_connector_root),
         ..Default::default()
     };
     // The node's services, created once with its identity, then the

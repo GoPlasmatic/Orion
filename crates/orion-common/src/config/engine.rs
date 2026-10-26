@@ -31,6 +31,11 @@ pub struct EngineConfig {
     /// Maximum entries in each external connector pool cache.
     /// LRU eviction removes the least-recently-used pool when exceeded.
     pub max_pool_cache_entries: usize,
+    /// The directory the `org.orion.sqlite` provider (`connector_call`)
+    /// resolves a connection's database file beneath. A connection names a
+    /// path relative to it; an absolute path, or a `..` that leaves it, is
+    /// refused.
+    pub sqlite_connector_root: String,
     /// Interval in seconds between cache cleanup sweeps that evict expired entries.
     pub cache_cleanup_interval_secs: u64,
     /// Maximum entries in the shared in-memory cache (default dedup store,
@@ -114,6 +119,7 @@ impl Default for EngineConfig {
             max_loop_iterations: 10_000,
             global_http_timeout_secs: 30,
             max_pool_cache_entries: 100,
+            sqlite_connector_root: "./data/connectors/sqlite".to_string(),
             cache_cleanup_interval_secs: 60,
             max_memory_cache_entries: 100_000,
             rollout_sticky_header: String::new(),
