@@ -1,0 +1,76 @@
+[package]
+name = "orion-engine"
+# No release cycle of its own: no tag names this crate. crates-publish.yml
+# publishes it as a rider before the crates that depend on it, on the
+# workspace's version.
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The Orion runtime's workflow engine: Orion's dataflow-rs functions and operators, the loader, connectors, the portable data dialect and JWT"
+license.workspace = true
+repository.workspace = true
+homepage = "https://docs.goplasmatic.io/"
+readme = "README.md"
+keywords = ["workflow", "runtime", "dataflow", "jsonlogic"]
+categories = ["web-programming"]
+include = ["src/**", "README.md"]
+
+[lints]
+workspace = true
+
+[features]
+# The helpers orion-server's own tests call: the twin records, the loader's
+# fixtures, and the connector registry's test inserts.
+test-support = []
+
+# The same requirements orion-server states, so the lockfile carries one copy
+# of each.
+[dependencies]
+orion-api = { workspace = true, features = ["utoipa"] }
+orion-common.workspace = true
+orion-definitions.workspace = true
+orion-extension-api.workspace = true
+orion-storage.workspace = true
+dataflow-rs = { version = "4.0.1", features = ["datetime", "budget"] }
+argon2 = "0.6.0"
+arc-swap = "1"
+async-trait = "0.1"
+axum = { version = "0.8", default-features = false, features = ["json"] }
+base64 = "0.23"
+bcrypt = "0.19.3"
+bigdecimal = "0.4"
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+dashmap = "6"
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
+hashlink = "0.11"
+hex = "0.4"
+hmac = "0.13"
+jsonwebtoken = { version = "11.1.0", features = ["aws_lc_rs"] }
+md-5 = "0.11"
+metrics = "0.24"
+rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
+sea-query = { version = "1.0", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
+sea-query-sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_path_to_error = "0.1"
+sha1 = "0.11"
+sha2 = "0.11"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "sqlite", "postgres", "mysql"] }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+tracing = "0.1"
+url = "2"
+utoipa = { version = "6", features = ["axum_extras", "chrono"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+
+[dev-dependencies]
+orion-common = { workspace = true, features = ["test-support"] }
+orion-storage = { workspace = true, features = ["test-support"] }
+tokio = { version = "1", features = ["test-util"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+proptest = "1"
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }

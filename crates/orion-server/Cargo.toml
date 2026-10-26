@@ -68,6 +68,7 @@ workspace = true
 
 [dependencies]
 orion-common.workspace = true
+orion-engine.workspace = true
 orion-storage.workspace = true
 orion-definitions.workspace = true
 orion-extension-api.workspace = true
@@ -224,6 +225,7 @@ similar = "3"
 # The test helpers orion-common keeps for this crate's unit tests.
 orion-common = { workspace = true, features = ["test-support"] }
 orion-storage = { workspace = true, features = ["test-support"] }
+orion-engine = { workspace = true, features = ["test-support"] }
 # test-util (paused clocks, time::advance) is test-only; feature unification
 # gives the in-crate #[cfg(test)] modules access without shipping it in release.
 tokio = { version = "1", features = ["test-util"] }

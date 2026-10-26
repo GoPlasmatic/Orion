@@ -17,7 +17,14 @@
 
 use std::collections::BTreeSet;
 
-const SRC_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+/// The sources of every crate the runtime is built from. Not `orion-api`:
+/// it defines the vocabulary, so scanning it would find every entry used.
+const SRC_DIRS: &[&str] = &[
+    concat!(env!("CARGO_MANIFEST_DIR"), "/src"),
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-common/src"),
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-storage/src"),
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-engine/src"),
+];
 const ERRORS_MD: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../docs/src/reference/errors.md"
@@ -85,7 +92,9 @@ fn emitted_codes() -> BTreeSet<String> {
     }
 
     let mut out = BTreeSet::new();
-    walk(std::path::Path::new(SRC_DIR), &mut out);
+    for dir in SRC_DIRS {
+        walk(std::path::Path::new(dir), &mut out);
+    }
     out
 }
 

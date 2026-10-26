@@ -43,20 +43,19 @@ pub use orion_common::canonical;
 pub mod channel;
 pub mod cluster;
 pub use orion_common::config;
-pub mod connector;
+pub use orion_engine::connector;
 pub mod cron;
 pub use orion_common::crypto;
 pub mod definitions;
-pub mod engine;
 pub use orion_common::errors;
+pub use orion_engine as engine;
 pub mod extensions;
 #[doc(hidden)]
 pub use orion_common::http_body;
-#[doc(hidden)]
-pub mod jwt;
 pub use orion_common::metrics;
+#[doc(hidden)]
+pub use orion_engine::jwt;
 pub mod plugin;
-pub(crate) mod query;
 pub mod queue;
 #[doc(hidden)]
 pub use orion_common::request_context;

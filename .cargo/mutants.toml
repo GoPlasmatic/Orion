@@ -18,9 +18,9 @@
 examine_globs = [
     "crates/orion-server/src/validation/**",         # SSRF allow/deny predicates
     "crates/orion-server/src/server/admin_auth.rs",  # API-key comparison, guarded-path set
-    "crates/orion-server/src/connector/masking.rs",  # secret redaction before secrets reach the wire
-    "crates/orion-server/src/connector/circuit_breaker.rs",
-    "crates/orion-server/src/query/**",              # the portable data dialect: filter → SQL
+    "crates/orion-engine/src/connector/masking.rs",  # secret redaction before secrets reach the wire
+    "crates/orion-engine/src/connector/circuit_breaker.rs",
+    "crates/orion-engine/src/query/**",              # the portable data dialect: filter → SQL
     "crates/orion-common/src/errors.rs",             # the public {code, message} envelope
 ]
 

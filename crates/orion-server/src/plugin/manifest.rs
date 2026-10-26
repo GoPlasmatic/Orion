@@ -138,23 +138,6 @@ pub struct FieldDecl {
     pub template_at: bool,
 }
 
-impl<'de> Deserialize<'de> for FieldKind {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let raw = String::deserialize(d)?;
-        match raw.as_str() {
-            "string" => Ok(FieldKind::String),
-            "number" => Ok(FieldKind::Number),
-            "bool" => Ok(FieldKind::Bool),
-            "object" => Ok(FieldKind::Object),
-            "array" => Ok(FieldKind::Array),
-            "any" => Ok(FieldKind::Any),
-            other => Err(serde::de::Error::custom(format!(
-                "unknown kind '{other}' — one of string, number, bool, object, array, any"
-            ))),
-        }
-    }
-}
-
 impl Manifest {
     /// Parse and validate a TOML manifest. Every problem is reported, with a
     /// path into the document, so an author fixes a manifest in one round.

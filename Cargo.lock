@@ -3027,6 +3027,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "orion-engine"
+version = "1.12.0"
+dependencies = [
+ "arc-swap",
+ "argon2",
+ "async-trait",
+ "axum",
+ "axum-server",
+ "base64 0.23.1",
+ "bcrypt",
+ "bigdecimal",
+ "bytes",
+ "chrono",
+ "dashmap",
+ "dataflow-rs",
+ "futures",
+ "hashlink",
+ "hex",
+ "hmac",
+ "jsonwebtoken",
+ "md-5",
+ "metrics",
+ "orion-api",
+ "orion-common",
+ "orion-definitions",
+ "orion-extension-api",
+ "orion-storage",
+ "proptest",
+ "rand 0.10.3",
+ "rcgen",
+ "reqwest",
+ "sea-query",
+ "sea-query-sqlx",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "sha1",
+ "sha2 0.11.1",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
 name = "orion-extension-api"
 version = "1.12.0"
 dependencies = [
@@ -3085,6 +3133,7 @@ dependencies = [
  "orion-client",
  "orion-common",
  "orion-definitions",
+ "orion-engine",
  "orion-extension-api",
  "orion-storage",
  "proptest",

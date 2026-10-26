@@ -30,6 +30,7 @@ on:
       # The crates the server is split into.
       - "crates/orion-common/**"
       - "crates/orion-storage/**"
+      - "crates/orion-engine/**"
       - "crates/orion-server/build.rs"
       - "crates/orion-server/Cargo.toml"
       # dist ships macOS and Windows binaries for orion-cli too, so the
@@ -49,6 +50,7 @@ on:
       # The crates the server is split into.
       - "crates/orion-common/**"
       - "crates/orion-storage/**"
+      - "crates/orion-engine/**"
       - "crates/orion-server/build.rs"
       - "crates/orion-server/Cargo.toml"
       # dist ships macOS and Windows binaries for orion-cli too, so the

@@ -19,8 +19,10 @@
 //!
 //! All five are gone — `runtime/` is where reload lives now, and the shared
 //! primitives (`crypto`, `request_context`, `trace_context`, `errors`,
-//! `config`, …) are the `orion-common` crate and storage is `orion-storage`,
-//! whose crate boundaries enforce their being below everything that serves. This test is what stops the rest growing back: it is a text scan, deliberately, because the thing it
+//! `config`, …) are the `orion-common` crate, storage is `orion-storage` and
+//! the engine with its connectors, query dialect and JWT core is
+//! `orion-engine`: their crate boundaries enforce their being below
+//! everything that serves. This test is what stops the rest growing back: it is a text scan, deliberately, because the thing it
 //! guards is a *convention*, and a convention no one can see is a convention
 //! that erodes.
 
@@ -35,11 +37,8 @@ use std::path::{Path, PathBuf};
 /// same reasoning obviously extends to.
 const FORBIDDEN: &[(&str, &[&str])] = &[
     // The request path sits below the HTTP layer and the startup sequence.
-    ("engine", &["crate::server::", "crate::bootstrap::"]),
     ("channel", &["crate::server::", "crate::bootstrap::"]),
-    ("connector", &["crate::server::", "crate::bootstrap::"]),
     ("queue", &["crate::server::", "crate::bootstrap::"]),
-    ("jwt", &["crate::server::", "crate::bootstrap::"]),
     // The plugin sandbox produces registry entries and handlers for a
     // generation to carry; it names nothing above `engine`.
     ("plugin", &["crate::server::", "crate::bootstrap::"]),
@@ -48,7 +47,6 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
     // may name it back. `engine` reaching up here is how `TRIGGER_KEY` briefly
     // ended up in the wrong module.
     ("cron", &["crate::server::", "crate::bootstrap::"]),
-    ("engine", &["crate::cron::"]),
     ("channel", &["crate::cron::"]),
     ("queue", &["crate::cron::"]),
     // The one SQL lexer: read by `db_read`/`db_write` (below `definitions`),
@@ -72,10 +70,6 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
     // `queue` are handed an `Arc<RuntimeHandle>` and read the generation they
     // were given. That is the same shape as `metrics`. Forbidding all of
     // `runtime::` would refuse it.
-    (
-        "engine",
-        &["crate::runtime::reload", "crate::runtime::handler_deps"],
-    ),
     (
         "channel",
         &["crate::runtime::reload", "crate::runtime::handler_deps"],
