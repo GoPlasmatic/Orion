@@ -18,9 +18,14 @@
 //! and `json_columns_carry_the_json_suffix` in [`super::models::dto`], which
 //! enforces the rule for any column added later.
 
+mod deployments;
 mod entities;
 mod runtime;
 
+pub use deployments::{
+    ArtifactObjects, ConnectionRevisions, DeploymentHead, DeploymentMembers, DeploymentOperations,
+    DeploymentRevisions, ProviderAdmissions, ProviderPackages,
+};
 pub use entities::{
     Channels, ConnectorOauthState, Connectors, CurrentChannels, CurrentWorkflows, Packages,
     PluginArtifacts, Plugins, Workflows,

@@ -290,6 +290,26 @@ impl DbPool {
     }
 }
 
+/// Whether `err` is the database saying a table the statement names does not
+/// exist: SQLSTATE `42P01` on PostgreSQL, error 1146 (`ER_NO_SUCH_TABLE`) on
+/// MySQL, and on SQLite the generic `SQLITE_ERROR` (code 1) with its
+/// `no such table` message, the only form SQLite gives it.
+pub fn is_undefined_table(err: &sqlx::Error) -> bool {
+    let Some(db) = err.as_database_error() else {
+        return false;
+    };
+    if let Some(pg) = db.try_downcast_ref::<sqlx::postgres::PgDatabaseError>() {
+        return pg.code() == "42P01";
+    }
+    if let Some(my) = db.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>() {
+        return my.number() == 1146;
+    }
+    if db.try_downcast_ref::<sqlx::sqlite::SqliteError>().is_some() {
+        return db.code().as_deref() == Some("1") && db.message().starts_with("no such table");
+    }
+    false
+}
+
 // ============================================================
 // DbTransaction — enum wrapping concrete transaction types
 // ============================================================
