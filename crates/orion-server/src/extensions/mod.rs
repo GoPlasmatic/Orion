@@ -8,7 +8,7 @@
 //!
 //! An edition describes what its node serves with an owned
 //! [`CompositionBuilder`] (Community's is [`CompositionRoot::community`]) and
-//! hands it to [`crate::bootstrap::assemble`]. Bootstrap
+//! hands it to [`crate::run`] / [`crate::bootstrap::assemble`]. Bootstrap
 //! creates the node's services (its [`NodeIdentity`], deployment store,
 //! [`RevocationLedger`] and [`NativeWorkScheduler`]) and freezes the builder
 //! over them into a [`Composition`]: plain maps, private fields, nothing
@@ -215,13 +215,13 @@ pub struct BuildContext {
 /// (or from [`Self::new`]) and adds its own:
 ///
 /// ```no_run
-/// # fn enterprise() {
+/// # async fn enterprise(config: orion::config::AppConfig) -> Result<(), Box<dyn std::error::Error>> {
 /// use orion::extensions::{CompositionRoot, EditionTier};
 /// let composition = CompositionRoot::community().with_edition(EditionTier::Enterprise);
 /// //  .with_channel_driver(Arc::new(KafkaChannelDriver))
 /// //  .with_providers(|r| r.provider(Arc::new(MongoProvider::new(r.deployments().clone()))))
 /// //  .with_package_verifier(Arc::new(EnterprisePackageVerifier::new(..)))
-/// # let _ = composition;
+/// orion::run(config, composition).await
 /// # }
 /// ```
 ///

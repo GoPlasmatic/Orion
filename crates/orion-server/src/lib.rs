@@ -7,9 +7,12 @@
 //!
 //! # This is not an embedding API
 //!
-//! The library target exists for two consumers: the `orion-server` binary and
-//! the integration test suite. Everything below is `pub` because those two need
-//! it, not because it is offered for use.
+//! The library target exists for three consumers: the `orion-server` binary,
+//! the integration test suite, and an edition binary (Orion Enterprise) that
+//! runs a node with its own composition: [`run`] with an
+//! [`extensions::CompositionBuilder`] carrying its channel drivers, provider
+//! backends, pools, package verifier and edition. Everything else is `pub`
+//! because those need it, not because it is offered for use.
 //!
 //! **Nothing here is covered by semver.** Module layout, type names, function
 //! signatures and trait shapes change whenever the binary needs them to,
@@ -69,3 +72,5 @@ pub(crate) mod text;
 pub mod trace_context;
 pub mod validation;
 pub mod version;
+
+pub use bootstrap::run;

@@ -389,6 +389,175 @@ impl EngineComponents {
     }
 }
 
+/// Run an Orion node until SIGTERM/SIGINT: observability, metrics, the state
+/// database, [`assemble`], the serving tasks, the HTTP(S) listener, and the
+/// graceful shutdown. What `orion-server` runs with no subcommand, with
+/// [`crate::extensions::CompositionRoot::community`]; an edition's binary
+/// runs it with its own [`crate::extensions::CompositionBuilder`].
+///
+/// `config` is the loaded configuration ([`crate::config::load_config`]); an
+/// empty `cluster.instance_id` is resolved here.
+pub async fn run(
+    mut config: config::AppConfig,
+    composition: crate::extensions::CompositionBuilder,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if config.cluster.instance_id.is_empty() {
+        config.cluster.instance_id = config.cluster.effective_instance_id();
+    }
+    // Init tracing subscriber with optional OpenTelemetry layer (see
+    // `init_observability`). The provider is flushed at shutdown.
+    let _otel_provider = init_observability(&config)?;
+
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        git_hash = env!("GIT_HASH"),
+        build_timestamp = env!("BUILD_TIMESTAMP"),
+        environment = %config.environment,
+        "Starting Orion — Declarative Services Runtime"
+    );
+
+    // Init metrics (gated by config)
+    let metrics_handle = init_metrics_handle(&config);
+
+    // Init database. With auto_migrate = false (multi-replica deploys) a
+    // stale schema is a hard startup error — a replica must never serve
+    // against pending migrations; `orion-server migrate` is the deploy step.
+    let pool = crate::storage::init_pool_for_startup(&config.storage).await?;
+    // S20: the DSN can embed `user:password@` credentials — never log it raw.
+    tracing::info!(
+        storage = %crate::connector::redact_url_secrets_or_raw(&config.storage.url),
+        "Database initialized"
+    );
+    // C7: in production this pairing is refused by `validate_config` before
+    // anything opens a connection, so only a development cluster reaches here
+    // — the Helm `devStack` shape, whose database is a release resource and so
+    // has no pre-install migrate Job to run instead.
+    if config.cluster.enabled && config.storage.auto_migrate {
+        tracing::warn!(
+            "cluster.enabled with storage.auto_migrate = true: replicas race \
+             migrations at boot. Tolerated outside production and refused in it — \
+             use auto_migrate = false plus an `orion-server migrate` deploy step"
+        );
+    }
+
+    // The ordered startup sequence from the open pool to a wired `AppState`
+    // — cluster runtime, repositories, engine components, the managed-OAuth2
+    // runtime, the first published generation, the background tasks, the
+    // plugin ticker. The integration-test harness calls
+    // the same `assemble`, so a step added there cannot silently skip either.
+    let config = Arc::new(config);
+    let Assembled {
+        state,
+        task_handles,
+    } = assemble(
+        AssembleParams {
+            config: config.clone(),
+            pool,
+            metrics_handle,
+        },
+        composition,
+    )
+    .await?;
+
+    // The readiness flag and the task supervisor live on `AppState`; keep the
+    // clones `run()` needs for the serve loop and graceful shutdown.
+    let ready = state.ready.clone();
+    let tasks = state.tasks.clone();
+
+    // Cluster background tasks: the deployment reconciler, and the shared-state
+    // sweeper in cluster mode.
+    crate::cluster::start_cluster_tasks(&state);
+
+    // Rate-limiter prune: sweep governor's in-process keyed stores so they
+    // stay proportional to recently active client identities rather than
+    // growing one entry per identity ever seen. Optional — a node that stops
+    // pruning still serves correctly.
+    crate::runtime::limiter_prune::start(&tasks, state.clone());
+
+    let router = crate::server::build_router(state.clone());
+
+    // Optional dedicated metrics listener (O12), bound before the main server
+    // starts (see `start_metrics_listener`).
+    let metrics_server = start_metrics_listener(&config, &state)?;
+
+    let serve = async {
+        if config.server.tls.enabled {
+            let handle = axum_server::Handle::new();
+            crate::server::serve::serve_tls(
+                config.clone(),
+                ready.clone(),
+                router,
+                handle,
+                crate::server::shutdown_signal(),
+            )
+            .await
+        } else {
+            let addr = format!("{}:{}", config.server.host, config.server.port);
+            let listener = crate::server::serve::create_tcp_listener(&addr)?;
+            crate::server::serve::serve_plain_http(
+                listener,
+                config.clone(),
+                ready.clone(),
+                router,
+                crate::server::shutdown_signal(),
+            )
+            .await
+        }
+    };
+    serve.await?;
+
+    join_metrics_listener(metrics_server).await;
+
+    // Graceful shutdown. Stop the supervised tasks first: the retention jobs,
+    // the DLQ retry consumer and the cluster reconciler all hold an `AppState` clone, and the
+    // drain below cannot start until the last trace-queue sender is gone.
+    // Cooperative, so a job in the middle of a DELETE finishes it — this
+    // used to be `JoinHandle::abort()`.
+    tasks
+        .shutdown(std::time::Duration::from_secs(
+            config.server.shutdown_force_timeout_secs,
+        ))
+        .await;
+
+    // Native jobs (a plugin compile in flight) own their threads; wait for
+    // them on the same bound, and name any still running rather than
+    // exiting as though the node drained.
+    let native = state
+        .native_scheduler
+        .graceful_shutdown(std::time::Duration::from_secs(
+            config.server.shutdown_force_timeout_secs,
+        ))
+        .await;
+    if !native.drained_cleanly {
+        let jobs: Vec<&str> = native
+            .residual_jobs
+            .iter()
+            .map(|job| job.label.as_str())
+            .collect();
+        tracing::warn!(
+            ?jobs,
+            "Native jobs still running at shutdown; exiting without them"
+        );
+    }
+
+    // Release the state's trace-queue sender before draining the workers —
+    // they exit when the last sender closes, and holding `state` here would
+    // stall the drain until its timeout.
+    drop(state);
+    task_handles.shutdown().await;
+
+    // Flush pending OTel spans before exit
+    if let Some(provider) = _otel_provider {
+        tracing::info!("Flushing OpenTelemetry spans...");
+        if let Err(e) = provider.shutdown() {
+            tracing::warn!(error = %e, "Error shutting down OTel tracer provider");
+        }
+    }
+
+    tracing::info!("Orion shut down cleanly");
+    Ok(())
+}
+
 /// O12: optional dedicated metrics listener. Bound *before* the main
 /// server starts, so an address clash or a permission problem is a startup
 /// failure rather than a silently missing scrape target. Its shutdown
