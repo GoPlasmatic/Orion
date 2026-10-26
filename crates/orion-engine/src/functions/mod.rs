@@ -307,7 +307,15 @@ pub mod twin {
     /// live, and the name they go by.
     fn records_path(file: &str) -> (String, std::path::PathBuf) {
         let (krate, rest) = file.rsplit_once("src/").unwrap_or(("", file));
-        let module = rest.trim_end_matches(".rs").replace('/', ".");
+        // A module's tests moved beside it — `foo_tests.rs` for `foo.rs`,
+        // `dir/tests.rs` for `dir/mod.rs` — pin the module's own records.
+        let stem = rest.trim_end_matches(".rs");
+        let stem = match (stem.strip_suffix("_tests"), stem.strip_suffix("/tests")) {
+            (Some(base), _) => base.to_string(),
+            (None, Some(dir)) => format!("{dir}/mod"),
+            (None, None) => stem.to_string(),
+        };
+        let module = stem.replace('/', ".");
         // The calling crate's own fixtures: `file` is the caller's path, as
         // the compiler wrote it (relative to the workspace root, or
         // absolute), so its records sit beside the crate that pins them.

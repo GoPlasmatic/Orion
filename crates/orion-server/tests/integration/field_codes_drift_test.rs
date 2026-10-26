@@ -48,7 +48,7 @@ fn emitted_codes() -> BTreeSet<String> {
             let path = entry.expect("dir entry").path();
             if path.is_dir() {
                 walk(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
+            } else if path.extension().is_some_and(|e| e == "rs") && !is_test_file(&path) {
                 let source = std::fs::read_to_string(&path).expect("read source file");
                 // Everything from the first `#[cfg(test)]` on is test code.
                 let production = match source.find("#[cfg(test)]") {
@@ -172,4 +172,12 @@ fn the_errors_reference_documents_the_registered_vocabulary() {
         "docs/src/reference/errors.md's field-code table and \
          orion_api::error::field_codes disagree"
     );
+}
+
+/// A test module moved beside the code it tests (`tests.rs`, `foo_tests.rs`)
+/// is test code throughout, with no `#[cfg(test)]` of its own to cut at.
+fn is_test_file(path: &std::path::Path) -> bool {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s == "tests" || s.ends_with("_tests"))
 }
