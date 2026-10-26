@@ -919,19 +919,28 @@ pub struct Assembled {
     pub task_handles: TaskHandles,
 }
 
-/// The ordered startup sequence from an open pool to a wired `AppState`:
-/// cluster runtime, repositories, channel loader, engine components, the
-/// managed-OAuth2 runtime, the first published generation, the background
-/// tasks and the plugin ticker. `main.rs` and the
-/// integration-test harness (`tests/integration/common`) both call this so a
-/// step added here reaches both — the sequence used to be spelled twice and a
-/// step added to one ran untested in the other.
+/// The ordered startup sequence from an open pool to a wired `AppState`, as
+/// five phases, each its own function so each can be run and tested alone:
+///
+/// 1. [`open_storage`]: the node's identity, the cluster runtime, the
+///    repositories and the channel loader over the open pool;
+/// 2. [`build_serving_components`]: connector registry, HTTP client, runtime
+///    handle, caches, plugin sandbox, composition and the managed-OAuth2
+///    runtime;
+/// 3. [`EngineComponents::publish_first_generation`]: generation 1, the
+///    serving registry with no workflows or channels;
+/// 4. [`start_background`]: the queues, their workers and the supervisor;
+/// 5. [`build_committed_head`]: the deployment store hydrated and its head
+///    built, after which the node reports ready.
+///
+/// `main.rs` and the integration-test harness (`tests/integration/common`)
+/// both call this, so a step added here reaches both — the sequence used to
+/// be spelled twice and a step added to one ran untested in the other.
 ///
 /// It stops at `AppState`: the caller then builds the router, spawns the
-/// state-dependent serving tasks (cluster tasks, limiter
-/// prune, `[packages] apply`) and runs the server, because those are where
-/// production and the harness diverge — the harness leaves them to the test
-/// that wants them.
+/// state-dependent serving tasks (cluster tasks, limiter prune) and runs the
+/// server, because those are where production and the harness diverge — the
+/// harness leaves them to the test that wants them.
 ///
 /// `composition` is what the node serves: Community passes
 /// [`crate::extensions::CompositionRoot::community`], an edition its own
@@ -947,107 +956,31 @@ pub async fn assemble(
         metrics_handle,
     } = params;
     crate::version::record_build(env!("GIT_HASH"), env!("BUILD_TIMESTAMP"));
-    // One identity for this node, resolved once: the cluster runtime, the
-    // node reconciler and the deployment store's receipts all
-    // read it from here. `main` resolves it into the config already; a test
-    // harness may leave it empty, which mints one.
-    let config = if config.cluster.instance_id.is_empty() {
-        let mut resolved = (*config).clone();
-        resolved.cluster.instance_id = config.cluster.effective_instance_id();
-        Arc::new(resolved)
-    } else {
-        config
-    };
 
-    // Cluster runtime: instance identity and the shared store over the state
-    // database.
-    let cluster = crate::cluster::init_cluster_runtime(&config.cluster, &pool).await?;
-    tracing::info!(
-        instance_id = %cluster.instance_id,
-        cluster_enabled = cluster.enabled,
-        "Instance identity"
-    );
+    let storage = open_storage(config, pool).await?;
+    let components = build_serving_components(&storage, composition)
+        .await?
+        .publish_first_generation(&storage.config);
+    let Background {
+        queues:
+            BackgroundQueues {
+                trace_persistence_queue,
+                trace_queue,
+                audit_queue,
+                task_handles,
+            },
+        tasks,
+        cron_status,
+    } = start_background(&storage, &components);
 
-    let repos = Repositories::new(&pool, &config.storage)?;
-
-    // Builds the channel half of every generation. Cluster mode swaps in the
-    // strict backend matrix.
-    let channel_loader = Arc::new(if config.cluster.enabled {
-        crate::channel::ChannelLoader::with_cluster((&*cluster).into())
-    } else {
-        crate::channel::ChannelLoader::new()
-    });
-
-    // Connector registry, shared HTTP client, runtime handle, cache pools and
-    // custom function handlers.
-    let components = build_engine_components(&config, &channel_loader, composition).await?;
-
-    // #268: hand the managed-OAuth2 token manager its runtime — the shared
-    // client, the encrypted state store, and (in cluster mode) the refresh
-    // lease that keeps N nodes from rotating against each other. The lease is
-    // derived from the config here, so the harness wires it the same way a
-    // cluster node does rather than passing `None` by hand.
-    components
-        .serving
-        .connector_registry
-        .oauth()
-        .init(crate::connector::oauth::OAuthRuntimeDeps {
-            http_client: components.serving.http_client.clone(),
-            repo: repos.oauth_state.clone(),
-            lease: config.cluster.enabled.then(|| {
-                Arc::new(crate::cluster::JobLeaseGate::new(
-                    cluster.repo.clone(),
-                    cluster.instance_id.clone(),
-                ))
-            }),
-        });
-
-    // Readiness flag — set once the first generation is published and the
-    // committed deployment head, if there is one, has been built.
-    let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-    // Publish the first generation through the pre-created runtime handle.
-    // Consumes `components`: the handler map goes into the engine, and what
-    // comes back is the half that backs `AppState` (F55).
-    let components = components.publish_first_generation(&config);
-
-    // One supervisor for every long-lived background task, so `/health` and
-    // `/readyz` can report their liveness; the scheduler's own status is
-    // shared too, for what its liveness does not say.
-    let tasks = Arc::new(crate::runtime::TaskRegistry::new());
-    let cron_status = Arc::new(crate::cron::CronStatus::new());
-    let BackgroundQueues {
-        trace_persistence_queue,
-        trace_queue,
-        audit_queue,
-        task_handles,
-    } = start_background_tasks(
-        &config,
-        &tasks,
-        components.runtime.clone(),
-        &repos,
-        &cluster,
-        CronComponents {
-            exprs: components.exprs.clone(),
-            vars: components.vars.clone(),
-            status: cron_status.clone(),
-        },
-    );
-
-    // The plugin epoch ticker: the clock every plugin deadline is measured in,
-    // supervised as `Required` so a dead ticker degrades `/readyz` rather than
-    // silently disabling every deadline. Only when the sandbox exists.
-    if let Some(sandbox) = &components.plugins {
-        crate::plugin::ticker::start(&tasks, sandbox.clone());
-    }
-
-    // Initial active-workflows gauge. After the recorder is installed (the
-    // caller did that before `assemble`), or the write lands nowhere. The
-    // head build below moves it.
-    crate::metrics::set_active_workflows(0.0);
-
+    let Storage {
+        config,
+        pool,
+        cluster,
+        repos,
+        channel_loader,
+    } = storage;
     let rate_limit_state = build_rate_limit_state(&config);
-
     let state = build_app_state(AppStateParams {
         config,
         pool,
@@ -1059,33 +992,178 @@ pub async fn assemble(
         audit_queue,
         rate_limit_state,
         metrics_handle,
-        ready: ready.clone(),
+        // Set once the committed head, if there is one, has been built.
+        ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         cluster,
         tasks,
         cron_status,
     });
 
-    // Hydrate the v2 deployment store from the state database, so committed
-    // revisions and the head survive a restart, then build the head. Either
-    // failing stops the boot: a node that cannot read or build what is
-    // committed must not report ready while serving something else.
+    build_committed_head(&state).await?;
+    state
+        .ready
+        .store(true, std::sync::atomic::Ordering::Release);
+    crate::cluster::start_v2_reconciler(&state);
+    crate::runtime::deployment_gc::start(&state);
+
+    Ok(Assembled {
+        state,
+        task_handles,
+    })
+}
+
+/// What [`open_storage`] builds over the open pool: everything later phases
+/// share that is not yet a serving component.
+pub struct Storage {
+    /// The config, with `cluster.instance_id` resolved.
+    pub config: Arc<config::AppConfig>,
+    pub pool: crate::storage::DbPool,
+    pub cluster: Arc<crate::cluster::ClusterRuntime>,
+    pub repos: Repositories,
+    /// Builds the channel half of every generation.
+    pub channel_loader: Arc<crate::channel::ChannelLoader>,
+}
+
+/// Boot phase 1: the node's identity, the cluster runtime over the state
+/// database, the repositories and the channel loader.
+///
+/// One identity for this node, resolved once: the cluster runtime, the node
+/// reconciler and the deployment store's receipts all read it from here.
+/// `main` resolves it into the config already; a test harness may leave it
+/// empty, which mints one.
+pub async fn open_storage(
+    config: Arc<config::AppConfig>,
+    pool: crate::storage::DbPool,
+) -> Result<Storage, Box<dyn std::error::Error>> {
+    let config = if config.cluster.instance_id.is_empty() {
+        let mut resolved = (*config).clone();
+        resolved.cluster.instance_id = config.cluster.effective_instance_id();
+        Arc::new(resolved)
+    } else {
+        config
+    };
+
+    let cluster = crate::cluster::init_cluster_runtime(&config.cluster, &pool).await?;
+    tracing::info!(
+        instance_id = %cluster.instance_id,
+        cluster_enabled = cluster.enabled,
+        "Instance identity"
+    );
+
+    let repos = Repositories::new(&pool, &config.storage)?;
+
+    // Cluster mode swaps in the strict backend matrix.
+    let channel_loader = Arc::new(if config.cluster.enabled {
+        crate::channel::ChannelLoader::with_cluster((&*cluster).into())
+    } else {
+        crate::channel::ChannelLoader::new()
+    });
+
+    Ok(Storage {
+        config,
+        pool,
+        cluster,
+        repos,
+        channel_loader,
+    })
+}
+
+/// Boot phase 2: the serving components ([`build_engine_components`]), then
+/// the managed-OAuth2 token manager's runtime (#268) — the shared client, the
+/// encrypted state store, and in cluster mode the refresh lease that keeps N
+/// nodes from rotating against each other. The lease is derived from the
+/// config here, so the harness wires it the same way a cluster node does.
+pub async fn build_serving_components(
+    storage: &Storage,
+    composition: crate::extensions::CompositionBuilder,
+) -> Result<EngineComponents, Box<dyn std::error::Error>> {
+    let config = &storage.config;
+    let components = build_engine_components(config, &storage.channel_loader, composition).await?;
+    components
+        .serving
+        .connector_registry
+        .oauth()
+        .init(crate::connector::oauth::OAuthRuntimeDeps {
+            http_client: components.serving.http_client.clone(),
+            repo: storage.repos.oauth_state.clone(),
+            lease: config.cluster.enabled.then(|| {
+                Arc::new(crate::cluster::JobLeaseGate::new(
+                    storage.cluster.repo.clone(),
+                    storage.cluster.instance_id.clone(),
+                ))
+            }),
+        });
+    Ok(components)
+}
+
+/// What [`start_background`] started: the queues `AppState` holds, the
+/// supervisor every long-lived task registered with (so `/health` and
+/// `/readyz` can report their liveness), and the scheduler's own status.
+pub struct Background {
+    pub queues: BackgroundQueues,
+    pub tasks: Arc<crate::runtime::TaskRegistry>,
+    pub cron_status: Arc<crate::cron::CronStatus>,
+}
+
+/// Boot phase 4: the background queues and their workers
+/// ([`start_background_tasks`]), and the plugin epoch ticker — the clock every
+/// plugin deadline is measured in, supervised as `Required` so a dead ticker
+/// degrades `/readyz` rather than silently disabling every deadline. Runs
+/// after the first generation is published, which the workers read.
+pub fn start_background(storage: &Storage, components: &ServingComponents) -> Background {
+    let tasks = Arc::new(crate::runtime::TaskRegistry::new());
+    let cron_status = Arc::new(crate::cron::CronStatus::new());
+    let queues = start_background_tasks(
+        &storage.config,
+        &tasks,
+        components.runtime.clone(),
+        &storage.repos,
+        &storage.cluster,
+        CronComponents {
+            exprs: components.exprs.clone(),
+            vars: components.vars.clone(),
+            status: cron_status.clone(),
+        },
+    );
+    if let Some(sandbox) = &components.plugins {
+        crate::plugin::ticker::start(&tasks, sandbox.clone());
+    }
+    // The initial active-workflows gauge. After the recorder is installed
+    // (the caller did that before `assemble`), or the write lands nowhere;
+    // the head build moves it.
+    crate::metrics::set_active_workflows(0.0);
+    Background {
+        queues,
+        tasks,
+        cron_status,
+    }
+}
+
+/// Boot phase 5: hydrate the v2 deployment store from the state database, so
+/// committed revisions and the head survive a restart, then build the head
+/// and record this node's status. Reading or building what is committed
+/// failing stops the boot: a node that cannot must not report ready while
+/// serving something else.
+pub async fn build_committed_head(
+    state: &crate::runtime::state::AppState,
+) -> Result<(), Box<dyn std::error::Error>> {
     state
         .deployments
         .load_from_db_pool(&state.db_pool)
         .await
         .map_err(|e| format!("reading the committed deployments failed: {e}"))?;
-    crate::cluster::reconcile::sync_v2_revocations(&state);
-    crate::runtime::workflow_providers::sync(&state).await;
+    crate::cluster::reconcile::sync_v2_revocations(state);
+    crate::runtime::workflow_providers::sync(state).await;
     let (head_rev, _) = state.deployments.current_head();
     if head_rev > 0 {
-        crate::runtime::reconcile_deployment_revision(&state, head_rev)
+        crate::runtime::reconcile_deployment_revision(state, head_rev)
             .await
             .map_err(|e| format!("deployment revision {head_rev} could not be built: {e}"))?;
     }
-    // F16: a connection that fails to load is absent from the
-    // registry, so the failure surfaces as a 500 on the first request that
-    // needs it — possibly hours after the boot that caused it. Operators who
-    // would rather have the rollout fail at boot opt in here.
+    // F16: a connection that fails to load is absent from the registry, so
+    // the failure surfaces as a 500 on the first request that needs it —
+    // possibly hours after the boot that caused it. Operators who would
+    // rather have the rollout fail at boot opt in here.
     let connector_issues = state.connector_registry.load_issues().await;
     if !connector_issues.is_empty() && state.config.engine.fail_on_connector_load_error {
         let detail = connector_issues
@@ -1118,14 +1196,7 @@ pub async fn assemble(
     {
         tracing::warn!(error = %e, "could not record this node's deployment status");
     }
-    ready.store(true, std::sync::atomic::Ordering::Release);
-    crate::cluster::start_v2_reconciler(&state);
-    crate::runtime::deployment_gc::start(&state);
-
-    Ok(Assembled {
-        state,
-        task_handles,
-    })
+    Ok(())
 }
 
 /// Assemble `AppState` from the bootstrap products — the single place the

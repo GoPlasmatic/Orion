@@ -20,6 +20,7 @@ mod async_traces_test;
 mod audit_actions_drift_test;
 mod audit_log_test;
 mod backup_test;
+mod boot_phases_test;
 mod channel_auth_test;
 mod channel_body_mode_test;
 mod channel_call_test;
