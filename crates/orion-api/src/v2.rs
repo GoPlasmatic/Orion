@@ -2,9 +2,10 @@
 //!
 //! Versioned request and response DTOs shared by `orion-server` and `orion-cli` for `/api/v2/admin/*` endpoints:
 //! - Runtime capabilities & edition discovery (`/runtime-capabilities`)
-//! - Connector package inventory, upload, admission & revocation (`/connector-packages`)
-//! - Connection revisions & health probes (`/connections`)
-//! - Candidate deployment planning, CAS apply, convergence & rollback (`/deployments`)
+//! - Connector packages, their admission and revocations (`/connector-packages`)
+//! - Connection revisions and their probes (`/connections/{id}/revisions`)
+//! - Candidate deployment plans (`/deployment-plans`), and deployments — an
+//!   apply or a rollback, both under CAS — with their convergence (`/deployments`)
 //! - Enterprise-to-Community edition transition preflight (`/edition-transition-preflight`)
 //! - Provider package authoring scaffold, lint & pack (`/authoring/*`)
 
@@ -87,7 +88,7 @@ pub struct ConnectorPackageSummary {
     pub inventory: Value,
 }
 
-/// Provider package admission record (`POST /api/v2/admin/connector-packages/{digest}/admit`).
+/// Provider package admission record (`PUT /api/v2/admin/connector-packages/{digest}/admission`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ProviderAdmissionDto {
@@ -111,6 +112,19 @@ pub struct ConnectorPackagesListResponse {
     pub packages: Vec<ConnectorPackageSummary>,
     #[serde(default)]
     pub admissions: Vec<ProviderAdmissionDto>,
+}
+
+/// One connector provider package and its admission record
+/// (`GET /api/v2/admin/connector-packages/{digest}`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct ConnectorPackageResponse {
+    #[serde(default)]
+    pub package: ConnectorPackageSummary,
+    /// The admission recorded for the package; absent while it was never
+    /// admitted.
+    #[serde(default)]
+    pub admission: Option<ProviderAdmissionDto>,
 }
 
 /// Request body for uploading, linting, or packing a provider package (`POST /api/v2/admin/connector-packages`, `/authoring/lint`, `/authoring/pack`).
@@ -154,7 +168,7 @@ pub struct UploadPackageResponse {
     pub admission: Option<ProviderAdmissionDto>,
 }
 
-/// Request body for admitting an uploaded provider package (`POST /api/v2/admin/connector-packages/{digest}/admit`).
+/// Request body for admitting an uploaded provider package (`PUT /api/v2/admin/connector-packages/{digest}/admission`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct AdmitPackageRequest {
@@ -162,7 +176,7 @@ pub struct AdmitPackageRequest {
     pub lock: Option<Value>,
 }
 
-/// Response from admitting a provider package (`POST /api/v2/admin/connector-packages/{digest}/admit`).
+/// Response from admitting a provider package (`PUT /api/v2/admin/connector-packages/{digest}/admission`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct AdmitPackageResponse {
@@ -172,7 +186,7 @@ pub struct AdmitPackageResponse {
     pub admission: ProviderAdmissionDto,
 }
 
-/// Request body for revoking an admitted provider package (`POST /api/v2/admin/connector-packages/{digest}/revoke`).
+/// Request body for revoking an admitted provider package (`POST /api/v2/admin/connector-packages/{digest}/revocations`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RevokePackageRequest {
@@ -180,7 +194,7 @@ pub struct RevokePackageRequest {
     pub reason: Option<String>,
 }
 
-/// Response from revoking a provider package (`POST /api/v2/admin/connector-packages/{digest}/revoke`).
+/// Response from revoking a provider package (`POST /api/v2/admin/connector-packages/{digest}/revocations`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RevokePackageResponse {
@@ -194,7 +208,7 @@ pub struct RevokePackageResponse {
     pub reason: Option<String>,
 }
 
-/// Summary of an immutable connection revision (`GET /api/v2/admin/connections`).
+/// An immutable connection revision (`GET /api/v2/admin/connections/{id}/revisions/{revision}`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ConnectionRevisionResponse {
@@ -223,7 +237,7 @@ pub struct ConnectionRevisionResponse {
     pub configuration_digest: String,
 }
 
-/// Response listing connection revisions (`GET /api/v2/admin/connections`).
+/// Response listing connection revisions (`GET /api/v2/admin/connections`, `GET /api/v2/admin/connections/{id}/revisions`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ConnectionsListResponse {
@@ -233,12 +247,16 @@ pub struct ConnectionsListResponse {
     pub connections: Vec<ConnectionRevisionResponse>,
 }
 
-/// Request body to create an immutable connection revision (`POST /api/v2/admin/connections`).
+/// Request body to create an immutable connection revision
+/// (`POST /api/v2/admin/connections/{id}/revisions`). The connection is the
+/// one the path names.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct CreateConnectionRevisionRequest {
-    pub connection_id: String,
+    /// The revision to create: one past the highest stored, for a change.
+    /// Creating a revision that is stored with the same content answers it
+    /// again; with different content, `IMMUTABLE_CONNECTION_CONFLICT`.
     pub revision: u64,
     pub provider_digest: String,
     /// The connection's settings. Never a secret: a credential-shaped key or
@@ -259,7 +277,7 @@ pub struct CreateConnectionRevisionRequest {
     pub bindings: BTreeMap<String, String>,
 }
 
-/// Response from creating an immutable connection revision (`POST /api/v2/admin/connections`).
+/// Response from creating an immutable connection revision (`POST /api/v2/admin/connections/{id}/revisions`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct CreateConnectionRevisionResponse {
@@ -269,19 +287,9 @@ pub struct CreateConnectionRevisionResponse {
     pub connection: ConnectionRevisionResponse,
 }
 
-/// Request body for probing a connection revision (`POST /api/v2/admin/connections/{id}/probe`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct ProbeConnectionRequest {
-    #[serde(default)]
-    pub revision: Option<u64>,
-    #[serde(default)]
-    pub driver_id: Option<String>,
-    #[serde(default)]
-    pub kind: Option<String>,
-}
-
-/// Result of an explicit connection health probe (`POST /api/v2/admin/connections/{id}/probe`).
+/// One health probe of a connection revision
+/// (`POST /api/v2/admin/connections/{id}/revisions/{revision}/probes`). A probe
+/// that ran answers `200` whatever it found: `healthy` is the finding.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ConnectionProbeResponse {
@@ -304,52 +312,175 @@ pub struct ConnectionProbeResponse {
 /// Request body for planning a candidate deployment (`POST /api/v2/admin/deployment-plans`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
 pub struct CreateDeploymentPlanRequest {
+    /// The head the candidate is planned on: `0` before the first apply.
     pub base_revision: u64,
     #[serde(alias = "candidate_manifest")]
     pub manifest: Value,
-    #[serde(default)]
-    pub reason: Option<String>,
 }
 
-/// Candidate deployment plan with reviewed digest and sanitized diff (`POST /api/v2/admin/deployment-plans`).
+/// A deployment member by identity, as a plan names it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct DeploymentEntityRef {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub revision: u64,
+}
+
+/// A member the base deploys at one revision and the candidate at another.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct DeploymentEntityUpdate {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub from_revision: u64,
+    #[serde(default)]
+    pub to_revision: u64,
+}
+
+/// A candidate deployment, checked against its base
+/// (`POST /api/v2/admin/deployment-plans`). Nothing is stored: the plan is a
+/// function of the request and the store, and `reviewed_manifest_digest` is
+/// what an apply must name to commit exactly this candidate.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DeploymentPlanResponse {
     #[serde(default)]
     pub base_revision: u64,
-    #[serde(default)]
-    pub candidate_digest: String,
+    /// The candidate's canonical manifest digest. An apply names it as its
+    /// `reviewed_manifest_digest`.
     #[serde(default)]
     pub reviewed_manifest_digest: String,
+    /// Members the base does not deploy at all.
     #[serde(default)]
-    pub request_hash: String,
+    pub added_entities: Vec<DeploymentEntityRef>,
+    /// Members the base deploys at another revision.
     #[serde(default)]
-    pub added_entities: Vec<Value>,
+    pub updated_entities: Vec<DeploymentEntityUpdate>,
+    /// Members the base deploys and the candidate drops: they stop serving.
     #[serde(default)]
-    pub updated_entities: Vec<String>,
-    #[serde(default)]
-    pub removed_entities: Vec<Value>,
-    #[serde(default)]
-    pub external_effect_warnings: Vec<String>,
-    #[serde(default)]
-    pub findings: Vec<Value>,
+    pub removed_entities: Vec<DeploymentEntityRef>,
 }
 
-/// Request body to atomically apply a candidate deployment (`POST /api/v2/admin/deployments`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Request body for `POST /api/v2/admin/deployments`: commit the next
+/// revision on top of `base_revision`, under compare-and-swap and an
+/// idempotency key. Either a reviewed manifest (an apply) or an earlier
+/// revision to deploy again (a rollback, `rollback_to`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(untagged, try_from = "RawCreateDeployment")]
+pub enum CreateDeploymentRequest {
+    Apply(ApplyDeploymentRequest),
+    Rollback(RollbackDeploymentRequest),
+}
+
+/// Commit a reviewed candidate manifest.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
 pub struct ApplyDeploymentRequest {
     pub idempotency_key: String,
+    /// The head the candidate was planned on; anything else is
+    /// `DEPLOYMENT_HEAD_CONFLICT`.
     pub base_revision: u64,
-    #[serde(alias = "candidate_manifest")]
     pub manifest: Value,
+    /// The audit reason the revision records.
     pub reason: String,
-    #[serde(default)]
-    pub reviewed_manifest_digest: Option<String>,
+    /// The digest `POST /deployment-plans` answered for this candidate on
+    /// this base. A candidate that plans to anything else is
+    /// `REVIEWED_DIGEST_MISMATCH`, and nothing is committed.
+    pub reviewed_manifest_digest: String,
 }
 
-/// Durable deployment apply/rollback receipt (`POST /api/v2/admin/deployments`).
+/// Commit an earlier revision's manifest again, as a new revision. It is
+/// re-checked as of now: a provider revoked since is refused.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct RollbackDeploymentRequest {
+    pub idempotency_key: String,
+    /// The current head; anything else is `DEPLOYMENT_HEAD_CONFLICT`.
+    pub base_revision: u64,
+    /// The committed revision whose manifest to deploy again.
+    pub rollback_to: u64,
+    #[serde(default = "default_rollback_reason")]
+    pub reason: String,
+}
+
+fn default_rollback_reason() -> String {
+    "rollback".to_string()
+}
+
+/// What a `POST /deployments` body is read as before it is told apart, so a
+/// body that is neither an apply nor a rollback is refused by name.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCreateDeployment {
+    idempotency_key: String,
+    base_revision: u64,
+    #[serde(default, alias = "candidate_manifest")]
+    manifest: Option<Value>,
+    #[serde(default)]
+    reviewed_manifest_digest: Option<String>,
+    #[serde(default)]
+    rollback_to: Option<u64>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+impl TryFrom<RawCreateDeployment> for CreateDeploymentRequest {
+    type Error = String;
+
+    fn try_from(raw: RawCreateDeployment) -> Result<Self, Self::Error> {
+        match (raw.manifest, raw.rollback_to) {
+            (Some(manifest), None) => {
+                let reviewed_manifest_digest = raw.reviewed_manifest_digest.ok_or(
+                    "an apply needs `reviewed_manifest_digest`: plan the manifest with \
+                     POST /deployment-plans and send the digest it answers",
+                )?;
+                let reason = raw.reason.ok_or("an apply needs a `reason`")?;
+                Ok(Self::Apply(ApplyDeploymentRequest {
+                    idempotency_key: raw.idempotency_key,
+                    base_revision: raw.base_revision,
+                    manifest,
+                    reason,
+                    reviewed_manifest_digest,
+                }))
+            }
+            (None, Some(rollback_to)) => {
+                if raw.reviewed_manifest_digest.is_some() {
+                    return Err(
+                        "a rollback names `rollback_to`, not `reviewed_manifest_digest`".into(),
+                    );
+                }
+                Ok(Self::Rollback(RollbackDeploymentRequest {
+                    idempotency_key: raw.idempotency_key,
+                    base_revision: raw.base_revision,
+                    rollback_to,
+                    reason: raw.reason.unwrap_or_else(default_rollback_reason),
+                }))
+            }
+            (Some(_), Some(_)) => Err(
+                "send either `manifest` (an apply) or `rollback_to` (a rollback), not both".into(),
+            ),
+            (None, None) => Err(
+                "send `manifest` with its `reviewed_manifest_digest` (an apply), or \
+                 `rollback_to` (a rollback)"
+                    .into(),
+            ),
+        }
+    }
+}
+
+/// The durable receipt of a committed apply or rollback (`POST /api/v2/admin/deployments`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DeploymentReceiptResponse {
@@ -393,16 +524,21 @@ pub struct ConvergenceStatusResponse {
     pub degraded_nodes: Vec<String>,
 }
 
-/// Response from applying a candidate deployment (`POST /api/v2/admin/deployments`).
+/// A committed apply or rollback (`POST /api/v2/admin/deployments`, `202`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct ApplyDeploymentResponse {
+pub struct CreateDeploymentResponse {
+    /// Always `accepted`: the revision is committed; nodes converge on it.
     #[serde(default)]
     pub status: String,
     #[serde(default)]
     pub committed_revision: u64,
     #[serde(default)]
     pub receipt: DeploymentReceiptResponse,
+    /// What committing this revision does not do — a rollback does not
+    /// reverse an external effect already made.
+    #[serde(default)]
+    pub warnings: Vec<String>,
     /// This node's convergence on the committed revision, once it tried to
     /// build it.
     #[serde(default)]
@@ -413,75 +549,63 @@ pub struct ApplyDeploymentResponse {
     pub local_error: Option<String>,
 }
 
-/// Committed deployment revision record (`GET /api/v2/admin/deployments/{revision}`).
+/// A committed deployment revision without its manifest: one row of
+/// `GET /api/v2/admin/deployments`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct DeploymentRevisionResponse {
+pub struct DeploymentRevisionSummary {
     #[serde(default)]
     pub revision: u64,
     #[serde(default)]
     pub parent_revision: Option<u64>,
     #[serde(default)]
     pub manifest_digest: String,
+    /// Members in the manifest; `0` once compacted.
     #[serde(default)]
-    pub manifest: Value,
+    pub member_count: usize,
     #[serde(default)]
     pub reason: String,
     #[serde(default)]
     pub created_by: String,
+    /// The collector dropped this revision's members: it can no longer be
+    /// rolled back to.
     #[serde(default)]
     pub members_compacted: bool,
     #[serde(default)]
     pub created_at: String,
 }
 
-/// Summary of deployment store head and committed revisions (`GET /api/v2/admin/deployments`).
+/// A committed deployment revision with its manifest
+/// (`GET /api/v2/admin/deployments/{revision}`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct DeploymentsSummaryResponse {
+pub struct DeploymentRevisionResponse {
+    #[serde(flatten)]
+    pub summary: DeploymentRevisionSummary,
+    #[serde(default)]
+    pub manifest: Value,
+}
+
+/// One page of committed revisions, newest first, with the head they were
+/// read against (`GET /api/v2/admin/deployments`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct DeploymentsPage {
     #[serde(default)]
     pub head_revision: u64,
     #[serde(default)]
     pub epoch: u64,
+    /// The revision this node serves.
     #[serde(default)]
     pub applied_revision: u64,
     #[serde(default)]
-    pub revisions: Vec<DeploymentRevisionResponse>,
-}
-
-fn default_rollback_reason() -> String {
-    "rollback".to_string()
-}
-
-/// Request body to roll back to a prior deployment revision (`POST /api/v2/admin/deployments/rollback`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct RollbackDeploymentRequest {
-    pub idempotency_key: String,
-    pub expected_head_revision: u64,
-    pub target_revision: u64,
-    #[serde(default = "default_rollback_reason")]
-    pub reason: String,
-}
-
-/// Response from rolling back to a prior deployment revision (`POST /api/v2/admin/deployments/rollback`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct RollbackDeploymentResponse {
+    pub data: Vec<DeploymentRevisionSummary>,
     #[serde(default)]
-    pub status: String,
-    #[serde(default)]
-    pub committed_revision: u64,
-    #[serde(default)]
-    pub receipt: DeploymentReceiptResponse,
-    #[serde(default, alias = "external_effect_warnings")]
-    pub warnings: Vec<String>,
-    /// This node's convergence on the new revision, once it tried to build it.
-    #[serde(default)]
-    pub evaluation: Option<ConvergenceStatusResponse>,
-    /// Why this node could not build the new revision, when it could not.
+    pub limit: u64,
+    /// Pass back as `?cursor=` for the next, older page; absent on the last.
+    /// Opaque: do not parse it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub local_error: Option<String>,
+    pub next_cursor: Option<String>,
 }
 
 fn default_scaffold_version() -> String {
@@ -758,6 +882,28 @@ pub struct TestDefinitionRequest {
     pub metadata: Value,
 }
 
+/// One run of a workflow definition (`POST /api/v2/admin/definitions/test`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct TestDefinitionResponse {
+    /// Whether the workflow's condition matched the supplied input.
+    #[serde(default)]
+    pub matched: bool,
+    /// The run's trace: the context it started from (`initial`), then each
+    /// step with its `task_id`, `result` (`executed` | `skipped` | `failed`)
+    /// and the changes it made.
+    #[serde(default)]
+    pub trace: Value,
+    /// The message data after the pipeline ran.
+    #[serde(default)]
+    pub output: Value,
+    #[serde(default)]
+    pub errors: Vec<Value>,
+    /// Why the run stopped short, when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 // ============================================================
 // Compiled deployments: what `orion-server compile --format deployment`
 // writes and `orion-cli deployments apply -d` reads
@@ -807,8 +953,8 @@ pub struct CompiledRequirement {
 
 /// `connections/<id>.json` of a compiled deployment directory: a connection
 /// over a built-in driver, without a revision. Its fields are those of a
-/// [`CreateConnectionRevisionRequest`], plus the driver the provider digest
-/// names.
+/// [`CreateConnectionRevisionRequest`] for the connection it names, plus the
+/// driver the provider digest names.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompiledConnection {
     #[serde(default)]
@@ -841,6 +987,40 @@ mod tests {
             serde_json::from_str(r#"{"committed_revision": 3}"#).expect("partial decode");
         assert_eq!(receipt.committed_revision, 3);
         assert!(!receipt.replayed);
+    }
+
+    /// A `POST /deployments` body is an apply or a rollback, never both, and
+    /// an apply always names the digest it reviewed.
+    #[test]
+    fn a_deployment_request_is_an_apply_or_a_rollback() {
+        let apply: CreateDeploymentRequest = serde_json::from_str(
+            r#"{"idempotency_key":"k","base_revision":1,"manifest":{},"reason":"r",
+                "reviewed_manifest_digest":"sha256:x"}"#,
+        )
+        .expect("apply");
+        assert!(matches!(apply, CreateDeploymentRequest::Apply(ref a) if a.base_revision == 1));
+        let rollback: CreateDeploymentRequest =
+            serde_json::from_str(r#"{"idempotency_key":"k","base_revision":3,"rollback_to":1}"#)
+                .expect("rollback");
+        assert!(matches!(
+            rollback,
+            CreateDeploymentRequest::Rollback(ref r) if r.rollback_to == 1 && r.reason == "rollback"
+        ));
+        for refused in [
+            r#"{"idempotency_key":"k","base_revision":1,"manifest":{},"reason":"r"}"#,
+            r#"{"idempotency_key":"k","base_revision":1}"#,
+            r#"{"idempotency_key":"k","base_revision":1,"manifest":{},"rollback_to":1,"reason":"r","reviewed_manifest_digest":"d"}"#,
+            r#"{"idempotency_key":"k","base_revision":1,"rollback_to":1,"surprise":true}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<CreateDeploymentRequest>(refused).is_err(),
+                "{refused}"
+            );
+        }
+        // Serialized, each variant is its own fields: what the server reads.
+        let wire = serde_json::to_value(&rollback).expect("serialize");
+        assert_eq!(wire["rollback_to"], 1);
+        assert!(wire.get("Rollback").is_none());
     }
 
     #[test]

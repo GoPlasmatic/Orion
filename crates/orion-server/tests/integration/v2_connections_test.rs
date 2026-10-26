@@ -44,9 +44,8 @@ async fn create(
     send(
         app,
         "POST",
-        CONNECTIONS,
+        &format!("{CONNECTIONS}/{id}/revisions"),
         Some(json!({
-            "connection_id": id,
             "revision": 1,
             "provider_digest": provider,
             "public_config": public_config,
@@ -241,8 +240,16 @@ async fn a_package_connection_must_satisfy_its_configuration_schema() {
     assert_eq!(status, StatusCode::CREATED, "{body}");
 }
 
+/// Probe revision 1 of `id`. A probe that ran answers `200` whatever it
+/// found; `healthy` is the finding.
 async fn probe(app: &Router, id: &str) -> (StatusCode, Value) {
-    send(app, "POST", &format!("{CONNECTIONS}/{id}/probe"), None).await
+    send(
+        app,
+        "POST",
+        &format!("{CONNECTIONS}/{id}/revisions/1/probes"),
+        None,
+    )
+    .await
 }
 
 /// A built-in-driver connection's probe connects: `SELECT 1` through the
@@ -280,7 +287,7 @@ async fn a_built_in_connection_probe_connects() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let (status, body) = probe(&app, "missing").await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["healthy"], false, "{body}");
     assert_eq!(body["details"]["probe"], "SELECT 1", "{body}");
 
@@ -330,7 +337,8 @@ async fn a_built_in_connection_probe_connects() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let (status, body) = probe(&app, "peer-strict").await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["healthy"], false, "{body}");
     assert!(
         body["details"]["error"]
             .as_str()
@@ -350,7 +358,8 @@ async fn a_built_in_connection_probe_connects() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let (status, body) = probe(&app, "orders").await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["healthy"], false, "{body}");
     assert!(
         body["details"]["error"]
             .as_str()
@@ -366,6 +375,50 @@ async fn a_built_in_connection_probe_connects() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Only a stored revision is probed, and only through the provider it
+    // names: nothing in the request chooses another.
+    let (status, body) = send(
+        &app,
+        "POST",
+        &format!("{CONNECTIONS}/numbers/revisions/2/probes"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(
+        body["error"]["code"], "CONNECTION_REVISION_NOT_FOUND",
+        "{body}"
+    );
+    let (status, body) = send(
+        &app,
+        "POST",
+        &format!("{CONNECTIONS}/numbers/revisions/1/probes"),
+        Some(json!({"kind": "rust", "driver_id": "org.orion.http"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "a body is not read: {body}");
+    assert_eq!(body["driver_id"], DRIVER_SQLITE, "{body}");
+
+    // A revision reads back, alone and in its connection's list.
+    let (status, body) = send(
+        &app,
+        "GET",
+        &format!("{CONNECTIONS}/numbers/revisions/1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["connection_id"], "numbers", "{body}");
+    let (status, body) = send(
+        &app,
+        "GET",
+        &format!("{CONNECTIONS}/numbers/revisions"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["count"], 1, "{body}");
 }
 
 /// A provider that answers what it was sent, so a test can tell whether a
@@ -460,30 +513,36 @@ async fn connector_call_input_must_satisfy_the_declared_input_schema() {
         &app,
         "POST",
         "/api/v2/admin/deployments",
-        Some(json!({
-            "idempotency_key": "lookup-1",
-            "base_revision": 0,
-            "manifest": {
-                "schema_version": 2,
-                "providers": [{
-                    "publisher": package["publisher"],
-                    "provider_id": package["provider_id"],
-                    "version": package["version"],
-                    "digest": digest,
-                }],
-                "members": [
-                    {"entity": {"kind": "channel", "id": "lookup", "revision": 1},
-                     "definition_digest": channel,
-                     "requires": [{"kind": "workflow", "id": "lookup-wf", "revision": 1}]},
-                    {"entity": {"kind": "workflow", "id": "lookup-wf", "revision": 1},
-                     "definition_digest": workflow,
-                     "requires": [{"kind": "connection", "id": "crm", "revision": 1}]},
-                    {"entity": {"kind": "connection", "id": "crm", "revision": 1},
-                     "definition_digest": connection},
-                ]
-            },
-            "reason": "deploy lookup",
-        })),
+        Some(
+            crate::common::deploy::reviewed(
+                &app,
+                json!({
+                    "idempotency_key": "lookup-1",
+                    "base_revision": 0,
+                    "manifest": {
+                        "schema_version": 2,
+                        "providers": [{
+                            "publisher": package["publisher"],
+                            "provider_id": package["provider_id"],
+                            "version": package["version"],
+                            "digest": digest,
+                        }],
+                        "members": [
+                            {"entity": {"kind": "channel", "id": "lookup", "revision": 1},
+                             "definition_digest": channel,
+                             "requires": [{"kind": "workflow", "id": "lookup-wf", "revision": 1}]},
+                            {"entity": {"kind": "workflow", "id": "lookup-wf", "revision": 1},
+                             "definition_digest": workflow,
+                             "requires": [{"kind": "connection", "id": "crm", "revision": 1}]},
+                            {"entity": {"kind": "connection", "id": "crm", "revision": 1},
+                             "definition_digest": connection},
+                        ]
+                    },
+                    "reason": "deploy lookup",
+                }),
+            )
+            .await,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{applied}");

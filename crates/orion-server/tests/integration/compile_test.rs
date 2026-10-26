@@ -875,11 +875,12 @@ async fn an_oauth2_connection_compiles_and_creates() {
     let app = crate::common::test_app().await;
     let obj = crm.as_object_mut().unwrap();
     obj.remove("driver");
+    obj.remove("connection_id");
     obj.insert("revision".into(), serde_json::json!(1));
     let resp = app
         .oneshot(crate::common::json_request(
             "POST",
-            "/api/v2/admin/connections",
+            "/api/v2/admin/connections/crm/revisions",
             Some(crm),
         ))
         .await
@@ -921,11 +922,11 @@ async fn a_compiled_deployment_uploads_to_its_own_digests_and_plans() {
     assert!(ok, "{report}");
 
     let app = crate::common::test_app().await;
-    let send = |method: &'static str, uri: &'static str, body: serde_json::Value| {
+    let send = |method: &'static str, uri: String, body: serde_json::Value| {
         let app = app.clone();
         async move {
             let resp = app
-                .oneshot(crate::common::json_request(method, uri, Some(body)))
+                .oneshot(crate::common::json_request(method, &uri, Some(body)))
                 .await
                 .unwrap();
             let status = resp.status();
@@ -947,8 +948,14 @@ async fn a_compiled_deployment_uploads_to_its_own_digests_and_plans() {
             let mut connection = read_json(&out.join(format!("connections/{id}.json")));
             let obj = connection.as_object_mut().unwrap();
             obj.remove("driver");
+            obj.remove("connection_id");
             obj.insert("revision".into(), serde_json::json!(1));
-            let (status, body) = send("POST", "/api/v2/admin/connections", connection).await;
+            let (status, body) = send(
+                "POST",
+                format!("/api/v2/admin/connections/{id}/revisions"),
+                connection,
+            )
+            .await;
             assert_eq!(status, 201, "{id}: {body}");
             body["connection"]["configuration_digest"]
                 .as_str()
@@ -960,7 +967,8 @@ async fn a_compiled_deployment_uploads_to_its_own_digests_and_plans() {
                 "definitions/{}.json",
                 named.trim_start_matches("sha256:")
             ));
-            let (status, body) = send("POST", "/api/v2/admin/definitions", read_json(&file)).await;
+            let (status, body) =
+                send("POST", "/api/v2/admin/definitions".into(), read_json(&file)).await;
             assert_eq!(status, 201, "{id}: {body}");
             assert_eq!(
                 body["digest"], named,
@@ -976,7 +984,7 @@ async fn a_compiled_deployment_uploads_to_its_own_digests_and_plans() {
     }
     let (status, plan) = send(
         "POST",
-        "/api/v2/admin/deployment-plans",
+        "/api/v2/admin/deployment-plans".into(),
         serde_json::json!({"base_revision": 0, "manifest": {
             "schema_version": 2, "providers": [], "members": members}}),
     )

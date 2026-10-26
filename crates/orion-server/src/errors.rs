@@ -459,25 +459,6 @@ impl OrionError {
     }
 }
 
-/// Build the canonical `{"error": {"code": ..., "message": ..., "request_id": ...}}`
-/// JSON envelope (`SIMP-03`) so v2 admin handlers and custom status responses
-/// share the exact wire envelope structure and `request_id` propagation as
-/// [`OrionError::into_response`].
-pub fn error_envelope_json(
-    code: impl Into<String>,
-    message: impl Into<String>,
-) -> serde_json::Value {
-    let envelope = ErrorEnvelope {
-        error: ErrorBody {
-            code: code.into(),
-            message: message.into(),
-            details: Vec::new(),
-            request_id: crate::request_context::request_id(),
-        },
-    };
-    serde_json::to_value(envelope).unwrap_or_else(|_| serde_json::Value::Null)
-}
-
 impl IntoResponse for OrionError {
     fn into_response(self) -> Response {
         // Pull the validation details out before consuming `self` in the match,

@@ -184,7 +184,7 @@ Name them anything, with one restriction. Orion refuses to start on an `ORION_*`
 | A workflow naming an undeclared `{"secret": …}` | The engine refuses the workflow, and the channel is **quarantined** rather than served with the key resolving to `null`. |
 | A reserved scheme | Refused wherever it is resolved, so an unresolvable reference never reaches the remote system as its own text. |
 
-Creating a connection revision does **not** resolve its references. `POST /api/v2/admin/connections` checks the config's shape, not this host's environment. A connection created from a laptop is accepted there and reveals the missing variable at load. `lint` and `compile` do not resolve references either, for the same reason. A CI runner holds no production secrets and must still be able to check a set. Neither `/health` line is a 503. Both are the degraded-but-serving state described in [Troubleshooting](../operate/maintain/troubleshooting.md#health-says-degraded-but-returns-http-200).
+Creating a connection revision does **not** resolve its references. `POST /api/v2/admin/connections/{id}/revisions` checks the config's shape, not this host's environment. A connection created from a laptop is accepted there and reveals the missing variable at load. `lint` and `compile` do not resolve references either, for the same reason. A CI runner holds no production secrets and must still be able to check a set. Neither `/health` line is a 503. Both are the degraded-but-serving state described in [Troubleshooting](../operate/maintain/troubleshooting.md#health-says-degraded-but-returns-http-200).
 
 ## Inventory what a set needs
 

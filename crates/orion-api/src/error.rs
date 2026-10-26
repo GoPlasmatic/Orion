@@ -109,6 +109,257 @@ pub mod field_codes {
     ];
 }
 
+/// How a v2 admin refusal is answered: the HTTP status class of a [`V2Code`].
+///
+/// Every code in the registry has exactly one kind, so a client can branch on
+/// the kind without knowing every code, and the server maps a refusal to its
+/// status from the kind alone — never from the code's spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ErrorKind {
+    /// `400`: the request itself is refused.
+    Invalid,
+    /// `403`: a provider that is not admitted, or no longer is, or an
+    /// admission policy that refuses it.
+    Forbidden,
+    /// `404`: a package, admission, revision or connection that is not stored.
+    NotFound,
+    /// `409`: an immutable row stored differently, a reused idempotency key,
+    /// a head another writer moved first, or a reviewed digest that no longer
+    /// matches.
+    Conflict,
+    /// `503`: the state database could not be read or written.
+    Unavailable,
+    /// `500`: a fault on the server's side — a stored row it cannot read
+    /// back, a value it could not serialize. Never the caller's input.
+    Internal,
+}
+
+impl ErrorKind {
+    /// The HTTP status this kind is answered with.
+    pub const fn status(self) -> u16 {
+        match self {
+            Self::Invalid => 400,
+            Self::Forbidden => 403,
+            Self::NotFound => 404,
+            Self::Conflict => 409,
+            Self::Unavailable => 503,
+            Self::Internal => 500,
+        }
+    }
+}
+
+macro_rules! v2_codes {
+    ($( $(#[$meta:meta])* $variant:ident = $code:literal => $kind:ident, )*) => {
+        /// The closed vocabulary of `error.code` on the v2 admin API's own
+        /// refusals — packages, connections, plans and deployments.
+        ///
+        /// The general codes in [`codes`] (`VALIDATION_ERROR` with field
+        /// details, `NOT_FOUND`, `UNAUTHORIZED`, …) still answer what every
+        /// endpoint shares: a body that does not parse, a missing key, a
+        /// definition that would not serve. These are the rest, one per
+        /// refusal a client can act on, each with the [`ErrorKind`] that
+        /// decides its status. `v2_error_codes_drift_test` in orion-server
+        /// keeps this list, what the server raises and
+        /// `docs/src/reference/errors.md` in agreement.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum V2Code {
+            $( $(#[$meta])* $variant, )*
+        }
+
+        impl V2Code {
+            /// Every code, in registry order.
+            pub const ALL: &'static [V2Code] = &[ $( V2Code::$variant, )* ];
+
+            /// The wire spelling.
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $( Self::$variant => $code, )*
+                }
+            }
+
+            /// The kind that decides the HTTP status.
+            pub const fn kind(self) -> ErrorKind {
+                match self {
+                    $( Self::$variant => ErrorKind::$kind, )*
+                }
+            }
+
+            /// The code `code` spells, when it is a registered one.
+            pub fn parse(code: &str) -> Option<Self> {
+                match code {
+                    $( $code => Some(Self::$variant), )*
+                    _ => None,
+                }
+            }
+        }
+
+        impl std::fmt::Display for V2Code {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+    };
+}
+
+v2_codes! {
+    // -- Not found --
+    PackageNotFound = "PACKAGE_NOT_FOUND" => NotFound,
+    AdmissionNotFound = "ADMISSION_NOT_FOUND" => NotFound,
+    BaseRevisionNotFound = "BASE_REVISION_NOT_FOUND" => NotFound,
+    RollbackTargetNotFound = "ROLLBACK_TARGET_NOT_FOUND" => NotFound,
+    ConnectionRevisionNotFound = "CONNECTION_REVISION_NOT_FOUND" => NotFound,
+    /// No committed deployment revision has that number.
+    RevisionNotFound = "REVISION_NOT_FOUND" => NotFound,
+    /// The connection's provider package has no backend on this node.
+    ProviderNotFound = "PROVIDER_NOT_FOUND" => NotFound,
+
+    // -- Conflict --
+    PublisherVersionConflict = "PUBLISHER_VERSION_CONFLICT" => Conflict,
+    ImmutableContentConflict = "IMMUTABLE_CONTENT_CONFLICT" => Conflict,
+    ImmutableConnectionConflict = "IMMUTABLE_CONNECTION_CONFLICT" => Conflict,
+    IdempotencyKeyConflict = "IDEMPOTENCY_KEY_CONFLICT" => Conflict,
+    /// The head moved since the caller's base: another writer committed first.
+    DeploymentHeadConflict = "DEPLOYMENT_HEAD_CONFLICT" => Conflict,
+    /// The manifest planned now is not the one the caller reviewed.
+    ReviewedDigestMismatch = "REVIEWED_DIGEST_MISMATCH" => Conflict,
+    /// A newer revision superseded the one a node was building.
+    CandidateSuperseded = "CANDIDATE_SUPERSEDED" => Conflict,
+
+    // -- Forbidden --
+    ProviderNotAdmitted = "PROVIDER_NOT_ADMITTED" => Forbidden,
+    ProviderRevoked = "PROVIDER_REVOKED" => Forbidden,
+    AdmissionInvalidated = "ADMISSION_INVALIDATED" => Forbidden,
+    /// An Enterprise-tier package on a Community node.
+    EnterpriseTierNotEnabled = "ENTERPRISE_TIER_NOT_ENABLED" => Forbidden,
+    PackageInvalidProviderId = "PACKAGE_INVALID_PROVIDER_ID" => Forbidden,
+    PackageInvalidTarget = "PACKAGE_INVALID_TARGET" => Forbidden,
+    /// The edition's admission policy refused the package for a reason of
+    /// its own; the message carries the policy's code.
+    AdmissionRejected = "ADMISSION_REJECTED" => Forbidden,
+
+    // -- Unavailable --
+    DbTransaction = "DB_TRANSACTION_ERROR" => Unavailable,
+    DbWrite = "DB_WRITE_ERROR" => Unavailable,
+    DbCommit = "DB_COMMIT_ERROR" => Unavailable,
+    DbRead = "DB_READ_ERROR" => Unavailable,
+
+    // -- Internal --
+    CorruptPersistedState = "CORRUPT_PERSISTED_STATE" => Internal,
+    /// A row the store wrote could not be serialized.
+    SerializeError = "SERIALIZE_ERROR" => Internal,
+    RequestHashInvalid = "REQUEST_HASH_INVALID" => Internal,
+    /// A node was asked to build a revision the store does not hold.
+    CandidateRevisionMissing = "CANDIDATE_REVISION_MISSING" => Internal,
+    /// A health probe's run could not be started.
+    ProbeFailed = "PROBE_FAILED" => Internal,
+
+    // -- Invalid: the package archive --
+    ArchiveEntryCountExceeded = "ARCHIVE_ENTRY_COUNT_EXCEEDED" => Invalid,
+    ArchiveSymlinkDenied = "ARCHIVE_SYMLINK_DENIED" => Invalid,
+    ArchiveDuplicateEntry = "ARCHIVE_DUPLICATE_ENTRY" => Invalid,
+    ArchiveCompressionRatioExceeded = "ARCHIVE_COMPRESSION_RATIO_EXCEEDED" => Invalid,
+    ArchiveSizeLimitExceeded = "ARCHIVE_SIZE_LIMIT_EXCEEDED" => Invalid,
+    ArchiveInventoryMissing = "ARCHIVE_INVENTORY_MISSING" => Invalid,
+    ArchiveInventoryInvalid = "ARCHIVE_INVENTORY_INVALID" => Invalid,
+    ArchivePathInvalid = "ARCHIVE_PATH_INVALID" => Invalid,
+    /// A file in an upload is neither UTF-8 text nor valid `base64:`.
+    InvalidPackageEncoding = "INVALID_PACKAGE_ENCODING" => Invalid,
+    /// Not `rust`, `workflow` or `wasm`.
+    InvalidImplementationKind = "INVALID_IMPLEMENTATION_KIND" => Invalid,
+    /// `POST /authoring/pack` could not pack the files.
+    PackValidationFailed = "PACK_VALIDATION_FAILED" => Invalid,
+    /// A package finding with no code of its own here; the message carries
+    /// the finding's.
+    PackageInvalid = "PACKAGE_INVALID" => Invalid,
+
+    // -- Invalid: the package inventory --
+    InventoryContentMismatch = "INVENTORY_CONTENT_MISMATCH" => Invalid,
+    InventoryLimitExceeded = "INVENTORY_LIMIT_EXCEEDED" => Invalid,
+    InventoryNotCanonical = "INVENTORY_NOT_CANONICAL" => Invalid,
+    InventoryOrderInvalid = "INVENTORY_ORDER_INVALID" => Invalid,
+    InventoryPathCollision = "INVENTORY_PATH_COLLISION" => Invalid,
+    InventoryPathInvalid = "INVENTORY_PATH_INVALID" => Invalid,
+    InventoryPayloadMismatch = "INVENTORY_PAYLOAD_MISMATCH" => Invalid,
+    InventoryRequiredFileMissing = "INVENTORY_REQUIRED_FILE_MISSING" => Invalid,
+    InventorySelfReference = "INVENTORY_SELF_REFERENCE" => Invalid,
+    InventoryShapeInvalid = "INVENTORY_SHAPE_INVALID" => Invalid,
+    CanonicalValueUnsupported = "CANONICAL_VALUE_UNSUPPORTED" => Invalid,
+
+    // -- Invalid: the package manifest and its schemas --
+    ManifestInvalidJson = "MANIFEST_INVALID_JSON" => Invalid,
+    ManifestShapeInvalid = "MANIFEST_SHAPE_INVALID" => Invalid,
+    ManifestArtifactMissing = "MANIFEST_ARTIFACT_MISSING" => Invalid,
+    ManifestDependencyAliasDuplicate = "MANIFEST_DEPENDENCY_ALIAS_DUPLICATE" => Invalid,
+    ManifestEntryMismatch = "MANIFEST_ENTRY_MISMATCH" => Invalid,
+    ManifestImportProfileCapabilityMissing = "MANIFEST_IMPORT_PROFILE_CAPABILITY_MISSING" => Invalid,
+    ManifestLimitExceedsProfile = "MANIFEST_LIMIT_EXCEEDS_PROFILE" => Invalid,
+    ManifestOperationReserved = "MANIFEST_OPERATION_RESERVED" => Invalid,
+    ManifestPathInvalid = "MANIFEST_PATH_INVALID" => Invalid,
+    ManifestRetryUnsafe = "MANIFEST_RETRY_UNSAFE" => Invalid,
+    ManifestSchemaVersionUnsupported = "MANIFEST_SCHEMA_VERSION_UNSUPPORTED" => Invalid,
+    DistributionInvalidJson = "DISTRIBUTION_INVALID_JSON" => Invalid,
+    DistributionShapeInvalid = "DISTRIBUTION_SHAPE_INVALID" => Invalid,
+    DocumentInvalidJson = "DOCUMENT_INVALID_JSON" => Invalid,
+    DocumentLimitExceeded = "DOCUMENT_LIMIT_EXCEEDED" => Invalid,
+    SchemaInvalidJson = "SCHEMA_INVALID_JSON" => Invalid,
+    SchemaInvalid = "SCHEMA_INVALID" => Invalid,
+    SchemaProfileLimit = "SCHEMA_PROFILE_LIMIT" => Invalid,
+    SchemaReferenceCycle = "SCHEMA_REFERENCE_CYCLE" => Invalid,
+    SchemaReferenceDenied = "SCHEMA_REFERENCE_DENIED" => Invalid,
+    SchemaReferenceMissing = "SCHEMA_REFERENCE_MISSING" => Invalid,
+    SchemaReferenceNotSchema = "SCHEMA_REFERENCE_NOT_SCHEMA" => Invalid,
+    SchemaUnsupportedKeyword = "SCHEMA_UNSUPPORTED_KEYWORD" => Invalid,
+    PackageInvalidTier = "PACKAGE_INVALID_TIER" => Invalid,
+    ArtifactNotActive = "ARTIFACT_NOT_ACTIVE" => Invalid,
+    ArtifactDrainingOrDeleted = "ARTIFACT_DRAINING_OR_DELETED" => Invalid,
+
+    // -- Invalid: a dependency lock --
+    LockAliasDuplicate = "LOCK_ALIAS_DUPLICATE" => Invalid,
+    LockArtifactUnavailable = "LOCK_ARTIFACT_UNAVAILABLE" => Invalid,
+    LockBindingSlotMismatch = "LOCK_BINDING_SLOT_MISMATCH" => Invalid,
+    LockClosureMissing = "LOCK_CLOSURE_MISSING" => Invalid,
+    LockCycle = "LOCK_CYCLE" => Invalid,
+    LockDeclarationMismatch = "LOCK_DECLARATION_MISMATCH" => Invalid,
+    LockDuplicateNode = "LOCK_DUPLICATE_NODE" => Invalid,
+    LockGrantMismatch = "LOCK_GRANT_MISMATCH" => Invalid,
+    LockIdentityConflict = "LOCK_IDENTITY_CONFLICT" => Invalid,
+    LockMetadataMismatch = "LOCK_METADATA_MISMATCH" => Invalid,
+    LockOrderInvalid = "LOCK_ORDER_INVALID" => Invalid,
+    LockShapeInvalid = "LOCK_SHAPE_INVALID" => Invalid,
+    LockUnreachableNode = "LOCK_UNREACHABLE_NODE" => Invalid,
+    LockVersionRequirementUnqualified = "LOCK_VERSION_REQUIREMENT_UNQUALIFIED" => Invalid,
+
+    // -- Invalid: a connection revision --
+    ConnectionRevisionInvalid = "CONNECTION_REVISION_INVALID" => Invalid,
+    ConnectionPublicSecretForbidden = "CONNECTION_PUBLIC_SECRET_FORBIDDEN" => Invalid,
+    ConnectionSecretLocatorInvalid = "CONNECTION_SECRET_LOCATOR_INVALID" => Invalid,
+    ConnectionDigestMismatch = "CONNECTION_DIGEST_MISMATCH" => Invalid,
+    ConnectionProviderNotDeclared = "CONNECTION_PROVIDER_NOT_DECLARED" => Invalid,
+
+    // -- Invalid: a deployment manifest --
+    ProviderMetadataMismatch = "PROVIDER_METADATA_MISMATCH" => Invalid,
+    MemberDefinitionNotFound = "MEMBER_DEFINITION_NOT_FOUND" => Invalid,
+    OwningPackageNotDeclared = "OWNING_PACKAGE_NOT_DECLARED" => Invalid,
+    MemberArtifactNotInPackage = "MEMBER_ARTIFACT_NOT_IN_PACKAGE" => Invalid,
+    RollbackTargetCompacted = "ROLLBACK_TARGET_COMPACTED" => Invalid,
+    EntityRefInvalid = "ENTITY_REF_INVALID" => Invalid,
+    ProviderRefInvalid = "PROVIDER_REF_INVALID" => Invalid,
+    RolloutPartitionInvalid = "ROLLOUT_PARTITION_INVALID" => Invalid,
+    ManifestVersionUnsupported = "MANIFEST_VERSION_UNSUPPORTED" => Invalid,
+    ManifestDuplicateProvider = "MANIFEST_DUPLICATE_PROVIDER" => Invalid,
+    ManifestOwnerMissing = "MANIFEST_OWNER_MISSING" => Invalid,
+    ManifestOwnershipConflict = "MANIFEST_OWNERSHIP_CONFLICT" => Invalid,
+    ManifestDuplicateSingleton = "MANIFEST_DUPLICATE_SINGLETON" => Invalid,
+    ManifestDuplicateMember = "MANIFEST_DUPLICATE_MEMBER" => Invalid,
+    ManifestMissingRequirement = "MANIFEST_MISSING_REQUIREMENT" => Invalid,
+    ManifestCanonicalError = "MANIFEST_CANONICAL_ERROR" => Invalid,
+    InvalidManifestJson = "INVALID_MANIFEST_JSON" => Invalid,
+    /// This node could not build the candidate; nothing was committed.
+    DeploymentWouldNotBuild = "DEPLOYMENT_WOULD_NOT_BUILD" => Invalid,
+    /// The node could not rebuild its generation from the candidate.
+    EngineReloadFailed = "ENGINE_RELOAD_FAILED" => Invalid,
+}
+
 /// Per-field validation detail returned in the `error.details[]` array.
 ///
 /// `code` is a stable machine-readable identifier from [`field_codes`].
@@ -199,6 +450,19 @@ pub struct ErrorEnvelope {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// Each code is spelled once and names itself back.
+    #[test]
+    fn v2_codes_are_unique_and_parse_back() {
+        let mut seen = std::collections::BTreeSet::new();
+        for code in V2Code::ALL {
+            assert!(seen.insert(code.as_str()), "{code} is registered twice");
+            assert_eq!(V2Code::parse(code.as_str()), Some(*code));
+        }
+        assert_eq!(V2Code::parse("NOT_A_CODE"), None);
+        assert_eq!(V2Code::DeploymentHeadConflict.kind().status(), 409);
+        assert_eq!(V2Code::CorruptPersistedState.kind().status(), 500);
+    }
 
     #[test]
     fn empty_details_and_request_id_are_omitted() {

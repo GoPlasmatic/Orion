@@ -13,6 +13,8 @@
 //!   `status`/`code` instead of matching prose.
 //! - [`paths`] — every endpoint path, built in one place instead of format
 //!   strings scattered through call sites.
+//! - [`V2Admin`] — one typed method per v2 admin operation, over the
+//!   `orion_api::v2` request and response DTOs.
 //!
 //! Two families of verbs, matching the two things a caller can want:
 //!
@@ -29,8 +31,10 @@
 mod client;
 mod error;
 pub mod paths;
+mod v2;
 
 pub use client::OrionClient;
 pub use error::ClientError;
 pub use paths::query_string;
-pub use reqwest::StatusCode;
+pub use reqwest::{Method, StatusCode};
+pub use v2::V2Admin;

@@ -167,7 +167,7 @@ async fn a_deployment_audit_row_commits_with_the_head(backend: &str, pool: &DbPo
         )
         .await
         .expect_err("a stale base loses");
-    assert_eq!(lost.code, "DEPLOYMENT_HEAD_CONFLICT", "{backend}");
+    assert_eq!(lost.code(), "DEPLOYMENT_HEAD_CONFLICT", "{backend}");
     assert_eq!(
         rows("v2_deployment_apply").await,
         1,
@@ -266,7 +266,7 @@ async fn concurrent_applies_on_one_base_commit_exactly_once(backend: &str, pool:
         .collect();
     assert_eq!(winners.len(), 1, "{backend}: {results:?}");
     for r in results.iter().filter_map(|r| r.as_ref().err()) {
-        assert_eq!(r.code, "DEPLOYMENT_HEAD_CONFLICT", "{backend}: {r:?}");
+        assert_eq!(r.code(), "DEPLOYMENT_HEAD_CONFLICT", "{backend}: {r:?}");
     }
     let winner = winners[0];
     let committed = results[winner].clone().expect("the winner's receipt");
@@ -469,7 +469,7 @@ async fn a_package_admission_connection_and_revocation_read_back(backend: &str, 
         )
         .await
         .expect_err("no admission");
-    assert_eq!(err.code, "ADMISSION_NOT_FOUND", "{backend}");
+    assert_eq!(err.code(), "ADMISSION_NOT_FOUND", "{backend}");
 }
 
 /// A collection pass and an apply racing over an unreferenced definition
@@ -520,7 +520,7 @@ async fn a_collection_racing_an_apply_never_takes_what_it_deploys(backend: &str,
                 assert_eq!(state, ArtifactState::Active, "{backend}");
             }
             Err(e) => {
-                assert_eq!(e.code, "ARTIFACT_DRAINING_OR_DELETED", "{backend}: {e:?}");
+                assert_eq!(e.code(), "ARTIFACT_DRAINING_OR_DELETED", "{backend}: {e:?}");
                 assert!(collected.draining.contains(&def.digest), "{backend}");
                 assert_eq!(state, ArtifactState::Draining, "{backend}");
             }

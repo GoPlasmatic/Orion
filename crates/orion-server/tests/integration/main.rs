@@ -130,6 +130,7 @@ mod v2_admin_refusals_test;
 mod v2_connections_test;
 mod v2_connector_authority_test;
 mod v2_definitions_test;
+mod v2_error_codes_drift_test;
 mod v2_replica_reconciliation_test;
 mod vault_test;
 mod workflow_lifecycle_test;

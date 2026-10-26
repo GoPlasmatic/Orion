@@ -5,22 +5,24 @@ use std::time::{Duration, Instant};
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use orion_api::v2::{
     ConnectionProbeResponse, ConnectionRevisionResponse, ConnectionsListResponse,
-    CreateConnectionRevisionRequest, CreateConnectionRevisionResponse, ProbeConnectionRequest,
+    CreateConnectionRevisionRequest, CreateConnectionRevisionResponse,
 };
-use serde_json::{Value, json};
+use serde_json::json;
 
-use super::deployment_err_response;
+use super::{V2Error, V2Result};
 use crate::errors::{FieldError, OrionError};
-use crate::extensions::deployment_store::{ConnectionRevisionRow, PackageSchema};
+use crate::extensions::deployment_store::{
+    ConnectionRevisionRow, DeploymentErrorKind, PackageSchema,
+};
 use crate::extensions::{
-    AdmittedRun, AuthorityGrant, BudgetLimits, ConnectionId, ConnectionReference, Digest,
-    EffectiveConnectionIdentity, ImplementationKind, ProviderRef, Revision,
+    AdmittedRun, AuthorityGrant, BudgetLimits, ConnectionId, ConnectionReference,
+    EffectiveConnectionIdentity, ProviderRef, Revision,
 };
 use crate::server::admin_auth::AdminPrincipal;
+use crate::server::extract::OrionJson;
 use crate::server::state::AppState;
 use orion_api::error::field_codes;
 
@@ -41,59 +43,133 @@ fn connection_row_to_dto(row: &ConnectionRevisionRow) -> ConnectionRevisionRespo
     }
 }
 
+/// `rows` as a list, ordered by connection then revision.
+fn list_response(mut rows: Vec<std::sync::Arc<ConnectionRevisionRow>>) -> ConnectionsListResponse {
+    rows.sort_by(|a, b| {
+        (a.connection_id.as_str(), a.revision.get())
+            .cmp(&(b.connection_id.as_str(), b.revision.get()))
+    });
+    let connections: Vec<ConnectionRevisionResponse> =
+        rows.iter().map(|r| connection_row_to_dto(r)).collect();
+    ConnectionsListResponse {
+        count: connections.len(),
+        connections,
+    }
+}
+
+/// The stored revision `revision` of `connection_id`.
+fn stored_revision(
+    state: &AppState,
+    connection_id: &str,
+    revision: u64,
+) -> V2Result<std::sync::Arc<ConnectionRevisionRow>> {
+    Revision::new(revision)
+        .and_then(|rev| state.deployments.get_connection(connection_id, rev))
+        .ok_or_else(|| {
+            V2Error::new(
+                DeploymentErrorKind::ConnectionRevisionNotFound,
+                format!("connection '{connection_id}' has no revision {revision}"),
+            )
+        })
+}
+
 /// `GET /api/v2/admin/connections`.
 #[utoipa::path(
     get,
     path = "/api/v2/admin/connections",
     tag = "Connections",
-    summary = "List immutable connection revisions",
-    description = "Returns all stored connection revisions alongside their provider digests and configuration fingerprints.",
+    summary = "List every stored connection revision",
+    description = "Returns every stored revision of every connection, ordered by connection then revision, with its provider digest and configuration digest.",
     responses(
         (status = 200, description = "Connection revisions", body = ConnectionsListResponse),
     )
 )]
-pub(crate) async fn list_connections(State(state): State<AppState>) -> impl IntoResponse {
-    let raw = state.deployments.list_connections();
-    let connections: Vec<ConnectionRevisionResponse> =
-        raw.iter().map(|r| connection_row_to_dto(r)).collect();
-    Json(ConnectionsListResponse {
-        count: connections.len(),
-        connections,
-    })
+pub(crate) async fn list_connections(
+    State(state): State<AppState>,
+) -> Json<ConnectionsListResponse> {
+    Json(list_response(state.deployments.list_connections()))
 }
 
-/// `POST /api/v2/admin/connections`.
+/// `GET /api/v2/admin/connections/{id}/revisions`.
+#[utoipa::path(
+    get,
+    path = "/api/v2/admin/connections/{id}/revisions",
+    tag = "Connections",
+    summary = "List one connection's revisions",
+    description = "Returns every stored revision of the connection, oldest first. Empty for a connection with none.",
+    params(("id" = String, Path, description = "Connection identifier")),
+    responses(
+        (status = 200, description = "The connection's revisions", body = ConnectionsListResponse),
+    )
+)]
+pub(crate) async fn list_connection_revisions(
+    State(state): State<AppState>,
+    Path(connection_id): Path<String>,
+) -> Json<ConnectionsListResponse> {
+    let rows = state
+        .deployments
+        .list_connections()
+        .into_iter()
+        .filter(|c| c.connection_id == connection_id)
+        .collect();
+    Json(list_response(rows))
+}
+
+/// `GET /api/v2/admin/connections/{id}/revisions/{revision}`.
+#[utoipa::path(
+    get,
+    path = "/api/v2/admin/connections/{id}/revisions/{revision}",
+    tag = "Connections",
+    summary = "Read one connection revision",
+    params(
+        ("id" = String, Path, description = "Connection identifier"),
+        ("revision" = u64, Path, description = "Connection revision"),
+    ),
+    responses(
+        (status = 200, description = "The connection revision", body = ConnectionRevisionResponse),
+        (status = 404, description = "No such revision is stored (`CONNECTION_REVISION_NOT_FOUND`)"),
+    )
+)]
+pub(crate) async fn get_connection_revision(
+    State(state): State<AppState>,
+    Path((connection_id, revision)): Path<(String, u64)>,
+) -> V2Result<Json<ConnectionRevisionResponse>> {
+    let row = stored_revision(&state, &connection_id, revision)?;
+    Ok(Json(connection_row_to_dto(&row)))
+}
+
+/// `POST /api/v2/admin/connections/{id}/revisions`.
 #[utoipa::path(
     post,
-    path = "/api/v2/admin/connections",
+    path = "/api/v2/admin/connections/{id}/revisions",
     tag = "Connections",
     summary = "Create an immutable connection revision",
-    description = "Refuses a raw secret in public_config and a malformed secret locator, then judges the configuration as the node will read it — public_config with each secret reference at its locator path, the references unresolved. Over a built-in driver it is typed and checked as the connector it serves (`http`, `db` or `cache`), exactly as `orion-server compile` checks it; over an uploaded provider package it must satisfy the package's declared `configuration_schema`. Over a `workflow` provider package, `bindings` must bind each dependency alias the package declares to a stored connection over a built-in or rust provider (the one the dependency names, when it names one), and nothing else; a deployment member for the connection must then require each bound connection. A refusal names each problem by field in `details`. Then persists an immutable, content-addressed connection revision.",
+    description = "Refuses a raw secret in public_config and a malformed secret locator, then judges the configuration as the node will read it — public_config with each secret reference at its locator path, the references unresolved. Over a built-in driver it is typed and checked as the connector it serves (`http`, `db` or `cache`), exactly as `orion-server compile` checks it; over an uploaded provider package it must satisfy the package's declared `configuration_schema`. Over a `workflow` provider package, `bindings` must bind each dependency alias the package declares to a stored connection over a built-in or rust provider (the one the dependency names, when it names one), and nothing else; a deployment member for the connection must then require each bound connection. A refusal names each problem by field in `details`. Then persists an immutable, content-addressed connection revision: the same revision with the same content answers it again, with different content it is a conflict.",
+    params(("id" = String, Path, description = "Connection identifier")),
     request_body = CreateConnectionRevisionRequest,
     responses(
         (status = 201, description = "Connection revision created", body = CreateConnectionRevisionResponse),
         (status = 400, description = "Raw secret in public_config, a malformed locator, or a configuration that would not load; `details` names each problem by field"),
-        (status = 409, description = "Immutable connection revision conflict"),
+        (status = 409, description = "The revision is stored with other content (`IMMUTABLE_CONNECTION_CONFLICT`)"),
     )
 )]
 pub(crate) async fn create_connection_revision(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    Json(req): Json<CreateConnectionRevisionRequest>,
-) -> Response {
+    Path(connection_id): Path<String>,
+    OrionJson(req): OrionJson<CreateConnectionRevisionRequest>,
+) -> V2Result<(StatusCode, Json<CreateConnectionRevisionResponse>)> {
     // The store refuses these too; first here so a raw secret is named as
     // one before the configuration's shape is judged.
-    if let Err(e) = crate::extensions::deployment_store::check_connection_config(
+    crate::extensions::deployment_store::check_connection_config(
         &req.public_config,
         &req.secret_locators,
-    ) {
-        return deployment_err_response(e).into_response();
-    }
+    )?;
     let mut problems = config_problems(&state, &req);
     problems.extend(
         crate::extensions::workflow_provider::binding_problems(
             &state.deployments,
-            &req.connection_id,
+            &connection_id,
             &req.provider_digest,
             &req.bindings,
         )
@@ -101,45 +177,42 @@ pub(crate) async fn create_connection_revision(
         .map(|p| FieldError::new(p.path, p.code, p.message)),
     );
     if !problems.is_empty() {
-        return OrionError::Validation {
+        return Err(OrionError::Validation {
             code: orion_api::error::codes::VALIDATION_ERROR,
             message: format!(
-                "connection '{}' revision {}: its configuration would not load",
-                req.connection_id, req.revision
+                "connection '{connection_id}' revision {}: its configuration would not load",
+                req.revision
             ),
             details: problems,
         }
-        .into_response();
+        .into());
     }
-    match state
+    let row = state
         .deployments
         .store_connection_revision_with_bindings_in_db(
             &state.db_pool,
-            &req.connection_id,
+            &connection_id,
             req.revision,
             &req.provider_digest,
             req.public_config,
             req.secret_locators,
             req.bindings,
         )
-        .await
-    {
-        Ok(row) => {
-            crate::server::routes::admin::audit_log(
-                &state.audit_queue,
-                &principal,
-                "v2_connection_create",
-                "connection",
-                &format!("{}@{}", row.connection_id, row.revision),
-            );
-            let resp = CreateConnectionRevisionResponse {
-                status: "created".to_string(),
-                connection: connection_row_to_dto(&row),
-            };
-            (StatusCode::CREATED, Json(resp)).into_response()
-        }
-        Err(e) => deployment_err_response(e).into_response(),
-    }
+        .await?;
+    crate::server::routes::admin::audit_log(
+        &state.audit_queue,
+        &principal,
+        "v2_connection_create",
+        "connection",
+        &format!("{}@{}", row.connection_id, row.revision),
+    );
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateConnectionRevisionResponse {
+            status: "created".to_string(),
+            connection: connection_row_to_dto(&row),
+        }),
+    ))
 }
 
 /// What the connection's configuration would not load with, by field: over a
@@ -213,173 +286,105 @@ fn field_root(path: &str, locators: &BTreeMap<String, String>) -> String {
     }
 }
 
-/// `POST /api/v2/admin/connections/{id}/probe`.
+/// `POST /api/v2/admin/connections/{id}/revisions/{revision}/probes`.
 #[utoipa::path(
     post,
-    path = "/api/v2/admin/connections/{id}/probe",
+    path = "/api/v2/admin/connections/{id}/revisions/{revision}/probes",
     tag = "Connections",
-    summary = "Execute an audited health probe against a connection",
-    description = "Probes the connection's latest revision (or `revision`), recorded in the audit log first because it reaches a real backend. Over a built-in driver it connects for real, with the revision's secret references resolved as the node resolves them at load: `org.orion.postgresql`, `org.orion.mysql` and `org.orion.sqlite` run `SELECT 1` through the node's own connector pool (refusing a private address unless `allow_private_urls`); `org.orion.http` resolves the configured URL's host and opens a TCP connection to it (no HTTP request is sent and no credential is presented; the same private-address rule applies); `org.orion.memory-cache` reads a probe key. `details.probe` says which check ran and `details.error` why it failed — never a resolved secret. Over an uploaded provider package it validates the configuration and runs the provider's health check within an admitted run budget.",
+    summary = "Probe a connection revision's backend",
+    description = "Probes the stored revision through the provider it names — nothing in the request can choose another — recorded in the audit log first because it reaches a real backend. Over a built-in driver it connects for real, with the revision's secret references resolved as the node resolves them at load: `org.orion.postgresql`, `org.orion.mysql` and `org.orion.sqlite` run `SELECT 1` through the node's own connector pool (refusing a private address unless `allow_private_urls`); `org.orion.http` resolves the configured URL's host and opens a TCP connection to it (no HTTP request is sent and no credential is presented; the same private-address rule applies); `org.orion.memory-cache` reads a probe key. Over an uploaded provider package it validates the configuration and runs the provider's health check within an admitted run budget. A probe that ran answers `200` whatever it found: `healthy` is the finding, `details.probe` says which check ran and `details.error` why it failed — never a resolved secret.",
     params(
-        ("id" = String, Path, description = "Connection identifier")
+        ("id" = String, Path, description = "Connection identifier"),
+        ("revision" = u64, Path, description = "Connection revision"),
     ),
-    request_body(content = Option<ProbeConnectionRequest>, description = "Optional target revision or driver override"),
     responses(
-        (status = 200, description = "Connection healthy", body = ConnectionProbeResponse),
-        (status = 400, description = "Unsupported implementation kind"),
-        (status = 403, description = "Provider package revoked"),
-        (status = 404, description = "Connection or provider not found"),
-        (status = 503, description = "Connection unhealthy", body = ConnectionProbeResponse),
+        (status = 200, description = "The probe ran; `healthy` says what it found", body = ConnectionProbeResponse),
+        (status = 403, description = "The revision's provider package is revoked (`PROVIDER_REVOKED`)"),
+        (status = 404, description = "No such revision (`CONNECTION_REVISION_NOT_FOUND`), its package is not stored (`PACKAGE_NOT_FOUND`), or this node has no backend for it (`PROVIDER_NOT_FOUND`)"),
     )
 )]
 pub(crate) async fn probe_connection(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    Path(connection_id): Path<String>,
-    req: Option<Json<ProbeConnectionRequest>>,
-) -> impl IntoResponse {
-    let req = req.map(|Json(r)| r).unwrap_or_default();
+    Path((connection_id, revision)): Path<(String, u64)>,
+) -> V2Result<Json<ConnectionProbeResponse>> {
     let started = Instant::now();
+    let conn_row = stored_revision(&state, &connection_id, revision)?;
 
-    let stored_conn = state
+    // A probe reaches a production backend with the connection's real
+    // credentials: on the record before it runs.
+    crate::server::routes::admin::audit_log(
+        &state.audit_queue,
+        &principal,
+        "v2_connection_probe",
+        "connection",
+        &format!("{}@{}", conn_row.connection_id, conn_row.revision),
+    );
+    if let Some(driver) = crate::extensions::foundation::builtin_driver(&conn_row.provider_digest) {
+        let outcome = probe_builtin(&state, &conn_row, driver).await;
+        return Ok(Json(probe_response(
+            &conn_row,
+            driver.to_string(),
+            started,
+            outcome,
+        )));
+    }
+
+    let pkg = state
         .deployments
-        .list_connections()
-        .into_iter()
-        .filter(|c| c.connection_id == connection_id)
-        .filter(|c| req.revision.is_none_or(|rev| c.revision == rev))
-        .max_by_key(|c| c.revision);
-
-    if let Some(conn_row) = &stored_conn {
-        // A probe reaches a production backend with the connection's real
-        // credentials: on the record before it runs.
-        crate::server::routes::admin::audit_log(
-            &state.audit_queue,
-            &principal,
-            "v2_connection_probe",
-            "connection",
-            &format!("{}@{}", conn_row.connection_id, conn_row.revision),
-        );
-        if let Some(driver) =
-            crate::extensions::foundation::builtin_driver(&conn_row.provider_digest)
-        {
-            let outcome = probe_builtin(&state, conn_row, driver).await;
-            return probe_response(
-                conn_row.connection_id.to_string(),
-                conn_row.revision.get(),
-                driver.to_string(),
-                started,
-                outcome,
-            );
-        }
-    }
-
-    let stored_pkg = stored_conn.as_ref().and_then(|conn_row| {
-        state
-            .deployments
-            .list_packages()
-            .into_iter()
-            .find(|p| p.package_digest == conn_row.provider_digest)
-    });
-
-    if let Some(ref pkg) = stored_pkg {
-        let is_revoked = state
-            .deployments
-            .list_admissions()
-            .into_iter()
-            .any(|a| a.package_digest == pkg.package_digest && a.revoked);
-        if is_revoked {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(crate::errors::error_envelope_json(
-                    "PROVIDER_REVOKED",
-                    format!(
-                        "Provider package '{}' ({}) for connection '{connection_id}' is revoked",
-                        pkg.provider_id, pkg.package_digest
-                    ),
-                )),
-            );
-        }
-    }
-
-    let kind_str = req
-        .kind
-        .as_deref()
-        .or_else(|| stored_pkg.as_ref().map(|p| p.implementation.as_str()))
-        .unwrap_or("rust");
-    let Some(kind) = ImplementationKind::parse(kind_str) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(crate::errors::error_envelope_json(
-                "INVALID_IMPLEMENTATION_KIND",
+        .get_package(&conn_row.provider_digest)
+        .ok_or_else(|| {
+            V2Error::new(
+                DeploymentErrorKind::PackageNotFound,
                 format!(
-                    "unsupported implementation kind '{kind_str}'; expected 'rust', 'workflow', or 'wasm'"
+                    "connection '{connection_id}' revision {revision} names provider package '{}', which is not stored",
+                    conn_row.provider_digest
                 ),
-            )),
-        );
-    };
+            )
+        })?;
+    if state
+        .deployments
+        .get_admission(&pkg.package_digest)
+        .is_some_and(|a| a.revoked)
+    {
+        return Err(V2Error::new(
+            DeploymentErrorKind::ProviderRevoked,
+            format!(
+                "provider package '{}' ({}) for connection '{connection_id}' is revoked",
+                pkg.provider_id, pkg.package_digest
+            ),
+        ));
+    }
 
-    let driver_id = req
-        .driver_id
-        .clone()
-        .or_else(|| stored_pkg.as_ref().map(|p| p.backend_id().to_string()))
-        .unwrap_or_else(|| connection_id.clone());
-
+    let kind = pkg.implementation;
+    let driver_id = pkg.backend_id().to_string();
     let Some(backend) = state.composition.providers().get(kind, &driver_id) else {
-        let code = if stored_conn.is_none() && req.driver_id.is_none() {
-            "CONNECTION_NOT_FOUND"
-        } else {
-            "PROVIDER_NOT_FOUND"
-        };
-        return (
-            StatusCode::NOT_FOUND,
-            Json(crate::errors::error_envelope_json(
-                code,
-                format!(
-                    "connection '{connection_id}' / provider ({}, '{driver_id}') is not registered",
-                    kind.as_str()
-                ),
-            )),
-        );
+        return Err(V2Error::new(
+            DeploymentErrorKind::ProviderNotFound,
+            format!(
+                "this node registers no {} provider backend '{driver_id}' for connection '{connection_id}'",
+                kind.as_str()
+            ),
+        ));
     };
 
-    if let Some(ref conn_row) = stored_conn
-        && !conn_row.public_config.is_null()
+    if !conn_row.public_config.is_null()
         && conn_row
             .public_config
             .as_object()
             .is_none_or(|m| !m.is_empty())
         && let Err(cfg_err) = backend.validate_config(&conn_row.public_config)
     {
-        let resp = ConnectionProbeResponse {
-            connection_id,
-            revision: conn_row.revision.get(),
+        return Ok(Json(probe_response(
+            &conn_row,
             driver_id,
-            healthy: false,
-            status: "unhealthy".to_string(),
-            latency_ms: started.elapsed().as_millis() as u64,
-            details: json!({ "error": cfg_err }),
-        };
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::to_value(resp).unwrap_or(Value::Null)),
-        );
+            started,
+            ProbeOutcome {
+                probe: "configuration",
+                result: Err(cfg_err.to_string()),
+            },
+        )));
     }
-
-    let resolved_revision = stored_conn
-        .as_ref()
-        .map(|c| c.revision)
-        .or(req.revision.and_then(Revision::new))
-        .unwrap_or(Revision::FIRST);
-    // A probe of a driver with no stored connection runs under a null
-    // provider identity: there is no package to name.
-    let resolved_digest = stored_conn
-        .as_ref()
-        .map(|c| c.provider_digest.clone())
-        .unwrap_or_else(|| Digest::from_sha256([0; 32]));
-    let resolved_version = stored_pkg
-        .as_ref()
-        .map(|p| p.version.clone())
-        .unwrap_or_else(|| "2.0.0".to_string());
 
     let mut allowed_operations = BTreeMap::new();
     allowed_operations.insert(
@@ -388,13 +393,9 @@ pub(crate) async fn probe_connection(
     );
     // The connection's own dependencies, each at its latest revision: what a
     // provider's health check may reach through them.
-    let declared_dependencies = stored_conn
-        .as_ref()
-        .map(|conn| probe_dependencies(&state, conn))
-        .unwrap_or_default();
     let grant = AuthorityGrant {
         allowed_operations,
-        declared_dependencies,
+        declared_dependencies: probe_dependencies(&state, &conn_row),
         allowed_channels: BTreeSet::new(),
     };
     let admitted = AdmittedRun::admit(
@@ -407,74 +408,38 @@ pub(crate) async fn probe_connection(
     let run_ctx = admitted.context();
     let conn_ref = ConnectionReference {
         connection_id: ConnectionId::from(&connection_id),
-        revision: resolved_revision,
+        revision: conn_row.revision,
         provider: ProviderRef {
-            publisher: stored_pkg
-                .as_ref()
-                .map(|p| p.publisher.clone())
-                .unwrap_or_default(),
+            publisher: pkg.publisher.clone(),
             provider_id: driver_id.as_str().into(),
-            version: resolved_version,
-            digest: resolved_digest.clone(),
+            version: pkg.version.clone(),
+            digest: conn_row.provider_digest.clone(),
         },
     };
     let eff = EffectiveConnectionIdentity {
-        provider_digest: resolved_digest,
+        provider_digest: conn_row.provider_digest.clone(),
         connection_id: ConnectionId::from(&connection_id),
-        revision: resolved_revision,
+        revision: conn_row.revision,
         secret_hash: "sha256:probe".to_string(),
     };
-    let Ok(inv) = run_ctx.start_invocation(conn_ref, eff, "probe", None, 1) else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(crate::errors::error_envelope_json(
-                "PROBE_INIT_FAILED",
-                "Failed to initialize connection health probe",
-            )),
-        );
-    };
-    let Ok(attempt) = inv.next_attempt() else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(crate::errors::error_envelope_json(
-                "PROBE_ATTEMPT_FAILED",
-                "Failed to start connection health probe attempt",
-            )),
-        );
-    };
+    let attempt = run_ctx
+        .start_invocation(conn_ref, eff, "probe", None, 1)
+        .and_then(|inv| inv.next_attempt())
+        .map_err(|e| {
+            V2Error::new(
+                DeploymentErrorKind::ProbeFailed,
+                format!("the probe of connection '{connection_id}' could not start: {e:?}"),
+            )
+        })?;
 
-    match backend.health_check(&attempt).await {
-        Ok(()) => {
-            let resp = ConnectionProbeResponse {
-                connection_id,
-                revision: resolved_revision.get(),
-                driver_id,
-                healthy: true,
-                status: "healthy".to_string(),
-                latency_ms: started.elapsed().as_millis() as u64,
-                details: json!({ "status": "ok" }),
-            };
-            (
-                StatusCode::OK,
-                Json(serde_json::to_value(resp).unwrap_or(Value::Null)),
-            )
-        }
-        Err(err) => {
-            let resp = ConnectionProbeResponse {
-                connection_id,
-                revision: resolved_revision.get(),
-                driver_id,
-                healthy: false,
-                status: "unhealthy".to_string(),
-                latency_ms: started.elapsed().as_millis() as u64,
-                details: json!({ "error": err }),
-            };
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::to_value(resp).unwrap_or(Value::Null)),
-            )
-        }
-    }
+    let outcome = ProbeOutcome {
+        probe: "provider health check",
+        result: backend
+            .health_check(&attempt)
+            .await
+            .map_err(|err| err.to_string()),
+    };
+    Ok(Json(probe_response(&conn_row, driver_id, started, outcome)))
 }
 
 /// The dependencies `conn`'s bindings name, keyed as a run's authority keys
@@ -524,39 +489,29 @@ struct ProbeOutcome {
     result: Result<(), String>,
 }
 
-/// The answer to a probe: `200` with `healthy: true`, or `503` with
-/// `details.error`.
+/// The answer to a probe: `healthy`, with `details.probe` naming the check
+/// and `details.error` why it failed.
 fn probe_response(
-    connection_id: String,
-    revision: u64,
+    row: &ConnectionRevisionRow,
     driver_id: String,
     started: Instant,
     outcome: ProbeOutcome,
-) -> (StatusCode, Json<Value>) {
+) -> ConnectionProbeResponse {
     let healthy = outcome.result.is_ok();
     let mut details = json!({ "probe": outcome.probe });
     match outcome.result {
         Ok(()) => details["status"] = json!("ok"),
         Err(error) => details["error"] = json!(error),
     }
-    let resp = ConnectionProbeResponse {
-        connection_id,
-        revision,
+    ConnectionProbeResponse {
+        connection_id: row.connection_id.to_string(),
+        revision: row.revision.get(),
         driver_id,
         healthy,
         status: if healthy { "healthy" } else { "unhealthy" }.to_string(),
         latency_ms: started.elapsed().as_millis() as u64,
         details,
-    };
-    let status = if healthy {
-        StatusCode::OK
-    } else {
-        StatusCode::SERVICE_UNAVAILABLE
-    };
-    (
-        status,
-        Json(serde_json::to_value(resp).unwrap_or(Value::Null)),
-    )
+    }
 }
 
 /// Probe a connection over a built-in driver: its configuration resolved

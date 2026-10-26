@@ -79,12 +79,18 @@ async fn a_service_deployed_from_definitions_serves() {
         &app,
         "POST",
         DEPLOYMENTS,
-        Some(json!({
-            "idempotency_key": "greet-1",
-            "base_revision": 0,
-            "manifest": manifest(&channel, &workflow),
-            "reason": "deploy greet",
-        })),
+        Some(
+            crate::common::deploy::reviewed(
+                &app,
+                json!({
+                    "idempotency_key": "greet-1",
+                    "base_revision": 0,
+                    "manifest": manifest(&channel, &workflow),
+                    "reason": "deploy greet",
+                }),
+            )
+            .await,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{applied}");
@@ -272,9 +278,8 @@ async fn a_deployed_connection_serves_the_built_in_functions() {
     let (status, created) = send(
         &app,
         "POST",
-        "/api/v2/admin/connections",
+        "/api/v2/admin/connections/numbers/revisions",
         Some(json!({
-            "connection_id": "numbers",
             "revision": 1,
             "provider_digest": sqlite,
             "public_config": {"connection_string": "sqlite::memory:"},
@@ -312,12 +317,18 @@ async fn a_deployed_connection_serves_the_built_in_functions() {
         &app,
         "POST",
         DEPLOYMENTS,
-        Some(json!({
-            "idempotency_key": "numbers-1",
-            "base_revision": 0,
-            "manifest": manifest,
-            "reason": "deploy numbers",
-        })),
+        Some(
+            crate::common::deploy::reviewed(
+                &app,
+                json!({
+                    "idempotency_key": "numbers-1",
+                    "base_revision": 0,
+                    "manifest": manifest,
+                    "reason": "deploy numbers",
+                }),
+            )
+            .await,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{applied}");
@@ -359,16 +370,22 @@ async fn two_channels_claiming_one_route_fail_the_revision() {
         &app,
         "POST",
         DEPLOYMENTS,
-        Some(json!({
-            "idempotency_key": "collide",
-            "base_revision": 0,
-            "manifest": {"schema_version": 2, "providers": [], "members": [
-                member("workflow", "wf", &workflow),
-                member("channel", "orders.first", &first),
-                member("channel", "orders.second", &second),
-            ]},
-            "reason": "collide",
-        })),
+        Some(
+            crate::common::deploy::reviewed(
+                &app,
+                json!({
+                    "idempotency_key": "collide",
+                    "base_revision": 0,
+                    "manifest": {"schema_version": 2, "providers": [], "members": [
+                        member("workflow", "wf", &workflow),
+                        member("channel", "orders.first", &first),
+                        member("channel", "orders.second", &second),
+                    ]},
+                    "reason": "collide",
+                }),
+            )
+            .await,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{applied}");

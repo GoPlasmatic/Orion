@@ -3,6 +3,7 @@ use super::*;
 use crate::extensions::Admission;
 use crate::extensions::package_identity::canonical_bytes;
 use crate::storage::DbPool;
+use orion_api::ErrorKind as ErrorClass;
 use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
 
@@ -141,13 +142,13 @@ fn a_manifest_is_read_once_and_names_a_malformed_reference() {
     assert_eq!(written["members"][0]["entity"]["revision"], 1);
 
     let short = CanonicalManifest::from_json(&manifest("sha256:abc", 1)).unwrap_err();
-    assert_eq!(short.code, "PROVIDER_REF_INVALID");
+    assert_eq!(short.code(), "PROVIDER_REF_INVALID");
     let upper = CanonicalManifest::from_json(&manifest(&digest.to_uppercase(), 1)).unwrap_err();
-    assert_eq!(upper.code, "PROVIDER_REF_INVALID");
+    assert_eq!(upper.code(), "PROVIDER_REF_INVALID");
     let zero = CanonicalManifest::from_json(&manifest(&digest, 0)).unwrap_err();
-    assert_eq!(zero.code, "ENTITY_REF_INVALID");
+    assert_eq!(zero.code(), "ENTITY_REF_INVALID");
     let garbage = CanonicalManifest::from_json(&json!({"providers": "none"})).unwrap_err();
-    assert_eq!(garbage.code, "INVALID_MANIFEST_JSON");
+    assert_eq!(garbage.code(), "INVALID_MANIFEST_JSON");
 }
 
 #[test]
@@ -162,7 +163,7 @@ fn typed_refs_disjoint_rollouts_and_canonical_manifest_verification() {
     assert_eq!(
         super::manifest::validate_provider_ref(&bad_provider)
             .unwrap_err()
-            .code,
+            .code(),
         "PROVIDER_REF_INVALID"
     );
 
@@ -180,7 +181,7 @@ fn typed_refs_disjoint_rollouts_and_canonical_manifest_verification() {
         },
     ];
     assert_eq!(
-        validate_rollout_partition(&gap_rollout).unwrap_err().code,
+        validate_rollout_partition(&gap_rollout).unwrap_err().code(),
         "ROLLOUT_PARTITION_INVALID"
     );
 
@@ -213,7 +214,7 @@ async fn end_to_end_archive_admit_plan_apply_rollback_and_gc() {
         .ingest_verified_archive_in_db(&pool, &bad_entries)
         .await
         .unwrap_err();
-    assert_eq!(err.code, "ARCHIVE_SYMLINK_DENIED");
+    assert_eq!(err.code(), "ARCHIVE_SYMLINK_DENIED");
     assert_eq!(err.kind, DeploymentErrorKind::ArchiveSymlinkDenied);
 
     // 2. Ingest verified archive and admit package (V2-04.1, V2-04.2)
@@ -284,7 +285,7 @@ async fn end_to_end_archive_admit_plan_apply_rollback_and_gc() {
         )
         .await
         .unwrap_err();
-    assert_eq!(conflict.code, "IDEMPOTENCY_KEY_CONFLICT");
+    assert_eq!(conflict.code(), "IDEMPOTENCY_KEY_CONFLICT");
 
     // 4. Plan & commit revision 2
     let manifest_v2 = workflow_manifest("orders-wf", 2, &definition(&store, &pool, b"wf-v2").await);
@@ -356,7 +357,7 @@ async fn end_to_end_archive_admit_plan_apply_rollback_and_gc() {
         .plan_candidate_in_db(&pool, 4, with_revoked)
         .await
         .unwrap_err();
-    assert_eq!(err.code, "PROVIDER_REVOKED");
+    assert_eq!(err.code(), "PROVIDER_REVOKED");
 
     // Second GC sweep transitions DRAINING -> DELETED while receipts remain intact
     let pass = store
@@ -493,8 +494,8 @@ async fn a_fresh_store_reads_the_database_back_and_fails_closed_on_corruption() 
         .load_from_db_pool(&pool)
         .await
         .expect_err("corrupt manifest_json must fail closed");
-    assert_eq!(err.code, "CORRUPT_PERSISTED_STATE");
-    assert_eq!(err.class(), ErrorClass::Corrupt);
+    assert_eq!(err.code(), "CORRUPT_PERSISTED_STATE");
+    assert_eq!(err.class(), ErrorClass::Internal);
 
     // Bytes that do not hash to their digest are refused, not served.
     let digest = definition(&store, &pool, b"tampered").await;
@@ -539,7 +540,7 @@ async fn connection_secret_rejection_canonical_digests_and_staged_gc_protection(
             )
             .await
             .expect_err("secret in public_config must be rejected");
-        assert_eq!(err.code, "CONNECTION_PUBLIC_SECRET_FORBIDDEN");
+        assert_eq!(err.code(), "CONNECTION_PUBLIC_SECRET_FORBIDDEN");
     }
 
     // TD-20: Key-reordered JSON produces identical canonical configuration_digest
@@ -577,7 +578,7 @@ async fn connection_secret_rejection_canonical_digests_and_staged_gc_protection(
         )
         .await
         .expect_err("a stored revision is immutable");
-    assert_eq!(err.code, "IMMUTABLE_CONNECTION_CONFLICT");
+    assert_eq!(err.code(), "IMMUTABLE_CONNECTION_CONFLICT");
 
     // TD-22: Newly staged package and connection (never yet deployed) are
     // protected from GC — with no deployment, no pass runs at all.
@@ -608,7 +609,7 @@ async fn connection_secret_rejection_canonical_digests_and_staged_gc_protection(
         .plan_candidate_in_db(&pool, 0, bad_conn_manifest)
         .await
         .unwrap_err();
-    assert_eq!(err.code, "CONNECTION_DIGEST_MISMATCH");
+    assert_eq!(err.code(), "CONNECTION_DIGEST_MISMATCH");
 }
 
 #[tokio::test]
@@ -656,7 +657,7 @@ async fn cross_replica_db_transactional_cas_and_revocation_enforcement() {
         .apply_candidate_in_db(&db_pool, "bob", "idem-b", &plan_b, "deploy b", &policy)
         .await
         .expect_err("competing deployment on stale base_revision must fail");
-    assert_eq!(err_b.code, "DEPLOYMENT_HEAD_CONFLICT");
+    assert_eq!(err_b.code(), "DEPLOYMENT_HEAD_CONFLICT");
     assert_eq!(err_b.class(), ErrorClass::Conflict);
 
     // Now Replica B plans against revision 1, but Replica A revokes the provider package first
@@ -673,7 +674,7 @@ async fn cross_replica_db_transactional_cas_and_revocation_enforcement() {
         .apply_candidate_in_db(&db_pool, "bob", "idem-b2", &plan_b2, "deploy b2", &policy)
         .await
         .expect_err("DB-level package revocation must block replica B's apply");
-    assert_eq!(err_revoked.code, "ADMISSION_INVALIDATED");
+    assert_eq!(err_revoked.code(), "ADMISSION_INVALIDATED");
 }
 
 #[tokio::test]
@@ -722,7 +723,7 @@ async fn a_failed_write_publishes_nothing() {
         )
         .await
         .expect_err("DB failure must return error");
-    assert_eq!(err.code, "DB_WRITE_ERROR");
+    assert_eq!(err.code(), "DB_WRITE_ERROR");
     assert_eq!(err.class(), ErrorClass::Unavailable);
 
     // Request 1's committed state remains intact and Request 2 was never
@@ -794,7 +795,7 @@ async fn a_builtin_provider_needs_no_declaration_and_an_uploaded_one_does() {
         .plan_candidate_in_db(&pool, 0, uploaded_manifest)
         .await
         .expect_err("an undeclared package is refused");
-    assert_eq!(err.code, "CONNECTION_PROVIDER_NOT_DECLARED");
+    assert_eq!(err.code(), "CONNECTION_PROVIDER_NOT_DECLARED");
 }
 
 /// A key naming an endpoint is public, even when it mentions a token; a key
@@ -840,13 +841,13 @@ fn an_endpoint_key_is_public_and_a_token_key_is_not() {
         &locators,
     )
     .expect_err("a secret-named query parameter is refused");
-    assert_eq!(err.code, "CONNECTION_PUBLIC_SECRET_FORBIDDEN");
+    assert_eq!(err.code(), "CONNECTION_PUBLIC_SECRET_FORBIDDEN");
     let err = check_connection_config(
         &serde_json::json!({"auth": {"refresh_token": "literal"}}),
         &std::collections::BTreeMap::new(),
     )
     .expect_err("a token key is refused");
-    assert_eq!(err.code, "CONNECTION_PUBLIC_SECRET_FORBIDDEN");
+    assert_eq!(err.code(), "CONNECTION_PUBLIC_SECRET_FORBIDDEN");
 }
 
 /// What one collection pass may never take, each case on its own: the
@@ -956,7 +957,7 @@ async fn collection_never_takes_what_is_referenced_retained_admitted_or_recent()
         )
         .await
         .unwrap_err();
-    assert_eq!(err.code, "ROLLBACK_TARGET_COMPACTED");
+    assert_eq!(err.code(), "ROLLBACK_TARGET_COMPACTED");
 
     // Revision 1's definition is named again by a new head before the next
     // pass: it is put back, not deleted. The orphan goes.
@@ -965,7 +966,8 @@ async fn collection_never_takes_what_is_referenced_retained_admitted_or_recent()
         .await
         .unwrap_err();
     assert_eq!(
-        err.code, "ARTIFACT_NOT_ACTIVE",
+        err.code(),
+        "ARTIFACT_NOT_ACTIVE",
         "a draining artifact cannot be deployed until it is uploaded again"
     );
     definition(&store, &pool, b"wf-1").await;

@@ -139,6 +139,28 @@ impl OrionClient {
     }
 }
 
+/// The typed v2 admin calls (`orion_client::V2Admin`), over this client:
+/// the shared transport, with errors rendered as every other command renders
+/// them — or, under test, the mock.
+impl orion_client::V2Admin for OrionClient {
+    type Error = anyhow::Error;
+
+    async fn send(
+        &self,
+        method: orion_client::Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value> {
+        #[cfg(test)]
+        if let Some(ref mock) = self.mock {
+            return mock(method.as_str(), path, body.as_ref());
+        }
+        orion_client::V2Admin::send(&self.inner, method, path, body)
+            .await
+            .map_err(render)
+    }
+}
+
 /// Translate a typed transport error into the message this CLI has always
 /// printed: `[CODE] message`, indented field errors, `request_id`, then an
 /// actionable hint keyed on the shared `orion_api::codes` registry.

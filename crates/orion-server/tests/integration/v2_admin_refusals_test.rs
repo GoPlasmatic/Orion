@@ -11,7 +11,7 @@ use tower::ServiceExt;
 use crate::common::{body_json, json_request, test_app};
 
 const PACKAGES: &str = "/api/v2/admin/connector-packages";
-const CONNECTIONS: &str = "/api/v2/admin/connections";
+const CONNECTIONS: &str = "/api/v2/admin/connections/crm/revisions";
 const DEPLOYMENTS: &str = "/api/v2/admin/deployments";
 
 async fn send(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
@@ -58,13 +58,8 @@ async fn deployed_package(app: &Router) -> (String, Value) {
     (digest, manifest)
 }
 
-fn apply(manifest: &Value, base: u64, key: &str) -> Value {
-    json!({
-        "idempotency_key": key,
-        "base_revision": base,
-        "manifest": manifest,
-        "reason": "test",
-    })
+async fn apply(app: &Router, manifest: &Value, base: u64, key: &str) -> Value {
+    crate::common::deploy::apply_body(app, base, manifest.clone(), key).await
 }
 
 /// The same idempotency key replays the receipt it committed; a stale
@@ -74,18 +69,36 @@ async fn a_replay_answers_its_receipt_and_a_stale_base_conflicts() {
     let app = test_app().await;
     let (_, manifest) = deployed_package(&app).await;
 
-    let (status, first) = send(&app, "POST", DEPLOYMENTS, apply(&manifest, 0, "k1")).await;
+    let (status, first) = send(
+        &app,
+        "POST",
+        DEPLOYMENTS,
+        apply(&app, &manifest, 0, "k1").await,
+    )
+    .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{first}");
     assert_eq!(first["committed_revision"], 1);
 
-    let (status, replay) = send(&app, "POST", DEPLOYMENTS, apply(&manifest, 0, "k1")).await;
+    let (status, replay) = send(
+        &app,
+        "POST",
+        DEPLOYMENTS,
+        apply(&app, &manifest, 0, "k1").await,
+    )
+    .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{replay}");
     assert_eq!(
         replay["committed_revision"], 1,
         "a replay commits nothing new"
     );
 
-    let (status, stale) = send(&app, "POST", DEPLOYMENTS, apply(&manifest, 0, "k2")).await;
+    let (status, stale) = send(
+        &app,
+        "POST",
+        DEPLOYMENTS,
+        apply(&app, &manifest, 0, "k2").await,
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT, "{stale}");
 }
 
@@ -97,13 +110,19 @@ async fn a_revoked_provider_is_not_deployed() {
     let (status, revoked) = send(
         &app,
         "POST",
-        &format!("{PACKAGES}/{digest}/revoke"),
+        &format!("{PACKAGES}/{digest}/revocations"),
         json!({"reason": "compromised"}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{revoked}");
+    assert_eq!(status, StatusCode::CREATED, "{revoked}");
 
-    let (status, body) = send(&app, "POST", DEPLOYMENTS, apply(&manifest, 0, "k1")).await;
+    let (status, body) = send(
+        &app,
+        "POST",
+        DEPLOYMENTS,
+        apply(&app, &manifest, 0, "k1").await,
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert_eq!(body["error"]["code"], "PROVIDER_REVOKED", "{body}");
     let (_, listed) = send(&app, "GET", DEPLOYMENTS, Value::Null).await;
@@ -128,7 +147,6 @@ async fn a_secret_in_public_config_is_refused() {
             "POST",
             CONNECTIONS,
             json!({
-                "connection_id": "crm",
                 "revision": 1,
                 "provider_digest": digest,
                 "public_config": public_config,
@@ -154,7 +172,6 @@ async fn a_secret_locator_must_be_a_reference() {
         "POST",
         CONNECTIONS,
         json!({
-            "connection_id": "crm",
             "revision": 1,
             "provider_digest": digest,
             "public_config": {"url": "https://crm.example.com", "auth": {"type": "bearer"}},
@@ -174,7 +191,6 @@ async fn a_secret_locator_must_be_a_reference() {
             "POST",
             CONNECTIONS,
             Some(json!({
-                "connection_id": "crm",
                 "revision": 1,
                 "provider_digest": digest,
                 "public_config": {"url": "https://crm.example.com"},

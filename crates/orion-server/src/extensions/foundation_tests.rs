@@ -111,7 +111,7 @@ async fn sql_rows_are_capped_and_a_secret_locator_must_be_a_reference() {
         )
         .await
         .expect_err("a literal locator is refused");
-    assert_eq!(refused.code, "CONNECTION_SECRET_LOCATOR_INVALID");
+    assert_eq!(refused.code(), "CONNECTION_SECRET_LOCATOR_INVALID");
 }
 
 /// Each built-in driver answers to one stable digest, which maps back to
@@ -746,7 +746,7 @@ async fn locators_are_placed_at_their_paths() {
             )
             .await
             .expect_err("refused");
-        assert_eq!(err.code, "CONNECTION_SECRET_LOCATOR_INVALID", "{path}");
+        assert_eq!(err.code(), "CONNECTION_SECRET_LOCATOR_INVALID", "{path}");
     }
 }
 

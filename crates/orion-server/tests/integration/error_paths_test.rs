@@ -278,8 +278,8 @@ async fn the_admin_body_limit_is_independent_of_the_data_plane_one() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v2/admin/connections",
-            Some(json!({"connection_id": "big", "revision": 1,
+            "/api/v2/admin/connections/big/revisions",
+            Some(json!({"revision": 1,
                         "provider_digest": "sha256:x",
                         "public_config": { "note": "y".repeat(300 * 1024) }})),
         ))

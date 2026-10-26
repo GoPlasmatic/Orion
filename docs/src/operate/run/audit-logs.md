@@ -49,14 +49,14 @@ Because `action` and `resource_type` match exactly, a filter is only as good as 
 | `cancel` | `cron_occurrence` | `POST /cron/occurrences/{id}/cancel` |
 | `trigger` | `channel` | `POST /channels/{id}/trigger` — a manual run of a cron channel |
 | `v2_package_upload` | `connector_package` | `POST /connector-packages`; `resource_id` is the package digest |
-| `v2_package_admit` | `connector_package` | `POST /connector-packages/{digest}/admit` |
-| `v2_package_revoke` | `connector_package` | `POST /connector-packages/{digest}/revoke` |
+| `v2_package_admit` | `connector_package` | `PUT /connector-packages/{digest}/admission` |
+| `v2_package_revoke` | `connector_package` | `POST /connector-packages/{digest}/revocations` |
 | `v2_definition_upload` | `definition` | `POST /definitions`; `resource_id` is the definition digest |
 | `v2_definition_test` | `definition` | `POST /definitions/test`, before the run; `resource_id` is the digest the workflow definition would have |
-| `v2_connection_create` | `connection` | `POST /connections` — one row per connection revision; `resource_id` is `{connection_id}@{revision}` |
-| `v2_connection_probe` | `connection` | `POST /connections/{id}/probe` — written before the probe connects, since it reaches a real backend with the connection's credentials; `resource_id` is `{connection_id}@{revision}` |
-| `v2_deployment_apply` | `deployment` | `POST /deployments`; `resource_id` is the committed revision. Written in the transaction that moves the deployment head, so it is there the moment the apply returns, and an apply that commits nothing (an idempotent replay, a lost race on the base revision) writes none |
-| `v2_deployment_rollback` | `deployment` | `POST /deployments/rollback`; `resource_id` is `{target_revision}->{committed_revision}`. In the head move's transaction, like an apply's |
+| `v2_connection_create` | `connection` | `POST /connections/{id}/revisions` — one row per connection revision; `resource_id` is `{connection_id}@{revision}` |
+| `v2_connection_probe` | `connection` | `POST /connections/{id}/revisions/{revision}/probes` — written before the probe connects, since it reaches a real backend with the connection's credentials; `resource_id` is `{connection_id}@{revision}` |
+| `v2_deployment_apply` | `deployment` | `POST /deployments` with a `manifest`; `resource_id` is the committed revision. Written in the transaction that moves the deployment head, so it is there the moment the apply returns, and an apply that commits nothing (an idempotent replay, a lost race on the base revision) writes none |
+| `v2_deployment_rollback` | `deployment` | `POST /deployments` with `rollback_to`; `resource_id` is `{rollback_to}->{committed_revision}`. In the head move's transaction, like an apply's |
 
 Reads are not recorded: only mutations, and `POST /definitions/test`, which reaches live backends and so behaves like one.
 

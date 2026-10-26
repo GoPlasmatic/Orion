@@ -105,23 +105,52 @@ pub const V2_CONNECTOR_PACKAGES: &str = "/api/v2/admin/connector-packages";
 pub const V2_CONNECTIONS: &str = "/api/v2/admin/connections";
 pub const V2_DEPLOYMENT_PLANS: &str = "/api/v2/admin/deployment-plans";
 pub const V2_DEFINITIONS: &str = "/api/v2/admin/definitions";
+pub const V2_DEFINITIONS_TEST: &str = "/api/v2/admin/definitions/test";
 pub const V2_DEPLOYMENTS: &str = "/api/v2/admin/deployments";
-pub const V2_DEPLOYMENTS_ROLLBACK: &str = "/api/v2/admin/deployments/rollback";
 pub const V2_EDITION_TRANSITION_PREFLIGHT: &str = "/api/v2/admin/edition-transition-preflight";
 pub const V2_AUTHORING_SCAFFOLD: &str = "/api/v2/admin/authoring/scaffold";
 pub const V2_AUTHORING_LINT: &str = "/api/v2/admin/authoring/lint";
 pub const V2_AUTHORING_PACK: &str = "/api/v2/admin/authoring/pack";
 
-pub fn v2_connector_package_admit(digest: &str) -> String {
-    format!("{V2_CONNECTOR_PACKAGES}/{}/admit", seg(digest))
+pub fn v2_connector_package(digest: &str) -> String {
+    format!("{V2_CONNECTOR_PACKAGES}/{}", seg(digest))
 }
 
-pub fn v2_connector_package_revoke(digest: &str) -> String {
-    format!("{V2_CONNECTOR_PACKAGES}/{}/revoke", seg(digest))
+/// The package's admission: `PUT` admits it.
+pub fn v2_connector_package_admission(digest: &str) -> String {
+    format!("{V2_CONNECTOR_PACKAGES}/{}/admission", seg(digest))
 }
 
-pub fn v2_connection_probe(id: &str) -> String {
-    format!("{V2_CONNECTIONS}/{}/probe", seg(id))
+/// The package's revocations: `POST` records one.
+pub fn v2_connector_package_revocations(digest: &str) -> String {
+    format!("{V2_CONNECTOR_PACKAGES}/{}/revocations", seg(digest))
+}
+
+/// One connection's revisions: `GET` lists them, `POST` creates one.
+pub fn v2_connection_revisions(id: &str) -> String {
+    format!("{V2_CONNECTIONS}/{}/revisions", seg(id))
+}
+
+pub fn v2_connection_revision(id: &str, revision: u64) -> String {
+    format!("{}/{revision}", v2_connection_revisions(id))
+}
+
+/// A connection revision's probes: `POST` runs one.
+pub fn v2_connection_probes(id: &str, revision: u64) -> String {
+    format!("{}/probes", v2_connection_revision(id, revision))
+}
+
+pub fn v2_definition(digest: &str) -> String {
+    format!("{V2_DEFINITIONS}/{}", seg(digest))
+}
+
+/// A page of committed deployment revisions, newest first.
+pub fn v2_deployments(limit: Option<u64>, cursor: Option<&str>) -> String {
+    let qs = query_string(&[
+        ("limit", limit.map(|l| l.to_string())),
+        ("cursor", cursor.map(str::to_string)),
+    ]);
+    format!("{V2_DEPLOYMENTS}{qs}")
 }
 
 pub fn v2_deployment(revision: u64) -> String {
@@ -188,6 +217,15 @@ mod tests {
             "/api/v2/admin/connectors/circuit-breakers/db"
         );
         assert_eq!(data_async("orders"), "/api/v2/data/orders/async");
+        assert_eq!(
+            v2_connector_package_admission("sha256:ab"),
+            "/api/v2/admin/connector-packages/sha256%3Aab/admission"
+        );
+        assert_eq!(
+            v2_deployments(Some(10), Some("7")),
+            "/api/v2/admin/deployments?limit=10&cursor=7"
+        );
+        assert_eq!(v2_deployments(None, None), "/api/v2/admin/deployments");
     }
 
     /// The defect this encoding exists for. `execute` concatenates the path
@@ -224,8 +262,8 @@ mod tests {
         for id in ["wf-1", "orders_v2", "a.b.c", "X9", "a-b_c.d~e"] {
             assert_eq!(trace(id), format!("/api/v2/admin/traces/{id}"));
             assert_eq!(
-                v2_connection_probe(id),
-                format!("/api/v2/admin/connections/{id}/probe")
+                v2_connection_probes(id, 2),
+                format!("/api/v2/admin/connections/{id}/revisions/2/probes")
             );
         }
     }

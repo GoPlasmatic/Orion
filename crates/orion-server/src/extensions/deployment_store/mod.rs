@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-pub use error::{DeploymentError, DeploymentErrorKind, ErrorClass};
+pub use error::{DeploymentError, DeploymentErrorKind};
 pub use manifest::{CanonicalManifest, EntityKind, EntityRef, ManifestMember};
 
 use super::ImplementationKind;
@@ -713,7 +713,7 @@ impl ImmutableDeploymentStore {
         };
         Some(match self.package_schemas(package_digest)? {
             Ok(bundle) => bundle.validate_instance(path, instance),
-            Err(e) => Err(SchemaProfileFinding::new(e.code, e.message)),
+            Err(e) => Err(SchemaProfileFinding::new(e.code(), e.message)),
         })
     }
 

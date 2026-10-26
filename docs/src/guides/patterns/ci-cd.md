@@ -177,9 +177,9 @@ orion-cli deployments wait 8 --target observed    # 8: the revision the apply co
 A rollback commits an earlier revision's manifest as a new revision:
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v2/admin/deployments/rollback \
+curl -s -X POST http://localhost:8080/api/v2/admin/deployments \
   -H 'Content-Type: application/json' \
-  -d '{"idempotency_key": "rollback-7", "expected_head_revision": 7, "target_revision": 6}'
+  -d '{"idempotency_key": "rollback-7", "base_revision": 7, "rollback_to": 6}'
 ```
 
 `orion-cli deployments rollback` takes the same values as flags. Re-running the production job against the previous tag works too: a member whose definition an earlier revision deployed takes that revision back.

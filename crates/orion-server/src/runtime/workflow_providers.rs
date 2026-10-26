@@ -15,6 +15,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use crate::errors::OrionError;
 use crate::extensions::workflow_provider::{
     WorkflowHost, WorkflowPackage, WorkflowProviderBackend, describe,
 };
@@ -174,24 +175,14 @@ pub async fn admission_problems(
 }
 
 /// `problems` as the refusal an admin route answers: `400 VALIDATION_ERROR`
-/// naming each by file and path, in the error envelope.
-pub fn refusal(
-    what: &str,
-    problems: Vec<crate::extensions::PackageProblem>,
-) -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
-    let envelope = orion_api::ErrorEnvelope {
-        error: orion_api::ErrorBody {
-            code: orion_api::error::codes::VALIDATION_ERROR.to_string(),
-            message: format!("{what}: the workflow package is not hermetic or does not compile"),
-            details: problems
-                .into_iter()
-                .map(|p| crate::errors::FieldError::new(p.path, p.code, p.message))
-                .collect(),
-            request_id: crate::request_context::request_id(),
-        },
-    };
-    (
-        axum::http::StatusCode::BAD_REQUEST,
-        axum::Json(serde_json::to_value(envelope).unwrap_or_default()),
-    )
+/// naming each by file and path.
+pub fn refusal(what: &str, problems: Vec<crate::extensions::PackageProblem>) -> OrionError {
+    OrionError::Validation {
+        code: orion_api::error::codes::VALIDATION_ERROR,
+        message: format!("{what}: the workflow package is not hermetic or does not compile"),
+        details: problems
+            .into_iter()
+            .map(|p| crate::errors::FieldError::new(p.path, p.code, p.message))
+            .collect(),
+    }
 }

@@ -113,9 +113,9 @@ async fn deploy_recall(app: &Router) -> String {
     let (status, refused) = send(
         app,
         "POST",
-        "/api/v2/admin/connections",
+        "/api/v2/admin/connections/crm/revisions",
         Some(json!({
-            "connection_id": "crm", "revision": 1, "provider_digest": digest,
+            "revision": 1, "provider_digest": digest,
             "public_config": {"endpoint": "https://crm.example"},
         })),
     )
@@ -129,9 +129,9 @@ async fn deploy_recall(app: &Router) -> String {
     let (status, created) = send(
         app,
         "POST",
-        "/api/v2/admin/connections",
+        "/api/v2/admin/connections/crm/revisions",
         Some(json!({
-            "connection_id": "crm", "revision": 1, "provider_digest": digest,
+            "revision": 1, "provider_digest": digest,
             "public_config": {"endpoint": "https://crm.example"},
             "bindings": {"cache": "cache-main"},
         })),
@@ -228,21 +228,27 @@ async fn apply(app: &Router, base: u64, members: Vec<Value>, digest: &str) -> (S
         app,
         "POST",
         "/api/v2/admin/deployments",
-        Some(json!({
-            "idempotency_key": key,
-            "base_revision": base,
-            "manifest": {
-                "schema_version": 2,
-                "providers": [{
-                    "publisher": "acme",
-                    "provider_id": "acme.recall",
-                    "version": "1.0.0",
-                    "digest": digest,
-                }],
-                "members": members,
-            },
-            "reason": "workflow package test",
-        })),
+        Some(
+            crate::common::deploy::reviewed(
+                app,
+                json!({
+                    "idempotency_key": key,
+                    "base_revision": base,
+                    "manifest": {
+                        "schema_version": 2,
+                        "providers": [{
+                            "publisher": "acme",
+                            "provider_id": "acme.recall",
+                            "version": "1.0.0",
+                            "digest": digest,
+                        }],
+                        "members": members,
+                    },
+                    "reason": "workflow package test",
+                }),
+            )
+            .await,
+        ),
     )
     .await
 }
@@ -314,11 +320,11 @@ async fn a_workflow_package_runs_survives_a_restart_and_stops_when_revoked() {
     let (status, body) = send(
         &app,
         "POST",
-        &format!("/api/v2/admin/connector-packages/{digest}/revoke"),
+        &format!("/api/v2/admin/connector-packages/{digest}/revocations"),
         Some(json!({"reason": "test"})),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(status, StatusCode::CREATED, "{body}");
     assert!(!workflow_providers(&app).await.contains(&digest));
     let (status, body) = call_front(&app).await;
     assert_ne!(

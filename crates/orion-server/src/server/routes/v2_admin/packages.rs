@@ -2,21 +2,46 @@
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use orion_api::v2::{
-    AdmitPackageRequest, AdmitPackageResponse, ConnectorPackageSummary,
+    AdmitPackageRequest, AdmitPackageResponse, ConnectorPackageResponse, ConnectorPackageSummary,
     ConnectorPackagesListResponse, ProviderAdmissionDto, RevokePackageRequest,
     RevokePackageResponse, UploadPackageRequest, UploadPackageResponse,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use super::{decode_files_map, deployment_err_response};
+use super::{V2Error, V2Result, decode_files_map};
 use crate::extensions::Digest;
 use crate::extensions::authoring::pack_provider_package;
-use crate::extensions::deployment_store::{ArchiveEntryInput, ArtifactState, ProviderPackageRow};
+use crate::extensions::deployment_store::{
+    ArchiveEntryInput, ArtifactState, DeploymentErrorKind, ProviderAdmissionRow, ProviderPackageRow,
+};
 use crate::server::admin_auth::AdminPrincipal;
+use crate::server::extract::OrionJson;
 use crate::server::state::AppState;
+
+fn admission_dto(adm: &ProviderAdmissionRow) -> ProviderAdmissionDto {
+    ProviderAdmissionDto {
+        package_digest: adm.package_digest.to_string(),
+        policy_id: adm.policy_id.clone(),
+        admission_fingerprint: adm.admission_fingerprint.clone(),
+        revoked: adm.revoked,
+    }
+}
+
+fn artifact_state_name(state: Option<&ArtifactState>) -> &'static str {
+    match state {
+        Some(ArtifactState::Draining) => "draining",
+        Some(ArtifactState::Deleted) => "deleted",
+        _ => "active",
+    }
+}
+
+/// A workflow package's hermetic-rule problems as the refusal they are:
+/// `400 VALIDATION_ERROR` naming each by file and path.
+fn refusal(what: &str, problems: Vec<crate::extensions::PackageProblem>) -> V2Error {
+    V2Error::Orion(crate::runtime::workflow_providers::refusal(what, problems))
+}
 
 fn package_row_to_summary(
     row: &ProviderPackageRow,
@@ -58,7 +83,9 @@ fn package_row_to_summary(
         (status = 200, description = "Connector provider packages", body = ConnectorPackagesListResponse),
     )
 )]
-pub(crate) async fn list_connector_packages(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn list_connector_packages(
+    State(state): State<AppState>,
+) -> Json<ConnectorPackagesListResponse> {
     let raw_packages = state.deployments.list_packages();
     let raw_admissions = state.deployments.list_admissions();
     let digests: Vec<String> = raw_packages
@@ -72,15 +99,8 @@ pub(crate) async fn list_connector_packages(State(state): State<AppState>) -> im
         .artifact_states(&state.db_pool, &digests)
         .await
         .unwrap_or_default();
-    let admissions: Vec<ProviderAdmissionDto> = raw_admissions
-        .iter()
-        .map(|a| ProviderAdmissionDto {
-            package_digest: a.package_digest.to_string(),
-            policy_id: a.policy_id.clone(),
-            admission_fingerprint: a.admission_fingerprint.clone(),
-            revoked: a.revoked,
-        })
-        .collect();
+    let admissions: Vec<ProviderAdmissionDto> =
+        raw_admissions.iter().map(|a| admission_dto(a)).collect();
     let packages: Vec<ConnectorPackageSummary> = raw_packages
         .iter()
         .map(|p| {
@@ -89,11 +109,7 @@ pub(crate) async fn list_connector_packages(State(state): State<AppState>) -> im
                 .find(|a| a.package_digest == p.package_digest);
             let admitted = adm.is_some_and(|a| !a.revoked);
             let revoked = adm.is_some_and(|a| a.revoked);
-            let artifact_state = match states.get(p.package_digest.as_str()) {
-                Some(ArtifactState::Draining) => "draining",
-                Some(ArtifactState::Deleted) => "deleted",
-                _ => "active",
-            };
+            let artifact_state = artifact_state_name(states.get(p.package_digest.as_str()));
             package_row_to_summary(p, admitted, revoked, artifact_state)
         })
         .collect();
@@ -102,6 +118,49 @@ pub(crate) async fn list_connector_packages(State(state): State<AppState>) -> im
         packages,
         admissions,
     })
+}
+
+/// `GET /api/v2/admin/connector-packages/{digest}`.
+#[utoipa::path(
+    get,
+    path = "/api/v2/admin/connector-packages/{digest}",
+    tag = "Providers",
+    summary = "Read one connector provider package",
+    description = "The package stored under the digest, with its manifest, distribution and inventory, and the admission recorded for it.",
+    params(
+        ("digest" = String, Path, description = "Package SHA-256 digest (`sha256:<64-hex>`)")
+    ),
+    responses(
+        (status = 200, description = "The package and its admission", body = ConnectorPackageResponse),
+        (status = 404, description = "No package is stored under the digest (`PACKAGE_NOT_FOUND`)"),
+    )
+)]
+pub(crate) async fn get_connector_package(
+    State(state): State<AppState>,
+    Path(digest): Path<String>,
+) -> V2Result<Json<ConnectorPackageResponse>> {
+    let package = state.deployments.get_package(&digest).ok_or_else(|| {
+        V2Error::new(
+            DeploymentErrorKind::PackageNotFound,
+            format!("no connector package is stored as '{digest}'"),
+        )
+    })?;
+    let admission = state.deployments.get_admission(&digest);
+    let states = state
+        .deployments
+        .artifact_states(&state.db_pool, std::slice::from_ref(&digest))
+        .await
+        .unwrap_or_default();
+    let summary = package_row_to_summary(
+        &package,
+        admission.as_ref().is_some_and(|a| !a.revoked),
+        admission.as_ref().is_some_and(|a| a.revoked),
+        artifact_state_name(states.get(digest.as_str())),
+    );
+    Ok(Json(ConnectorPackageResponse {
+        package: summary,
+        admission: admission.as_deref().map(admission_dto),
+    }))
 }
 
 /// `POST /api/v2/admin/connector-packages`.
@@ -121,26 +180,15 @@ pub(crate) async fn list_connector_packages(State(state): State<AppState>) -> im
 pub(crate) async fn upload_connector_package(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    Json(req): Json<UploadPackageRequest>,
-) -> impl IntoResponse {
+    OrionJson(req): OrionJson<UploadPackageRequest>,
+) -> V2Result<(StatusCode, Json<UploadPackageResponse>)> {
     let raw_files = req.merged_files();
-    let mut files = match decode_files_map(&raw_files) {
-        Ok(f) => f,
-        Err(msg) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(crate::errors::error_envelope_json(
-                    "INVALID_PACKAGE_ENCODING",
-                    msg,
-                )),
-            );
-        }
-    };
+    let mut files = decode_files_map(&raw_files)?;
     // A workflow package is held to the hermetic rules before anything is
     // stored.
     let problems = crate::runtime::workflow_providers::upload_problems(&state, &files);
     if !problems.is_empty() {
-        return crate::runtime::workflow_providers::refusal("package refused", problems);
+        return Err(refusal("package refused", problems));
     }
     if !files.contains_key("inventory.json")
         && let Ok(packed) = pack_provider_package(&files)
@@ -157,24 +205,20 @@ pub(crate) async fn upload_connector_package(
         })
         .collect();
 
-    let row = match state
+    let row = state
         .deployments
         .ingest_verified_archive_in_db(&state.db_pool, &entries)
-        .await
-    {
-        Ok(row) => row,
-        Err(e) => return deployment_err_response(e),
-    };
+        .await?;
 
-    let mut admission_dto = None;
+    let mut admission = None;
     if req.admit {
         let problems =
             crate::runtime::workflow_providers::admission_problems(&state, &row.package_digest)
                 .await;
         if !problems.is_empty() {
-            return crate::runtime::workflow_providers::refusal("admission refused", problems);
+            return Err(refusal("admission refused", problems));
         }
-        match state
+        let adm = state
             .deployments
             .admit_package_in_db(
                 &state.db_pool,
@@ -182,18 +226,8 @@ pub(crate) async fn upload_connector_package(
                 state.composition.admission(),
                 req.lock.as_ref(),
             )
-            .await
-        {
-            Ok(adm) => {
-                admission_dto = Some(ProviderAdmissionDto {
-                    package_digest: adm.package_digest.into_string(),
-                    policy_id: adm.policy_id,
-                    admission_fingerprint: adm.admission_fingerprint,
-                    revoked: adm.revoked,
-                });
-            }
-            Err(e) => return deployment_err_response(e),
-        }
+            .await?;
+        admission = Some(admission_dto(&adm));
         crate::runtime::workflow_providers::sync(&state).await;
     }
 
@@ -205,48 +239,48 @@ pub(crate) async fn upload_connector_package(
         &row.package_digest,
     );
 
-    let summary = package_row_to_summary(&row, admission_dto.is_some(), false, "active");
-    let resp = UploadPackageResponse {
-        status: "uploaded".to_string(),
-        digest: row.package_digest.to_string(),
-        package: summary,
-        admission: admission_dto,
-    };
-    (
+    let summary = package_row_to_summary(&row, admission.is_some(), false, "active");
+    Ok((
         StatusCode::CREATED,
-        Json(serde_json::to_value(resp).unwrap_or(Value::Null)),
-    )
+        Json(UploadPackageResponse {
+            status: "uploaded".to_string(),
+            digest: row.package_digest.to_string(),
+            package: summary,
+            admission,
+        }),
+    ))
 }
 
-/// `POST /api/v2/admin/connector-packages/{digest}/admit`.
+/// `PUT /api/v2/admin/connector-packages/{digest}/admission`.
 #[utoipa::path(
-    post,
-    path = "/api/v2/admin/connector-packages/{digest}/admit",
+    put,
+    path = "/api/v2/admin/connector-packages/{digest}/admission",
     tag = "Providers",
     summary = "Admit an uploaded connector provider package",
-    description = "Evaluates the active edition admission policy against the uploaded package and records a durable admission fingerprint. A `workflow` package is checked against the hermetic rules again first, and once admitted is registered as a provider backend under its digest.",
+    description = "Evaluates the active edition admission policy against the uploaded package and records its admission, with a durable fingerprint. Putting the admission again re-evaluates it. A `workflow` package is checked against the hermetic rules again first, and once admitted is registered as a provider backend under its digest.",
     params(
         ("digest" = String, Path, description = "Package SHA-256 digest (`sha256:<64-hex>`)")
     ),
     request_body(content = Option<AdmitPackageRequest>, description = "Optional lockfile verification payload"),
     responses(
         (status = 200, description = "Package admitted", body = AdmitPackageResponse),
-        (status = 403, description = "Rejected by admission policy"),
-        (status = 404, description = "Package not found"),
+        (status = 400, description = "A workflow package that is not hermetic (`VALIDATION_ERROR`, by file), or a lock that does not verify"),
+        (status = 403, description = "Rejected by the admission policy"),
+        (status = 404, description = "No package is stored under the digest (`PACKAGE_NOT_FOUND`)"),
     )
 )]
 pub(crate) async fn admit_connector_package(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(digest): Path<String>,
-    req: Option<Json<AdmitPackageRequest>>,
-) -> impl IntoResponse {
-    let lock = req.and_then(|Json(r)| r.lock);
+    req: Option<OrionJson<AdmitPackageRequest>>,
+) -> V2Result<Json<AdmitPackageResponse>> {
+    let lock = req.and_then(|OrionJson(r)| r.lock);
     let problems = crate::runtime::workflow_providers::admission_problems(&state, &digest).await;
     if !problems.is_empty() {
-        return crate::runtime::workflow_providers::refusal("admission refused", problems);
+        return Err(refusal("admission refused", problems));
     }
-    match state
+    let adm = state
         .deployments
         .admit_package_in_db(
             &state.db_pool,
@@ -254,92 +288,71 @@ pub(crate) async fn admit_connector_package(
             state.composition.admission(),
             lock.as_ref(),
         )
-        .await
-    {
-        Ok(adm) => {
-            crate::runtime::workflow_providers::sync(&state).await;
-            crate::server::routes::admin::audit_log(
-                &state.audit_queue,
-                &principal,
-                "v2_package_admit",
-                "connector_package",
-                &digest,
-            );
-            let resp = AdmitPackageResponse {
-                status: "admitted".to_string(),
-                admission: ProviderAdmissionDto {
-                    package_digest: adm.package_digest.into_string(),
-                    policy_id: adm.policy_id,
-                    admission_fingerprint: adm.admission_fingerprint,
-                    revoked: adm.revoked,
-                },
-            };
-            (
-                StatusCode::OK,
-                Json(serde_json::to_value(resp).unwrap_or(Value::Null)),
-            )
-        }
-        Err(e) => deployment_err_response(e),
-    }
+        .await?;
+    crate::runtime::workflow_providers::sync(&state).await;
+    crate::server::routes::admin::audit_log(
+        &state.audit_queue,
+        &principal,
+        "v2_package_admit",
+        "connector_package",
+        &digest,
+    );
+    Ok(Json(AdmitPackageResponse {
+        status: "admitted".to_string(),
+        admission: admission_dto(&adm),
+    }))
 }
 
-/// `POST /api/v2/admin/connector-packages/{digest}/revoke`.
+/// `POST /api/v2/admin/connector-packages/{digest}/revocations`.
 #[utoipa::path(
     post,
-    path = "/api/v2/admin/connector-packages/{digest}/revoke",
+    path = "/api/v2/admin/connector-packages/{digest}/revocations",
     tag = "Providers",
     summary = "Revoke an admitted connector provider package",
-    description = "Marks the package digest as revoked in the deployment store and runtime admission policy, blocking new invocations and deployments. A `workflow` package's backend is unregistered.",
+    description = "Records a revocation of the package's admission in the deployment store and the runtime admission ledger, blocking new invocations and deployments. A `workflow` package's backend is unregistered.",
     params(
         ("digest" = String, Path, description = "Package SHA-256 digest (`sha256:<64-hex>`)")
     ),
     request_body(content = Option<RevokePackageRequest>, description = "Optional revocation reason"),
     responses(
-        (status = 200, description = "Package revoked", body = RevokePackageResponse),
-        (status = 404, description = "Admission not found"),
+        (status = 201, description = "Package revoked", body = RevokePackageResponse),
+        (status = 404, description = "The package was never admitted (`ADMISSION_NOT_FOUND`)"),
     )
 )]
 pub(crate) async fn revoke_connector_package(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(digest): Path<String>,
-    req: Option<Json<RevokePackageRequest>>,
-) -> impl IntoResponse {
-    let reason = req.and_then(|Json(r)| r.reason);
-    match state
+    req: Option<OrionJson<RevokePackageRequest>>,
+) -> V2Result<(StatusCode, Json<RevokePackageResponse>)> {
+    let reason = req.and_then(|OrionJson(r)| r.reason);
+    state
         .deployments
         .revoke_package_in_db(&state.db_pool, &digest)
-        .await
-    {
-        Ok(()) => {
-            // The store revoked a package stored under `digest`, so it is
-            // one.
-            if let Ok(revoked) = Digest::parse(&digest) {
-                state
-                    .composition
-                    .admission()
-                    .ledger()
-                    .revoke_digest(&revoked);
-            }
-            crate::runtime::workflow_providers::sync(&state).await;
-            crate::server::routes::admin::audit_log(
-                &state.audit_queue,
-                &principal,
-                "v2_package_revoke",
-                "connector_package",
-                &digest,
-            );
-            let resp = RevokePackageResponse {
-                status: "revoked".to_string(),
-                package_digest: digest,
-                revoked: true,
-                reason,
-            };
-            (
-                StatusCode::OK,
-                Json(serde_json::to_value(resp).unwrap_or_else(|_| json!({"revoked": true}))),
-            )
-        }
-        Err(e) => deployment_err_response(e),
+        .await?;
+    // The store revoked a package stored under `digest`, so it is one.
+    if let Ok(revoked) = Digest::parse(&digest) {
+        state
+            .composition
+            .admission()
+            .ledger()
+            .revoke_digest(&revoked);
     }
+    crate::runtime::workflow_providers::sync(&state).await;
+    crate::server::routes::admin::audit_log(
+        &state.audit_queue,
+        &principal,
+        "v2_package_revoke",
+        "connector_package",
+        &digest,
+    );
+    Ok((
+        StatusCode::CREATED,
+        Json(RevokePackageResponse {
+            status: "revoked".to_string(),
+            package_digest: digest,
+            revoked: true,
+            reason,
+        }),
+    ))
 }

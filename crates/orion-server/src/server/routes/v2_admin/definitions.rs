@@ -8,15 +8,14 @@
 
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
 use axum::{Json, Router};
 use orion_api::v2::{
     ChannelDefinition, Definition, DefinitionAdvisory, DefinitionResponse, TestDefinitionRequest,
-    WorkflowDefinition,
+    TestDefinitionResponse, WorkflowDefinition,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use super::deployment_err_response;
+use super::V2Result;
 use crate::errors::{FieldError, OrionError};
 use crate::runtime::definitions;
 use crate::server::admin_auth::AdminPrincipal;
@@ -40,21 +39,17 @@ pub(crate) async fn upload_definition(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
     OrionJson(mut definition): OrionJson<Definition>,
-) -> Result<impl IntoResponse, OrionError> {
+) -> V2Result<(StatusCode, Json<DefinitionResponse>)> {
     validate(&state, &mut definition).await?;
     let advisories = match &definition {
         Definition::Workflow(workflow) => workflow_advisories(&state, workflow),
         Definition::Channel(_) | Definition::Plugin(_) => Vec::new(),
     };
     let bytes = definitions::canonical_bytes(&definition)?;
-    let row = match state
+    let row = state
         .deployments
         .store_definition_artifact_in_db(&state.db_pool, bytes)
-        .await
-    {
-        Ok(row) => row,
-        Err(e) => return Ok(deployment_err_response(e).into_response()),
-    };
+        .await?;
     crate::server::routes::admin::audit_log(
         &state.audit_queue,
         &principal,
@@ -70,8 +65,7 @@ pub(crate) async fn upload_definition(
             size_bytes: row.size_bytes as u64,
             advisories,
         }),
-    )
-        .into_response())
+    ))
 }
 
 /// `GET /api/v2/admin/definitions/{digest}`.
@@ -121,7 +115,7 @@ const TEST_CHANNEL: &str = "__test__";
     description = "Refuses a workflow definition `POST /definitions` would refuse, then runs it once on this node's engine — its functions, plugins and connectors, so tasks reach **live backends** — against the given `data` and `metadata`, normalised the way an ingress builds them with this node's `[vars]` stamped in. Nothing is stored and nothing is stubbed. The trace is kept on every outcome, so a run that stopped short still answers `200` with the steps that ran and the `error` that stopped it. Recorded in the audit log before the run.",
     request_body = TestDefinitionRequest,
     responses(
-        (status = 200, description = "The run, with its trace", body = crate::server::routes::openapi::schemas::WorkflowTestResult),
+        (status = 200, description = "The run, with its trace", body = TestDefinitionResponse),
         (status = 400, description = "The definition would not serve, or `metadata` is not an object; `details` names each problem by field"),
     )
 )]
@@ -129,7 +123,7 @@ pub(crate) async fn test_definition(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
     OrionJson(request): OrionJson<TestDefinitionRequest>,
-) -> Result<Json<Value>, OrionError> {
+) -> Result<Json<TestDefinitionResponse>, OrionError> {
     let TestDefinitionRequest {
         definition,
         data,
@@ -198,19 +192,23 @@ pub(crate) async fn test_definition(
     .await;
 
     let message = &result.message;
-    let mut body = json!({
-        "matched": result.matched,
-        "trace": serde_json::to_value(&result.trace)?,
-        "output": Value::from(message.context().data()),
-        "errors": serde_json::to_value(message.errors())?,
-    });
-    if let Some(e) = result.error {
-        // Through the same redaction as every other engine-error surface:
-        // the raw text can carry driver detail, so it goes to the log.
+    let errors = match serde_json::to_value(message.errors())? {
+        Value::Array(errors) => errors,
+        other => vec![other],
+    };
+    // Through the same redaction as every other engine-error surface: the
+    // raw text can carry driver detail, so it goes to the log.
+    let error = result.error.map(|e| {
         tracing::warn!(error = %e, "definition test run failed");
-        body["error"] = json!(OrionError::Engine(e).client_message());
-    }
-    Ok(Json(body))
+        OrionError::Engine(e).client_message()
+    });
+    Ok(Json(TestDefinitionResponse {
+        matched: result.matched,
+        trace: serde_json::to_value(&result.trace)?,
+        output: Value::from(message.context().data()),
+        errors,
+        error,
+    }))
 }
 
 pub(super) fn routes() -> Router<AppState> {

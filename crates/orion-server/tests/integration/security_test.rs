@@ -950,6 +950,8 @@ async fn test_read_only_key_reads_but_cannot_mutate() {
                 "base_revision": 0,
                 "manifest": {"schema_version": 2, "providers": [], "members": []},
                 "reason": "read-only key",
+                // Refused before it is read: the key may not mutate.
+                "reviewed_manifest_digest": format!("sha256:{}", "0".repeat(64)),
             })),
         ))
         .await

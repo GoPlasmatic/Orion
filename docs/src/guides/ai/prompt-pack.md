@@ -102,8 +102,11 @@ always async.
    { "definition": { ...workflow... }, "data": { ... } }
    → returns the output and an execution trace (which tasks ran / were
    skipped). It runs against LIVE connections: nothing is stubbed.
-3. Deploy: POST /api/v2/admin/deployments with
+3. Plan, then deploy. POST /api/v2/admin/deployment-plans
+   { "base_revision": <current head>, "manifest": ... } answers the
+   reviewed_manifest_digest; POST /api/v2/admin/deployments with
    { "idempotency_key": "...", "base_revision": <current head>,
+     "reason": "...", "reviewed_manifest_digest": "sha256:...",
      "manifest": { "schema_version": 2, "providers": [], "members": [
        { "entity": { "kind": "workflow", "id": "orders-wf", "revision": 1 },
          "definition_digest": "sha256:..." },
@@ -112,24 +115,24 @@ always async.
          "requires": [{ "kind": "workflow", "id": "orders-wf", "revision": 1 }] } ] } }
    A channel requires its workflow. The engine hot-reloads; no restart.
 4. A deployment is EVERYTHING the node serves. A member left out of the
-   manifest stops serving. Read the current head and its manifest with
-   GET /api/v2/admin/deployments and start from it.
+   manifest stops serving. Read the current head with
+   GET /api/v2/admin/deployments, its manifest with
+   GET /api/v2/admin/deployments/{head}, and start from it.
 5. A changed definition is a new digest. Give its member the next revision
-   and apply a new deployment. Check it first with
-   POST /api/v2/admin/deployment-plans { "base_revision": N, "manifest": ... }.
-6. Rollback is rolling FORWARD: POST /api/v2/admin/deployments/rollback
-   { "idempotency_key": "...", "expected_head_revision": N,
-     "target_revision": M } commits revision M's manifest as a new revision.
+   and plan and apply a new deployment, as in step 3.
+6. Rollback is rolling FORWARD: POST /api/v2/admin/deployments
+   { "idempotency_key": "...", "base_revision": N, "rollback_to": M }
+   commits revision M's manifest as a new revision.
 
 ## Core API calls
 
 POST  /api/v2/admin/definitions                    upload a definition, answers its digest
 POST  /api/v2/admin/definitions/test               run a workflow once with sample data
-POST  /api/v2/admin/connections                    create a connection revision
+POST  /api/v2/admin/connections/{id}/revisions     create a connection revision
 POST  /api/v2/admin/deployment-plans               check a manifest; commits nothing
-POST  /api/v2/admin/deployments                    apply a manifest as the next revision
-GET   /api/v2/admin/deployments                    the head and every revision
-POST  /api/v2/admin/deployments/rollback           restore an earlier manifest
+POST  /api/v2/admin/deployments                    apply a reviewed manifest, or roll back
+GET   /api/v2/admin/deployments                    the head and a page of revisions
+GET   /api/v2/admin/deployments/{revision}         one revision with its manifest
 GET   /api/v2/admin/functions                      function input schemas
 GET   /api/v2/openapi.json                         full OpenAPI 3.1 spec
 POST  /api/v2/data/{route}                         call a deployed service

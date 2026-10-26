@@ -215,7 +215,7 @@ impl OrionClient {
 
     // -- The one request path --
 
-    async fn execute(
+    pub(crate) async fn execute(
         &self,
         method: Method,
         path: &str,

@@ -179,23 +179,53 @@ fn resolve_requires(members: &mut [Value]) {
     }
 }
 
+/// The digest `POST /deployment-plans` answers for `manifest` on `base`,
+/// the one an apply must name. A manifest the plan refuses gets a digest
+/// nothing plans to: the apply then plans it itself and answers the same
+/// refusal, before it ever compares digests.
+pub async fn reviewed_digest(app: &Router, base: u64, manifest: &Value) -> String {
+    let (status, plan) = send(
+        app,
+        "POST",
+        "/api/v2/admin/deployment-plans",
+        Some(json!({"base_revision": base, "manifest": manifest})),
+    )
+    .await;
+    match plan["reviewed_manifest_digest"].as_str() {
+        Some(digest) if status == StatusCode::OK => digest.to_string(),
+        _ => format!("sha256:{}", "0".repeat(64)),
+    }
+}
+
+/// `body`, an apply, with the `reviewed_manifest_digest` its plan answers.
+pub async fn reviewed(app: &Router, mut body: Value) -> Value {
+    let base = body["base_revision"].as_u64().unwrap_or(0);
+    let digest = reviewed_digest(app, base, &body["manifest"]).await;
+    body["reviewed_manifest_digest"] = json!(digest);
+    body
+}
+
+/// The body of an apply of `manifest` over `base` under `key`, planned
+/// first for its reviewed digest.
+pub async fn apply_body(app: &Router, base: u64, manifest: Value, key: &str) -> Value {
+    let reviewed = reviewed_digest(app, base, &manifest).await;
+    json!({
+        "idempotency_key": key,
+        "base_revision": base,
+        "manifest": manifest,
+        "reason": "test fixture",
+        "reviewed_manifest_digest": reviewed,
+    })
+}
+
 /// Apply `members` over `base`, answering the status and the body as they
 /// are — for a test whose subject is what an apply answers.
 pub async fn apply(app: &Router, base: u64, members: Vec<Value>) -> (StatusCode, Value) {
     static KEYS: AtomicU64 = AtomicU64::new(0);
     let key = format!("fixture-{}", KEYS.fetch_add(1, Ordering::Relaxed));
-    send(
-        app,
-        "POST",
-        "/api/v2/admin/deployments",
-        Some(json!({
-            "idempotency_key": key,
-            "base_revision": base,
-            "manifest": {"schema_version": 2, "providers": [], "members": members},
-            "reason": "test fixture",
-        })),
-    )
-    .await
+    let manifest = json!({"schema_version": 2, "providers": [], "members": members});
+    let body = apply_body(app, base, manifest, &key).await;
+    send(app, "POST", "/api/v2/admin/deployments", Some(body)).await
 }
 
 /// Commit `members` over `base` straight into `state`'s deployment store,
@@ -433,9 +463,8 @@ pub async fn create_connection(app: &Router, connector: &Value) -> (String, u64,
     let (status, created) = send(
         app,
         "POST",
-        "/api/v2/admin/connections",
+        &format!("/api/v2/admin/connections/{id}/revisions"),
         Some(json!({
-            "connection_id": id,
             "revision": revision,
             "provider_digest": provider,
             "public_config": config,

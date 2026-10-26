@@ -3,11 +3,10 @@
 
 use axum::Json;
 use axum::extract::State;
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
 use orion_api::v2::{EditionTransitionPreflightRequest, EditionTransitionPreflightResponse};
-use serde_json::{Value, json};
+use serde_json::json;
 
+use crate::server::extract::OrionJson;
 use crate::server::state::AppState;
 
 /// `POST /api/v2/admin/edition-transition-preflight`.
@@ -24,9 +23,9 @@ use crate::server::state::AppState;
 )]
 pub(crate) async fn edition_transition_preflight(
     State(state): State<AppState>,
-    req: Option<Json<EditionTransitionPreflightRequest>>,
-) -> impl IntoResponse {
-    let requested_rev = req.and_then(|Json(r)| r.revision);
+    req: Option<OrionJson<EditionTransitionPreflightRequest>>,
+) -> Json<EditionTransitionPreflightResponse> {
+    let requested_rev = req.and_then(|OrionJson(r)| r.revision);
     let (head_rev, _) = state.deployments.current_head();
     let target_rev = requested_rev.unwrap_or(head_rev);
 
@@ -57,7 +56,7 @@ pub(crate) async fn edition_transition_preflight(
     }
 
     let transition_allowed = incompatible_providers.is_empty() && incompatible_channels.is_empty();
-    let dto = EditionTransitionPreflightResponse {
+    Json(EditionTransitionPreflightResponse {
         target_edition: "community".to_string(),
         transition_allowed,
         inspected_revision: target_rev,
@@ -69,13 +68,5 @@ pub(crate) async fn edition_transition_preflight(
             "2. Export encrypted secret store backup and retain historical rollback revisions".to_string(),
             "3. Replace or remove any Enterprise providers/channels in a new candidate revision before starting the Community binary".to_string(),
         ],
-    };
-    let mut val = serde_json::to_value(&dto).unwrap_or(Value::Null);
-    if let Some(obj) = val.as_object_mut() {
-        obj.insert(
-            "data".to_string(),
-            serde_json::to_value(&dto).unwrap_or(Value::Null),
-        );
-    }
-    (StatusCode::OK, Json(val))
+    })
 }

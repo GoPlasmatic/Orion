@@ -19,11 +19,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use orion_api::v2::{
     COMPILED_DEPLOYMENT_SCHEMA_VERSION, CompiledConnection, CompiledDeployment,
-    ConnectionRevisionResponse, ConnectionsListResponse, CreateConnectionRevisionRequest,
-    CreateConnectionRevisionResponse, DefinitionResponse, DeploymentsSummaryResponse,
-    RuntimeCapabilitiesResponse,
+    ConnectionRevisionResponse, CreateConnectionRevisionRequest, Definition,
 };
-use orion_client::paths;
+use orion_client::V2Admin;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -182,14 +180,38 @@ pub struct History {
 }
 
 impl History {
-    pub fn from_summary(summary: &DeploymentsSummaryResponse) -> Self {
+    /// The target's history: every committed revision, page by page, and
+    /// the manifest of each one not compacted. A compacted revision has no
+    /// members left to read.
+    pub async fn read(client: &OrionClient) -> Result<Self> {
+        let first = client.list_deployments(None, None).await?;
         let mut history = Self {
-            head_revision: summary.head_revision,
+            head_revision: first.head_revision,
             ..Self::default()
         };
-        for revision in &summary.revisions {
+        let mut page = first;
+        loop {
+            for summary in page.data.iter().filter(|r| !r.members_compacted) {
+                let revision = client.get_deployment(summary.revision).await?;
+                history.add(
+                    summary.revision,
+                    &summary.manifest_digest,
+                    &revision.manifest,
+                );
+            }
+            let Some(cursor) = page.next_cursor.take() else {
+                break;
+            };
+            page = client.list_deployments(None, Some(&cursor)).await?;
+        }
+        Ok(history)
+    }
+
+    /// Record one revision's members.
+    fn add(&mut self, revision: u64, manifest_digest: &str, manifest: &Value) {
+        {
             let manifest: StoredManifest =
-                serde_json::from_value(revision.manifest.clone()).unwrap_or_default();
+                serde_json::from_value(manifest.clone()).unwrap_or_default();
             let members: Vec<_> = manifest
                 .members
                 .into_iter()
@@ -202,13 +224,12 @@ impl History {
                     )
                 })
                 .collect();
-            if revision.revision == summary.head_revision {
-                history.head = members.clone();
-                history.head_manifest_digest = Some(revision.manifest_digest.clone());
+            if revision == self.head_revision {
+                self.head = members.clone();
+                self.head_manifest_digest = Some(manifest_digest.to_string());
             }
-            history.all.extend(members);
+            self.all.extend(members);
         }
-        history
     }
 
     /// The revision `(kind, id)` takes for `digest`: kept, taken back, or
@@ -293,8 +314,7 @@ pub async fn prepare(
     dir: &DeploymentDir,
     expected_head: Option<u64>,
 ) -> Result<Prepared> {
-    let summary: DeploymentsSummaryResponse = client.get(paths::V2_DEPLOYMENTS).await?;
-    let history = History::from_summary(&summary);
+    let history = History::read(client).await?;
     if let Some(expected) = expected_head
         && expected != history.head_revision
     {
@@ -307,10 +327,10 @@ pub async fn prepare(
     for (digest, path) in &dir.definitions {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading '{}'", path.display()))?;
-        let body: Value = serde_json::from_str(&text)
-            .with_context(|| format!("'{}' is not JSON", path.display()))?;
-        let stored: DefinitionResponse = client
-            .post_dto(paths::V2_DEFINITIONS, &body)
+        let definition: Definition = serde_json::from_str(&text)
+            .with_context(|| format!("'{}' is not a definition", path.display()))?;
+        let stored = client
+            .upload_definition(&definition)
             .await
             .with_context(|| format!("uploading '{}'", path.display()))?;
         if &stored.digest != digest {
@@ -335,8 +355,7 @@ pub async fn prepare(
 
     let mut connection_revisions: BTreeMap<String, (u64, String)> = BTreeMap::new();
     if !dir.connections.is_empty() {
-        let capabilities: RuntimeCapabilitiesResponse =
-            client.get(paths::V2_RUNTIME_CAPABILITIES).await?;
+        let capabilities = client.runtime_capabilities().await?;
         let builtin: BTreeMap<String, String> = capabilities
             .provider_backends
             .iter()
@@ -347,7 +366,7 @@ pub async fn prepare(
                 ))
             })
             .collect();
-        let stored: ConnectionsListResponse = client.get(paths::V2_CONNECTIONS).await?;
+        let stored = client.list_connections().await?;
         for (id, connection) in &dir.connections {
             match builtin.get(&connection.driver) {
                 Some(digest) if digest == &connection.provider_digest => {}
@@ -378,11 +397,10 @@ pub async fn prepare(
                         .max()
                         .unwrap_or(0)
                         + 1;
-                    let created: CreateConnectionRevisionResponse = client
-                        .post_dto(
-                            paths::V2_CONNECTIONS,
+                    let created = client
+                        .create_connection_revision(
+                            id,
                             &CreateConnectionRevisionRequest {
-                                connection_id: id.clone(),
                                 revision,
                                 provider_digest: connection.provider_digest.clone(),
                                 public_config: connection.public_config.clone(),
@@ -476,16 +494,6 @@ pub fn default_idempotency_key(base_revision: u64, candidate_digest: &str) -> St
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-    use orion_api::v2::DeploymentRevisionResponse;
-
-    fn revision(rev: u64, members: Value) -> DeploymentRevisionResponse {
-        DeploymentRevisionResponse {
-            revision: rev,
-            manifest_digest: format!("sha256:{rev}"),
-            manifest: json!({"schema_version": 2, "members": members}),
-            ..Default::default()
-        }
-    }
 
     fn member(kind: &str, id: &str, rev: u64, digest: &str) -> Value {
         json!({"entity": {"kind": kind, "id": id, "revision": rev}, "definition_digest": digest})
@@ -493,17 +501,27 @@ mod tests {
 
     #[test]
     fn a_member_keeps_takes_back_or_advances_its_revision() {
-        let summary = DeploymentsSummaryResponse {
+        let mut history = History {
             head_revision: 3,
-            revisions: vec![
-                revision(1, json!([member("workflow", "w", 1, "sha256:a")])),
-                revision(2, json!([member("workflow", "w", 2, "sha256:b")])),
-                // A rollback to revision 1's manifest.
-                revision(3, json!([member("workflow", "w", 1, "sha256:a")])),
-            ],
-            ..Default::default()
+            ..History::default()
         };
-        let history = History::from_summary(&summary);
+        let manifest = |members: Value| json!({"schema_version": 2, "members": members});
+        history.add(
+            1,
+            "sha256:1",
+            &manifest(json!([member("workflow", "w", 1, "sha256:a")])),
+        );
+        history.add(
+            2,
+            "sha256:2",
+            &manifest(json!([member("workflow", "w", 2, "sha256:b")])),
+        );
+        // A rollback to revision 1's manifest.
+        history.add(
+            3,
+            "sha256:3",
+            &manifest(json!([member("workflow", "w", 1, "sha256:a")])),
+        );
         assert_eq!(history.revision_for("workflow", "w", "sha256:a"), 1);
         assert_eq!(history.revision_for("workflow", "w", "sha256:b"), 2);
         // New content goes past every revision the entity ever had, not the

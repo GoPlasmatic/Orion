@@ -261,9 +261,8 @@ async fn deploy_raw_connection(
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v2/admin/connections",
+            &format!("/api/v2/admin/connections/{id}/revisions"),
             Some(json!({
-                "connection_id": id,
                 "revision": 1,
                 "provider_digest": provider,
                 "public_config": public_config,

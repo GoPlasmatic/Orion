@@ -70,4 +70,4 @@ pub use enums::{
     VALID_CHANNEL_TYPES,
 };
 pub use envelope::{Data, Paginated, TracePage};
-pub use error::{ErrorBody, ErrorEnvelope, FieldError, codes, field_codes};
+pub use error::{ErrorBody, ErrorEnvelope, ErrorKind, FieldError, V2Code, codes, field_codes};

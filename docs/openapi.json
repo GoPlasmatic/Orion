@@ -263,7 +263,7 @@
             }
           },
           "400": {
-            "description": "Invalid file encoding",
+            "description": "A file is not valid `base64:` (`INVALID_PACKAGE_ENCODING`), or the files do not pack (`PACK_VALIDATION_FAILED`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -284,16 +284,6 @@
           },
           "403": {
             "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Package validation failed",
             "content": {
               "application/json": {
                 "schema": {
@@ -701,12 +691,73 @@
         "tags": [
           "Connections"
         ],
-        "summary": "List immutable connection revisions",
-        "description": "Returns all stored connection revisions alongside their provider digests and configuration fingerprints.",
+        "summary": "List every stored connection revision",
+        "description": "Returns every stored revision of every connection, ordered by connection then revision, with its provider digest and configuration digest.",
         "operationId": "list_connections",
         "responses": {
           "200": {
             "description": "Connection revisions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionsListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v2/admin/connections/{id}/revisions": {
+      "get": {
+        "tags": [
+          "Connections"
+        ],
+        "summary": "List one connection's revisions",
+        "description": "Returns every stored revision of the connection, oldest first. Empty for a connection with none.",
+        "operationId": "list_connection_revisions",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Connection identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The connection's revisions",
             "content": {
               "application/json": {
                 "schema": {
@@ -750,8 +801,19 @@
           "Connections"
         ],
         "summary": "Create an immutable connection revision",
-        "description": "Refuses a raw secret in public_config and a malformed secret locator, then judges the configuration as the node will read it — public_config with each secret reference at its locator path, the references unresolved. Over a built-in driver it is typed and checked as the connector it serves (`http`, `db` or `cache`), exactly as `orion-server compile` checks it; over an uploaded provider package it must satisfy the package's declared `configuration_schema`. Over a `workflow` provider package, `bindings` must bind each dependency alias the package declares to a stored connection over a built-in or rust provider (the one the dependency names, when it names one), and nothing else; a deployment member for the connection must then require each bound connection. A refusal names each problem by field in `details`. Then persists an immutable, content-addressed connection revision.",
+        "description": "Refuses a raw secret in public_config and a malformed secret locator, then judges the configuration as the node will read it — public_config with each secret reference at its locator path, the references unresolved. Over a built-in driver it is typed and checked as the connector it serves (`http`, `db` or `cache`), exactly as `orion-server compile` checks it; over an uploaded provider package it must satisfy the package's declared `configuration_schema`. Over a `workflow` provider package, `bindings` must bind each dependency alias the package declares to a stored connection over a built-in or rust provider (the one the dependency names, when it names one), and nothing else; a deployment member for the connection must then require each bound connection. A refusal names each problem by field in `details`. Then persists an immutable, content-addressed connection revision: the same revision with the same content answers it again, with different content it is a conflict.",
         "operationId": "create_connection_revision",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Connection identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -804,7 +866,7 @@
             }
           },
           "409": {
-            "description": "Immutable connection revision conflict",
+            "description": "The revision is stored with other content (`IMMUTABLE_CONNECTION_CONFLICT`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -834,14 +896,13 @@
         ]
       }
     },
-    "/api/v2/admin/connections/{id}/probe": {
-      "post": {
+    "/api/v2/admin/connections/{id}/revisions/{revision}": {
+      "get": {
         "tags": [
           "Connections"
         ],
-        "summary": "Execute an audited health probe against a connection",
-        "description": "Probes the connection's latest revision (or `revision`), recorded in the audit log first because it reaches a real backend. Over a built-in driver it connects for real, with the revision's secret references resolved as the node resolves them at load: `org.orion.postgresql`, `org.orion.mysql` and `org.orion.sqlite` run `SELECT 1` through the node's own connector pool (refusing a private address unless `allow_private_urls`); `org.orion.http` resolves the configured URL's host and opens a TCP connection to it (no HTTP request is sent and no credential is presented; the same private-address rule applies); `org.orion.memory-cache` reads a probe key. `details.probe` says which check ran and `details.error` why it failed — never a resolved secret. Over an uploaded provider package it validates the configuration and runs the provider's health check within an admitted run budget.",
-        "operationId": "probe_connection",
+        "summary": "Read one connection revision",
+        "operationId": "get_connection_revision",
         "parameters": [
           {
             "name": "id",
@@ -851,42 +912,26 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "revision",
+            "in": "path",
+            "description": "Connection revision",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
           }
         ],
-        "requestBody": {
-          "description": "Optional target revision or driver override",
-          "content": {
-            "application/json": {
-              "schema": {
-                "oneOf": [
-                  {
-                    "$ref": "#/components/schemas/ProbeConnectionRequest"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
-            "description": "Connection healthy",
+            "description": "The connection revision",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ConnectionProbeResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Unsupported implementation kind",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
+                  "$ref": "#/components/schemas/ConnectionRevisionResponse"
                 }
               }
             }
@@ -901,18 +946,8 @@
               }
             }
           },
-          "403": {
-            "description": "Provider package revoked",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
           "404": {
-            "description": "Connection or provider not found",
+            "description": "No such revision is stored (`CONNECTION_REVISION_NOT_FOUND`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -930,13 +965,95 @@
                 }
               }
             }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
           },
-          "503": {
-            "description": "Connection unhealthy",
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v2/admin/connections/{id}/revisions/{revision}/probes": {
+      "post": {
+        "tags": [
+          "Connections"
+        ],
+        "summary": "Probe a connection revision's backend",
+        "description": "Probes the stored revision through the provider it names — nothing in the request can choose another — recorded in the audit log first because it reaches a real backend. Over a built-in driver it connects for real, with the revision's secret references resolved as the node resolves them at load: `org.orion.postgresql`, `org.orion.mysql` and `org.orion.sqlite` run `SELECT 1` through the node's own connector pool (refusing a private address unless `allow_private_urls`); `org.orion.http` resolves the configured URL's host and opens a TCP connection to it (no HTTP request is sent and no credential is presented; the same private-address rule applies); `org.orion.memory-cache` reads a probe key. Over an uploaded provider package it validates the configuration and runs the provider's health check within an admitted run budget. A probe that ran answers `200` whatever it found: `healthy` is the finding, `details.probe` says which check ran and `details.error` why it failed — never a resolved secret.",
+        "operationId": "probe_connection",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Connection identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "path",
+            "description": "Connection revision",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The probe ran; `healthy` says what it found",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ConnectionProbeResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The revision's provider package is revoked (`PROVIDER_REVOKED`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such revision (`CONNECTION_REVISION_NOT_FOUND`), its package is not stored (`PACKAGE_NOT_FOUND`), or this node has no backend for it (`PROVIDER_NOT_FOUND`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1090,13 +1207,84 @@
         ]
       }
     },
-    "/api/v2/admin/connector-packages/{digest}/admit": {
-      "post": {
+    "/api/v2/admin/connector-packages/{digest}": {
+      "get": {
+        "tags": [
+          "Providers"
+        ],
+        "summary": "Read one connector provider package",
+        "description": "The package stored under the digest, with its manifest, distribution and inventory, and the admission recorded for it.",
+        "operationId": "get_connector_package",
+        "parameters": [
+          {
+            "name": "digest",
+            "in": "path",
+            "description": "Package SHA-256 digest (`sha256:<64-hex>`)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The package and its admission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorPackageResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No package is stored under the digest (`PACKAGE_NOT_FOUND`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v2/admin/connector-packages/{digest}/admission": {
+      "put": {
         "tags": [
           "Providers"
         ],
         "summary": "Admit an uploaded connector provider package",
-        "description": "Evaluates the active edition admission policy against the uploaded package and records a durable admission fingerprint. A `workflow` package is checked against the hermetic rules again first, and once admitted is registered as a provider backend under its digest.",
+        "description": "Evaluates the active edition admission policy against the uploaded package and records its admission, with a durable fingerprint. Putting the admission again re-evaluates it. A `workflow` package is checked against the hermetic rules again first, and once admitted is registered as a provider backend under its digest.",
         "operationId": "admit_connector_package",
         "parameters": [
           {
@@ -1137,6 +1325,16 @@
               }
             }
           },
+          "400": {
+            "description": "A workflow package that is not hermetic (`VALIDATION_ERROR`, by file), or a lock that does not verify",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
             "content": {
@@ -1148,7 +1346,7 @@
             }
           },
           "403": {
-            "description": "Rejected by admission policy",
+            "description": "Rejected by the admission policy",
             "content": {
               "application/json": {
                 "schema": {
@@ -1158,7 +1356,7 @@
             }
           },
           "404": {
-            "description": "Package not found",
+            "description": "No package is stored under the digest (`PACKAGE_NOT_FOUND`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1188,13 +1386,13 @@
         ]
       }
     },
-    "/api/v2/admin/connector-packages/{digest}/revoke": {
+    "/api/v2/admin/connector-packages/{digest}/revocations": {
       "post": {
         "tags": [
           "Providers"
         ],
         "summary": "Revoke an admitted connector provider package",
-        "description": "Marks the package digest as revoked in the deployment store and runtime admission policy, blocking new invocations and deployments. A `workflow` package's backend is unregistered.",
+        "description": "Records a revocation of the package's admission in the deployment store and the runtime admission ledger, blocking new invocations and deployments. A `workflow` package's backend is unregistered.",
         "operationId": "revoke_connector_package",
         "parameters": [
           {
@@ -1225,7 +1423,7 @@
           }
         },
         "responses": {
-          "200": {
+          "201": {
             "description": "Package revoked",
             "content": {
               "application/json": {
@@ -1256,7 +1454,7 @@
             }
           },
           "404": {
-            "description": "Admission not found",
+            "description": "The package was never admitted (`ADMISSION_NOT_FOUND`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1918,7 +2116,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WorkflowTestResult"
+                  "$ref": "#/components/schemas/TestDefinitionResponse"
                 }
               }
             }
@@ -2050,7 +2248,7 @@
           "Deployments"
         ],
         "summary": "Plan and validate a candidate deployment manifest",
-        "description": "Validates canonical manifest invariants, provider admission status, and connection references against the requested base revision, returning the reviewed manifest digest and entity diff.",
+        "description": "Validates canonical manifest invariants, provider admission status, and connection references against the requested base revision, and checks that this node could build the candidate. Answers the reviewed manifest digest an apply must name, and the members the candidate adds, updates and removes. Nothing is stored: planning the same candidate on the same base answers the same plan.",
         "operationId": "create_deployment_plan",
         "requestBody": {
           "content": {
@@ -2139,16 +2337,48 @@
         "tags": [
           "Deployments"
         ],
-        "summary": "Get deployment head and committed revision history",
-        "description": "Returns the current deployment store head revision, epoch, node-applied revision, and committed revision rows.",
-        "operationId": "get_deployments_summary",
+        "summary": "Page through committed deployment revisions",
+        "description": "The deployment head, its epoch and the revision this node serves, with one page of committed revisions, newest first, each without its manifest — `GET /deployments/{revision}` reads one in full. Pass `next_cursor` back as `?cursor=` for the next page.",
+        "operationId": "list_deployments",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Revisions per page, newest first: 50 by default, at most 1000.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The `next_cursor` of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "Deployment summary",
+            "description": "The head and a page of revisions",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DeploymentsSummaryResponse"
+                  "$ref": "#/components/schemas/DeploymentsPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A `limit` of 0, or a cursor this endpoint did not issue",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2187,14 +2417,14 @@
         "tags": [
           "Deployments"
         ],
-        "summary": "Atomically apply a candidate deployment manifest",
-        "description": "Validates the candidate manifest (and optional reviewed_manifest_digest), performs compare-and-swap against base_revision in a single database transaction, and reconciles the local node.",
-        "operationId": "apply_deployment",
+        "summary": "Commit the next deployment revision: an apply or a rollback",
+        "description": "An apply (`manifest` with its `reviewed_manifest_digest`) plans the manifest again, refuses it unless it plans to the digest that was reviewed, and commits it. A rollback (`rollback_to`) commits an earlier revision's manifest as a new revision, re-checking its providers' admissions as of now. Either is a compare-and-swap against `base_revision` in one database transaction, idempotent on `idempotency_key` per principal (a replay answers the receipt it committed), and then reconciles the local node.",
+        "operationId": "create_deployment",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ApplyDeploymentRequest"
+                "$ref": "#/components/schemas/CreateDeploymentRequest"
               }
             }
           },
@@ -2202,17 +2432,17 @@
         },
         "responses": {
           "202": {
-            "description": "Deployment committed and accepted for convergence",
+            "description": "Committed and accepted for convergence",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApplyDeploymentResponse"
+                  "$ref": "#/components/schemas/CreateDeploymentResponse"
                 }
               }
             }
           },
           "400": {
-            "description": "Manifest validation failed",
+            "description": "Manifest validation failed, the body is neither an apply nor a rollback, or the rollback target is compacted",
             "content": {
               "application/json": {
                 "schema": {
@@ -2241,98 +2471,18 @@
               }
             }
           },
+          "404": {
+            "description": "The rollback target does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Base revision conflict, idempotency conflict, or reviewed digest mismatch",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "admin_bearer": []
-          },
-          {
-            "admin_api_key": []
-          }
-        ]
-      }
-    },
-    "/api/v2/admin/deployments/rollback": {
-      "post": {
-        "tags": [
-          "Deployments"
-        ],
-        "summary": "Roll back to a prior deployment revision",
-        "description": "Creates a new forward deployment revision whose manifest matches target_revision under compare-and-swap against expected_head_revision, then reconciles the local node.",
-        "operationId": "rollback_deployment",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RollbackDeploymentRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "description": "Rollback committed as a new deployment revision",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RollbackDeploymentResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Provider in target revision is no longer admitted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Target revision not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Expected head revision conflict or idempotency conflict",
             "content": {
               "application/json": {
                 "schema": {
@@ -2405,7 +2555,7 @@
             }
           },
           "404": {
-            "description": "Revision not found",
+            "description": "No revision has that number (`REVISION_NOT_FOUND`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3730,14 +3880,14 @@
     "schemas": {
       "AdmitPackageRequest": {
         "type": "object",
-        "description": "Request body for admitting an uploaded provider package (`POST /api/v2/admin/connector-packages/{digest}/admit`).",
+        "description": "Request body for admitting an uploaded provider package (`PUT /api/v2/admin/connector-packages/{digest}/admission`).",
         "properties": {
           "lock": {}
         }
       },
       "AdmitPackageResponse": {
         "type": "object",
-        "description": "Response from admitting a provider package (`POST /api/v2/admin/connector-packages/{digest}/admit`).",
+        "description": "Response from admitting a provider package (`PUT /api/v2/admin/connector-packages/{digest}/admission`).",
         "properties": {
           "admission": {
             "$ref": "#/components/schemas/ProviderAdmissionDto"
@@ -3749,17 +3899,19 @@
       },
       "ApplyDeploymentRequest": {
         "type": "object",
-        "description": "Request body to atomically apply a candidate deployment (`POST /api/v2/admin/deployments`).",
+        "description": "Commit a reviewed candidate manifest.",
         "required": [
           "idempotency_key",
           "base_revision",
           "manifest",
-          "reason"
+          "reason",
+          "reviewed_manifest_digest"
         ],
         "properties": {
           "base_revision": {
             "type": "integer",
             "format": "int64",
+            "description": "The head the candidate was planned on; anything else is\n`DEPLOYMENT_HEAD_CONFLICT`.",
             "minimum": 0
           },
           "idempotency_key": {
@@ -3767,50 +3919,15 @@
           },
           "manifest": {},
           "reason": {
-            "type": "string"
+            "type": "string",
+            "description": "The audit reason the revision records."
           },
           "reviewed_manifest_digest": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string",
+            "description": "The digest `POST /deployment-plans` answered for this candidate on\nthis base. A candidate that plans to anything else is\n`REVIEWED_DIGEST_MISMATCH`, and nothing is committed."
           }
-        }
-      },
-      "ApplyDeploymentResponse": {
-        "type": "object",
-        "description": "Response from applying a candidate deployment (`POST /api/v2/admin/deployments`).",
-        "properties": {
-          "committed_revision": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "evaluation": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/ConvergenceStatusResponse",
-                "description": "This node's convergence on the committed revision, once it tried to\nbuild it."
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "local_error": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Why this node could not build the committed revision, when it could\nnot. The revision stays committed; the node keeps serving what it had."
-          },
-          "receipt": {
-            "$ref": "#/components/schemas/DeploymentReceiptResponse"
-          },
-          "status": {
-            "type": "string"
-          }
-        }
+        },
+        "additionalProperties": false
       },
       "ArchiveEntryDto": {
         "type": "object",
@@ -4148,7 +4265,7 @@
       },
       "ConnectionProbeResponse": {
         "type": "object",
-        "description": "Result of an explicit connection health probe (`POST /api/v2/admin/connections/{id}/probe`).",
+        "description": "One health probe of a connection revision\n(`POST /api/v2/admin/connections/{id}/revisions/{revision}/probes`). A probe\nthat ran answers `200` whatever it found: `healthy` is the finding.",
         "properties": {
           "connection_id": {
             "type": "string"
@@ -4177,7 +4294,7 @@
       },
       "ConnectionRevisionResponse": {
         "type": "object",
-        "description": "Summary of an immutable connection revision (`GET /api/v2/admin/connections`).",
+        "description": "An immutable connection revision (`GET /api/v2/admin/connections/{id}/revisions/{revision}`).",
         "properties": {
           "bindings": {
             "type": "object",
@@ -4223,7 +4340,7 @@
       },
       "ConnectionsListResponse": {
         "type": "object",
-        "description": "Response listing connection revisions (`GET /api/v2/admin/connections`).",
+        "description": "Response listing connection revisions (`GET /api/v2/admin/connections`, `GET /api/v2/admin/connections/{id}/revisions`).",
         "properties": {
           "connections": {
             "type": "array",
@@ -4260,6 +4377,26 @@
           "stage": {
             "type": "string",
             "description": "`env_substitution`, `json_parse`, `var_reference`,\n`secret_resolution`, `deserialize` or `endpoint`."
+          }
+        }
+      },
+      "ConnectorPackageResponse": {
+        "type": "object",
+        "description": "One connector provider package and its admission record\n(`GET /api/v2/admin/connector-packages/{digest}`).",
+        "properties": {
+          "admission": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProviderAdmissionDto",
+                "description": "The admission recorded for the package; absent while it was never\nadmitted."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "package": {
+            "$ref": "#/components/schemas/ConnectorPackageSummary"
           }
         }
       },
@@ -4358,9 +4495,8 @@
       },
       "CreateConnectionRevisionRequest": {
         "type": "object",
-        "description": "Request body to create an immutable connection revision (`POST /api/v2/admin/connections`).",
+        "description": "Request body to create an immutable connection revision\n(`POST /api/v2/admin/connections/{id}/revisions`). The connection is the\none the path names.",
         "required": [
-          "connection_id",
           "revision",
           "provider_digest"
         ],
@@ -4375,9 +4511,6 @@
               "type": "string"
             }
           },
-          "connection_id": {
-            "type": "string"
-          },
           "provider_digest": {
             "type": "string"
           },
@@ -4387,6 +4520,7 @@
           "revision": {
             "type": "integer",
             "format": "int64",
+            "description": "The revision to create: one past the highest stored, for a change.\nCreating a revision that is stored with the same content answers it\nagain; with different content, `IMMUTABLE_CONNECTION_CONFLICT`.",
             "minimum": 0
           },
           "secret_locators": {
@@ -4404,7 +4538,7 @@
       },
       "CreateConnectionRevisionResponse": {
         "type": "object",
-        "description": "Response from creating an immutable connection revision (`POST /api/v2/admin/connections`).",
+        "description": "Response from creating an immutable connection revision (`POST /api/v2/admin/connections/{id}/revisions`).",
         "properties": {
           "connection": {
             "$ref": "#/components/schemas/ConnectionRevisionResponse"
@@ -4425,14 +4559,64 @@
           "base_revision": {
             "type": "integer",
             "format": "int64",
+            "description": "The head the candidate is planned on: `0` before the first apply.",
             "minimum": 0
           },
-          "manifest": {},
-          "reason": {
+          "manifest": {}
+        },
+        "additionalProperties": false
+      },
+      "CreateDeploymentRequest": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ApplyDeploymentRequest"
+          },
+          {
+            "$ref": "#/components/schemas/RollbackDeploymentRequest"
+          }
+        ],
+        "description": "Request body for `POST /api/v2/admin/deployments`: commit the next\nrevision on top of `base_revision`, under compare-and-swap and an\nidempotency key. Either a reviewed manifest (an apply) or an earlier\nrevision to deploy again (a rollback, `rollback_to`)."
+      },
+      "CreateDeploymentResponse": {
+        "type": "object",
+        "description": "A committed apply or rollback (`POST /api/v2/admin/deployments`, `202`).",
+        "properties": {
+          "committed_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "evaluation": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ConvergenceStatusResponse",
+                "description": "This node's convergence on the committed revision, once it tried to\nbuild it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "local_error": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Why this node could not build the committed revision, when it could\nnot. The revision stays committed; the node keeps serving what it had."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/DeploymentReceiptResponse"
+          },
+          "status": {
+            "type": "string",
+            "description": "Always `accepted`: the revision is committed; nodes converge on it."
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What committing this revision does not do — a rollback does not\nreverse an external effect already made."
           }
         }
       },
@@ -5548,53 +5732,84 @@
           }
         }
       },
+      "DeploymentEntityRef": {
+        "type": "object",
+        "description": "A deployment member by identity, as a plan names it.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "DeploymentEntityUpdate": {
+        "type": "object",
+        "description": "A member the base deploys at one revision and the candidate at another.",
+        "properties": {
+          "from_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "to_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "DeploymentPlanResponse": {
         "type": "object",
-        "description": "Candidate deployment plan with reviewed digest and sanitized diff (`POST /api/v2/admin/deployment-plans`).",
+        "description": "A candidate deployment, checked against its base\n(`POST /api/v2/admin/deployment-plans`). Nothing is stored: the plan is a\nfunction of the request and the store, and `reviewed_manifest_digest` is\nwhat an apply must name to commit exactly this candidate.",
         "properties": {
           "added_entities": {
             "type": "array",
-            "items": {}
+            "items": {
+              "$ref": "#/components/schemas/DeploymentEntityRef"
+            },
+            "description": "Members the base does not deploy at all."
           },
           "base_revision": {
             "type": "integer",
             "format": "int64",
             "minimum": 0
           },
-          "candidate_digest": {
-            "type": "string"
-          },
-          "external_effect_warnings": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "findings": {
-            "type": "array",
-            "items": {}
-          },
           "removed_entities": {
             "type": "array",
-            "items": {}
-          },
-          "request_hash": {
-            "type": "string"
+            "items": {
+              "$ref": "#/components/schemas/DeploymentEntityRef"
+            },
+            "description": "Members the base deploys and the candidate drops: they stop serving."
           },
           "reviewed_manifest_digest": {
-            "type": "string"
+            "type": "string",
+            "description": "The candidate's canonical manifest digest. An apply names it as its\n`reviewed_manifest_digest`."
           },
           "updated_entities": {
             "type": "array",
             "items": {
-              "type": "string"
-            }
+              "$ref": "#/components/schemas/DeploymentEntityUpdate"
+            },
+            "description": "Members the base deploys at another revision."
           }
         }
       },
       "DeploymentReceiptResponse": {
         "type": "object",
-        "description": "Durable deployment apply/rollback receipt (`POST /api/v2/admin/deployments`).",
+        "description": "The durable receipt of a committed apply or rollback (`POST /api/v2/admin/deployments`).",
         "properties": {
           "committed_revision": {
             "type": "integer",
@@ -5636,8 +5851,22 @@
         }
       },
       "DeploymentRevisionResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/DeploymentRevisionSummary"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "manifest": {}
+            }
+          }
+        ],
+        "description": "A committed deployment revision with its manifest\n(`GET /api/v2/admin/deployments/{revision}`)."
+      },
+      "DeploymentRevisionSummary": {
         "type": "object",
-        "description": "Committed deployment revision record (`GET /api/v2/admin/deployments/{revision}`).",
+        "description": "A committed deployment revision without its manifest: one row of\n`GET /api/v2/admin/deployments`.",
         "properties": {
           "created_at": {
             "type": "string"
@@ -5645,12 +5874,17 @@
           "created_by": {
             "type": "string"
           },
-          "manifest": {},
           "manifest_digest": {
             "type": "string"
           },
+          "member_count": {
+            "type": "integer",
+            "description": "Members in the manifest; `0` once compacted.",
+            "minimum": 0
+          },
           "members_compacted": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "The collector dropped this revision's members: it can no longer be\nrolled back to."
           },
           "parent_revision": {
             "type": [
@@ -5670,14 +5904,21 @@
           }
         }
       },
-      "DeploymentsSummaryResponse": {
+      "DeploymentsPage": {
         "type": "object",
-        "description": "Summary of deployment store head and committed revisions (`GET /api/v2/admin/deployments`).",
+        "description": "One page of committed revisions, newest first, with the head they were\nread against (`GET /api/v2/admin/deployments`).",
         "properties": {
           "applied_revision": {
             "type": "integer",
             "format": "int64",
+            "description": "The revision this node serves.",
             "minimum": 0
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeploymentRevisionSummary"
+            }
           },
           "epoch": {
             "type": "integer",
@@ -5689,11 +5930,17 @@
             "format": "int64",
             "minimum": 0
           },
-          "revisions": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/DeploymentRevisionResponse"
-            }
+          "limit": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `?cursor=` for the next, older page; absent on the last.\nOpaque: do not parse it."
           }
         }
       },
@@ -6366,32 +6613,6 @@
           }
         }
       },
-      "ProbeConnectionRequest": {
-        "type": "object",
-        "description": "Request body for probing a connection revision (`POST /api/v2/admin/connections/{id}/probe`).",
-        "properties": {
-          "driver_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "kind": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "revision": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "minimum": 0
-          }
-        }
-      },
       "ProcessRequest": {
         "type": "object",
         "properties": {
@@ -6469,7 +6690,7 @@
       },
       "ProviderAdmissionDto": {
         "type": "object",
-        "description": "Provider package admission record (`POST /api/v2/admin/connector-packages/{digest}/admit`).",
+        "description": "Provider package admission record (`PUT /api/v2/admin/connector-packages/{digest}/admission`).",
         "properties": {
           "admission_fingerprint": {
             "type": "string"
@@ -6547,7 +6768,7 @@
       },
       "RevokePackageRequest": {
         "type": "object",
-        "description": "Request body for revoking an admitted provider package (`POST /api/v2/admin/connector-packages/{digest}/revoke`).",
+        "description": "Request body for revoking an admitted provider package (`POST /api/v2/admin/connector-packages/{digest}/revocations`).",
         "properties": {
           "reason": {
             "type": [
@@ -6559,7 +6780,7 @@
       },
       "RevokePackageResponse": {
         "type": "object",
-        "description": "Response from revoking a provider package (`POST /api/v2/admin/connector-packages/{digest}/revoke`).",
+        "description": "Response from revoking a provider package (`POST /api/v2/admin/connector-packages/{digest}/revocations`).",
         "properties": {
           "package_digest": {
             "type": "string"
@@ -6580,16 +6801,17 @@
       },
       "RollbackDeploymentRequest": {
         "type": "object",
-        "description": "Request body to roll back to a prior deployment revision (`POST /api/v2/admin/deployments/rollback`).",
+        "description": "Commit an earlier revision's manifest again, as a new revision. It is\nre-checked as of now: a provider revoked since is refused.",
         "required": [
           "idempotency_key",
-          "expected_head_revision",
-          "target_revision"
+          "base_revision",
+          "rollback_to"
         ],
         "properties": {
-          "expected_head_revision": {
+          "base_revision": {
             "type": "integer",
             "format": "int64",
+            "description": "The current head; anything else is `DEPLOYMENT_HEAD_CONFLICT`.",
             "minimum": 0
           },
           "idempotency_key": {
@@ -6598,53 +6820,14 @@
           "reason": {
             "type": "string"
           },
-          "target_revision": {
+          "rollback_to": {
             "type": "integer",
             "format": "int64",
+            "description": "The committed revision whose manifest to deploy again.",
             "minimum": 0
           }
-        }
-      },
-      "RollbackDeploymentResponse": {
-        "type": "object",
-        "description": "Response from rolling back to a prior deployment revision (`POST /api/v2/admin/deployments/rollback`).",
-        "properties": {
-          "committed_revision": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "evaluation": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/ConvergenceStatusResponse",
-                "description": "This node's convergence on the new revision, once it tried to build it."
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "local_error": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Why this node could not build the new revision, when it could not."
-          },
-          "receipt": {
-            "$ref": "#/components/schemas/DeploymentReceiptResponse"
-          },
-          "status": {
-            "type": "string"
-          },
-          "warnings": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        }
+        },
+        "additionalProperties": false
       },
       "RuntimeCapabilitiesResponse": {
         "type": "object",
@@ -6777,6 +6960,33 @@
           }
         },
         "additionalProperties": false
+      },
+      "TestDefinitionResponse": {
+        "type": "object",
+        "description": "One run of a workflow definition (`POST /api/v2/admin/definitions/test`).",
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the run stopped short, when it did."
+          },
+          "errors": {
+            "type": "array",
+            "items": {}
+          },
+          "matched": {
+            "type": "boolean",
+            "description": "Whether the workflow's condition matched the supplied input."
+          },
+          "output": {
+            "description": "The message data after the pipeline ran."
+          },
+          "trace": {
+            "description": "The run's trace: the context it started from (`initial`), then each\nstep with its `task_id`, `result` (`executed` | `skipped` | `failed`)\nand the changes it made."
+          }
+        }
       },
       "TraceDetailResponse": {
         "type": "object",
@@ -7199,39 +7409,6 @@
           "fail",
           "continue"
         ]
-      },
-      "WorkflowTestResult": {
-        "type": "object",
-        "description": "`POST /api/v2/admin/definitions/test` — one run of a workflow definition.",
-        "required": [
-          "matched",
-          "trace",
-          "output",
-          "errors"
-        ],
-        "properties": {
-          "error": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Why the run stopped short, when it did."
-          },
-          "errors": {
-            "type": "array",
-            "items": {}
-          },
-          "matched": {
-            "type": "boolean",
-            "description": "Whether the workflow's condition matched the supplied input."
-          },
-          "output": {
-            "description": "The message data after the pipeline ran."
-          },
-          "trace": {
-            "description": "The run's trace: the context it started from (`initial`), then each\nstep with its `task_id`, `result` (`executed` | `skipped` | `failed`)\nand the changes it made."
-          }
-        }
       }
     },
     "securitySchemes": {

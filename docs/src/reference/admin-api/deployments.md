@@ -1,6 +1,6 @@
 <!-- description: The v2 deployment endpoints: definitions by digest, connection revisions, plans, compare-and-swap apply, rollback, convergence and the CLI apply flow. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-10-25 -->
+<!-- last_verified: 2026-10-26 -->
 
 # Deployment endpoints
 
@@ -11,15 +11,18 @@ A deployment states everything a node serves in one manifest. You store the defi
 | POST | `/api/v2/admin/definitions` | Validate and store a workflow, channel or plugin definition; answers its digest |
 | GET | `/api/v2/admin/definitions/{digest}` | Read a stored definition back |
 | POST | `/api/v2/admin/definitions/test` | Run a workflow definition once on this node, without deploying it |
-| GET | `/api/v2/admin/connections` | List every stored connection revision |
-| POST | `/api/v2/admin/connections` | Create an immutable connection revision |
-| POST | `/api/v2/admin/connections/{id}/probe` | Connect to a connection's backend and report whether it answers |
+| GET | `/api/v2/admin/connections` | List every stored revision of every connection |
+| GET | `/api/v2/admin/connections/{id}/revisions` | List one connection's revisions |
+| POST | `/api/v2/admin/connections/{id}/revisions` | Create an immutable connection revision |
+| GET | `/api/v2/admin/connections/{id}/revisions/{revision}` | One connection revision |
+| POST | `/api/v2/admin/connections/{id}/revisions/{revision}/probes` | Connect to a revision's backend and report whether it answers |
 | POST | `/api/v2/admin/deployment-plans` | Check a candidate manifest against a base revision; answers the diff and the reviewed digest |
-| POST | `/api/v2/admin/deployments` | Apply a manifest as the next revision, under compare-and-swap on the head |
-| GET | `/api/v2/admin/deployments` | The head revision and every committed revision with its manifest |
-| GET | `/api/v2/admin/deployments/{revision}` | One committed revision |
-| POST | `/api/v2/admin/deployments/rollback` | Commit an earlier revision's manifest as a new revision |
+| POST | `/api/v2/admin/deployments` | Commit the next revision under compare-and-swap on the head: a reviewed manifest, or a rollback to an earlier revision |
+| GET | `/api/v2/admin/deployments` | The head revision, and a page of committed revisions without their manifests |
+| GET | `/api/v2/admin/deployments/{revision}` | One committed revision, with its manifest |
 | GET | `/api/v2/admin/deployments/{revision}/convergence` | Whether nodes serve a revision (`?target=this-node` or `?target=observed`) |
+
+A refusal answers the error envelope with a code from [the v2 admin code registry](../errors.md#the-v2-admin-code-registry), at the status its kind names.
 
 Once a deployment is committed, the node builds what it serves from the head manifest alone.
 
@@ -75,7 +78,7 @@ The answer always carries the trace. A run that stopped short still answers `200
 
 ## Connections
 
-A connection revision is the configuration a provider runs with: `{connection_id, revision, provider_digest, public_config, secret_locators, bindings}`. `(connection_id, revision)` is immutable. Sending the same pair again with the same content answers the stored revision, and with different content a `409`.
+A connection revision is the configuration a provider runs with. It is created under its connection, `POST /api/v2/admin/connections/{id}/revisions`, with `{revision, provider_digest, public_config, secret_locators, bindings}`. `(connection_id, revision)` is immutable. Creating the same revision again with the same content answers the stored revision, and with different content `409 IMMUTABLE_CONNECTION_CONFLICT`. A change is the next revision: one past the highest the connection lists.
 
 `public_config` holds the settings. A secret-shaped key (`password`, `token`, `secret`, …), an `Authorization` value or credentials in a URL are refused there. A key naming an endpoint, ending `_url`, `_uri` or `_endpoint`, is not secret-shaped, so OAuth2's `token_url` stays public; its value is still screened for credentials. `secret_locators` maps a dotted config path to a secret reference such as `env://ORDERS_DB_URL` or `vault://secret/data/db#url`. The reference is placed at its path when the connection is used, and resolved there. A locator's path may not be one `public_config` already sets.
 
@@ -89,13 +92,15 @@ The configuration is judged as the node will read it, `public_config` with each 
 A configuration that would not load is refused with a `400` `VALIDATION_ERROR`, each problem at its field: under `public_config.`, or `secret_locators.` when a locator supplies the field. A failure only a resolved value can cause, such as a reference that resolves to an `ftp://` URL, surfaces when the node loads the deployment, in `/health` under `connectors.failed_to_load`.
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v2/admin/connections \
+curl -s -X POST http://localhost:8080/api/v2/admin/connections/orders-db/revisions \
   -H 'Content-Type: application/json' \
-  -d '{"connection_id": "orders-db", "revision": 1,
+  -d '{"revision": 1,
        "provider_digest": "sha256:…",
        "public_config": {"max_connections": 5, "allow_private_urls": true},
        "secret_locators": {"connection_string": "env://ORDERS_DB_URL"}}'
 
+curl -s http://localhost:8080/api/v2/admin/connections/orders-db/revisions | jq '.connections[] | .revision'
+curl -s http://localhost:8080/api/v2/admin/connections/orders-db/revisions/1 | jq '.configuration_digest'
 curl -s http://localhost:8080/api/v2/admin/connections | jq '.connections[] | {connection_id, revision}'
 ```
 
@@ -106,9 +111,9 @@ The answer carries the revision's `configuration_digest`, taken over its public 
 A connection over a [workflow provider package](../functions/connector_call.md#workflow-provider-packages) also carries `bindings`: which connection each dependency alias the package declares calls, as `{"alias": "connection_id"}`. Every declared alias must be bound and nothing else may be. Each target must be a stored connection over a built-in driver or a `rust` provider, the one the dependency names in its `id` when it names one; a connection over another workflow package cannot be a dependency. A problem is refused with a `400` naming `bindings.<alias>`. A connection over any other provider takes no bindings.
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v2/admin/connections \
+curl -s -X POST http://localhost:8080/api/v2/admin/connections/crm/revisions \
   -H 'Content-Type: application/json' \
-  -d '{"connection_id": "crm", "revision": 1, "provider_digest": "sha256:…",
+  -d '{"revision": 1, "provider_digest": "sha256:…",
        "public_config": {"endpoint": "https://crm.example"},
        "bindings": {"cache": "cache-main"}}'
 ```
@@ -121,7 +126,7 @@ A `connector_call` to an uploaded package's operation sends an input the package
 
 ### Probe a connection
 
-`POST /api/v2/admin/connections/{id}/probe` connects to the backend of the connection's latest revision, or of `{"revision": N}`, and answers whether it responds. The probe is recorded in the audit log (`v2_connection_probe`) before it runs, because it reaches a real backend with the connection's credentials.
+`POST /api/v2/admin/connections/{id}/revisions/{revision}/probes` connects to the revision's backend and answers whether it responds. It takes no body: the probe runs through the provider the stored revision names, and nothing in the request can choose another. A revision that is not stored answers `404 CONNECTION_REVISION_NOT_FOUND`. The probe is recorded in the audit log (`v2_connection_probe`) before it runs, because it reaches a real backend with the connection's credentials.
 
 Over a built-in driver, the configuration is first resolved exactly as the node resolves it at load: `[vars]`, secret references, the typed parse and the endpoint scheme. Then the driver's own check runs:
 
@@ -131,18 +136,18 @@ Over a built-in driver, the configuration is first resolved exactly as the node 
 | `org.orion.http` | The URL's host is resolved and a TCP connection opened to it (`TCP connect to the URL's host`). No HTTP request is sent and no credential is presented. A private or internal address is refused unless `allow_private_urls` is set |
 | `org.orion.memory-cache` | A read of a probe key |
 
-A healthy backend answers `200` with `"healthy": true`. Anything else answers `503` with `"healthy": false` and `details.error`: the stage that failed (`configuration`, `secret_resolution`, …) or what the backend did. A resolved secret never appears in the answer; a driver error that could carry one is written to the server log instead.
+A probe that ran answers `200`, whatever it found: `"healthy": true`, or `"healthy": false` with `details.error`, the stage that failed (`configuration`, `secret_resolution`, …) or what the backend did. A resolved secret never appears in the answer; a driver error that could carry one is written to the server log instead.
 
-Over an uploaded provider package, the probe validates the configuration and runs the provider's health check within an admitted run budget.
+Over an uploaded provider package, the probe validates the configuration and runs the provider's health check within an admitted run budget. A revoked package answers `403 PROVIDER_REVOKED`, and one this node has no backend for `404 PROVIDER_NOT_FOUND`.
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v2/admin/connections/orders-db/probe
+curl -s -X POST http://localhost:8080/api/v2/admin/connections/orders-db/revisions/1/probes
 # {"connection_id": "orders-db", "revision": 1, "driver_id": "org.orion.postgresql",
 #  "healthy": true, "status": "healthy", "latency_ms": 4,
 #  "details": {"probe": "SELECT 1", "status": "ok"}}
 ```
 
-`orion-cli connections probe <id>` sends the same request.
+`orion-cli connections probe <id>` probes the latest revision, or `--revision N`, and exits `2` when the backend is unhealthy.
 
 ## Manifests
 
@@ -168,7 +173,7 @@ A workflow, channel or plugin member's `definition_digest` names a stored defini
 
 ## Plan and apply
 
-A plan checks a manifest against a base revision without committing anything. It refuses a member whose definition is not stored and a connection revision that is not there. It also compiles the manifest the way the node would build it. A manifest that would not build is refused with `400 DEPLOYMENT_WOULD_NOT_BUILD`, naming why. Typical causes are a workflow calling a function no member serves, two channels claiming one route, or a workflow the engine cannot compile. It answers the added and removed entities and the `reviewed_manifest_digest`.
+A plan checks a manifest against a base revision without committing anything. It refuses a member whose definition is not stored and a connection revision that is not there. It also compiles the manifest the way the node would build it. A manifest that would not build is refused with `400 DEPLOYMENT_WOULD_NOT_BUILD`, naming why. Typical causes are a workflow calling a function no member serves, two channels claiming one route, or a workflow the engine cannot compile. It answers the `reviewed_manifest_digest`, and how the candidate changes the base, by member: `added_entities` the base does not deploy, `updated_entities` it deploys at another revision (`from_revision`, `to_revision`), and `removed_entities` the candidate drops, which stop serving. Nothing is stored: the plan is a function of the request and the store, so planning again answers the same plan.
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v2/admin/deployment-plans \
@@ -176,7 +181,7 @@ curl -s -X POST http://localhost:8080/api/v2/admin/deployment-plans \
   -d '{"base_revision": 0, "manifest": '"$(cat manifest.json)"'}'
 ```
 
-Apply commits the manifest as the next revision. It succeeds only while the head is still `base_revision`, so two concurrent applies cannot both win. With `reviewed_manifest_digest`, it also refuses a manifest other than the one you reviewed, with a `409`. The `idempotency_key` makes a retry replay the first answer instead of committing twice. Apply runs the plan's build check first, so a manifest that would not build is refused before anything is committed. The node then builds the revision, and the answer reports how that went under `evaluation`. Another node can still fail to build a committed revision, for example one with plugins disabled or a different `channel_filter`. The revision stays committed and `local_error` says why. That node keeps serving what it had, and its `/health` reports `engine_reload` as degraded.
+Apply commits the manifest as the next revision. It succeeds only while the head is still `base_revision`, so two concurrent applies cannot both win (`409 DEPLOYMENT_HEAD_CONFLICT`). It requires the `reviewed_manifest_digest` the plan answered, and refuses a manifest that plans to anything else with `409 REVIEWED_DIGEST_MISMATCH`, so what commits is what was reviewed. The `idempotency_key` makes a retry replay the first answer instead of committing twice. Apply runs the plan's build check first, so a manifest that would not build is refused before anything is committed. The node then builds the revision, and the answer reports how that went under `evaluation`. Another node can still fail to build a committed revision, for example one with plugins disabled or a different `channel_filter`. The revision stays committed and `local_error` says why. That node keeps serving what it had, and its `/health` reports `engine_reload` as degraded.
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v2/admin/deployments \
@@ -188,14 +193,23 @@ curl -s http://localhost:8080/api/v2/admin/deployments | jq '{head_revision, app
 curl -s http://localhost:8080/api/v2/admin/deployments/1 | jq '.manifest.members'
 ```
 
-## Rollback
+## History
 
-A rollback commits an earlier revision's manifest as a new revision. History only moves forward, so the earlier revision stays as it was.
+`GET /api/v2/admin/deployments` answers the head, its `epoch` and the revision this node serves (`applied_revision`), with one page of committed revisions, newest first. Each row is a summary without its manifest: `revision`, `parent_revision`, `manifest_digest`, `member_count`, `reason`, `created_by`, `members_compacted` and `created_at`. `?limit=` sets the page size (50 by default, at most 1000). When older revisions follow, the page carries `next_cursor`; pass it back as `?cursor=` for the next page. `GET /api/v2/admin/deployments/{revision}` reads one revision with its manifest.
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v2/admin/deployments/rollback \
+curl -s "http://localhost:8080/api/v2/admin/deployments?limit=20" | jq '.data[] | {revision, reason}'
+curl -s "http://localhost:8080/api/v2/admin/deployments?limit=20&cursor=41" | jq '.next_cursor'
+```
+
+## Rollback
+
+A rollback commits an earlier revision's manifest as a new revision. It is a deployment like an apply: `POST /api/v2/admin/deployments` with `rollback_to` in place of a manifest, under the same compare-and-swap on `base_revision` and the same idempotency. History only moves forward, so the earlier revision stays as it was. The manifest is re-checked as of now, so a provider revoked since is refused. The answer's `warnings` say what a rollback does not undo: an external effect already made.
+
+```bash
+curl -s -X POST http://localhost:8080/api/v2/admin/deployments \
   -H 'Content-Type: application/json' \
-  -d '{"idempotency_key": "rollback-3", "expected_head_revision": 3, "target_revision": 1}'
+  -d '{"idempotency_key": "rollback-3", "base_revision": 3, "rollback_to": 1}'
 ```
 
 ## Convergence

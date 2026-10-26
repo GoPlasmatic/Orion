@@ -42,9 +42,8 @@ async fn refused_connection(
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v2/admin/connections",
+            &format!("/api/v2/admin/connections/{id}/revisions"),
             Some(json!({
-                "connection_id": id,
                 "revision": 1,
                 "provider_digest": provider,
                 "public_config": public_config,
@@ -374,7 +373,7 @@ async fn s6_allow_private_urls_lets_a_loopback_db_through() {
 }
 
 // ============================================================
-// Connectivity probe: POST /connections/{id}/probe
+// Connectivity probe: POST /connections/{id}/revisions/{revision}/probes
 // ============================================================
 
 #[tokio::test]
@@ -384,12 +383,15 @@ async fn probing_an_unknown_connection_is_404() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v2/admin/connections/no-such-connector/probe",
+            "/api/v2/admin/connections/no-such-connector/revisions/1/probes",
             None,
         ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     let body = body_json(resp).await;
-    assert_eq!(body["error"]["code"], "CONNECTION_NOT_FOUND", "{body}");
+    assert_eq!(
+        body["error"]["code"], "CONNECTION_REVISION_NOT_FOUND",
+        "{body}"
+    );
 }

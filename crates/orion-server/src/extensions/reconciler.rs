@@ -210,7 +210,11 @@ impl NodeReconciler {
                     node.backoff_delay_ms =
                         compute_reconcile_backoff_ms(node.backoff_attempt, candidate_revision);
                     node.last_error = Some(format!("{code}: {message}"));
-                    return Err(DeploymentError::from_code(code, message));
+                    return Err(DeploymentError::passed(
+                        &code,
+                        message,
+                        DeploymentErrorKind::DeploymentWouldNotBuild,
+                    ));
                 }
                 CandidateBuildIssue::PerEntityExternal { entity, reason } => {
                     quarantined.push(QuarantinedEntity { entity, reason });
@@ -570,7 +574,7 @@ mod tests {
         let sup_err = reconciler
             .build_and_publish_candidate(1, Vec::new())
             .unwrap_err();
-        assert_eq!(sup_err.code, "CANDIDATE_SUPERSEDED");
+        assert_eq!(sup_err.code(), "CANDIDATE_SUPERSEDED");
         assert_eq!(reconciler.local_status().applied_revision, 0);
 
         // Whole-build integrity failure retains applied_revision = 0 and sets backoff
@@ -583,7 +587,10 @@ mod tests {
                 }],
             )
             .unwrap_err();
-        assert_eq!(int_err.code, "WORKFLOW_COMPILE_ERROR");
+        // A build issue's own code is not a registered refusal: it is
+        // answered as the build refusal, its code kept in the message.
+        assert_eq!(int_err.code(), "DEPLOYMENT_WOULD_NOT_BUILD");
+        assert!(int_err.message.starts_with("WORKFLOW_COMPILE_ERROR: "));
         assert_eq!(reconciler.local_status().applied_revision, 0);
         assert!(reconciler.local_status().backoff_delay_ms >= MIN_BACKOFF_MS);
 

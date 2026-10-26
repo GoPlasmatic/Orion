@@ -65,7 +65,7 @@ pub(super) fn prepare_archive(
             ));
         }
         validate_safe_package_path(&entry.path, "ARCHIVE_PATH_INVALID")
-            .map_err(|f| DeploymentError::from_code(f.code, f.location))?;
+            .map_err(|f| DeploymentError::passed(&f.code, f.location, Kind::PackageInvalid))?;
         if !seen_paths.insert(entry.path.to_ascii_lowercase()) {
             return Err(DeploymentError::new(
                 Kind::ArchiveDuplicateEntry,
@@ -99,7 +99,13 @@ pub(super) fn prepare_archive(
         DeploymentError::new(Kind::ArchiveInventoryInvalid, "invalid inventory.json")
     })?;
     let package_digest = verify_inventory(&inventory_json, &payloads, Some(&inventory_bytes))
-        .map_err(|f| DeploymentError::from_code(f.code, "inventory verification failed"))?;
+        .map_err(|f| {
+            DeploymentError::passed(
+                &f.code,
+                "inventory verification failed",
+                Kind::PackageInvalid,
+            )
+        })?;
 
     let manifest_json: Value = payloads
         .get("connector.json")
@@ -120,7 +126,7 @@ pub(super) fn prepare_archive(
         }
     }
     let bundle = check_manifest_bundle(&manifest_json, &file_list, &schemas)
-        .map_err(|f| DeploymentError::from_code(f.code, f.location))?;
+        .map_err(|f| DeploymentError::passed(&f.code, f.location, Kind::PackageInvalid))?;
 
     let publisher = distribution_json["publisher"]
         .as_str()
@@ -206,7 +212,7 @@ pub(super) fn compile_bundle(
         schemas.insert(path.clone(), schema);
     }
     check_manifest_bundle(&package.manifest_json, &paths, &schemas)
-        .map_err(|f| DeploymentError::from_code(f.code, f.location))
+        .map_err(|f| DeploymentError::passed(&f.code, f.location, Kind::PackageInvalid))
 }
 
 // ============================================================
@@ -319,8 +325,13 @@ pub(super) fn admit(
     lock: Option<(&Value, &[ProviderPackageRow])>,
 ) -> Result<ProviderAdmissionRow, DeploymentError> {
     if let Some((lock_doc, all_packages)) = lock {
-        check_dependency_lock(lock_doc, &verified_metadata(all_packages))
-            .map_err(|f| DeploymentError::from_code(f.code, "dependency lock check failed"))?;
+        check_dependency_lock(lock_doc, &verified_metadata(all_packages)).map_err(|f| {
+            DeploymentError::passed(
+                &f.code,
+                "dependency lock check failed",
+                Kind::PackageInvalid,
+            )
+        })?;
     }
 
     // A package states its tier, or implies Enterprise by declaring policy
@@ -358,7 +369,7 @@ pub(super) fn admit(
             tier,
             signature: None,
         })
-        .map_err(|e| DeploymentError::from_code(e.code, e.message))?;
+        .map_err(|e| DeploymentError::passed(&e.code, e.message, Kind::AdmissionRejected))?;
 
     let fingerprint = sha256_digest(
         &canonical_bytes(&json!({

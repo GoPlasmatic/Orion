@@ -118,7 +118,7 @@ The apply answers `"committed_revision": 1`. Applying the same directory again c
 | Part | Identity | Changes by | Created by |
 |---|---|---|---|
 | Definition | `sha256:` digest of its canonical bytes | Never; a new document is a new digest | `POST /api/v2/admin/definitions`, or `apply -d` |
-| Connection revision | `(connection_id, revision)` | Never; a change is the next revision | `POST /api/v2/admin/connections`, or `apply -d` |
+| Connection revision | `(connection_id, revision)` | Never; a change is the next revision | `POST /api/v2/admin/connections/{id}/revisions`, or `apply -d` |
 | Manifest member | `(kind, id, revision)` | A new deployment naming another revision | `apply -d` assigns revisions, or you write them |
 | Deployment revision | A number, from 1 | Never; a change is the next revision | An apply or a rollback |
 

@@ -4,23 +4,30 @@ use std::collections::BTreeMap;
 
 use axum::Json;
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use orion_api::v2::{
     LintResponse, PackResponse, ScaffoldRequest, ScaffoldResponse, UploadPackageRequest,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use super::decode_files_map;
+use super::{V2Error, V2Result, decode_files_map};
 use crate::extensions::ImplementationKind;
 use crate::extensions::authoring::{
     lint_provider_package, pack_provider_package, scaffold_provider_package,
 };
+use crate::extensions::deployment_store::DeploymentErrorKind;
+use crate::server::extract::OrionJson;
 
-fn parse_implementation_kind(kind_str: &str) -> Result<ImplementationKind, String> {
+fn parse_implementation_kind(kind_str: &str) -> V2Result<ImplementationKind> {
     let name = kind_str.trim().to_ascii_lowercase();
     ImplementationKind::parse(&name).ok_or_else(|| {
-        format!("unsupported implementation kind '{name}'; expected 'rust', 'workflow', or 'wasm'")
+        V2Error::new(
+            DeploymentErrorKind::InvalidImplementationKind,
+            format!(
+                "unsupported implementation kind '{name}'; expected 'rust', 'workflow', or 'wasm'"
+            ),
+        )
     })
 }
 
@@ -37,19 +44,10 @@ fn parse_implementation_kind(kind_str: &str) -> Result<ImplementationKind, Strin
         (status = 400, description = "Unsupported implementation kind"),
     )
 )]
-pub(crate) async fn authoring_scaffold(Json(req): Json<ScaffoldRequest>) -> impl IntoResponse {
-    let kind = match parse_implementation_kind(&req.kind) {
-        Ok(k) => k,
-        Err(msg) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(crate::errors::error_envelope_json(
-                    "INVALID_IMPLEMENTATION_KIND",
-                    msg,
-                )),
-            );
-        }
-    };
+pub(crate) async fn authoring_scaffold(
+    OrionJson(req): OrionJson<ScaffoldRequest>,
+) -> V2Result<Json<ScaffoldResponse>> {
+    let kind = parse_implementation_kind(&req.kind)?;
     let pkg = scaffold_provider_package(&req.publisher, &req.provider_id, &req.version, kind);
     let package_digest = pack_provider_package(&pkg.files)
         .map(|inv| inv.package_digest.into_string())
@@ -67,18 +65,14 @@ pub(crate) async fn authoring_scaffold(Json(req): Json<ScaffoldRequest>) -> impl
             (k, s)
         })
         .collect();
-    let resp = ScaffoldResponse {
+    Ok(Json(ScaffoldResponse {
         publisher: pkg.publisher,
         provider_id: pkg.provider_id,
         version: pkg.version,
         implementation: pkg.implementation.as_str().to_string(),
         package_digest,
         files: files_utf8,
-    };
-    (
-        StatusCode::OK,
-        Json(serde_json::to_value(resp).unwrap_or(Value::Null)),
-    )
+    }))
 }
 
 /// `POST /api/v2/admin/authoring/pack`.
@@ -91,56 +85,29 @@ pub(crate) async fn authoring_scaffold(Json(req): Json<ScaffoldRequest>) -> impl
     request_body = UploadPackageRequest,
     responses(
         (status = 200, description = "Deterministically packed provider package", body = PackResponse),
-        (status = 400, description = "Invalid file encoding"),
-        (status = 422, description = "Package validation failed"),
+        (status = 400, description = "A file is not valid `base64:` (`INVALID_PACKAGE_ENCODING`), or the files do not pack (`PACK_VALIDATION_FAILED`)"),
     )
 )]
-pub(crate) async fn authoring_pack(Json(req): Json<UploadPackageRequest>) -> impl IntoResponse {
+pub(crate) async fn authoring_pack(
+    OrionJson(req): OrionJson<UploadPackageRequest>,
+) -> V2Result<Json<PackResponse>> {
     let mut raw_files = req.merged_files();
-    let files = match decode_files_map(&raw_files) {
-        Ok(f) => f,
-        Err(msg) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(crate::errors::error_envelope_json(
-                    "INVALID_PACKAGE_ENCODING",
-                    msg,
-                )),
-            );
-        }
-    };
-    match pack_provider_package(&files) {
-        Ok(packed) => {
-            let inventory_json =
-                serde_json::from_slice::<Value>(&packed.inventory_bytes).unwrap_or(Value::Null);
-            if let Ok(inv_str) = String::from_utf8(packed.inventory_bytes) {
-                raw_files.insert("inventory.json".to_string(), inv_str);
-            }
-            let resp = PackResponse {
-                package_digest: packed.package_digest.to_string(),
-                inventory: inventory_json.clone(),
-                files: raw_files,
-            };
-            let mut val = serde_json::to_value(&resp).unwrap_or(Value::Null);
-            if let Some(obj) = val.as_object_mut() {
-                obj.insert(
-                    "data".to_string(),
-                    json!({
-                        "package_digest": packed.package_digest,
-                        "inventory": inventory_json,
-                    }),
-                );
-            }
-            (StatusCode::OK, Json(val))
-        }
-        Err(err) => (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(crate::errors::error_envelope_json(
-                "PACK_VALIDATION_FAILED",
-                err.code,
-            )),
-        ),
+    let files = decode_files_map(&raw_files)?;
+    let packed = pack_provider_package(&files).map_err(|err| {
+        V2Error::new(
+            DeploymentErrorKind::PackValidationFailed,
+            format!("the files do not pack: {}", err.code),
+        )
+    })?;
+    let inventory: Value = serde_json::from_slice(&packed.inventory_bytes)?;
+    if let Ok(inv_str) = String::from_utf8(packed.inventory_bytes) {
+        raw_files.insert("inventory.json".to_string(), inv_str);
     }
+    Ok(Json(PackResponse {
+        package_digest: packed.package_digest.to_string(),
+        inventory,
+        files: raw_files,
+    }))
 }
 
 /// `POST /api/v2/admin/authoring/lint`.
@@ -157,21 +124,19 @@ pub(crate) async fn authoring_pack(Json(req): Json<UploadPackageRequest>) -> imp
         (status = 422, description = "Package has lint errors", body = LintResponse),
     )
 )]
-pub(crate) async fn authoring_lint(Json(req): Json<UploadPackageRequest>) -> impl IntoResponse {
+pub(crate) async fn authoring_lint(OrionJson(req): OrionJson<UploadPackageRequest>) -> Response {
     let raw_files = req.merged_files();
     let files = match decode_files_map(&raw_files) {
         Ok(f) => f,
-        Err(msg) => {
+        Err(V2Error::Store(e)) => {
             let resp = LintResponse {
                 valid: false,
-                errors: vec![msg],
+                errors: vec![e.message],
                 ..LintResponse::default()
             };
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::to_value(resp).unwrap_or(Value::Null)),
-            );
+            return (StatusCode::BAD_REQUEST, Json(resp)).into_response();
         }
+        Err(other) => return other.into_response(),
     };
     let report = lint_provider_package(&files);
     let status = if report.valid {
@@ -179,14 +144,8 @@ pub(crate) async fn authoring_lint(Json(req): Json<UploadPackageRequest>) -> imp
     } else {
         StatusCode::UNPROCESSABLE_ENTITY
     };
-    let dto: LintResponse = serde_json::to_value(&report)
-        .and_then(serde_json::from_value)
-        .unwrap_or_else(|_| LintResponse {
-            valid: report.valid,
-            ..LintResponse::default()
-        });
-    (
-        status,
-        Json(serde_json::to_value(dto).unwrap_or(Value::Null)),
-    )
+    match serde_json::to_value(&report).and_then(serde_json::from_value::<LintResponse>) {
+        Ok(dto) => (status, Json(dto)).into_response(),
+        Err(e) => V2Error::from(e).into_response(),
+    }
 }

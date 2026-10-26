@@ -427,6 +427,9 @@ async fn a_node_does_not_boot_on_a_head_it_cannot_build() {
                     "idempotency_key": "idem-ghost",
                     "reason": "deploy an unbuildable revision",
                     "manifest": manifest,
+                    // Refused while it is planned, before any digest is
+                    // compared.
+                    "reviewed_manifest_digest": format!("sha256:{}", "0".repeat(64)),
                 })
                 .to_string(),
             ))

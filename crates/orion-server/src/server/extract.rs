@@ -56,6 +56,27 @@ where
     }
 }
 
+/// An optional body: none when the request carries no `content-type` (a bare
+/// `curl -X POST`), and otherwise parsed exactly as [`OrionJson`] parses it,
+/// so a malformed one is refused with the error envelope rather than axum's
+/// plain-text rejection.
+impl<T, S> axum::extract::OptionalFromRequest<S> for OrionJson<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = OrionError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Option<Self>, Self::Rejection> {
+        if !req.headers().contains_key(axum::http::header::CONTENT_TYPE) {
+            return Ok(None);
+        }
+        <Self as FromRequest<S>>::from_request(req, state)
+            .await
+            .map(Some)
+    }
+}
+
 /// The data plane's raw body, with an envelope-carrying rejection.
 ///
 /// The dynamic handler takes the body as bytes because a channel's payload is

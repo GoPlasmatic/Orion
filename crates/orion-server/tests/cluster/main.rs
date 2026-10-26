@@ -1689,11 +1689,11 @@ async fn rollback_propagates_across_nodes() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v2/admin/deployments/rollback",
+            "/api/v2/admin/deployments",
             Some(json!({
                 "idempotency_key": "rollback-to-first",
-                "expected_head_revision": second,
-                "target_revision": first,
+                "base_revision": second,
+                "rollback_to": first,
                 "reason": "cluster rollback test",
             })),
         ))

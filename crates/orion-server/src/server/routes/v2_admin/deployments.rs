@@ -1,25 +1,25 @@
-//! V2 Candidate deployment planning, CAS apply, convergence & rollback routes (`/api/v2/admin/deployment*`).
+//! V2 candidate deployment plans, and deployments — an apply or a rollback,
+//! each one CAS commit — with their convergence (`/api/v2/admin/deployment*`).
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use orion_api::v2::{
-    ApplyDeploymentRequest, ApplyDeploymentResponse, ConvergenceStatusResponse,
-    CreateDeploymentPlanRequest, DeploymentPlanResponse, DeploymentReceiptResponse,
-    DeploymentRevisionResponse, DeploymentsSummaryResponse, RollbackDeploymentRequest,
-    RollbackDeploymentResponse,
+    ApplyDeploymentRequest, ConvergenceStatusResponse, CreateDeploymentPlanRequest,
+    CreateDeploymentRequest, CreateDeploymentResponse, DeploymentEntityRef, DeploymentEntityUpdate,
+    DeploymentPlanResponse, DeploymentReceiptResponse, DeploymentRevisionResponse,
+    DeploymentRevisionSummary, DeploymentsPage, RollbackDeploymentRequest,
 };
 use serde::Deserialize;
-use serde_json::{Value, json};
 
-use super::{deployment_err_response, principal_id};
+use super::{V2Error, V2Result, principal_id};
 use crate::extensions::deployment_store::{
-    CanonicalManifest, DeploymentError, DeploymentErrorKind, DeploymentReceipt,
-    DeploymentRevisionRow,
+    CandidatePlan, CanonicalManifest, DeploymentError, DeploymentErrorKind, DeploymentReceipt,
+    DeploymentRevisionRow, EntityRef,
 };
 use crate::extensions::reconciler::ConvergenceTarget;
 use crate::server::admin_auth::AdminPrincipal;
+use crate::server::extract::{OrionJson, OrionQuery};
 use crate::server::state::AppState;
 
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
@@ -27,6 +27,21 @@ use crate::server::state::AppState;
 pub struct ConvergenceQuery {
     /// Convergence evaluation scope (`this-node` or `observed`).
     pub target: Option<String>,
+}
+
+/// The default and the largest page of `GET /deployments`, as every list
+/// surface pages.
+const DEFAULT_PAGE: u64 = 50;
+const MAX_PAGE: u64 = 1000;
+
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
+pub struct DeploymentsQuery {
+    /// Revisions per page, newest first: 50 by default, at most 1000.
+    pub limit: Option<u64>,
+    /// The `next_cursor` of the previous page.
+    pub cursor: Option<String>,
 }
 
 /// A stored time as the wire carries it: ISO 8601, as every other admin
@@ -52,17 +67,63 @@ fn receipt_to_dto(receipt: &DeploymentReceipt) -> DeploymentReceiptResponse {
     }
 }
 
-fn revision_row_to_dto(row: &DeploymentRevisionRow) -> DeploymentRevisionResponse {
-    DeploymentRevisionResponse {
+fn revision_summary(row: &DeploymentRevisionRow) -> DeploymentRevisionSummary {
+    DeploymentRevisionSummary {
         revision: row.revision,
         parent_revision: row.parent_revision,
         manifest_digest: row.manifest_digest.clone(),
-        manifest: serde_json::to_value(&row.manifest).unwrap_or(Value::Null),
+        member_count: row.manifest.members.len(),
         reason: row.reason.clone(),
         created_by: row.created_by.clone(),
         members_compacted: row.members_compacted,
         created_at: wire_time(row.created_at),
     }
+}
+
+fn entity_dto(entity: &EntityRef) -> DeploymentEntityRef {
+    DeploymentEntityRef {
+        kind: entity.kind.as_str().to_string(),
+        id: entity.id.clone(),
+        revision: entity.revision.get(),
+    }
+}
+
+/// The plan's change to its base, by member: one the base does not deploy
+/// is added, one it deploys at another revision is updated, and one the
+/// candidate drops is removed.
+fn plan_diff(
+    plan: &CandidatePlan,
+) -> (
+    Vec<DeploymentEntityRef>,
+    Vec<DeploymentEntityUpdate>,
+    Vec<DeploymentEntityRef>,
+) {
+    let same_member =
+        |a: &EntityRef, b: &EntityRef| a.kind.as_str() == b.kind.as_str() && a.id == b.id;
+    let mut added = Vec::new();
+    let mut updated = Vec::new();
+    for entity in &plan.added_entities {
+        match plan
+            .removed_entities
+            .iter()
+            .find(|old| same_member(old, entity))
+        {
+            Some(old) => updated.push(DeploymentEntityUpdate {
+                kind: entity.kind.as_str().to_string(),
+                id: entity.id.clone(),
+                from_revision: old.revision.get(),
+                to_revision: entity.revision.get(),
+            }),
+            None => added.push(entity_dto(entity)),
+        }
+    }
+    let removed = plan
+        .removed_entities
+        .iter()
+        .filter(|old| !plan.added_entities.iter().any(|e| same_member(old, e)))
+        .map(entity_dto)
+        .collect();
+    (added, updated, removed)
 }
 
 /// `POST /api/v2/admin/deployment-plans`.
@@ -71,7 +132,7 @@ fn revision_row_to_dto(row: &DeploymentRevisionRow) -> DeploymentRevisionRespons
     path = "/api/v2/admin/deployment-plans",
     tag = "Deployments",
     summary = "Plan and validate a candidate deployment manifest",
-    description = "Validates canonical manifest invariants, provider admission status, and connection references against the requested base revision, returning the reviewed manifest digest and entity diff.",
+    description = "Validates canonical manifest invariants, provider admission status, and connection references against the requested base revision, and checks that this node could build the candidate. Answers the reviewed manifest digest an apply must name, and the members the candidate adds, updates and removes. Nothing is stored: planning the same candidate on the same base answers the same plan.",
     request_body = CreateDeploymentPlanRequest,
     responses(
         (status = 200, description = "Candidate deployment plan", body = DeploymentPlanResponse),
@@ -82,59 +143,22 @@ fn revision_row_to_dto(row: &DeploymentRevisionRow) -> DeploymentRevisionRespons
 )]
 pub(crate) async fn create_deployment_plan(
     State(state): State<AppState>,
-    Json(req): Json<CreateDeploymentPlanRequest>,
-) -> impl IntoResponse {
-    let manifest = match CanonicalManifest::from_json(&req.manifest) {
-        Ok(m) => m,
-        Err(e) => return deployment_err_response(e),
-    };
+    OrionJson(req): OrionJson<CreateDeploymentPlanRequest>,
+) -> V2Result<Json<DeploymentPlanResponse>> {
+    let manifest = CanonicalManifest::from_json(&req.manifest)?;
     let plan = state
         .deployments
         .plan_candidate_in_db(&state.db_pool, req.base_revision, manifest)
-        .await;
-    if let Ok(ref plan) = plan
-        && let Err(e) = refuse_unbuildable(&state, plan).await
-    {
-        return deployment_err_response(e);
-    }
-    match plan {
-        Ok(plan) => {
-            let added_values: Vec<Value> = plan
-                .added_entities
-                .iter()
-                .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
-                .collect();
-            let removed_values: Vec<Value> = plan
-                .removed_entities
-                .iter()
-                .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
-                .collect();
-            let findings: Vec<Value> = plan
-                .external_effect_warnings
-                .iter()
-                .map(|w| json!({ "warning": w }))
-                .collect();
-            let request_hash = plan
-                .compute_request_hash("deployment_plan", "")
-                .unwrap_or_else(|_| plan.candidate_digest.clone());
-            let resp = DeploymentPlanResponse {
-                base_revision: plan.base_revision,
-                candidate_digest: plan.candidate_digest.clone(),
-                reviewed_manifest_digest: plan.candidate_digest,
-                request_hash,
-                added_entities: added_values,
-                updated_entities: Vec::new(),
-                removed_entities: removed_values,
-                external_effect_warnings: plan.external_effect_warnings,
-                findings,
-            };
-            (
-                StatusCode::OK,
-                Json(serde_json::to_value(resp).unwrap_or(Value::Null)),
-            )
-        }
-        Err(e) => deployment_err_response(e),
-    }
+        .await?;
+    refuse_unbuildable(&state, &plan).await?;
+    let (added_entities, updated_entities, removed_entities) = plan_diff(&plan);
+    Ok(Json(DeploymentPlanResponse {
+        base_revision: plan.base_revision,
+        reviewed_manifest_digest: plan.candidate_digest,
+        added_entities,
+        updated_entities,
+        removed_entities,
+    }))
 }
 
 /// `GET /api/v2/admin/deployments`.
@@ -142,86 +166,135 @@ pub(crate) async fn create_deployment_plan(
     get,
     path = "/api/v2/admin/deployments",
     tag = "Deployments",
-    summary = "Get deployment head and committed revision history",
-    description = "Returns the current deployment store head revision, epoch, node-applied revision, and committed revision rows.",
+    summary = "Page through committed deployment revisions",
+    description = "The deployment head, its epoch and the revision this node serves, with one page of committed revisions, newest first, each without its manifest — `GET /deployments/{revision}` reads one in full. Pass `next_cursor` back as `?cursor=` for the next page.",
+    params(DeploymentsQuery),
     responses(
-        (status = 200, description = "Deployment summary", body = DeploymentsSummaryResponse),
+        (status = 200, description = "The head and a page of revisions", body = DeploymentsPage),
+        (status = 400, description = "A `limit` of 0, or a cursor this endpoint did not issue"),
     )
 )]
-pub(crate) async fn get_deployments_summary(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn list_deployments(
+    State(state): State<AppState>,
+    OrionQuery(query): OrionQuery<DeploymentsQuery>,
+) -> V2Result<Json<DeploymentsPage>> {
+    let limit = query.limit.unwrap_or(DEFAULT_PAGE);
+    if limit == 0 {
+        return Err(crate::errors::OrionError::invalid_field(
+            "limit",
+            "INVALID",
+            "limit must be at least 1",
+        )
+        .into());
+    }
+    let limit = limit.min(MAX_PAGE);
+    // The cursor is the revision the previous page ended at: this page is
+    // what came before it.
+    let before = match query.cursor.as_deref() {
+        None => None,
+        Some(cursor) => Some(cursor.parse::<u64>().map_err(|_| {
+            crate::errors::OrionError::invalid_field(
+                "cursor",
+                "INVALID",
+                format!("'{cursor}' is not a cursor this endpoint issued"),
+            )
+        })?),
+    };
     let store = &state.deployments;
-    let (head_rev, epoch) = store.current_head();
-    let local_status = state.reconciler.local_status();
-    let revisions = store
-        .list_revisions()
-        .iter()
-        .map(|r| revision_row_to_dto(r))
-        .collect();
-    Json(DeploymentsSummaryResponse {
-        head_revision: head_rev,
+    let (head_revision, epoch) = store.current_head();
+    let mut revisions = store.list_revisions();
+    revisions.retain(|r| before.is_none_or(|b| r.revision < b));
+    revisions.sort_by_key(|r| std::cmp::Reverse(r.revision));
+    let more = revisions.len() as u64 > limit;
+    revisions.truncate(limit as usize);
+    let next_cursor = more
+        .then(|| revisions.last().map(|r| r.revision.to_string()))
+        .flatten();
+    Ok(Json(DeploymentsPage {
+        head_revision,
         epoch,
-        applied_revision: local_status.applied_revision,
-        revisions,
-    })
+        applied_revision: state.reconciler.local_status().applied_revision,
+        data: revisions.iter().map(|r| revision_summary(r)).collect(),
+        limit,
+        next_cursor,
+    }))
 }
 
 /// `POST /api/v2/admin/deployments`.
 ///
-/// Commits the candidate manifest under CAS on `base_revision` and returns
-/// `202 Accepted` with the durable `DeploymentReceipt`.
+/// Commits the next revision under CAS on `base_revision` — the reviewed
+/// candidate, or an earlier revision's manifest again — and answers
+/// `202 Accepted` with the durable receipt.
 #[utoipa::path(
     post,
     path = "/api/v2/admin/deployments",
     tag = "Deployments",
-    summary = "Atomically apply a candidate deployment manifest",
-    description = "Validates the candidate manifest (and optional reviewed_manifest_digest), performs compare-and-swap against base_revision in a single database transaction, and reconciles the local node.",
-    request_body = ApplyDeploymentRequest,
+    summary = "Commit the next deployment revision: an apply or a rollback",
+    description = "An apply (`manifest` with its `reviewed_manifest_digest`) plans the manifest again, refuses it unless it plans to the digest that was reviewed, and commits it. A rollback (`rollback_to`) commits an earlier revision's manifest as a new revision, re-checking its providers' admissions as of now. Either is a compare-and-swap against `base_revision` in one database transaction, idempotent on `idempotency_key` per principal (a replay answers the receipt it committed), and then reconciles the local node.",
+    request_body = CreateDeploymentRequest,
     responses(
-        (status = 202, description = "Deployment committed and accepted for convergence", body = ApplyDeploymentResponse),
-        (status = 400, description = "Manifest validation failed"),
+        (status = 202, description = "Committed and accepted for convergence", body = CreateDeploymentResponse),
+        (status = 400, description = "Manifest validation failed, the body is neither an apply nor a rollback, or the rollback target is compacted"),
         (status = 403, description = "Provider not admitted or admission invalidated"),
+        (status = 404, description = "The rollback target does not exist"),
         (status = 409, description = "Base revision conflict, idempotency conflict, or reviewed digest mismatch"),
     )
 )]
-pub(crate) async fn apply_deployment(
+pub(crate) async fn create_deployment(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    Json(req): Json<ApplyDeploymentRequest>,
-) -> impl IntoResponse {
-    let actor = principal_id(&principal);
-    let manifest = match CanonicalManifest::from_json(&req.manifest) {
-        Ok(m) => m,
-        Err(e) => return deployment_err_response(e),
+    OrionJson(req): OrionJson<CreateDeploymentRequest>,
+) -> V2Result<(StatusCode, Json<CreateDeploymentResponse>)> {
+    let (receipt, warnings) = match req {
+        CreateDeploymentRequest::Apply(apply) => (
+            apply_deployment(&state, &principal, apply).await?,
+            Vec::new(),
+        ),
+        CreateDeploymentRequest::Rollback(rollback) => {
+            rollback_deployment(&state, &principal, rollback).await?
+        }
     };
-    let plan = match state
+    let (evaluation, local_error) = reconcile_locally(&state, receipt.committed_revision).await;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(CreateDeploymentResponse {
+            status: "accepted".to_string(),
+            committed_revision: receipt.committed_revision,
+            receipt: receipt_to_dto(&receipt),
+            warnings,
+            evaluation: Some(evaluation),
+            local_error,
+        }),
+    ))
+}
+
+/// Plan `req`'s manifest again, refuse it unless it plans to the reviewed
+/// digest, and commit it.
+async fn apply_deployment(
+    state: &AppState,
+    principal: &Option<Extension<AdminPrincipal>>,
+    req: ApplyDeploymentRequest,
+) -> Result<DeploymentReceipt, DeploymentError> {
+    let actor = principal_id(principal);
+    let manifest = CanonicalManifest::from_json(&req.manifest)?;
+    let plan = state
         .deployments
         .plan_candidate_in_db(&state.db_pool, req.base_revision, manifest)
-        .await
-    {
-        Ok(p) => p,
-        Err(e) => return deployment_err_response(e),
-    };
-
-    if let Err(e) = refuse_unbuildable(&state, &plan).await {
-        return deployment_err_response(e);
-    }
-
-    if let Some(ref expected_digest) = req.reviewed_manifest_digest
-        && expected_digest != &plan.candidate_digest
-    {
-        return deployment_err_response(DeploymentError::new(
+        .await?;
+    refuse_unbuildable(state, &plan).await?;
+    if req.reviewed_manifest_digest != plan.candidate_digest {
+        return Err(DeploymentError::new(
             DeploymentErrorKind::ReviewedDigestMismatch,
             format!(
-                "reviewed_manifest_digest '{expected_digest}' does not match candidate manifest digest '{}'",
-                plan.candidate_digest
+                "reviewed_manifest_digest '{}' does not match candidate manifest digest '{}'",
+                req.reviewed_manifest_digest, plan.candidate_digest
             ),
         ));
     }
-
     // The audit row is written in the commit's transaction: it lands with
     // the head move or not at all, and a replay that commits nothing writes
     // none.
-    let receipt = match state
+    let (receipt, recorded) = state
         .deployments
         .apply_candidate_audited_in_db(
             &state.db_pool,
@@ -232,36 +305,54 @@ pub(crate) async fn apply_deployment(
             state.composition.admission(),
             |receipt| {
                 crate::server::routes::admin::audit_record(
-                    &principal,
+                    principal,
                     "v2_deployment_apply",
                     "deployment",
                     &receipt.committed_revision.to_string(),
                 )
             },
         )
-        .await
-    {
-        Ok((r, recorded)) => {
-            if let Some(event) = recorded {
-                crate::server::routes::admin::emit_audit_trail(&event);
-            }
-            r
-        }
-        Err(e) => return deployment_err_response(e),
-    };
+        .await?;
+    if let Some(event) = recorded {
+        crate::server::routes::admin::emit_audit_trail(&event);
+    }
+    Ok(receipt)
+}
 
-    let (evaluation, local_error) = reconcile_locally(&state, receipt.committed_revision).await;
-    let resp = ApplyDeploymentResponse {
-        status: "accepted".to_string(),
-        committed_revision: receipt.committed_revision,
-        receipt: receipt_to_dto(&receipt),
-        evaluation: Some(evaluation),
-        local_error,
-    };
-    (
-        StatusCode::ACCEPTED,
-        Json(serde_json::to_value(resp).unwrap_or(Value::Null)),
-    )
+/// Commit `req.rollback_to`'s manifest again as the next revision.
+async fn rollback_deployment(
+    state: &AppState,
+    principal: &Option<Extension<AdminPrincipal>>,
+    req: RollbackDeploymentRequest,
+) -> Result<(DeploymentReceipt, Vec<String>), DeploymentError> {
+    let actor = principal_id(principal);
+    let ((receipt, warnings), recorded) = state
+        .deployments
+        .rollback_to_revision_audited_in_db(
+            &state.db_pool,
+            &crate::extensions::deployment_store::Rollback {
+                principal: &actor,
+                idempotency_key: &req.idempotency_key,
+                expected_head_revision: req.base_revision,
+                target_revision: req.rollback_to,
+                reason: &req.reason,
+            },
+            state.composition.admission(),
+            // In the commit's transaction, as an apply's is.
+            |receipt| {
+                crate::server::routes::admin::audit_record(
+                    principal,
+                    "v2_deployment_rollback",
+                    "deployment",
+                    &format!("{}->{}", req.rollback_to, receipt.committed_revision),
+                )
+            },
+        )
+        .await?;
+    if let Some(event) = recorded {
+        crate::server::routes::admin::emit_audit_trail(&event);
+    }
+    Ok((receipt, warnings))
 }
 
 /// Refuse a candidate this node could not build, before anything is
@@ -320,34 +411,28 @@ async fn reconcile_locally(
     ),
     responses(
         (status = 200, description = "Committed deployment revision", body = DeploymentRevisionResponse),
-        (status = 404, description = "Revision not found"),
+        (status = 404, description = "No revision has that number (`REVISION_NOT_FOUND`)"),
     )
 )]
 pub(crate) async fn get_deployment_revision(
     State(state): State<AppState>,
     Path(revision): Path<u64>,
-) -> impl IntoResponse {
-    let revisions = state.deployments.list_revisions();
-    match revisions.into_iter().find(|r| r.revision == revision) {
-        Some(rev) => {
-            let dto = revision_row_to_dto(&rev);
-            let mut val = serde_json::to_value(&dto).unwrap_or(Value::Null);
-            if let Some(obj) = val.as_object_mut() {
-                obj.insert(
-                    "data".to_string(),
-                    serde_json::to_value(&dto).unwrap_or(Value::Null),
-                );
-            }
-            (StatusCode::OK, Json(val))
-        }
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(crate::errors::error_envelope_json(
-                "REVISION_NOT_FOUND",
+) -> V2Result<Json<DeploymentRevisionResponse>> {
+    let row = state
+        .deployments
+        .list_revisions()
+        .into_iter()
+        .find(|r| r.revision == revision)
+        .ok_or_else(|| {
+            V2Error::new(
+                DeploymentErrorKind::RevisionNotFound,
                 format!("deployment revision {revision} not found"),
-            )),
-        ),
-    }
+            )
+        })?;
+    Ok(Json(DeploymentRevisionResponse {
+        summary: revision_summary(&row),
+        manifest: serde_json::to_value(&row.manifest)?,
+    }))
 }
 
 /// `GET /api/v2/admin/deployments/{revision}/convergence`.
@@ -369,7 +454,7 @@ pub(crate) async fn get_deployment_convergence(
     State(state): State<AppState>,
     Path(revision): Path<u64>,
     Query(query): Query<ConvergenceQuery>,
-) -> impl IntoResponse {
+) -> Json<ConvergenceStatusResponse> {
     let local_node_id = state.reconciler.local_status().identity.node_id;
     let target = match query.target.as_deref().unwrap_or("this-node") {
         "observed" => {
@@ -390,73 +475,5 @@ pub(crate) async fn get_deployment_convergence(
         pending_nodes: report.pending_nodes,
         degraded_nodes: report.degraded_nodes,
     };
-    (StatusCode::OK, Json(dto))
-}
-
-/// `POST /api/v2/admin/deployments/rollback`.
-#[utoipa::path(
-    post,
-    path = "/api/v2/admin/deployments/rollback",
-    tag = "Deployments",
-    summary = "Roll back to a prior deployment revision",
-    description = "Creates a new forward deployment revision whose manifest matches target_revision under compare-and-swap against expected_head_revision, then reconciles the local node.",
-    request_body = RollbackDeploymentRequest,
-    responses(
-        (status = 202, description = "Rollback committed as a new deployment revision", body = RollbackDeploymentResponse),
-        (status = 403, description = "Provider in target revision is no longer admitted"),
-        (status = 404, description = "Target revision not found"),
-        (status = 409, description = "Expected head revision conflict or idempotency conflict"),
-    )
-)]
-pub(crate) async fn rollback_deployment(
-    State(state): State<AppState>,
-    principal: Option<Extension<AdminPrincipal>>,
-    Json(req): Json<RollbackDeploymentRequest>,
-) -> impl IntoResponse {
-    let actor = principal_id(&principal);
-    match state
-        .deployments
-        .rollback_to_revision_audited_in_db(
-            &state.db_pool,
-            &crate::extensions::deployment_store::Rollback {
-                principal: &actor,
-                idempotency_key: &req.idempotency_key,
-                expected_head_revision: req.expected_head_revision,
-                target_revision: req.target_revision,
-                reason: &req.reason,
-            },
-            state.composition.admission(),
-            // In the commit's transaction, as an apply's is.
-            |receipt| {
-                crate::server::routes::admin::audit_record(
-                    &principal,
-                    "v2_deployment_rollback",
-                    "deployment",
-                    &format!("{}->{}", req.target_revision, receipt.committed_revision),
-                )
-            },
-        )
-        .await
-    {
-        Ok(((receipt, warnings), recorded)) => {
-            if let Some(event) = recorded {
-                crate::server::routes::admin::emit_audit_trail(&event);
-            }
-            let (evaluation, local_error) =
-                reconcile_locally(&state, receipt.committed_revision).await;
-            let resp = RollbackDeploymentResponse {
-                status: "accepted".to_string(),
-                committed_revision: receipt.committed_revision,
-                receipt: receipt_to_dto(&receipt),
-                warnings,
-                evaluation: Some(evaluation),
-                local_error,
-            };
-            (
-                StatusCode::ACCEPTED,
-                Json(serde_json::to_value(resp).unwrap_or(Value::Null)),
-            )
-        }
-        Err(e) => deployment_err_response(e),
-    }
+    Json(dto)
 }

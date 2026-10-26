@@ -46,6 +46,12 @@ pub enum ClientError {
     },
 }
 
+impl From<serde_json::Error> for ClientError {
+    fn from(source: serde_json::Error) -> Self {
+        Self::Decode { source }
+    }
+}
+
 impl ClientError {
     /// The HTTP status, when the server answered at all.
     pub fn status(&self) -> Option<StatusCode> {

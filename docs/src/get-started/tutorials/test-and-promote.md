@@ -215,12 +215,12 @@ curl -s http://localhost:8080/api/v2/admin/deployments | jq '{head_revision, app
 History only moves forward. A rollback commits an earlier revision's manifest as a new revision, so the revision you leave stays as it was:
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v2/admin/deployments/rollback \
+curl -s -X POST http://localhost:8080/api/v2/admin/deployments \
   -H 'Content-Type: application/json' \
-  -d '{"idempotency_key": "rollback-1", "expected_head_revision": 2, "target_revision": 1}'
+  -d '{"idempotency_key": "rollback-1", "base_revision": 2, "rollback_to": 1}'
 ```
 
-`expected_head_revision` must be the current head, and `target_revision` the revision to restore. Pick the target from the history `GET /api/v2/admin/deployments` lists. The example assumes the head is revision 2, such as after a second apply. `orion-cli deployments rollback` takes the same three values as flags.
+`base_revision` must be the current head, and `rollback_to` the revision to restore. Pick the target from the history `GET /api/v2/admin/deployments` lists, or `orion-cli deployments list`. The example assumes the head is revision 2, such as after a second apply. `orion-cli deployments rollback` takes the same three values as flags (`--expected-head-revision`, `--target-revision`, `--idempotency-key`).
 
 ## Clean up
 

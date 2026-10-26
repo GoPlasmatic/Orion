@@ -1,5 +1,3 @@
-pub(crate) mod schemas;
-
 use utoipa::openapi::path::Operation;
 use utoipa::openapi::security::{
     ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme,
@@ -9,7 +7,13 @@ use utoipa::{Modify, OpenApi};
 
 use crate::server::admin_auth::is_guarded_path;
 
-pub(crate) use schemas::{ErrorDetail, ErrorFieldDetail, ErrorResponse};
+/// The error envelope every 4xx/5xx carries — the shared contract types
+/// themselves, published under the component names the document has always
+/// used (`schema(as = …)` on the orion-api types), since renaming one breaks
+/// clients generated against it.
+pub(crate) use orion_api::{
+    ErrorBody as ErrorDetail, ErrorEnvelope as ErrorResponse, FieldError as ErrorFieldDetail,
+};
 
 /// The spec is generated without a config, so it has to pick one deployment
 /// shape to describe for the paths whose registration is config-dependent.
@@ -247,20 +251,22 @@ validation failures.",
         super::v2_admin::get_runtime_capabilities,
         super::v2_admin::packages::list_connector_packages,
         super::v2_admin::packages::upload_connector_package,
+        super::v2_admin::packages::get_connector_package,
         super::v2_admin::packages::admit_connector_package,
         super::v2_admin::packages::revoke_connector_package,
         super::v2_admin::connections::list_connections,
+        super::v2_admin::connections::list_connection_revisions,
         super::v2_admin::connections::create_connection_revision,
+        super::v2_admin::connections::get_connection_revision,
         super::v2_admin::connections::probe_connection,
         super::v2_admin::definitions::upload_definition,
         super::v2_admin::definitions::get_definition,
         super::v2_admin::definitions::test_definition,
         super::v2_admin::deployments::create_deployment_plan,
-        super::v2_admin::deployments::get_deployments_summary,
-        super::v2_admin::deployments::apply_deployment,
+        super::v2_admin::deployments::list_deployments,
+        super::v2_admin::deployments::create_deployment,
         super::v2_admin::deployments::get_deployment_revision,
         super::v2_admin::deployments::get_deployment_convergence,
-        super::v2_admin::deployments::rollback_deployment,
         super::v2_admin::edition::edition_transition_preflight,
         super::v2_admin::authoring::authoring_scaffold,
         super::v2_admin::authoring::authoring_lint,
@@ -318,6 +324,7 @@ validation failures.",
             orion_api::v2::ConnectorPackageSummary,
             orion_api::v2::ProviderAdmissionDto,
             orion_api::v2::ConnectorPackagesListResponse,
+            orion_api::v2::ConnectorPackageResponse,
             orion_api::v2::UploadPackageRequest,
             orion_api::v2::Definition,
             orion_api::v2::WorkflowDefinition,
@@ -327,6 +334,7 @@ validation failures.",
             orion_api::v2::DefinitionResponse,
             orion_api::v2::DefinitionAdvisory,
             orion_api::v2::TestDefinitionRequest,
+            orion_api::v2::TestDefinitionResponse,
             orion_api::v2::UploadPackageResponse,
             orion_api::v2::AdmitPackageRequest,
             orion_api::v2::AdmitPackageResponse,
@@ -336,18 +344,20 @@ validation failures.",
             orion_api::v2::ConnectionsListResponse,
             orion_api::v2::CreateConnectionRevisionRequest,
             orion_api::v2::CreateConnectionRevisionResponse,
-            orion_api::v2::ProbeConnectionRequest,
             orion_api::v2::ConnectionProbeResponse,
             orion_api::v2::CreateDeploymentPlanRequest,
+            orion_api::v2::DeploymentEntityRef,
+            orion_api::v2::DeploymentEntityUpdate,
             orion_api::v2::DeploymentPlanResponse,
+            orion_api::v2::CreateDeploymentRequest,
             orion_api::v2::ApplyDeploymentRequest,
+            orion_api::v2::RollbackDeploymentRequest,
             orion_api::v2::DeploymentReceiptResponse,
             orion_api::v2::ConvergenceStatusResponse,
-            orion_api::v2::ApplyDeploymentResponse,
+            orion_api::v2::CreateDeploymentResponse,
+            orion_api::v2::DeploymentRevisionSummary,
             orion_api::v2::DeploymentRevisionResponse,
-            orion_api::v2::DeploymentsSummaryResponse,
-            orion_api::v2::RollbackDeploymentRequest,
-            orion_api::v2::RollbackDeploymentResponse,
+            orion_api::v2::DeploymentsPage,
             orion_api::v2::ScaffoldRequest,
             orion_api::v2::ScaffoldResponse,
             orion_api::v2::LintResponse,

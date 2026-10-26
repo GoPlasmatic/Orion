@@ -1,9 +1,12 @@
 //! Orion v2 CLI commands.
 //!
 //! Exposes first-class CLI subcommands for:
-//! - `deployments`: `capabilities`, `plan`, `apply`, `get`, `wait`, `rollback`, `edition-preflight`
-//! - `provider`: `list`, `upload`, `admit`, `revoke`, `scaffold`, `lint`, `pack`
-//! - `connections`: `list`, `create`, `probe`
+//! - `deployments`: `capabilities`, `plan`, `apply`, `list`, `get`, `wait`, `rollback`, `edition-preflight`
+//! - `provider`: `list`, `get`, `upload`, `admit`, `revoke`, `scaffold`, `lint`, `pack`
+//! - `connections`: `list`, `get`, `create`, `probe`
+//!
+//! Every call goes through `orion_client::V2Admin`: the request and response
+//! types are `orion_api::v2`'s, and no command builds a body or a path.
 
 use std::time::{Duration, Instant};
 
@@ -11,16 +14,12 @@ use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use colored::Colorize;
 use orion_api::v2::{
-    AdmitPackageResponse, ApplyDeploymentRequest, ApplyDeploymentResponse, ConnectionProbeResponse,
-    ConnectionsListResponse, ConnectorPackagesListResponse, ConvergenceStatusResponse,
-    CreateConnectionRevisionRequest, CreateConnectionRevisionResponse, CreateDeploymentPlanRequest,
-    DeploymentPlanResponse, DeploymentRevisionResponse, EditionTransitionPreflightRequest,
-    EditionTransitionPreflightResponse, LintResponse, PackResponse, ProbeConnectionRequest,
-    RevokePackageRequest, RevokePackageResponse, RollbackDeploymentRequest,
-    RollbackDeploymentResponse, RuntimeCapabilitiesResponse, ScaffoldRequest, ScaffoldResponse,
-    UploadPackageRequest, UploadPackageResponse,
+    AdmitPackageRequest, ApplyDeploymentRequest, CreateConnectionRevisionRequest,
+    CreateDeploymentPlanRequest, CreateDeploymentRequest, DeploymentPlanResponse,
+    EditionTransitionPreflightRequest, RevokePackageRequest, RollbackDeploymentRequest,
+    ScaffoldRequest, UploadPackageRequest,
 };
-use orion_client::paths;
+use orion_client::V2Admin;
 use tabled::Tabled;
 
 use crate::client::OrionClient;
@@ -34,8 +33,14 @@ fn load_file_or_stdin(file: &str) -> Result<serde_json::Value> {
     }
 }
 
+/// `file` (or stdin for `-`) read as the request type `T`.
+fn load_request<T: serde::de::DeserializeOwned>(file: &str, what: &str) -> Result<T> {
+    let body = load_file_or_stdin(file).with_context(|| format!("failed to read '{file}'"))?;
+    serde_json::from_value(body).with_context(|| format!("invalid {what} in '{file}'"))
+}
+
 // ============================================================================
-// 1. `orion-cli deployments` (V2-07.4, V2-07.5, V2-16.4)
+// 1. `orion-cli deployments`
 // ============================================================================
 
 #[derive(Args)]
@@ -67,9 +72,6 @@ pub enum DeploymentsSubcommand {
         /// -d, the plan is refused unless the head is this revision
         #[arg(long)]
         base_revision: Option<u64>,
-        /// Optional change reason
-        #[arg(long)]
-        reason: Option<String>,
     },
     /// Atomically apply a reviewed candidate deployment under CAS + idempotency:
     /// a manifest file (-f), or a compiled deployment directory (-d)
@@ -87,8 +89,10 @@ pub enum DeploymentsSubcommand {
         /// apply is refused unless the head is this revision
         #[arg(long, required_unless_present = "dir")]
         base_revision: Option<u64>,
-        /// Reviewed manifest SHA-256 digest returned by `deployments plan`
-        #[arg(long)]
+        /// The reviewed manifest digest `deployments plan` printed. Required
+        /// with -f; with -d the plan's own is sent, and this, when given, must
+        /// equal it
+        #[arg(long, required_unless_present = "dir")]
         reviewed_digest: Option<String>,
         /// Client-generated idempotency key. Required with -f; with -d it
         /// defaults to one derived from the head and the manifest digest, so
@@ -105,7 +109,16 @@ pub enum DeploymentsSubcommand {
         #[arg(long, default_value = "this-node")]
         wait_target: String,
     },
-    /// Fetch a committed deployment revision by revision number
+    /// List committed deployment revisions, newest first, without their manifests
+    List {
+        /// Revisions per page (the server clamps it to 1000)
+        #[arg(long, default_value_t = 50)]
+        limit: u64,
+        /// The `next_cursor` a previous page printed
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Fetch a committed deployment revision, with its manifest
     Get {
         /// Deployment revision number
         revision: u64,
@@ -144,6 +157,22 @@ pub enum DeploymentsSubcommand {
     },
 }
 
+#[derive(Tabled)]
+struct DeploymentRow {
+    #[tabled(rename = "Revision")]
+    revision: u64,
+    #[tabled(rename = "Members")]
+    members: String,
+    #[tabled(rename = "Reason")]
+    reason: String,
+    #[tabled(rename = "By")]
+    created_by: String,
+    #[tabled(rename = "Created")]
+    created_at: String,
+    #[tabled(rename = "Digest")]
+    digest: String,
+}
+
 impl DeploymentsCmd {
     #[cfg(test)]
     fn new(command: DeploymentsSubcommand) -> Self {
@@ -158,8 +187,7 @@ impl DeploymentsCmd {
     ) -> Result<i32> {
         match &self.command {
             DeploymentsSubcommand::Capabilities => {
-                let resp: RuntimeCapabilitiesResponse =
-                    client.get(paths::V2_RUNTIME_CAPABILITIES).await?;
+                let resp = client.runtime_capabilities().await?;
                 if quiet {
                     let ed = if resp.edition.is_empty() {
                         "community"
@@ -169,50 +197,31 @@ impl DeploymentsCmd {
                     println!("{ed}");
                     return Ok(0);
                 }
-                let val = serde_json::to_value(&resp)?;
-                output::print_value(format, &val)?;
+                output::print_value(format, &serde_json::to_value(&resp)?)?;
                 Ok(0)
             }
             DeploymentsSubcommand::Plan {
                 file,
                 dir,
                 base_revision,
-                reason,
             } => {
                 if let Some(dir) = dir {
-                    return plan_directory(
-                        client,
-                        format,
-                        quiet,
-                        dir,
-                        *base_revision,
-                        reason,
-                        false,
-                    )
-                    .await
-                    .map(|_| 0);
+                    return plan_directory(client, format, quiet, dir, *base_revision, false)
+                        .await
+                        .map(|_| 0);
                 }
                 let manifest = load_file_or_stdin(file.as_deref().unwrap_or("-"))?;
-                let body = CreateDeploymentPlanRequest {
-                    base_revision: base_revision.unwrap_or(0),
-                    manifest,
-                    reason: reason.clone(),
-                };
-                let resp: DeploymentPlanResponse =
-                    client.post_dto(paths::V2_DEPLOYMENT_PLANS, &body).await?;
+                let resp = client
+                    .plan_deployment(&CreateDeploymentPlanRequest {
+                        base_revision: base_revision.unwrap_or(0),
+                        manifest,
+                    })
+                    .await?;
                 if quiet {
-                    let digest = if !resp.reviewed_manifest_digest.is_empty() {
-                        &resp.reviewed_manifest_digest
-                    } else {
-                        &resp.candidate_digest
-                    };
-                    if !digest.is_empty() {
-                        println!("{digest}");
-                    }
+                    println!("{}", resp.reviewed_manifest_digest);
                     return Ok(0);
                 }
-                let val = serde_json::to_value(&resp)?;
-                output::print_value(format, &val)?;
+                output::print_value(format, &serde_json::to_value(&resp)?)?;
                 Ok(0)
             }
             DeploymentsSubcommand::Apply {
@@ -227,16 +236,9 @@ impl DeploymentsCmd {
             } => {
                 let body = match dir {
                     Some(dir) => {
-                        let planned = plan_directory(
-                            client,
-                            format,
-                            quiet,
-                            dir,
-                            *base_revision,
-                            &Some(reason.clone()),
-                            true,
-                        )
-                        .await?;
+                        let planned =
+                            plan_directory(client, format, quiet, dir, *base_revision, true)
+                                .await?;
                         let Some((prepared, plan)) = planned else {
                             // The head deploys it already; nothing to apply.
                             return Ok(0);
@@ -260,7 +262,7 @@ impl DeploymentsCmd {
                             base_revision: prepared.base_revision,
                             manifest: prepared.manifest,
                             reason: reason.clone(),
-                            reviewed_manifest_digest: Some(plan.reviewed_manifest_digest),
+                            reviewed_manifest_digest: plan.reviewed_manifest_digest,
                         }
                     }
                     None => ApplyDeploymentRequest {
@@ -268,23 +270,19 @@ impl DeploymentsCmd {
                         base_revision: base_revision.unwrap_or(0),
                         manifest: load_file_or_stdin(file.as_deref().unwrap_or("-"))?,
                         reason: reason.clone(),
-                        reviewed_manifest_digest: reviewed_digest.clone(),
+                        reviewed_manifest_digest: reviewed_digest.clone().unwrap_or_default(),
                     },
                 };
-                let resp: ApplyDeploymentResponse =
-                    client.post_dto(paths::V2_DEPLOYMENTS, &body).await?;
-                let committed_rev = if resp.committed_revision > 0 {
-                    resp.committed_revision
-                } else {
-                    resp.receipt.committed_revision
-                };
+                let resp = client
+                    .create_deployment(&CreateDeploymentRequest::Apply(body))
+                    .await?;
+                let committed_rev = resp.committed_revision;
                 if quiet && *wait_ms == 0 {
                     println!("{committed_rev}");
                     return Ok(0);
                 }
                 if !quiet {
-                    let val = serde_json::to_value(&resp)?;
-                    output::print_value(format, &val)?;
+                    output::print_value(format, &serde_json::to_value(&resp)?)?;
                 }
                 if *wait_ms > 0 && committed_rev > 0 {
                     return wait_for_convergence(
@@ -299,17 +297,60 @@ impl DeploymentsCmd {
                 }
                 Ok(0)
             }
-            DeploymentsSubcommand::Get { revision } => {
-                let resp: DeploymentRevisionResponse =
-                    client.get(&paths::v2_deployment(*revision)).await?;
+            DeploymentsSubcommand::List { limit, cursor } => {
+                let page = client
+                    .list_deployments(Some(*limit), cursor.as_deref())
+                    .await?;
                 if quiet {
-                    if !resp.manifest_digest.is_empty() {
-                        println!("{}", resp.manifest_digest);
+                    for revision in &page.data {
+                        println!("{}", revision.revision);
                     }
                     return Ok(0);
                 }
-                let val = serde_json::to_value(&resp)?;
-                output::print_value(format, &val)?;
+                if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+                    output::print_value(format, &serde_json::to_value(&page)?)?;
+                    return Ok(0);
+                }
+                println!(
+                    "Head revision {} (this node serves {})",
+                    page.head_revision, page.applied_revision
+                );
+                if page.data.is_empty() {
+                    println!("{}", "No deployment revisions.".dimmed());
+                    return Ok(0);
+                }
+                let rows: Vec<DeploymentRow> = page
+                    .data
+                    .iter()
+                    .map(|r| DeploymentRow {
+                        revision: r.revision,
+                        members: if r.members_compacted {
+                            "compacted".to_string()
+                        } else {
+                            r.member_count.to_string()
+                        },
+                        reason: r.reason.clone(),
+                        created_by: r.created_by.clone(),
+                        created_at: r.created_at.clone(),
+                        digest: r.manifest_digest.clone(),
+                    })
+                    .collect();
+                output::print_table(rows);
+                if let Some(next) = &page.next_cursor {
+                    println!(
+                        "{}",
+                        format!("More revisions follow: --cursor {next}").dimmed()
+                    );
+                }
+                Ok(0)
+            }
+            DeploymentsSubcommand::Get { revision } => {
+                let resp = client.get_deployment(*revision).await?;
+                if quiet {
+                    println!("{}", resp.summary.manifest_digest);
+                    return Ok(0);
+                }
+                output::print_value(format, &serde_json::to_value(&resp)?)?;
                 Ok(0)
             }
             DeploymentsSubcommand::Wait {
@@ -323,40 +364,31 @@ impl DeploymentsCmd {
                 idempotency_key,
                 reason,
             } => {
-                let body = RollbackDeploymentRequest {
-                    idempotency_key: idempotency_key.clone(),
-                    expected_head_revision: *expected_head_revision,
-                    target_revision: *target_revision,
-                    reason: reason.clone().unwrap_or_else(|| "rollback".to_string()),
-                };
-                let resp: RollbackDeploymentResponse = client
-                    .post_dto(paths::V2_DEPLOYMENTS_ROLLBACK, &body)
+                let resp = client
+                    .create_deployment(&CreateDeploymentRequest::Rollback(
+                        RollbackDeploymentRequest {
+                            idempotency_key: idempotency_key.clone(),
+                            base_revision: *expected_head_revision,
+                            rollback_to: *target_revision,
+                            reason: reason.clone().unwrap_or_else(|| "rollback".to_string()),
+                        },
+                    ))
                     .await?;
-                let committed_rev = if resp.committed_revision > 0 {
-                    resp.committed_revision
-                } else {
-                    resp.receipt.committed_revision
-                };
                 if quiet {
-                    if committed_rev > 0 {
-                        println!("{committed_rev}");
-                    }
+                    println!("{}", resp.committed_revision);
                     return Ok(0);
                 }
-                let val = serde_json::to_value(&resp)?;
-                output::print_value(format, &val)?;
+                output::print_value(format, &serde_json::to_value(&resp)?)?;
                 Ok(0)
             }
             DeploymentsSubcommand::EditionPreflight { revision } => {
-                let body = EditionTransitionPreflightRequest {
-                    revision: *revision,
-                };
-                let resp: EditionTransitionPreflightResponse = client
-                    .post_dto(paths::V2_EDITION_TRANSITION_PREFLIGHT, &body)
+                let resp = client
+                    .edition_transition_preflight(&EditionTransitionPreflightRequest {
+                        revision: *revision,
+                    })
                     .await?;
                 let allowed = resp.transition_allowed;
-                let val = serde_json::to_value(&resp)?;
-                output::print_value(format, &val)?;
+                output::print_value(format, &serde_json::to_value(&resp)?)?;
                 Ok(if allowed { 0 } else { 2 })
             }
         }
@@ -369,27 +401,21 @@ impl DeploymentsCmd {
 ///
 /// The summary goes to stderr, so stdout carries only the plan (or, for
 /// `apply`, the receipt that follows) in the chosen format.
-#[allow(clippy::too_many_arguments)]
 async fn plan_directory(
     client: &OrionClient,
     format: &OutputFormat,
     quiet: bool,
     dir: &str,
     expected_head: Option<u64>,
-    reason: &Option<String>,
     for_apply: bool,
 ) -> Result<Option<(super::deployment_dir::Prepared, DeploymentPlanResponse)>> {
     let directory = super::deployment_dir::DeploymentDir::read(std::path::Path::new(dir))?;
     let prepared = super::deployment_dir::prepare(client, &directory, expected_head).await?;
-    let plan: DeploymentPlanResponse = client
-        .post_dto(
-            paths::V2_DEPLOYMENT_PLANS,
-            &CreateDeploymentPlanRequest {
-                base_revision: prepared.base_revision,
-                manifest: prepared.manifest.clone(),
-                reason: reason.clone(),
-            },
-        )
+    let plan = client
+        .plan_deployment(&CreateDeploymentPlanRequest {
+            base_revision: prepared.base_revision,
+            manifest: prepared.manifest.clone(),
+        })
         .await?;
 
     let up_to_date = prepared.base_revision > 0
@@ -420,9 +446,9 @@ async fn plan_directory(
             eprintln!(
                 "  {} {} {}@{}",
                 "-".red(),
-                removed["kind"].as_str().unwrap_or_default(),
-                removed["id"].as_str().unwrap_or_default(),
-                removed["revision"]
+                removed.kind,
+                removed.id,
+                removed.revision
             );
         }
         let changed = prepared.assigned.iter().filter(|m| !m.unchanged).count();
@@ -455,20 +481,21 @@ async fn wait_for_convergence(
     timeout_ms: u64,
 ) -> Result<i32> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(50));
-    let path = paths::v2_deployment_convergence(revision, Some(target));
     loop {
-        let resp: ConvergenceStatusResponse = client.get(&path).await?;
+        let resp = client
+            .deployment_convergence(revision, Some(target))
+            .await?;
         if resp.converged {
             if quiet {
                 println!("{revision}");
             } else {
-                let val = serde_json::to_value(&resp)?;
-                output::print_value(format, &val)?;
+                output::print_value(format, &serde_json::to_value(&resp)?)?;
             }
             return Ok(0);
         }
         if Instant::now() >= deadline {
-            // V2-07.4: wait timeout exits nonzero while printing committed revision.
+            // A wait that times out exits nonzero, still printing the
+            // committed revision.
             eprintln!(
                 "{} Convergence wait timed out for committed revision {revision}",
                 "Timeout:".yellow().bold()
@@ -481,7 +508,7 @@ async fn wait_for_convergence(
 }
 
 // ============================================================================
-// 2. `orion-cli provider` (V2-07.2, V2-07.3)
+// 2. `orion-cli provider`
 // ============================================================================
 
 #[derive(Args)]
@@ -497,6 +524,11 @@ pub struct ProviderCmd {
 pub enum ProviderSubcommand {
     /// List uploaded and admitted connector provider packages
     List,
+    /// Show one connector package, with its admission
+    Get {
+        /// Package digest (`sha256:<64 hex chars>`)
+        digest: String,
+    },
     /// Upload a verified connector package archive/bundle JSON
     Upload {
         /// Path to package upload JSON file (or '-' for stdin)
@@ -585,24 +617,15 @@ impl ProviderCmd {
     ) -> Result<i32> {
         match &self.command {
             ProviderSubcommand::List => {
-                let resp: ConnectorPackagesListResponse =
-                    client.get(paths::V2_CONNECTOR_PACKAGES).await?;
+                let resp = client.list_connector_packages().await?;
                 if quiet {
                     for item in &resp.packages {
-                        let d = if !item.digest.is_empty() {
-                            &item.digest
-                        } else {
-                            &item.package_digest
-                        };
-                        if !d.is_empty() {
-                            println!("{d}");
-                        }
+                        println!("{}", item.digest);
                     }
                     return Ok(0);
                 }
                 if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
-                    let val = serde_json::to_value(&resp)?;
-                    output::print_value(format, &val)?;
+                    output::print_value(format, &serde_json::to_value(&resp)?)?;
                     return Ok(0);
                 }
                 if resp.packages.is_empty() {
@@ -618,64 +641,56 @@ impl ProviderCmd {
                         version: p.version.clone(),
                         implementation: p.implementation.clone(),
                         admitted: p.admitted.to_string(),
-                        digest: if !p.digest.is_empty() {
-                            p.digest.clone()
-                        } else {
-                            p.package_digest.clone()
-                        },
+                        digest: p.digest.clone(),
                     })
                     .collect();
                 output::print_table(rows);
                 Ok(0)
             }
-            ProviderSubcommand::Upload { file } => {
-                let body = load_file_or_stdin(file)?;
-                let req: UploadPackageRequest = serde_json::from_value(body)
-                    .with_context(|| format!("invalid package upload payload in '{file}'"))?;
-                let resp: UploadPackageResponse =
-                    client.post_dto(paths::V2_CONNECTOR_PACKAGES, &req).await?;
+            ProviderSubcommand::Get { digest } => {
+                let resp = client.get_connector_package(digest).await?;
                 if quiet {
-                    let d = if !resp.digest.is_empty() {
-                        &resp.digest
-                    } else if !resp.package.digest.is_empty() {
-                        &resp.package.digest
-                    } else {
-                        &resp.package.package_digest
-                    };
-                    if !d.is_empty() {
-                        println!("{d}");
-                    }
+                    println!("{}", resp.package.digest);
                     return Ok(0);
                 }
-                let val = serde_json::to_value(&resp)?;
-                output::print_value(format, &val)?;
+                output::print_value(format, &serde_json::to_value(&resp)?)?;
+                Ok(0)
+            }
+            ProviderSubcommand::Upload { file } => {
+                let req: UploadPackageRequest = load_request(file, "package upload payload")?;
+                let resp = client.upload_connector_package(&req).await?;
+                if quiet {
+                    println!("{}", resp.digest);
+                    return Ok(0);
+                }
+                output::print_value(format, &serde_json::to_value(&resp)?)?;
                 Ok(0)
             }
             ProviderSubcommand::Admit { digest } => {
-                let resp: AdmitPackageResponse = client
-                    .post_empty(&paths::v2_connector_package_admit(digest))
+                let resp = client
+                    .admit_connector_package(digest, &AdmitPackageRequest::default())
                     .await?;
                 if quiet {
                     println!("{digest}");
                     return Ok(0);
                 }
-                let val = serde_json::to_value(&resp)?;
-                output::print_value(format, &val)?;
+                output::print_value(format, &serde_json::to_value(&resp)?)?;
                 Ok(0)
             }
             ProviderSubcommand::Revoke { digest, reason } => {
-                let body = RevokePackageRequest {
-                    reason: reason.clone(),
-                };
-                let resp: RevokePackageResponse = client
-                    .post_dto(&paths::v2_connector_package_revoke(digest), &body)
+                let resp = client
+                    .revoke_connector_package(
+                        digest,
+                        &RevokePackageRequest {
+                            reason: reason.clone(),
+                        },
+                    )
                     .await?;
                 if quiet {
                     println!("{digest}");
                     return Ok(0);
                 }
-                let val = serde_json::to_value(&resp)?;
-                output::print_value(format, &val)?;
+                output::print_value(format, &serde_json::to_value(&resp)?)?;
                 Ok(0)
             }
             ProviderSubcommand::Scaffold {
@@ -684,42 +699,32 @@ impl ProviderCmd {
                 version,
                 kind,
             } => {
-                let body = ScaffoldRequest {
-                    publisher: publisher.clone(),
-                    provider_id: provider_id.clone(),
-                    version: version.clone(),
-                    kind: kind.clone(),
-                };
-                let resp: ScaffoldResponse =
-                    client.post_dto(paths::V2_AUTHORING_SCAFFOLD, &body).await?;
-                let val = serde_json::to_value(&resp)?;
-                output::print_value(format, &val)?;
+                let resp = client
+                    .authoring_scaffold(&ScaffoldRequest {
+                        publisher: publisher.clone(),
+                        provider_id: provider_id.clone(),
+                        version: version.clone(),
+                        kind: kind.clone(),
+                    })
+                    .await?;
+                output::print_value(format, &serde_json::to_value(&resp)?)?;
                 Ok(0)
             }
             ProviderSubcommand::Lint { file } => {
-                let body = load_file_or_stdin(file)
-                    .with_context(|| format!("failed to read provider bundle '{file}'"))?;
-                let req: UploadPackageRequest = serde_json::from_value(body)
-                    .with_context(|| format!("invalid provider bundle in '{file}'"))?;
-                let resp: LintResponse = client.post_dto(paths::V2_AUTHORING_LINT, &req).await?;
+                let req: UploadPackageRequest = load_request(file, "provider bundle")?;
+                let resp = client.authoring_lint(&req).await?;
                 let valid = resp.valid;
-                let val = serde_json::to_value(&resp)?;
-                output::print_value(format, &val)?;
+                output::print_value(format, &serde_json::to_value(&resp)?)?;
                 Ok(if valid { 0 } else { 2 })
             }
             ProviderSubcommand::Pack { file } => {
-                let body = load_file_or_stdin(file)?;
-                let req: UploadPackageRequest = serde_json::from_value(body)
-                    .with_context(|| format!("invalid provider bundle in '{file}'"))?;
-                let resp: PackResponse = client.post_dto(paths::V2_AUTHORING_PACK, &req).await?;
+                let req: UploadPackageRequest = load_request(file, "provider bundle")?;
+                let resp = client.authoring_pack(&req).await?;
                 if quiet {
-                    if !resp.package_digest.is_empty() {
-                        println!("{}", resp.package_digest);
-                    }
+                    println!("{}", resp.package_digest);
                     return Ok(0);
                 }
-                let val = serde_json::to_value(&resp)?;
-                output::print_value(format, &val)?;
+                output::print_value(format, &serde_json::to_value(&resp)?)?;
                 Ok(0)
             }
         }
@@ -727,7 +732,7 @@ impl ProviderCmd {
 }
 
 // ============================================================================
-// 3. `orion-cli connections` (V2-07.3)
+// 3. `orion-cli connections`
 // ============================================================================
 
 #[derive(Args)]
@@ -741,22 +746,57 @@ pub struct ConnectionsCmd {
 
 #[derive(Subcommand)]
 pub enum ConnectionsSubcommand {
-    /// List immutable connection revisions
-    List,
-    /// Create a new immutable connection revision
-    Create {
-        /// Path to connection definition JSON file (or '-' for stdin)
-        #[arg(short, long)]
-        file: String,
+    /// List immutable connection revisions: every connection's, or one's
+    List {
+        /// Only this connection's revisions
+        #[arg(long)]
+        id: Option<String>,
     },
-    /// Execute a short audited health probe against a connection
-    Probe {
+    /// Show one connection revision (the latest when no --revision)
+    Get {
         /// Connection identifier
         id: String,
-        /// Optional revision to probe (defaults to latest revision)
+        /// Revision to show (defaults to the latest)
         #[arg(long)]
         revision: Option<u64>,
     },
+    /// Create a new immutable connection revision
+    Create {
+        /// Connection identifier
+        id: String,
+        /// Path to the revision JSON (`revision`, `provider_digest`,
+        /// `public_config`, `secret_locators`, `bindings`), or '-' for stdin
+        #[arg(short, long)]
+        file: String,
+    },
+    /// Run an audited health probe against a connection revision; exits 2
+    /// when the backend is unhealthy
+    Probe {
+        /// Connection identifier
+        id: String,
+        /// Revision to probe (defaults to the latest)
+        #[arg(long)]
+        revision: Option<u64>,
+    },
+}
+
+/// `revision`, or the highest one the connection has.
+async fn resolve_revision(
+    client: &OrionClient,
+    connection_id: &str,
+    revision: Option<u64>,
+) -> Result<u64> {
+    if let Some(revision) = revision {
+        return Ok(revision);
+    }
+    client
+        .list_connection_revisions(connection_id)
+        .await?
+        .connections
+        .iter()
+        .map(|c| c.revision)
+        .max()
+        .with_context(|| format!("connection '{connection_id}' has no revisions"))
 }
 
 impl ConnectionsCmd {
@@ -772,57 +812,50 @@ impl ConnectionsCmd {
         quiet: bool,
     ) -> Result<i32> {
         match &self.command {
-            ConnectionsSubcommand::List => {
-                let resp: ConnectionsListResponse = client.get(paths::V2_CONNECTIONS).await?;
+            ConnectionsSubcommand::List { id } => {
+                let resp = match id {
+                    Some(id) => client.list_connection_revisions(id).await?,
+                    None => client.list_connections().await?,
+                };
                 if quiet {
                     for item in &resp.connections {
-                        if !item.connection_id.is_empty() {
-                            println!("{}", item.connection_id);
-                        }
+                        println!("{}@{}", item.connection_id, item.revision);
                     }
                     return Ok(0);
                 }
-                let val = serde_json::to_value(&resp)?;
-                output::print_value(format, &val)?;
+                output::print_value(format, &serde_json::to_value(&resp)?)?;
                 Ok(0)
             }
-            ConnectionsSubcommand::Create { file } => {
-                let body = load_file_or_stdin(file)?;
-                let req: CreateConnectionRevisionRequest = serde_json::from_value(body)
-                    .with_context(|| format!("invalid connection payload in '{file}'"))?;
-                let resp: CreateConnectionRevisionResponse =
-                    client.post_dto(paths::V2_CONNECTIONS, &req).await?;
+            ConnectionsSubcommand::Get { id, revision } => {
+                let revision = resolve_revision(client, id, *revision).await?;
+                let resp = client.get_connection_revision(id, revision).await?;
+                if quiet {
+                    println!("{}", resp.configuration_digest);
+                    return Ok(0);
+                }
+                output::print_value(format, &serde_json::to_value(&resp)?)?;
+                Ok(0)
+            }
+            ConnectionsSubcommand::Create { id, file } => {
+                let req: CreateConnectionRevisionRequest =
+                    load_request(file, "connection revision")?;
+                let resp = client.create_connection_revision(id, &req).await?;
                 if quiet {
                     println!("{}", resp.connection.revision);
                     return Ok(0);
                 }
-                let val = serde_json::to_value(&resp)?;
-                output::print_value(format, &val)?;
+                output::print_value(format, &serde_json::to_value(&resp)?)?;
                 Ok(0)
             }
             ConnectionsSubcommand::Probe { id, revision } => {
-                let body = ProbeConnectionRequest {
-                    revision: *revision,
-                    driver_id: None,
-                    kind: None,
-                };
-                let resp: ConnectionProbeResponse = client
-                    .post_dto(&paths::v2_connection_probe(id), &body)
-                    .await?;
+                let revision = resolve_revision(client, id, *revision).await?;
+                let resp = client.probe_connection(id, revision).await?;
                 if quiet {
-                    let s = if !resp.status.is_empty() {
-                        resp.status.as_str()
-                    } else if resp.healthy {
-                        "healthy"
-                    } else {
-                        "unhealthy"
-                    };
-                    println!("{s}");
-                    return Ok(0);
+                    println!("{}", resp.status);
+                } else {
+                    output::print_value(format, &serde_json::to_value(&resp)?)?;
                 }
-                let val = serde_json::to_value(&resp)?;
-                output::print_value(format, &val)?;
-                Ok(0)
+                Ok(if resp.healthy { 0 } else { 2 })
             }
         }
     }
@@ -859,8 +892,9 @@ mod tests {
                 "inventory": {},
                 "files": {"manifest.json": "{}", "inventory.json": "{}"},
             })),
-            ("POST", p)
-                if p.starts_with("/api/v2/admin/connector-packages/") && p.ends_with("/admit") =>
+            ("PUT", p)
+                if p.starts_with("/api/v2/admin/connector-packages/")
+                    && p.ends_with("/admission") =>
             {
                 Ok(json!({
                     "status": "admitted",
@@ -885,17 +919,19 @@ mod tests {
                     "admitted": false,
                 }
             })),
-            ("POST", p) if p.starts_with("/api/v2/admin/connections/") && p.ends_with("/probe") => {
-                Ok(json!({
-                    "connection_id": "cache-1",
-                    "revision": 1,
-                    "driver_id": "memory-cache",
-                    "healthy": true,
-                    "status": "healthy",
-                    "latency_ms": 1,
-                }))
-            }
-            ("POST", "/api/v2/admin/connections") => Ok(json!({
+            ("GET", "/api/v2/admin/connections/cache-1/revisions") => Ok(json!({
+                "count": 1,
+                "connections": [{"connection_id": "cache-1", "revision": 1}],
+            })),
+            ("POST", "/api/v2/admin/connections/cache-1/revisions/1/probes") => Ok(json!({
+                "connection_id": "cache-1",
+                "revision": 1,
+                "driver_id": "memory-cache",
+                "healthy": true,
+                "status": "healthy",
+                "latency_ms": 1,
+            })),
+            ("POST", "/api/v2/admin/connections/cache-1/revisions") => Ok(json!({
                 "status": "created",
                 "connection": {
                     "connection_id": "cache-1",
@@ -906,36 +942,42 @@ mod tests {
             })),
             ("POST", "/api/v2/admin/deployment-plans") => Ok(json!({
                 "base_revision": 0,
-                "candidate_digest": "sha256:3333",
                 "reviewed_manifest_digest": "sha256:3333",
             })),
-            ("POST", "/api/v2/admin/deployments/rollback") => {
-                let req: RollbackDeploymentRequest = serde_json::from_value(body_val)?;
-                assert_eq!(req.target_revision, 1);
-                assert_eq!(req.expected_head_revision, 1);
-                assert!(!req.reason.is_empty());
-                Ok(json!({
-                    "status": "accepted",
-                    "committed_revision": 2,
-                    "receipt": {
-                        "committed_revision": 2,
-                        "manifest_digest": "sha256:3333",
-                    }
-                }))
-            }
             ("POST", "/api/v2/admin/deployments") => {
-                let req: ApplyDeploymentRequest = serde_json::from_value(body_val)?;
-                assert!(!req.reason.is_empty(), "apply must send required reason");
-                assert_eq!(req.reviewed_manifest_digest.as_deref(), Some("sha256:3333"));
-                Ok(json!({
-                    "status": "accepted",
-                    "committed_revision": 1,
-                    "receipt": {
-                        "committed_revision": 1,
-                        "manifest_digest": "sha256:3333",
+                match serde_json::from_value::<CreateDeploymentRequest>(body_val)? {
+                    CreateDeploymentRequest::Rollback(req) => {
+                        assert_eq!(req.rollback_to, 1);
+                        assert_eq!(req.base_revision, 1);
+                        assert!(!req.reason.is_empty());
+                        Ok(json!({
+                            "status": "accepted",
+                            "committed_revision": 2,
+                            "receipt": {
+                                "committed_revision": 2,
+                                "manifest_digest": "sha256:3333",
+                            }
+                        }))
                     }
-                }))
+                    CreateDeploymentRequest::Apply(req) => {
+                        assert!(!req.reason.is_empty(), "apply must send required reason");
+                        assert_eq!(req.reviewed_manifest_digest, "sha256:3333");
+                        Ok(json!({
+                            "status": "accepted",
+                            "committed_revision": 1,
+                            "receipt": {
+                                "committed_revision": 1,
+                                "manifest_digest": "sha256:3333",
+                            }
+                        }))
+                    }
+                }
             }
+            ("GET", "/api/v2/admin/deployments?limit=50") => Ok(json!({
+                "head_revision": 1,
+                "data": [{"revision": 1, "manifest_digest": "sha256:3333", "member_count": 0}],
+                "limit": 50,
+            })),
             ("GET", p) if p.starts_with("/api/v2/admin/deployments/1/convergence") => Ok(json!({
                 "converged": true,
                 "target_revision": 1,
@@ -1014,10 +1056,11 @@ mod tests {
         let conn_file = dir.path().join("conn.json");
         std::fs::write(
             &conn_file,
-            r#"{"connection_id":"cache-1","revision":1,"provider_digest":"sha256:1111","public_config":{}}"#,
+            r#"{"revision":1,"provider_digest":"sha256:1111","public_config":{}}"#,
         )
         .unwrap();
         let code = ConnectionsCmd::new(ConnectionsSubcommand::Create {
+            id: "cache-1".to_string(),
             file: conn_file.to_string_lossy().to_string(),
         })
         .run(&client, &fmt, true)
@@ -1028,6 +1071,15 @@ mod tests {
         let code = ConnectionsCmd::new(ConnectionsSubcommand::Probe {
             id: "cache-1".to_string(),
             revision: Some(1),
+        })
+        .run(&client, &fmt, true)
+        .await
+        .unwrap();
+        assert_eq!(code, 0);
+        // The latest revision when none is named.
+        let code = ConnectionsCmd::new(ConnectionsSubcommand::Probe {
+            id: "cache-1".to_string(),
+            revision: None,
         })
         .run(&client, &fmt, true)
         .await
@@ -1045,7 +1097,6 @@ mod tests {
             file: Some(manifest_file.to_string_lossy().to_string()),
             dir: None,
             base_revision: Some(0),
-            reason: Some("plan".to_string()),
         })
         .run(&client, &fmt, true)
         .await
@@ -1061,6 +1112,15 @@ mod tests {
             reason: "cli apply".to_string(),
             wait_ms: 1000,
             wait_target: "this-node".to_string(),
+        })
+        .run(&client, &fmt, true)
+        .await
+        .unwrap();
+        assert_eq!(code, 0);
+
+        let code = DeploymentsCmd::new(DeploymentsSubcommand::List {
+            limit: 50,
+            cursor: None,
         })
         .run(&client, &fmt, true)
         .await
@@ -1138,16 +1198,17 @@ mod tests {
                 // older definition.
                 ("GET", "/api/v2/admin/deployments") => Ok(json!({
                     "head_revision": 4,
-                    "revisions": [{
-                        "revision": 4,
-                        "manifest_digest": "sha256:head",
-                        "manifest": {"members": [
-                            {"entity": {"kind": "channel", "id": "c", "revision": 2},
-                             "definition_digest": format!("sha256:{}", "b".repeat(64))},
-                            {"entity": {"kind": "workflow", "id": "w", "revision": 5},
-                             "definition_digest": "sha256:old"},
-                        ]},
-                    }],
+                    "data": [{"revision": 4, "manifest_digest": "sha256:head"}],
+                })),
+                ("GET", "/api/v2/admin/deployments/4") => Ok(json!({
+                    "revision": 4,
+                    "manifest_digest": "sha256:head",
+                    "manifest": {"members": [
+                        {"entity": {"kind": "channel", "id": "c", "revision": 2},
+                         "definition_digest": format!("sha256:{}", "b".repeat(64))},
+                        {"entity": {"kind": "workflow", "id": "w", "revision": 5},
+                         "definition_digest": "sha256:old"},
+                    ]},
                 })),
                 ("POST", "/api/v2/admin/definitions") => {
                     let hex = if body["kind"] == "workflow" { "a" } else { "b" };
@@ -1162,15 +1223,15 @@ mod tests {
                     {"connection_id": "db", "revision": 2, "provider_digest": "sha256:p",
                      "public_config": {"connection_string": "sqlite:/other.db"}},
                 ]})),
-                ("POST", "/api/v2/admin/connections") => {
+                ("POST", "/api/v2/admin/connections/db/revisions") => {
                     assert_eq!(body["revision"], 3, "one past the stored revisions");
+                    assert!(body.get("connection_id").is_none(), "the path names it");
                     Ok(json!({"connection": {"connection_id": "db", "revision": 3,
                               "configuration_digest": "sha256:cfg"}}))
                 }
                 ("POST", "/api/v2/admin/deployment-plans") => {
                     assert_eq!(body["base_revision"], 4);
-                    Ok(json!({"reviewed_manifest_digest": "sha256:next",
-                              "candidate_digest": "sha256:next"}))
+                    Ok(json!({"reviewed_manifest_digest": "sha256:next"}))
                 }
                 ("POST", "/api/v2/admin/deployments") => {
                     *seen.lock().unwrap() = Some(body);

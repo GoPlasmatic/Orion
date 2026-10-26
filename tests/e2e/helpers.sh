@@ -602,9 +602,10 @@ undeploy_all() {
     local summary head members
     summary=$(curl -sf "$ORION_URL/api/v2/admin/deployments") || return 1
     head=$(jq -r '.head_revision' <<< "$summary")
+    [[ "$head" -eq 0 ]] && return 0
     members=$(jq -r --argjson h "$head" \
-        '[.revisions[] | select(.revision == $h) | .manifest.members[]] | length' <<< "$summary")
-    [[ "$head" -eq 0 || "$members" -eq 0 ]] && return 0
+        '[.data[] | select(.revision == $h) | .member_count] | first // 0' <<< "$summary")
+    [[ "$members" -eq 0 ]] && return 0
 
     local manifest digest
     manifest=$(mktemp "${TMPDIR:-/tmp}/orion-e2e-empty-XXXXXX")

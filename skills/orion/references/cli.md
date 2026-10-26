@@ -201,7 +201,9 @@ A backlog of `pending` occurrences means the scheduler is behind or off. Check
 
 A connection revision is created by `apply -d` from the set's connector file.
 `orion-cli connections list` shows the stored revisions.
-`orion-cli connections probe` runs an audited health probe against one.
+`orion-cli connections probe <id>` runs an audited health probe against its
+latest revision (`--revision N` for another) and exits 2 when the backend is
+unhealthy.
 Circuit breakers are read and reset through
 `GET /api/v2/admin/connectors/circuit-breakers` and
 `POST /api/v2/admin/connectors/circuit-breakers/{channel}:{connector}`.
