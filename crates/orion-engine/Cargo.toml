@@ -52,13 +52,13 @@ metrics = "0.24"
 rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
 sea-query = { version = "1.0", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
-sea-query-sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
+sea-query-sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "with-chrono", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_path_to_error = "0.1"
 sha1 = "0.11"
 sha2 = "0.11"
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "sqlite", "postgres", "mysql"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "sqlite", "postgres", "mysql"] }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
 tracing = "0.1"

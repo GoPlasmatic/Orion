@@ -27,9 +27,9 @@ test-support = []
 [dependencies]
 orion-api = { workspace = true, features = ["utoipa"] }
 orion-common.workspace = true
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "sqlite", "postgres", "mysql"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "sqlite", "postgres", "mysql"] }
 sea-query = { version = "1.0", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
-sea-query-sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
+sea-query-sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "with-chrono", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 hex = "0.4"

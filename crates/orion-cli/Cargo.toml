@@ -60,7 +60,7 @@ orion-plugin-host.workspace = true
 orion-runtime.workspace = true
 orion-storage.workspace = true
 dataflow-rs = { version = "4.0.1", features = ["datetime", "budget"] }
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "sqlite", "postgres", "mysql"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "sqlite", "postgres", "mysql"] }
 similar = "3"
 
 [dev-dependencies]
