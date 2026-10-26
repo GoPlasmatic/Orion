@@ -103,6 +103,12 @@ cargo test --test integration                     # the whole binary
 cargo test --test integration rest_routing_test   # one module
 ```
 
+**Function records.** Each host function's answers are pinned in
+`crates/*/tests/fixtures/function-records/<module>.json` (`twin::pinned`); a run
+with `ORION_BLESS=1` rewrites them. A re-bless is a behaviour change: review its
+diff like code, never as noise. `function_records_test` (docs-check) refuses a
+record that captured the blessing machine (an absolute path, a temp directory).
+
 **Drift guards** are part of the default run. The `*_drift_test` modules —
 config, metrics, functions, routes, audit actions, field and v2 error codes,
 the formatter's style, the clippy pages, the mdBook pin and the CI filters —
