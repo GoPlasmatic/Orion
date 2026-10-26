@@ -242,10 +242,12 @@ async fn end_to_end_archive_admit_plan_apply_rollback_and_gc() {
     let receipt_v1 = store
         .apply_candidate_in_db(
             &pool,
-            "alice",
-            "idem-1",
-            &plan_v1,
-            "initial deploy",
+            &Apply {
+                principal: "alice",
+                idempotency_key: "idem-1",
+                plan: &plan_v1,
+                reason: "initial deploy",
+            },
             &policy,
         )
         .await
@@ -262,10 +264,12 @@ async fn end_to_end_archive_admit_plan_apply_rollback_and_gc() {
     let retry_v1 = store
         .apply_candidate_in_db(
             &pool,
-            "alice",
-            "idem-1",
-            &plan_v1,
-            "initial deploy",
+            &Apply {
+                principal: "alice",
+                idempotency_key: "idem-1",
+                plan: &plan_v1,
+                reason: "initial deploy",
+            },
             &policy,
         )
         .await
@@ -277,10 +281,12 @@ async fn end_to_end_archive_admit_plan_apply_rollback_and_gc() {
     let conflict = store
         .apply_candidate_in_db(
             &pool,
-            "alice",
-            "idem-1",
-            &plan_v1,
-            "changed reason",
+            &Apply {
+                principal: "alice",
+                idempotency_key: "idem-1",
+                plan: &plan_v1,
+                reason: "changed reason",
+            },
             &policy,
         )
         .await
@@ -294,7 +300,16 @@ async fn end_to_end_archive_admit_plan_apply_rollback_and_gc() {
         .await
         .expect("planned v2");
     let receipt_v2 = store
-        .apply_candidate_in_db(&pool, "alice", "idem-2", &plan_v2, "upgrade wf", &policy)
+        .apply_candidate_in_db(
+            &pool,
+            &Apply {
+                principal: "alice",
+                idempotency_key: "idem-2",
+                plan: &plan_v2,
+                reason: "upgrade wf",
+            },
+            &policy,
+        )
         .await
         .expect("applied v2");
     assert_eq!(receipt_v2.committed_revision, 2);
@@ -324,7 +339,16 @@ async fn end_to_end_archive_admit_plan_apply_rollback_and_gc() {
         .await
         .unwrap();
     store
-        .apply_candidate_in_db(&pool, "alice", "idem-4", &plan_v4, "clear estate", &policy)
+        .apply_candidate_in_db(
+            &pool,
+            &Apply {
+                principal: "alice",
+                idempotency_key: "idem-4",
+                plan: &plan_v4,
+                reason: "clear estate",
+            },
+            &policy,
+        )
         .await
         .unwrap();
     // An admitted package is never collected, referenced or not.
@@ -411,7 +435,16 @@ async fn a_fresh_store_reads_the_database_back_and_fails_closed_on_corruption() 
         .await
         .unwrap();
     let committed = store
-        .apply_candidate_in_db(&pool, "alice", "sql-idem-1", &plan, "persist test", &policy)
+        .apply_candidate_in_db(
+            &pool,
+            &Apply {
+                principal: "alice",
+                idempotency_key: "sql-idem-1",
+                plan: &plan,
+                reason: "persist test",
+            },
+            &policy,
+        )
         .await
         .unwrap();
 
@@ -450,7 +483,16 @@ async fn a_fresh_store_reads_the_database_back_and_fails_closed_on_corruption() 
     // TD-15: the receipt reads back as it was committed, not rebuilt from
     // the revision.
     let replay = restored
-        .apply_candidate_in_db(&pool, "alice", "sql-idem-1", &plan, "persist test", &policy)
+        .apply_candidate_in_db(
+            &pool,
+            &Apply {
+                principal: "alice",
+                idempotency_key: "sql-idem-1",
+                plan: &plan,
+                reason: "persist test",
+            },
+            &policy,
+        )
         .await
         .expect("idempotent replay after restart answers the stored receipt");
     assert_eq!(replay, committed);
@@ -462,7 +504,16 @@ async fn a_fresh_store_reads_the_database_back_and_fails_closed_on_corruption() 
         .await
         .unwrap();
     store
-        .apply_candidate_in_db(&pool, "alice", "sql-idem-2", &plan_v2, "v2", &policy)
+        .apply_candidate_in_db(
+            &pool,
+            &Apply {
+                principal: "alice",
+                idempotency_key: "sql-idem-2",
+                plan: &plan_v2,
+                reason: "v2",
+            },
+            &policy,
+        )
         .await
         .unwrap();
     restored.load_from_db_pool(&pool).await.unwrap();
@@ -647,14 +698,32 @@ async fn cross_replica_db_transactional_cas_and_revocation_enforcement() {
 
     // Replica A commits revision 1
     let receipt_a = store_a
-        .apply_candidate_in_db(&db_pool, "alice", "idem-a", &plan_a, "deploy a", &policy)
+        .apply_candidate_in_db(
+            &db_pool,
+            &Apply {
+                principal: "alice",
+                idempotency_key: "idem-a",
+                plan: &plan_a,
+                reason: "deploy a",
+            },
+            &policy,
+        )
         .await
         .expect("replica A wins CAS on base_revision 0");
     assert_eq!(receipt_a.committed_revision, 1);
 
     // Replica B's stale plan against base_revision 0 must fail inside the DB transaction
     let err_b = store_b
-        .apply_candidate_in_db(&db_pool, "bob", "idem-b", &plan_b, "deploy b", &policy)
+        .apply_candidate_in_db(
+            &db_pool,
+            &Apply {
+                principal: "bob",
+                idempotency_key: "idem-b",
+                plan: &plan_b,
+                reason: "deploy b",
+            },
+            &policy,
+        )
         .await
         .expect_err("competing deployment on stale base_revision must fail");
     assert_eq!(err_b.code(), "DEPLOYMENT_HEAD_CONFLICT");
@@ -671,7 +740,16 @@ async fn cross_replica_db_transactional_cas_and_revocation_enforcement() {
         .unwrap();
 
     let err_revoked = store_b
-        .apply_candidate_in_db(&db_pool, "bob", "idem-b2", &plan_b2, "deploy b2", &policy)
+        .apply_candidate_in_db(
+            &db_pool,
+            &Apply {
+                principal: "bob",
+                idempotency_key: "idem-b2",
+                plan: &plan_b2,
+                reason: "deploy b2",
+            },
+            &policy,
+        )
         .await
         .expect_err("DB-level package revocation must block replica B's apply");
     assert_eq!(err_revoked.code(), "ADMISSION_INVALIDATED");
@@ -884,7 +962,16 @@ async fn collection_never_takes_what_is_referenced_retained_admitted_or_recent()
             .await
             .unwrap();
         head = store
-            .apply_candidate_in_db(&pool, "ops", &format!("gc-{i}"), &plan, "r", &policy)
+            .apply_candidate_in_db(
+                &pool,
+                &Apply {
+                    principal: "ops",
+                    idempotency_key: &format!("gc-{i}"),
+                    plan: &plan,
+                    reason: "r",
+                },
+                &policy,
+            )
             .await
             .unwrap()
             .committed_revision;
@@ -981,7 +1068,16 @@ async fn collection_never_takes_what_is_referenced_retained_admitted_or_recent()
         .await
         .unwrap();
     store
-        .apply_candidate_in_db(&pool, "ops", "gc-4", &plan, "r", &policy)
+        .apply_candidate_in_db(
+            &pool,
+            &Apply {
+                principal: "ops",
+                idempotency_key: "gc-4",
+                plan: &plan,
+                reason: "r",
+            },
+            &policy,
+        )
         .await
         .unwrap();
     backdate_all(&pool).await;
@@ -1022,7 +1118,16 @@ async fn a_draining_artifact_a_retained_revision_names_is_revived() {
         .await
         .unwrap();
     store
-        .apply_candidate_in_db(&pool, "ops", "rv-1", &plan, "r", &Admission::community())
+        .apply_candidate_in_db(
+            &pool,
+            &Apply {
+                principal: "ops",
+                idempotency_key: "rv-1",
+                plan: &plan,
+                reason: "r",
+            },
+            &Admission::community(),
+        )
         .await
         .unwrap();
     sqlx::query(
@@ -1058,7 +1163,16 @@ async fn a_peer_revision_is_read_through_and_then_loaded_incrementally() {
             .await
             .unwrap();
         head = a
-            .apply_candidate_in_db(&pool, "ops", &format!("inc-{i}"), &plan, "r", &policy)
+            .apply_candidate_in_db(
+                &pool,
+                &Apply {
+                    principal: "ops",
+                    idempotency_key: &format!("inc-{i}"),
+                    plan: &plan,
+                    reason: "r",
+                },
+                &policy,
+            )
             .await
             .unwrap()
             .committed_revision;

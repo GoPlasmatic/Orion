@@ -416,7 +416,9 @@ impl NodeReconciler {
 mod tests {
     use super::*;
     use crate::extensions::Admission;
-    use crate::extensions::deployment_store::{CanonicalManifest, EntityKind, ManifestMember};
+    use crate::extensions::deployment_store::{
+        Apply, CanonicalManifest, EntityKind, ManifestMember,
+    };
 
     #[tokio::test]
     async fn reconciler_quarantines_per_entity_discards_superseded_and_enforces_lease() {
@@ -451,10 +453,12 @@ mod tests {
             store
                 .apply_candidate_in_db(
                     &pool,
-                    "admin",
-                    &format!("k-{rev}"),
-                    &plan,
-                    "deploy",
+                    &Apply {
+                        principal: "admin",
+                        idempotency_key: &format!("k-{rev}"),
+                        plan: &plan,
+                        reason: "deploy",
+                    },
                     &policy,
                 )
                 .await
@@ -547,7 +551,16 @@ mod tests {
         };
         let plan = store_a.plan_candidate_in_db(&db_pool, 0, m).await.unwrap();
         let receipt = store_a
-            .apply_candidate_in_db(&db_pool, "admin", "idem-obs", &plan, "deploy", &policy)
+            .apply_candidate_in_db(
+                &db_pool,
+                &Apply {
+                    principal: "admin",
+                    idempotency_key: "idem-obs",
+                    plan: &plan,
+                    reason: "deploy",
+                },
+                &policy,
+            )
             .await
             .unwrap();
         assert_eq!(receipt.receiving_node_id, "node-alpha");

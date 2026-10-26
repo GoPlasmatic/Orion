@@ -11,8 +11,8 @@ pub use crate::extensions::admission::Admission;
 pub use crate::extensions::authoring::scaffold_provider_package;
 pub use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
 pub use crate::extensions::deployment_store::{
-    ArchiveEntryInput, ArtifactState, CanonicalManifest, DeploymentReceipt, EntityKind, EntityRef,
-    ImmutableDeploymentStore, ManifestMember, Rollback,
+    Apply, ArchiveEntryInput, ArtifactState, CanonicalManifest, DeploymentReceipt, EntityKind,
+    EntityRef, ImmutableDeploymentStore, ManifestMember, NewConnectionRevision, Rollback,
 };
 pub use crate::extensions::foundation::{
     DRIVER_HTTP, DRIVER_MEMORY_CACHE, DRIVER_MYSQL, DRIVER_POSTGRESQL, DRIVER_SQLITE,

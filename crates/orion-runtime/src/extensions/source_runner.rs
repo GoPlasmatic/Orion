@@ -924,30 +924,32 @@ impl SourceChannelRunner {
         Ok(())
     }
 
-    /// Authorize and execute `source.open` on a source-capable connector (`V2-15.1`).
-    pub async fn open_cursor(
+    /// The privileged half every source facet call shares: the runtime lease
+    /// is still held, a source invocation for `step` is started for the
+    /// target's connection, and its provider is registered. What comes back
+    /// holds the invocation, its attempt and the backend.
+    fn authorize(
         &self,
         run_ctx: &RunContext,
-        connection: ConnectionReference,
-        effective_identity: EffectiveConnectionIdentity,
-        kind: ImplementationKind,
-        driver_id: &str,
-        checkpoint: Option<Value>,
-    ) -> Result<Value, ConnectorError> {
+        target: SourceTarget,
+        step: &str,
+    ) -> Result<SourceCall, ConnectorError> {
+        let SourceTarget {
+            connection,
+            effective_identity,
+            kind,
+            driver_id,
+        } = target;
         self.providers.ledger().check_runtime_lease(
             run_ctx.generation_id(),
             &connection.provider.provider_id,
             &connection.connection_id,
             EffectStatus::NotStarted,
         )?;
-        let inv = run_ctx.start_privileged_source_invocation(
-            connection,
-            effective_identity,
-            "open",
-            1,
-        )?;
-        let attempt = inv.next_attempt()?;
-        let backend = self.providers.get(kind, driver_id).ok_or_else(|| {
+        let invocation =
+            run_ctx.start_privileged_source_invocation(connection, effective_identity, step, 1)?;
+        let attempt = invocation.next_attempt()?;
+        let backend = self.providers.get(kind, &driver_id).ok_or_else(|| {
             ConnectorError::forbidden(
                 codes::CONNECTION_FORBIDDEN,
                 "dispatch",
@@ -955,63 +957,42 @@ impl SourceChannelRunner {
                 EffectStatus::NotStarted,
             )
         })?;
-        let source = backend.as_source().ok_or_else(|| {
-            ConnectorError::forbidden(
-                codes::OPERATION_FORBIDDEN,
-                "dispatch",
-                format!("Provider '{driver_id}' does not implement the source facet"),
-                EffectStatus::NotStarted,
-            )
-        })?;
-        let cursor = source.open(&attempt, checkpoint).await?;
+        Ok(SourceCall {
+            _invocation: invocation,
+            attempt,
+            backend,
+            driver_id,
+        })
+    }
+
+    /// Authorize and execute `source.open` on a source-capable connector (`V2-15.1`).
+    pub async fn open_cursor(
+        &self,
+        run_ctx: &RunContext,
+        target: SourceTarget,
+        checkpoint: Option<Value>,
+    ) -> Result<Value, ConnectorError> {
+        let call = self.authorize(run_ctx, target, "open")?;
+        let cursor = call.source()?.open(&call.attempt, checkpoint).await?;
         self.check_cursor_size(&cursor)?;
         Ok(cursor)
     }
 
     /// Authorize and execute `source.poll`, enforcing `max_batch_items` and cursor bounds (`V2-15.1`).
-    #[expect(clippy::too_many_arguments)]
     pub async fn poll_batch(
         &self,
         run_ctx: &RunContext,
-        connection: ConnectionReference,
-        effective_identity: EffectiveConnectionIdentity,
-        kind: ImplementationKind,
-        driver_id: &str,
+        target: SourceTarget,
         cursor: &Value,
         requested_max_items: u32,
     ) -> Result<SourcePollBatch, ConnectorError> {
         self.check_cursor_size(cursor)?;
-        self.providers.ledger().check_runtime_lease(
-            run_ctx.generation_id(),
-            &connection.provider.provider_id,
-            &connection.connection_id,
-            EffectStatus::NotStarted,
-        )?;
-        let inv = run_ctx.start_privileged_source_invocation(
-            connection,
-            effective_identity,
-            "poll",
-            1,
-        )?;
-        let attempt = inv.next_attempt()?;
-        let backend = self.providers.get(kind, driver_id).ok_or_else(|| {
-            ConnectorError::forbidden(
-                codes::CONNECTION_FORBIDDEN,
-                "dispatch",
-                format!("Source provider ({kind}, '{driver_id}') is not registered"),
-                EffectStatus::NotStarted,
-            )
-        })?;
-        let source = backend.as_source().ok_or_else(|| {
-            ConnectorError::forbidden(
-                codes::OPERATION_FORBIDDEN,
-                "dispatch",
-                format!("Provider '{driver_id}' does not implement the source facet"),
-                EffectStatus::NotStarted,
-            )
-        })?;
+        let call = self.authorize(run_ctx, target, "poll")?;
         let bounded_max = requested_max_items.clamp(1, self.limits.max_batch_items);
-        let batch = source.poll(&attempt, cursor, bounded_max).await?;
+        let batch = call
+            .source()?
+            .poll(&call.attempt, cursor, bounded_max)
+            .await?;
         if batch.items.len() > bounded_max as usize {
             return Err(ConnectorError::contract_violation(
                 "source_poll",
@@ -1029,47 +1010,53 @@ impl SourceChannelRunner {
     }
 
     /// Authorize and execute `source.settle` for a single delivery ID (`V2-15.1`, `V2-15.3`).
-    #[expect(clippy::too_many_arguments)]
     pub async fn settle_item(
         &self,
         run_ctx: &RunContext,
-        connection: ConnectionReference,
-        effective_identity: EffectiveConnectionIdentity,
-        kind: ImplementationKind,
-        driver_id: &str,
+        target: SourceTarget,
         delivery_id: &str,
         settlement: SourceSettlement,
     ) -> Result<(), ConnectorError> {
-        self.providers.ledger().check_runtime_lease(
-            run_ctx.generation_id(),
-            &connection.provider.provider_id,
-            &connection.connection_id,
-            EffectStatus::NotStarted,
-        )?;
-        let inv = run_ctx.start_privileged_source_invocation(
-            connection,
-            effective_identity,
-            "settle",
-            1,
-        )?;
-        let attempt = inv.next_attempt()?;
-        let backend = self.providers.get(kind, driver_id).ok_or_else(|| {
-            ConnectorError::forbidden(
-                codes::CONNECTION_FORBIDDEN,
-                "dispatch",
-                format!("Source provider ({kind}, '{driver_id}') is not registered"),
-                EffectStatus::NotStarted,
-            )
-        })?;
-        let source = backend.as_source().ok_or_else(|| {
+        let call = self.authorize(run_ctx, target, "settle")?;
+        call.source()?
+            .settle(&call.attempt, delivery_id, settlement)
+            .await
+    }
+}
+
+/// The connection a source facet call acts on, the identity it acts as, and
+/// the provider that serves it.
+#[derive(Debug, Clone)]
+pub struct SourceTarget {
+    pub connection: ConnectionReference,
+    pub effective_identity: EffectiveConnectionIdentity,
+    pub kind: ImplementationKind,
+    pub driver_id: String,
+}
+
+/// An authorized source facet call: the invocation (held for the call's
+/// lifetime), its attempt, and the provider backend.
+struct SourceCall {
+    _invocation: super::context::Invocation,
+    attempt: super::AttemptContext,
+    backend: Arc<dyn super::ProviderBackend>,
+    driver_id: String,
+}
+
+impl SourceCall {
+    /// The provider's source facet, or a refusal when it has none.
+    fn source(&self) -> Result<&dyn orion_extension_api::SourceConnectorFacet, ConnectorError> {
+        self.backend.as_source().ok_or_else(|| {
             ConnectorError::forbidden(
                 codes::OPERATION_FORBIDDEN,
                 "dispatch",
-                format!("Provider '{driver_id}' does not implement the source facet"),
+                format!(
+                    "Provider '{}' does not implement the source facet",
+                    self.driver_id
+                ),
                 EffectStatus::NotStarted,
             )
-        })?;
-        source.settle(&attempt, delivery_id, settlement).await
+        })
     }
 }
 
@@ -1426,10 +1413,12 @@ mod tests {
         let cursor = runner
             .open_cursor(
                 &run.context(),
-                conn.clone(),
-                eff_id.clone(),
-                ImplementationKind::Rust,
-                TEST_SOURCE,
+                SourceTarget {
+                    connection: conn.clone(),
+                    effective_identity: eff_id.clone(),
+                    kind: ImplementationKind::Rust,
+                    driver_id: TEST_SOURCE.to_string(),
+                },
                 Some(json!({"lsn": 42})),
             )
             .await
@@ -1439,10 +1428,12 @@ mod tests {
         let batch = runner
             .poll_batch(
                 &run.context(),
-                conn,
-                eff_id,
-                ImplementationKind::Rust,
-                TEST_SOURCE,
+                SourceTarget {
+                    connection: conn,
+                    effective_identity: eff_id,
+                    kind: ImplementationKind::Rust,
+                    driver_id: TEST_SOURCE.to_string(),
+                },
                 &cursor,
                 25,
             )

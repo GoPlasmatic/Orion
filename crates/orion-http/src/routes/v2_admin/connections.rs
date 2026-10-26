@@ -186,12 +186,14 @@ pub(crate) async fn create_connection_revision(
         .deployments
         .store_connection_revision_with_bindings_in_db(
             &state.db_pool,
-            &connection_id,
-            req.revision,
-            &req.provider_digest,
-            req.public_config,
-            req.secret_locators,
-            req.bindings,
+            crate::extensions::deployment_store::NewConnectionRevision {
+                connection_id: &connection_id,
+                revision: req.revision,
+                provider_digest: &req.provider_digest,
+                public_config: req.public_config,
+                secret_locators: req.secret_locators,
+                bindings: req.bindings,
+            },
         )
         .await?;
     crate::routes::admin::audit_log(

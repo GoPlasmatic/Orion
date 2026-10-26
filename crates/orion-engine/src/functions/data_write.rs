@@ -329,8 +329,20 @@ async fn execute_sql(
                     .await?;
                 let (args, persistent) = decide(bound, fallback);
                 let out = run_write_statement(
-                    &mut *tx, sql, args, persistent, w, &budget, rows_to_json, write_result,
-                    format, max_returning,
+                    &mut *tx,
+                    Statement {
+                        sql,
+                        args,
+                        persistent,
+                    },
+                    w,
+                    &budget,
+                    Shaping {
+                        rows_to_json,
+                        write_result,
+                        format,
+                        max_returning,
+                    },
                 )
                 .await?;
                 budget.run(NAME, tx.commit()).await?;
@@ -350,8 +362,20 @@ async fn execute_sql(
                     .await?;
                 let (args, persistent) = decide(bound, fallback);
                 run_write_statement(
-                    &mut *conn, sql, args, persistent, w, &budget, rows_to_json, write_result,
-                    format, max_returning,
+                    &mut *conn,
+                    Statement {
+                        sql,
+                        args,
+                        persistent,
+                    },
+                    w,
+                    &budget,
+                    Shaping {
+                        rows_to_json,
+                        write_result,
+                        format,
+                        max_returning,
+                    },
                 )
                 .await?
             }
@@ -375,6 +399,24 @@ fn decide<A>(bound: crate::connector::sql_encode::Bound<A>, fallback: A) -> (A, 
     }
 }
 
+/// The statement [`run_write_statement`] sends: its SQL, its bound arguments,
+/// and whether the driver may cache it as a prepared statement.
+struct Statement<'e, A> {
+    sql: &'e str,
+    args: A,
+    persistent: bool,
+}
+
+/// How [`run_write_statement`] turns what the driver answered into the
+/// result: the backend's row decoder and its affected-rows reader, the row
+/// format, and the cap on a `returning` set.
+struct Shaping<F, G> {
+    rows_to_json: F,
+    write_result: G,
+    format: crate::connector::sql_decode::RowFormat,
+    max_returning: usize,
+}
+
 /// Run the rendered statement on `executor` (the pool, or a transaction's
 /// connection). When `returning` is requested the statement's rows are streamed
 /// and counted against `max_returning`; otherwise it is a plain `execute`
@@ -388,18 +430,12 @@ fn decide<A>(bound: crate::connector::sql_encode::Bound<A>, fallback: A) -> (A, 
 /// intact, exactly like `db_read`'s row cap.
 ///
 /// [`QueryFailure::Limit`]: super::connector_helpers::QueryFailure::Limit
-#[expect(clippy::too_many_arguments)]
 async fn run_write_statement<'e, E, R, F, G>(
     executor: E,
-    sql: &'e str,
-    args: R::Arguments,
-    persistent: bool,
+    statement: Statement<'e, R::Arguments>,
     w: &ResolvedWrite,
     budget: &QueryBudget,
-    rows_to_json: F,
-    write_result: G,
-    format: crate::connector::sql_decode::RowFormat,
-    max_returning: usize,
+    shaping: Shaping<F, G>,
 ) -> Result<Value, HandlerError>
 where
     E: sqlx::Executor<'e, Database = R>,
@@ -413,6 +449,17 @@ where
     ) -> Result<Vec<Value>, crate::connector::sql_decode::DecodeError>,
     G: Fn(&R::QueryResult) -> (u64, Option<i64>),
 {
+    let Statement {
+        sql,
+        args,
+        persistent,
+    } = statement;
+    let Shaping {
+        rows_to_json,
+        write_result,
+        format,
+        max_returning,
+    } = shaping;
     if w.returning().is_empty() {
         let res = budget
             .run(

@@ -521,6 +521,29 @@ pub struct ArchiveEntryInput {
     pub is_symlink: bool,
 }
 
+/// An apply request: commit `plan` as the next revision, under `principal`'s
+/// idempotency key. The apply's counterpart of [`Rollback`].
+#[derive(Debug, Clone, Copy)]
+pub struct Apply<'a> {
+    pub principal: &'a str,
+    pub idempotency_key: &'a str,
+    pub plan: &'a CandidatePlan,
+    pub reason: &'a str,
+}
+
+/// A new immutable connection revision: its public configuration, the
+/// secret locators it resolves at load, and — for a connection over a
+/// `workflow` provider package — the dependency `bindings`.
+#[derive(Debug, Clone)]
+pub struct NewConnectionRevision<'a> {
+    pub connection_id: &'a str,
+    pub revision: u64,
+    pub provider_digest: &'a str,
+    pub public_config: serde_json::Value,
+    pub secret_locators: std::collections::BTreeMap<String, String>,
+    pub bindings: std::collections::BTreeMap<String, String>,
+}
+
 /// A rollback request: re-deploy `target_revision`'s manifest as a new
 /// revision on top of `expected_head_revision`.
 #[derive(Debug, Clone, Copy)]

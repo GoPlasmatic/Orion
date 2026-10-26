@@ -528,10 +528,12 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
                 &effective_trace,
                 &trace_id,
                 &dlq,
-                &message,
-                profile.as_ref(),
-                duration_ms,
-                task_trace_json,
+                FinishedRun {
+                    message: &message,
+                    profile: profile.as_ref(),
+                    duration_ms,
+                    task_trace_json,
+                },
             )
             .await;
         }
@@ -618,22 +620,33 @@ async fn mark_running(
     true
 }
 
+/// What a successful run left to persist: the finished message, its profile
+/// when one was requested, how long it took, and its task trace.
+struct FinishedRun<'a> {
+    message: &'a dataflow_rs::Message,
+    profile: Option<&'a Arc<crate::engine::profile::ProfileCollector>>,
+    duration_ms: f64,
+    task_trace_json: Option<String>,
+}
+
 /// The success arm of [`process_trace`]: serialize the finished message
 /// (embedding the profile when requested), enforce the result size limit,
 /// route the result write through the configured persistence mode (with
 /// inline retries in sync mode), set the final trace status, and settle any
 /// leased DLQ retry entry (`TD-05`).
-#[expect(clippy::too_many_arguments)]
 async fn persist_success(
     ctx: &ProcessingContext,
     effective_trace: &crate::channel::registry::EffectiveTraceConfig,
     trace_id: &str,
     dlq: &DlqCandidate<'_>,
-    message: &dataflow_rs::Message,
-    profile: Option<&Arc<crate::engine::profile::ProfileCollector>>,
-    duration_ms: f64,
-    task_trace_json: Option<String>,
+    run: FinishedRun<'_>,
 ) {
+    let FinishedRun {
+        message,
+        profile,
+        duration_ms,
+        task_trace_json,
+    } = run;
     let trace_mode = effective_trace.mode;
 
     let result_json = match serialize_result_with_profile(message, profile) {

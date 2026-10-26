@@ -286,10 +286,12 @@ async fn apply_deployment(
         .deployments
         .apply_candidate_audited_in_db(
             &state.db_pool,
-            &actor,
-            &req.idempotency_key,
-            &plan,
-            &req.reason,
+            &crate::extensions::deployment_store::Apply {
+                principal: &actor,
+                idempotency_key: &req.idempotency_key,
+                plan: &plan,
+                reason: &req.reason,
+            },
             state.composition.admission(),
             |receipt| {
                 crate::routes::admin::audit_record(

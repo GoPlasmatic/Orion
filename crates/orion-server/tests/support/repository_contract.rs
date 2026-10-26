@@ -172,10 +172,12 @@ async fn a_deployment_audit_row_commits_with_the_head(backend: &str, pool: &DbPo
     let (receipt, recorded) = node_a
         .apply_candidate_audited_in_db(
             pool,
-            "contract",
-            "audit-1",
-            &plan_a,
-            "r",
+            &orion::test_support::Apply {
+                principal: "contract",
+                idempotency_key: "audit-1",
+                plan: &plan_a,
+                reason: "r",
+            },
             &policy,
             event("v2_deployment_apply"),
         )
@@ -191,10 +193,12 @@ async fn a_deployment_audit_row_commits_with_the_head(backend: &str, pool: &DbPo
     let (replayed, recorded) = node_a
         .apply_candidate_audited_in_db(
             pool,
-            "contract",
-            "audit-1",
-            &plan_a,
-            "r",
+            &orion::test_support::Apply {
+                principal: "contract",
+                idempotency_key: "audit-1",
+                plan: &plan_a,
+                reason: "r",
+            },
             &policy,
             event("v2_deployment_apply"),
         )
@@ -206,10 +210,12 @@ async fn a_deployment_audit_row_commits_with_the_head(backend: &str, pool: &DbPo
     let lost = node_b
         .apply_candidate_audited_in_db(
             pool,
-            "contract",
-            "audit-2",
-            &plan_b,
-            "r",
+            &orion::test_support::Apply {
+                principal: "contract",
+                idempotency_key: "audit-2",
+                plan: &plan_b,
+                reason: "r",
+            },
             &policy,
             event("v2_deployment_apply"),
         )
@@ -238,10 +244,12 @@ async fn a_deployment_audit_row_commits_with_the_head(backend: &str, pool: &DbPo
     let (second, _) = node_a
         .apply_candidate_audited_in_db(
             pool,
-            "contract",
-            "audit-3",
-            &plan2,
-            "r",
+            &orion::test_support::Apply {
+                principal: "contract",
+                idempotency_key: "audit-3",
+                plan: &plan2,
+                reason: "r",
+            },
             &policy,
             event("v2_deployment_apply"),
         )
@@ -302,8 +310,17 @@ async fn concurrent_applies_on_one_base_commit_exactly_once(backend: &str, pool:
         let key = format!("cc-{i}");
         let policy = &policy;
         async move {
-            node.apply_candidate_in_db(pool, "contract", &key, plan, "r", policy)
-                .await
+            node.apply_candidate_in_db(
+                pool,
+                &orion::test_support::Apply {
+                    principal: "contract",
+                    idempotency_key: &key,
+                    plan,
+                    reason: "r",
+                },
+                policy,
+            )
+            .await
         }
     }))
     .await;
@@ -333,8 +350,17 @@ async fn concurrent_applies_on_one_base_commit_exactly_once(backend: &str, pool:
         let node = ImmutableDeploymentStore::new(format!("contract-cc-replay-{i}"));
         let (key, policy) = (&key, &policy);
         async move {
-            node.apply_candidate_in_db(pool, "contract", key, plan, "r", policy)
-                .await
+            node.apply_candidate_in_db(
+                pool,
+                &orion::test_support::Apply {
+                    principal: "contract",
+                    idempotency_key: key,
+                    plan,
+                    reason: "r",
+                },
+                policy,
+            )
+            .await
         }
     }))
     .await;
@@ -415,15 +441,7 @@ async fn a_package_admission_connection_and_revocation_read_back(backend: &str, 
         .await
         .expect("admit");
     let conn = node
-        .store_connection_revision_with_bindings_in_db(
-            pool,
-            "contract-pkg-conn",
-            1,
-            &pkg.package_digest,
-            serde_json::json!({"url": "https://api.example.com", "retries": 2, "tls": true}),
-            [("auth.token".to_string(), "env://CONTRACT_TOKEN".to_string())].into(),
-            [("crm".to_string(), "contract-crm".to_string())].into(),
-        )
+        .store_connection_revision_with_bindings_in_db(pool, orion::test_support::NewConnectionRevision { connection_id: "contract-pkg-conn", revision: 1, provider_digest: &pkg.package_digest, public_config: serde_json::json!({"url": "https://api.example.com", "retries": 2, "tls": true}), secret_locators: [("auth.token".to_string(), "env://CONTRACT_TOKEN".to_string())].into(), bindings: [("crm".to_string(), "contract-crm".to_string())].into() })
         .await
         .expect("connection");
     let def = node
@@ -464,7 +482,16 @@ async fn a_package_admission_connection_and_revocation_read_back(backend: &str, 
         .await
         .expect("plan");
     let receipt = node
-        .apply_candidate_in_db(pool, "contract", "pkg-1", &plan, "r", &policy)
+        .apply_candidate_in_db(
+            pool,
+            &orion::test_support::Apply {
+                principal: "contract",
+                idempotency_key: "pkg-1",
+                plan: &plan,
+                reason: "r",
+            },
+            &policy,
+        )
         .await
         .expect("apply");
 
@@ -548,7 +575,16 @@ async fn a_collection_racing_an_apply_never_takes_what_it_deploys(backend: &str,
             .expect("plan");
         let key = format!("race-{round}");
         let (applied, collected) = futures::future::join(
-            deployer.apply_candidate_in_db(pool, "contract", &key, &plan, "r", &policy),
+            deployer.apply_candidate_in_db(
+                pool,
+                &orion::test_support::Apply {
+                    principal: "contract",
+                    idempotency_key: &key,
+                    plan: &plan,
+                    reason: "r",
+                },
+                &policy,
+            ),
             collector.mark_and_collect_garbage_in_db(pool, 1, 3600),
         )
         .await;
@@ -794,7 +830,16 @@ async fn the_artifact_collector_judges_its_grace_on_the_database_clock(
         .await
         .expect("plan");
     node_a
-        .apply_candidate_in_db(pool, "contract", "gc-1", &plan, "r", &policy)
+        .apply_candidate_in_db(
+            pool,
+            &orion::test_support::Apply {
+                principal: "contract",
+                idempotency_key: "gc-1",
+                plan: &plan,
+                reason: "r",
+            },
+            &policy,
+        )
         .await
         .expect("apply");
     let orphan = node_a

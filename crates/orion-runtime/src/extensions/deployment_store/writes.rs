@@ -19,10 +19,10 @@ use serde_json::Value;
 use super::error::DeploymentErrorKind as Kind;
 use super::rules::{self, ClosureFacts, GcFacts};
 use super::{
-    ArchiveEntryInput, ArtifactObjectRow, ArtifactState, CandidatePlan, CanonicalManifest,
+    Apply, ArchiveEntryInput, ArtifactObjectRow, ArtifactState, CandidatePlan, CanonicalManifest,
     ConnectionRevisionRow, DeploymentError, DeploymentReceipt, DeploymentRevisionRow, EntityKind,
-    GcOutcome, ImmutableDeploymentStore, ProviderAdmissionRow, ProviderPackageRow, Rollback,
-    catalog, extract_inventory_file_digests, sql,
+    GcOutcome, ImmutableDeploymentStore, NewConnectionRevision, ProviderAdmissionRow,
+    ProviderPackageRow, Rollback, catalog, extract_inventory_file_digests, sql,
 };
 use crate::extensions::Admission;
 use crate::extensions::package_identity::sha256_digest;
@@ -392,29 +392,33 @@ impl ImmutableDeploymentStore {
     ) -> Result<ConnectionRevisionRow, DeploymentError> {
         self.store_connection_revision_with_bindings_in_db(
             pool,
-            connection_id,
-            revision,
-            provider_digest,
-            public_config,
-            secret_locators,
-            Default::default(),
+            NewConnectionRevision {
+                connection_id,
+                revision,
+                provider_digest,
+                public_config,
+                secret_locators,
+                bindings: BTreeMap::new(),
+            },
         )
         .await
     }
 
     /// [`Self::store_connection_revision_in_db`], with the dependency
     /// `bindings` of a connection over a `workflow` provider package.
-    #[expect(clippy::too_many_arguments)]
     pub async fn store_connection_revision_with_bindings_in_db(
         &self,
         pool: &DbPool,
-        connection_id: &str,
-        revision: u64,
-        provider_digest: &str,
-        public_config: Value,
-        secret_locators: BTreeMap<String, String>,
-        bindings: BTreeMap<String, String>,
+        new: NewConnectionRevision<'_>,
     ) -> Result<ConnectionRevisionRow, DeploymentError> {
+        let NewConnectionRevision {
+            connection_id,
+            revision,
+            provider_digest,
+            public_config,
+            secret_locators,
+            bindings,
+        } = new;
         let prepared = rules::prepare_connection(
             connection_id,
             revision,
@@ -487,37 +491,22 @@ impl ImmutableDeploymentStore {
     pub async fn apply_candidate_in_db(
         &self,
         pool: &DbPool,
-        principal: &str,
-        idempotency_key: &str,
-        plan: &CandidatePlan,
-        reason: &str,
+        apply: &Apply<'_>,
         policy: &Admission,
     ) -> Result<DeploymentReceipt, DeploymentError> {
-        self.apply_candidate_audited_in_db(
-            pool,
-            principal,
-            idempotency_key,
-            plan,
-            reason,
-            policy,
-            |_| None::<AuditEvent>,
-        )
-        .await
-        .map(|(receipt, _)| receipt)
+        self.apply_candidate_audited_in_db(pool, apply, policy, |_| None::<AuditEvent>)
+            .await
+            .map(|(receipt, _)| receipt)
     }
 
     /// [`Self::apply_candidate_in_db`], with the audit row `audit` builds
     /// from the receipt written in the commit's transaction: it lands with
     /// the head move or not at all. `None` beside the receipt when nothing
     /// was committed (an idempotent replay of a committed apply).
-    #[expect(clippy::too_many_arguments)]
     pub async fn apply_candidate_audited_in_db<A, E>(
         &self,
         pool: &DbPool,
-        principal: &str,
-        idempotency_key: &str,
-        plan: &CandidatePlan,
-        reason: &str,
+        apply: &Apply<'_>,
         policy: &Admission,
         audit: A,
     ) -> Result<(DeploymentReceipt, Option<AuditEvent>), DeploymentError>
@@ -528,17 +517,7 @@ impl ImmutableDeploymentStore {
         let _guard = self.write_lock.lock().await;
         let mut tx = begin_write(pool).await?;
         let observed = sql::lock_head(&mut tx).await?;
-        let committed = self
-            .commit_plan(
-                &mut tx,
-                observed,
-                principal,
-                idempotency_key,
-                plan,
-                reason,
-                policy,
-            )
-            .await?;
+        let committed = self.commit_plan(&mut tx, observed, apply, policy).await?;
         self.finish_commit(pool, tx, committed, |r| audit(r).into())
             .await
     }
@@ -603,10 +582,12 @@ impl ImmutableDeploymentStore {
             .commit_plan(
                 &mut tx,
                 observed,
-                principal,
-                idempotency_key,
-                &plan,
-                reason,
+                &Apply {
+                    principal,
+                    idempotency_key,
+                    plan: &plan,
+                    reason,
+                },
                 policy,
             )
             .await?;
@@ -621,17 +602,19 @@ impl ImmutableDeploymentStore {
     /// the base checked against the head, the providers' admissions and the
     /// manifest's closure re-read and re-checked, then the head moved and
     /// the revision, its members and the receipt written.
-    #[expect(clippy::too_many_arguments)]
     async fn commit_plan(
         &self,
         tx: &mut DbTransaction,
         observed: Option<(u64, u64)>,
-        principal: &str,
-        idempotency_key: &str,
-        plan: &CandidatePlan,
-        reason: &str,
+        apply: &Apply<'_>,
         policy: &Admission,
     ) -> Result<Committed, DeploymentError> {
+        let &Apply {
+            principal,
+            idempotency_key,
+            plan,
+            reason,
+        } = apply;
         let request_hash = plan.compute_request_hash("apply", reason)?;
         if let Some(stored) = sql::receipt(tx, principal, idempotency_key).await? {
             if stored.request_hash == request_hash {

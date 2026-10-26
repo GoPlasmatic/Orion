@@ -249,10 +249,12 @@ pub async fn commit_unchecked(
     store
         .apply_candidate_in_db(
             &state.db_pool,
-            "test",
-            &format!("unchecked-{}", KEYS.fetch_add(1, Ordering::Relaxed)),
-            &plan,
-            "committed past the build check",
+            &orion::test_support::Apply {
+                principal: "test",
+                idempotency_key: &format!("unchecked-{}", KEYS.fetch_add(1, Ordering::Relaxed)),
+                plan: &plan,
+                reason: "committed past the build check",
+            },
             state.composition.admission(),
         )
         .await

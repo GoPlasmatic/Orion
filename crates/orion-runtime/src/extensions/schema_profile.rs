@@ -202,6 +202,141 @@ pub struct CompiledSchemaBundle {
     limits: SchemaProfileLimits,
 }
 
+/// The walk `CompiledSchemaBundle::compile` makes over each schema file: every
+/// node it reaches, the edges between them and the `$ref`s to resolve, held
+/// against the profile's limits.
+struct SchemaWalk<'l> {
+    limits: &'l SchemaProfileLimits,
+    allowed: HashSet<&'static str>,
+    nodes: HashMap<NodeKey, Value>,
+    edges: HashMap<NodeKey, Vec<NodeKey>>,
+    references: Vec<(NodeKey, Value)>,
+}
+
+impl SchemaWalk<'_> {
+    /// Record `node` (at `pointer` in `path`) and everything under it.
+    fn walk(
+        &mut self,
+        path: &str,
+        node: &Value,
+        pointer: Vec<String>,
+        depth: usize,
+    ) -> Result<NodeKey, SchemaProfileFinding> {
+        if !node.is_object() && !node.is_boolean() {
+            return Err(SchemaProfileFinding::new("SCHEMA_INVALID", path));
+        }
+        let key = NodeKey {
+            path: path.to_string(),
+            pointer: pointer.clone(),
+        };
+        self.nodes.insert(key.clone(), node.clone());
+        self.edges.entry(key.clone()).or_default();
+
+        if self.nodes.len() > self.limits.schema_nodes || depth > self.limits.schema_depth {
+            return Err(SchemaProfileFinding::new(
+                "SCHEMA_PROFILE_LIMIT",
+                "schema node/depth count",
+            ));
+        }
+        let Some(map) = node.as_object() else {
+            return Ok(key);
+        };
+
+        for k in map.keys() {
+            if !self.allowed.contains(k.as_str()) {
+                return Err(SchemaProfileFinding::new(
+                    "SCHEMA_UNSUPPORTED_KEYWORD",
+                    path,
+                ));
+            }
+        }
+        if map.contains_key("$schema") && !pointer.is_empty() {
+            return Err(SchemaProfileFinding::new(
+                "SCHEMA_INVALID",
+                "nested dialect declaration",
+            ));
+        }
+        if let Some(sens) = map.get("x-orion-sensitive")
+            && !sens.is_boolean()
+        {
+            return Err(SchemaProfileFinding::new(
+                "SCHEMA_INVALID",
+                "sensitivity annotation",
+            ));
+        }
+        validate_keyword_shapes(map, path)?;
+
+        if let Some(r) = map.get("$ref") {
+            self.references.push((key.clone(), r.clone()));
+            if self.references.len() > self.limits.reference_edges {
+                return Err(SchemaProfileFinding::new(
+                    "SCHEMA_PROFILE_LIMIT",
+                    "reference count",
+                ));
+            }
+        }
+
+        for keyword in ["$defs", "properties"] {
+            if let Some(sub) = map.get(keyword) {
+                let Some(sub_map) = sub.as_object() else {
+                    return Err(SchemaProfileFinding::new("SCHEMA_INVALID", path));
+                };
+                for (name, child) in sub_map {
+                    let mut next_ptr = pointer.clone();
+                    next_ptr.push(keyword.to_string());
+                    next_ptr.push(name.clone());
+                    let child_key = self.walk(path, child, next_ptr, depth + 1)?;
+                    self.edges
+                        .get_mut(&key)
+                        .expect("node edge list initialized")
+                        .push(child_key);
+                }
+            }
+        }
+
+        for keyword in ["items", "additionalProperties"] {
+            if let Some(sub) = map.get(keyword) {
+                let mut next_ptr = pointer.clone();
+                next_ptr.push(keyword.to_string());
+                let child_key = self.walk(path, sub, next_ptr, depth + 1)?;
+                self.edges
+                    .get_mut(&key)
+                    .expect("node edge list initialized")
+                    .push(child_key);
+            }
+        }
+
+        for keyword in ["allOf", "anyOf", "oneOf"] {
+            if let Some(sub) = map.get(keyword) {
+                let Some(children) = sub.as_array() else {
+                    return Err(SchemaProfileFinding::new("SCHEMA_INVALID", path));
+                };
+                if children.is_empty() {
+                    return Err(SchemaProfileFinding::new("SCHEMA_INVALID", path));
+                }
+                if children.len() > self.limits.composition_branches {
+                    return Err(SchemaProfileFinding::new(
+                        "SCHEMA_PROFILE_LIMIT",
+                        "composition branches",
+                    ));
+                }
+                for (idx, child) in children.iter().enumerate() {
+                    let mut next_ptr = pointer.clone();
+                    next_ptr.push(keyword.to_string());
+                    next_ptr.push(idx.to_string());
+                    let child_key = self.walk(path, child, next_ptr, depth + 1)?;
+                    self.edges
+                        .get_mut(&key)
+                        .expect("node edge list initialized")
+                        .push(child_key);
+                }
+            }
+        }
+
+        Ok(key)
+    }
+}
+
 impl CompiledSchemaBundle {
     pub fn compile(
         schemas: BTreeMap<String, Value>,
@@ -214,167 +349,14 @@ impl CompiledSchemaBundle {
             ));
         }
 
-        let allowed: HashSet<&str> = ALLOWED_KEYWORDS.iter().copied().collect();
-        let mut nodes: HashMap<NodeKey, Value> = HashMap::new();
-        let mut edges: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
-        let mut references: Vec<(NodeKey, Value)> = Vec::new();
+        let mut walk = SchemaWalk {
+            limits: &limits,
+            allowed: ALLOWED_KEYWORDS.iter().copied().collect(),
+            nodes: HashMap::new(),
+            edges: HashMap::new(),
+            references: Vec::new(),
+        };
         let mut bundle_bytes = 0usize;
-
-        #[expect(clippy::too_many_arguments)]
-        fn walk(
-            path: &str,
-            node: &Value,
-            pointer: Vec<String>,
-            depth: usize,
-            limits: &SchemaProfileLimits,
-            allowed: &HashSet<&str>,
-            nodes: &mut HashMap<NodeKey, Value>,
-            edges: &mut HashMap<NodeKey, Vec<NodeKey>>,
-            references: &mut Vec<(NodeKey, Value)>,
-        ) -> Result<NodeKey, SchemaProfileFinding> {
-            if !node.is_object() && !node.is_boolean() {
-                return Err(SchemaProfileFinding::new("SCHEMA_INVALID", path));
-            }
-            let key = NodeKey {
-                path: path.to_string(),
-                pointer: pointer.clone(),
-            };
-            nodes.insert(key.clone(), node.clone());
-            edges.entry(key.clone()).or_default();
-
-            if nodes.len() > limits.schema_nodes || depth > limits.schema_depth {
-                return Err(SchemaProfileFinding::new(
-                    "SCHEMA_PROFILE_LIMIT",
-                    "schema node/depth count",
-                ));
-            }
-            let Some(map) = node.as_object() else {
-                return Ok(key);
-            };
-
-            for k in map.keys() {
-                if !allowed.contains(k.as_str()) {
-                    return Err(SchemaProfileFinding::new(
-                        "SCHEMA_UNSUPPORTED_KEYWORD",
-                        path,
-                    ));
-                }
-            }
-            if map.contains_key("$schema") && !pointer.is_empty() {
-                return Err(SchemaProfileFinding::new(
-                    "SCHEMA_INVALID",
-                    "nested dialect declaration",
-                ));
-            }
-            if let Some(sens) = map.get("x-orion-sensitive")
-                && !sens.is_boolean()
-            {
-                return Err(SchemaProfileFinding::new(
-                    "SCHEMA_INVALID",
-                    "sensitivity annotation",
-                ));
-            }
-            validate_keyword_shapes(map, path)?;
-
-            if let Some(r) = map.get("$ref") {
-                references.push((key.clone(), r.clone()));
-                if references.len() > limits.reference_edges {
-                    return Err(SchemaProfileFinding::new(
-                        "SCHEMA_PROFILE_LIMIT",
-                        "reference count",
-                    ));
-                }
-            }
-
-            for keyword in ["$defs", "properties"] {
-                if let Some(sub) = map.get(keyword) {
-                    let Some(sub_map) = sub.as_object() else {
-                        return Err(SchemaProfileFinding::new("SCHEMA_INVALID", path));
-                    };
-                    for (name, child) in sub_map {
-                        let mut next_ptr = pointer.clone();
-                        next_ptr.push(keyword.to_string());
-                        next_ptr.push(name.clone());
-                        let child_key = walk(
-                            path,
-                            child,
-                            next_ptr,
-                            depth + 1,
-                            limits,
-                            allowed,
-                            nodes,
-                            edges,
-                            references,
-                        )?;
-                        edges
-                            .get_mut(&key)
-                            .expect("node edge list initialized")
-                            .push(child_key);
-                    }
-                }
-            }
-
-            for keyword in ["items", "additionalProperties"] {
-                if let Some(sub) = map.get(keyword) {
-                    let mut next_ptr = pointer.clone();
-                    next_ptr.push(keyword.to_string());
-                    let child_key = walk(
-                        path,
-                        sub,
-                        next_ptr,
-                        depth + 1,
-                        limits,
-                        allowed,
-                        nodes,
-                        edges,
-                        references,
-                    )?;
-                    edges
-                        .get_mut(&key)
-                        .expect("node edge list initialized")
-                        .push(child_key);
-                }
-            }
-
-            for keyword in ["allOf", "anyOf", "oneOf"] {
-                if let Some(sub) = map.get(keyword) {
-                    let Some(children) = sub.as_array() else {
-                        return Err(SchemaProfileFinding::new("SCHEMA_INVALID", path));
-                    };
-                    if children.is_empty() {
-                        return Err(SchemaProfileFinding::new("SCHEMA_INVALID", path));
-                    }
-                    if children.len() > limits.composition_branches {
-                        return Err(SchemaProfileFinding::new(
-                            "SCHEMA_PROFILE_LIMIT",
-                            "composition branches",
-                        ));
-                    }
-                    for (idx, child) in children.iter().enumerate() {
-                        let mut next_ptr = pointer.clone();
-                        next_ptr.push(keyword.to_string());
-                        next_ptr.push(idx.to_string());
-                        let child_key = walk(
-                            path,
-                            child,
-                            next_ptr,
-                            depth + 1,
-                            limits,
-                            allowed,
-                            nodes,
-                            edges,
-                            references,
-                        )?;
-                        edges
-                            .get_mut(&key)
-                            .expect("node edge list initialized")
-                            .push(child_key);
-                    }
-                }
-            }
-
-            Ok(key)
-        }
 
         for (path, schema) in &schemas {
             validate_safe_package_path(path, "SCHEMA_REFERENCE_DENIED")?;
@@ -400,18 +382,14 @@ impl CompiledSchemaBundle {
                     "serialized example schema size",
                 ));
             }
-            walk(
-                path,
-                schema,
-                Vec::new(),
-                1,
-                &limits,
-                &allowed,
-                &mut nodes,
-                &mut edges,
-                &mut references,
-            )?;
+            walk.walk(path, schema, Vec::new(), 1)?;
         }
+        let SchemaWalk {
+            nodes,
+            mut edges,
+            references,
+            ..
+        } = walk;
 
         for (key, ref_val) in references {
             let Some(ref_str) = ref_val.as_str() else {

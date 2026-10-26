@@ -159,10 +159,12 @@ async fn a_workflow_calls_only_the_connections_its_member_requires() {
     let receipt = deployments
         .apply_candidate_in_db(
             &state.db_pool,
-            "admin",
-            "idem-authority",
-            &plan,
-            "deploy",
+            &orion::test_support::Apply {
+                principal: "admin",
+                idempotency_key: "idem-authority",
+                plan: &plan,
+                reason: "deploy",
+            },
             state.composition.admission(),
         )
         .await

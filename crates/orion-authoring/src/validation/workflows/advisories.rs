@@ -372,14 +372,26 @@ pub fn secret_reference_errors(
             value,
             path,
             "",
-            exempt,
-            function,
-            inspects_nodes,
-            plugin,
+            &SecretField {
+                exempt,
+                function,
+                inspects_nodes,
+                plugin,
+            },
             &mut out,
         );
     });
     out
+}
+
+/// The field a secret-reference walk is in: the positions where its function
+/// resolves key material (`exempt`), the function, whether the function looks
+/// inside the field at all, and whether it is a plugin function.
+pub(super) struct SecretField<'a> {
+    pub exempt: &'a [&'a str],
+    pub function: &'a str,
+    pub inspects_nodes: bool,
+    pub plugin: bool,
 }
 
 /// Walk one authored value, reporting every secret reference inside it.
@@ -389,17 +401,19 @@ pub fn secret_reference_errors(
 /// element, `".name"` for an object member. A node whose `rel` is listed in
 /// `exempt` is where the handler resolves key material, so it and everything
 /// under it is left alone.
-#[expect(clippy::too_many_arguments)]
 pub(super) fn collect_secret_references(
     value: &Value,
     path: &str,
     rel: &str,
-    exempt: &[&str],
-    function: &str,
-    inspects_nodes: bool,
-    plugin: bool,
+    field: &SecretField<'_>,
     out: &mut Vec<(String, String)>,
 ) {
+    let &SecretField {
+        exempt,
+        function,
+        inspects_nodes,
+        plugin,
+    } = field;
     if exempt.contains(&rel) {
         return;
     }
@@ -482,10 +496,7 @@ pub(super) fn collect_secret_references(
                     child,
                     &format!("{path}.{key}"),
                     &format!("{rel}.{key}"),
-                    exempt,
-                    function,
-                    inspects_nodes,
-                    plugin,
+                    field,
                     out,
                 );
             }
@@ -496,10 +507,7 @@ pub(super) fn collect_secret_references(
                     child,
                     &format!("{path}[{i}]"),
                     &format!("{rel}[]"),
-                    exempt,
-                    function,
-                    inspects_nodes,
-                    plugin,
+                    field,
                     out,
                 );
             }

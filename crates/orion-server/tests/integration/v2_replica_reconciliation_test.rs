@@ -203,10 +203,12 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
         .deployments
         .apply_candidate_in_db(
             &state_a.db_pool,
-            "admin",
-            "idem-rev1",
-            &plan_rev1,
-            "deploy rev 1",
+            &orion::test_support::Apply {
+                principal: "admin",
+                idempotency_key: "idem-rev1",
+                plan: &plan_rev1,
+                reason: "deploy rev 1",
+            },
             state_a.composition.admission(),
         )
         .await
@@ -263,10 +265,12 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
         .deployments
         .apply_candidate_in_db(
             &state_a.db_pool,
-            "admin",
-            "idem-rev2",
-            &plan_rev2,
-            "remove channel",
+            &orion::test_support::Apply {
+                principal: "admin",
+                idempotency_key: "idem-rev2",
+                plan: &plan_rev2,
+                reason: "remove channel",
+            },
             state_a.composition.admission(),
         )
         .await

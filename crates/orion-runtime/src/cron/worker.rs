@@ -311,11 +311,13 @@ async fn attempt(deps: &WorkerDeps, occurrence: &CronOccurrence) -> Result<(), A
 
     let outcome = execute(
         deps,
-        &generation,
         occurrence,
-        &runtime,
-        &descriptor,
-        timeout_ms,
+        Resolved {
+            generation: &generation,
+            runtime: &runtime,
+            descriptor: &descriptor,
+            timeout_ms,
+        },
         held,
         Lease {
             secs: lease_secs,
@@ -356,23 +358,35 @@ struct Lease {
     acquired: tokio::time::Instant,
 }
 
+/// The channel an attempt resolved in step 1: the generation it was resolved
+/// in, the channel's runtime config there, its cron descriptor, and the
+/// timeout that applies.
+struct Resolved<'a> {
+    generation: &'a Arc<crate::runtime::RuntimeGeneration>,
+    runtime: &'a Arc<ChannelRuntimeConfig>,
+    descriptor: &'a Arc<crate::channel::CronDescriptor>,
+    timeout_ms: u64,
+}
+
 /// Steps 4 through 8: trace, guards, execute, settle.
 ///
 /// `generation` is the one step 1 loaded, passed rather than re-loaded: one
 /// attempt, one generation, from the channel resolution through to the engine
 /// call. That is the rule every ingress follows, and stating it in the
 /// signature is what stops a future edit quietly re-reading the `ArcSwap` here.
-#[expect(clippy::too_many_arguments)]
 async fn execute(
     deps: &WorkerDeps,
-    generation: &Arc<crate::runtime::RuntimeGeneration>,
     occurrence: &CronOccurrence,
-    runtime: &Arc<ChannelRuntimeConfig>,
-    descriptor: &Arc<crate::channel::CronDescriptor>,
-    timeout_ms: u64,
+    resolved: Resolved<'_>,
     held: Option<crate::storage::repositories::cron::HeldSlot>,
     lease: Lease,
 ) -> Result<(), Abandoned> {
+    let Resolved {
+        generation,
+        runtime,
+        descriptor,
+        timeout_ms,
+    } = resolved;
     let channel = runtime.channel.name.as_str();
     let started_at = Utc::now().naive_utc();
 
