@@ -448,9 +448,56 @@ fn shaped_response(shaped: ShapedResponse, channel: &str) -> Response {
 /// Serialize a response envelope, mapping the (unreachable in practice)
 /// serializer failure to the one `Internal` message every envelope site used
 /// to spell out for itself.
-fn serialize_envelope(envelope: &Value) -> Result<String, OrionError> {
+fn serialize_envelope(envelope: &impl serde::Serialize) -> Result<String, OrionError> {
     serde_json::to_string(envelope)
         .map_err(|e| OrionError::internal_from("Failed to serialize response", e))
+}
+
+/// The full-detail envelope — what the trace stores — serialized straight
+/// from the engine's error records.
+///
+/// `envelope` is the [`response_envelope`] value with an empty `errors`; this
+/// writes its keys in order and puts `records` then `drops` in place of that
+/// empty list. The bytes are the ones a `Value` holding
+/// `serde_json::to_value` of each record would produce, without building a
+/// `Value` tree per error first.
+struct FullDetailEnvelope<'a> {
+    envelope: &'a Value,
+    records: &'a [dataflow_rs::run::ErrorRecord],
+    drops: &'a [Value],
+}
+
+impl serde::Serialize for FullDetailEnvelope<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{SerializeMap, SerializeSeq};
+
+        struct Errors<'a>(&'a [dataflow_rs::run::ErrorRecord], &'a [Value]);
+        impl serde::Serialize for Errors<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                let mut seq = serializer.serialize_seq(Some(self.0.len() + self.1.len()))?;
+                for record in self.0 {
+                    seq.serialize_element(record)?;
+                }
+                for drop in self.1 {
+                    seq.serialize_element(drop)?;
+                }
+                seq.end()
+            }
+        }
+
+        let Some(fields) = self.envelope.as_object() else {
+            return self.envelope.serialize(serializer);
+        };
+        let mut map = serializer.serialize_map(Some(fields.len()))?;
+        for (key, value) in fields {
+            if key == "errors" {
+                map.serialize_entry(key, &Errors(self.records, self.drops))?;
+            } else {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        map.end()
+    }
 }
 
 /// Generic replacement for engine error messages on the data plane (G1).
@@ -760,22 +807,21 @@ pub(super) async fn process_sync_for_channel(
                     }
                 }
 
-                let mut response = response_envelope(
-                    message.id(),
-                    data_out,
-                    message
-                        .errors()
-                        .iter()
-                        .filter_map(|e| serde_json::to_value(e).ok())
-                        .chain(response_drops.iter().cloned())
-                        .collect(),
-                    None,
-                );
+                // Built with an empty `errors`: the full-detail list is written
+                // straight from the engine's records when the envelope is
+                // serialized below, and the public body overwrites the key with
+                // the sanitized list. On an error-free run the two agree — both
+                // empty — which is what the profile variant relies on.
+                let mut response = response_envelope(message.id(), data_out, Vec::new(), None);
 
                 // Serialize the full-detail envelope exactly once — reused for the
                 // size check, trace storage, and (on the error-free hot path) the
                 // cache and HTTP body with no re-serialization by Axum.
-                let response_json = serialize_envelope(&response)?;
+                let response_json = serialize_envelope(&FullDetailEnvelope {
+                    envelope: &response,
+                    records: message.errors(),
+                    drops: &response_drops,
+                })?;
 
                 // G1: when workflow errors are present, the client-facing body
                 // (and the cached copy) carry sanitized entries plus a
@@ -988,6 +1034,46 @@ mod tests {
     /// Deserializing with `deny_unknown_fields` catches drift in both
     /// directions: a key the envelope emits and the schema lacks fails here,
     /// and a required schema field the envelope omits fails here too.
+    /// The full-detail envelope is written straight from the error records;
+    /// its bytes must be the ones the `Value`-per-error envelope produced.
+    #[test]
+    fn the_full_detail_envelope_serializes_as_the_value_envelope_did() {
+        let mut record = dataflow_rs::run::ErrorRecord::new("TASK_FAILED", "boom");
+        record.task_id = Some("t1".into());
+        record.path = Some("data.x".into());
+        let records = vec![record, dataflow_rs::run::ErrorRecord::new("OTHER", "two")];
+        let drops = vec![json!({"code": "RESPONSE_DROPPED", "path": "p", "message": "m"})];
+        let data = json!({"z": 1, "a": [true, null]});
+
+        let expected = serde_json::to_string(&response_envelope(
+            "msg-1",
+            data.clone(),
+            records
+                .iter()
+                .map(|e| serde_json::to_value(e).expect("a record serializes"))
+                .chain(drops.iter().cloned())
+                .collect(),
+            None,
+        ))
+        .expect("serializes");
+        let envelope = response_envelope("msg-1", data, Vec::new(), None);
+        let actual = serialize_envelope(&FullDetailEnvelope {
+            envelope: &envelope,
+            records: &records,
+            drops: &drops,
+        })
+        .expect("serializes");
+        assert_eq!(actual, expected);
+
+        let clean = serialize_envelope(&FullDetailEnvelope {
+            envelope: &envelope,
+            records: &[],
+            drops: &[],
+        })
+        .expect("serializes");
+        assert_eq!(clean, serde_json::to_string(&envelope).expect("serializes"));
+    }
+
     #[test]
     fn the_response_envelope_matches_its_documented_schema() {
         let shapes = [

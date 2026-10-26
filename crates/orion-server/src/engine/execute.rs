@@ -215,10 +215,17 @@ fn v4_trace_options(max_snapshot_bytes: usize) -> dataflow_rs::observe::TraceOpt
 ///
 /// `data` is seeded because dataflow-rs 4 keeps the payload out of the
 /// evaluation context (a path rooted at `payload` is a `PAYLOAD_VAR`), so a
-/// workflow reads its input under `data`. The one copy is inherent: the
-/// payload stays as the caller sent it while tasks change `data`. Every
-/// surface that runs a workflow builds its message here, so an offline run
-/// starts where a served one does.
+/// workflow reads its input under `data`. Every surface that runs a workflow
+/// builds its message here, so an offline run starts where a served one does.
+///
+/// The one `clone` is inherent, and cannot become a move. The engine holds
+/// the payload behind an `Arc` and `data` by value inside the context, which
+/// tasks mutate in place, so the two cannot share one value. And the payload
+/// must stay as the caller sent it: `channel_call` with no `data` hands the
+/// child the caller's *payload* (`ctx.payload()`), and an async trace's
+/// persisted result is the whole message, `payload` included — both read
+/// after tasks have changed `data`. Dropping either half would change what
+/// those see.
 pub fn serving_message(data: &Value, metadata: &Value) -> dataflow_rs::Message {
     use dataflow_rs::datavalue::OwnedDataValue;
     let data = OwnedDataValue::from(data);
