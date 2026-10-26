@@ -19,19 +19,26 @@ use super::{TracePersistenceQueue, TracePersistenceTask};
 
 /// One completed trace, ready for persistence.
 ///
-/// Passed as a single borrow rather than six positional arguments, which is
-/// what it was for when it served only the sync path.
+/// One value rather than six positional arguments, which is what it was for
+/// when it served only the sync path.
+///
+/// The three payloads are owned, or owned when the caller can give them up,
+/// because the queued modes hand the row to a background worker: a borrowed
+/// string there is a full copy of the request body or the response, per
+/// request. `input_json` and `task_trace_json` are built for the trace alone,
+/// so they always move; `response_json` moves when nothing else needs it
+/// after the trace is handed over (it is often also the HTTP body).
 pub(crate) struct CompletedTrace<'a> {
     /// `"sync"`, `"async"` or `"cron"` — how the message reached the runtime.
     /// Stored on the row and offered as a filter by `GET /data/traces`.
     pub(crate) mode: &'a str,
     pub(crate) channel: &'a str,
     pub(crate) channel_id: Option<&'a str>,
-    pub(crate) input_json: Option<&'a str>,
-    pub(crate) response_json: &'a str,
+    pub(crate) input_json: Option<String>,
+    pub(crate) response_json: std::borrow::Cow<'a, str>,
     pub(crate) duration_ms: f64,
     pub(crate) has_errors: bool,
-    pub(crate) task_trace_json: Option<&'a str>,
+    pub(crate) task_trace_json: Option<String>,
 }
 
 /// Route a completed sync trace through the chosen persistence mode.
@@ -43,19 +50,26 @@ pub(crate) async fn route_store_completed(
     cfg: &EffectiveTraceConfig,
     trace_repo: &dyn crate::storage::repositories::traces::TraceSink,
     persistence_queue: &TracePersistenceQueue,
-    trace: &CompletedTrace<'_>,
+    trace: CompletedTrace<'_>,
 ) {
     // `should_drop` already returned for `Off`; remaining modes are Sync / Async / Batch.
+    //
+    // `sync` awaits the insert before the caller answers: that is the mode's
+    // documented promise (`docs/src/operate/run/traces.md` — "written inline
+    // before responding", "a served request implies a persisted trace"), so a
+    // caller holding a response can read its trace, and a crash after the
+    // response cannot lose it. Moving the insert off the request path is what
+    // `async` and `batch` are for.
     if matches!(cfg.mode, TraceStorageMode::Sync) {
         if let Err(e) = trace_repo
             .store_completed(crate::storage::repositories::traces::TraceCompletedRef {
                 channel: trace.channel,
                 channel_id: trace.channel_id,
                 mode: trace.mode,
-                input_json: trace.input_json,
-                result_json: trace.response_json,
+                input_json: trace.input_json.as_deref(),
+                result_json: &trace.response_json,
                 duration_ms: trace.duration_ms,
-                task_trace_json: trace.task_trace_json,
+                task_trace_json: trace.task_trace_json.as_deref(),
             })
             .await
         {
@@ -66,10 +80,10 @@ pub(crate) async fn route_store_completed(
             channel: trace.channel.to_string(),
             channel_id: trace.channel_id.map(str::to_string),
             mode: trace.mode.to_string(),
-            input_json: trace.input_json.map(str::to_string),
-            result_json: trace.response_json.to_string(),
+            input_json: trace.input_json,
+            result_json: trace.response_json.into_owned(),
             duration_ms: trace.duration_ms,
-            task_trace_json: trace.task_trace_json.map(str::to_string),
+            task_trace_json: trace.task_trace_json,
         });
         persistence_queue.submit(task).await;
     }

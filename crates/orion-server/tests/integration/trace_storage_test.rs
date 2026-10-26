@@ -474,3 +474,107 @@ async fn count_traces(pool: &orion::storage::DbPool) -> i64 {
         .expect("count");
     n
 }
+
+/// The stored `(input_json, result_json)` of the one trace on `channel`,
+/// once a queued worker has written it.
+async fn stored_payloads(pool: &orion::storage::DbPool, channel: &str) -> (String, String) {
+    for _ in 0..50 {
+        let row = pool
+            .fetch_optional_as::<(Option<String>, Option<String>)>(
+                "SELECT input_json, result_json FROM traces WHERE channel = ?",
+                sea_query_sqlx::SqlxValues(sea_query::Values(vec![channel.into()])),
+            )
+            .await
+            .expect("read trace");
+        if let Some((Some(input), Some(result))) = row {
+            return (input, result);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("no trace for {channel} within 2.5s");
+}
+
+/// The queued modes take a sync trace's payloads by move rather than copying
+/// them. Whichever way the full-detail envelope travels — kept as the HTTP
+/// body on a clean run, given to the trace when the run carried errors — the
+/// row must hold the request body and that envelope.
+#[tokio::test]
+async fn a_queued_sync_trace_stores_the_input_and_the_full_detail_envelope() {
+    for mode in [TraceStorageMode::Async, TraceStorageMode::Batch] {
+        let state = common::test_state_with_config(cfg_with_storage(mode)).await;
+        let pool = state.db_pool.clone();
+        let app = orion::server::build_router(state);
+
+        // Clean: the envelope is the body, and the trace stores the same bytes.
+        common::create_and_activate_channel(&app, "ch_q_ok", common::simple_log_workflow("Log"))
+            .await;
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v2/data/ch_q_ok",
+                Some(json!({"data": {"marker": "in-ok"}})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        let (input, result) = stored_payloads(&pool, "ch_q_ok").await;
+        assert!(input.contains("in-ok"), "{mode:?}: {input}");
+        let stored: serde_json::Value = serde_json::from_str(&result).expect("result is JSON");
+        assert_eq!(stored, body, "{mode:?}: a clean trace stores the body");
+
+        // Errors: the body is the sanitized envelope; the trace keeps the
+        // full-detail one, which carries the request_id-free original.
+        let addr = common::start_failing_server().await;
+        common::create_http_connector(&app, "q-fail", addr).await;
+        common::create_and_activate_channel(
+            &app,
+            "ch_q_err",
+            common::workflow_with_tasks(
+                "Fail",
+                json!([{
+                    "id": "t1",
+                    "name": "Call failing endpoint",
+                    "on_failure": "continue",
+                    "function": {
+                        "name": "http_call",
+                        "input": {
+                            "connector": "q-fail",
+                            "method": "POST",
+                            "path": "/fail",
+                            "output": "data.result",
+                            "timeout_ms": 5000
+                        }
+                    }
+                }]),
+            ),
+        )
+        .await;
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v2/data/ch_q_err",
+                Some(json!({"data": {"marker": "in-err"}})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        assert!(body["request_id"].is_string(), "{mode:?}: {body}");
+        let (input, result) = stored_payloads(&pool, "ch_q_err").await;
+        assert!(input.contains("in-err"), "{mode:?}: {input}");
+        let stored: serde_json::Value = serde_json::from_str(&result).expect("result is JSON");
+        assert!(stored.get("request_id").is_none(), "{mode:?}: {stored}");
+        assert_eq!(stored["id"], body["id"], "{mode:?}");
+        assert_eq!(
+            stored["errors"][0]["code"], body["errors"][0]["code"],
+            "{mode:?}: {stored}"
+        );
+        assert!(
+            stored["errors"][0].get("path").is_some(),
+            "{mode:?}: the stored errors are the full records: {stored}"
+        );
+    }
+}

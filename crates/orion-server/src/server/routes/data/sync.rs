@@ -44,6 +44,11 @@ fn json_response(status: StatusCode, body: String) -> Response {
 /// once the value is there. An in-process store is a map insert and runs
 /// inline, so the next request for the key always sees it.
 ///
+/// The trace insert itself is awaited under `trace_storage.mode = "sync"`,
+/// and only there: that mode promises the trace is written before the
+/// response (see [`route_store_completed`]). The queued modes return as soon
+/// as the row is handed to a worker.
+///
 /// `cache_body` is the client-facing serialization: cache hits are returned
 /// to callers verbatim, so the cached copy must be the sanitized envelope
 /// (G1), while the persisted trace keeps `trace.response_json` full detail.
@@ -51,7 +56,7 @@ async fn persist_trace_and_cache(
     state: &AppState,
     channel_config: &std::sync::Arc<crate::channel::ChannelRuntimeConfig>,
     plan: &TracePlan,
-    trace: &CompletedTrace<'_>,
+    trace: CompletedTrace<'_>,
     cache_body: &str,
     cache_context: Option<CacheStoreCtx>,
     profile: Option<&std::sync::Arc<crate::engine::profile::ProfileCollector>>,
@@ -938,24 +943,43 @@ pub(super) async fn process_sync_for_channel(
                     })
                     .ok()
                 });
-                let cache_body = shaped_cache_json
-                    .as_deref()
-                    .or(public_json.as_deref())
-                    .unwrap_or(&response_json);
+                let cache_body = shaped_cache_json.as_deref().or(public_json.as_deref());
+
+                // The full-detail serialization is still needed after the trace
+                // is handed over only when it is the HTTP body (a clean envelope
+                // response with no profile and no redirect) or the cached copy.
+                // Otherwise it moves into the trace, which saves the queued
+                // modes a full copy of the response.
+                let body_is_full_detail = authorize_outcome.is_none()
+                    && shaped.is_none()
+                    && profile.is_none()
+                    && public_json.is_none();
+                let keep_full_detail = body_is_full_detail || (will_cache && cache_body.is_none());
+                let (kept_json, given_json) = if keep_full_detail {
+                    (Some(response_json), None)
+                } else {
+                    (None, Some(response_json))
+                };
+                let trace_response = match given_json {
+                    Some(owned) => std::borrow::Cow::Owned(owned),
+                    None => std::borrow::Cow::Borrowed(kept_json.as_deref().unwrap_or_default()),
+                };
+                // Read only when `will_cache`, and then it is one of the three.
+                let cache_body = cache_body.or(kept_json.as_deref()).unwrap_or_default();
 
                 persist_trace_and_cache(
                     state,
                     &channel_config,
                     &plan,
-                    &CompletedTrace {
+                    CompletedTrace {
                         mode: "sync",
                         channel,
                         channel_id: Some(channel_config.channel.channel_id.as_str()),
-                        input_json: input_json.as_deref(),
-                        response_json: &response_json,
+                        input_json,
+                        response_json: trace_response,
                         duration_ms,
                         has_errors,
-                        task_trace_json: task_trace_json.as_deref(),
+                        task_trace_json,
                     },
                     cache_body,
                     cache_context,
@@ -995,9 +1019,11 @@ pub(super) async fn process_sync_for_channel(
                     ));
                 }
 
+                // `public_json` when the run had errors, else the kept
+                // full-detail body (`body_is_full_detail` above).
                 Ok(json_response(
                     StatusCode::OK,
-                    public_json.unwrap_or(response_json),
+                    public_json.or(kept_json).unwrap_or_default(),
                 ))
             }
         }
