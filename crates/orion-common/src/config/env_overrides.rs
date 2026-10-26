@@ -1,59 +1,108 @@
-use std::cell::RefCell;
 use std::collections::BTreeSet;
+use std::sync::LazyLock;
 
-use crate::config::{AppConfig, LogFormat};
+use serde_json::Value;
+
+use crate::config::AppConfig;
 use crate::errors::OrionError;
 
-/// Helper to parse an env var value, returning a clear error on failure.
-fn parse_env<T: std::str::FromStr>(key: &str, value: &str) -> Result<T, OrionError> {
-    value.parse::<T>().map_err(|_| OrionError::Config {
-        message: format!(
-            "{}: invalid value '{}', expected {}",
-            key,
-            value,
-            std::any::type_name::<T>()
-        ),
-    })
+#[derive(Clone, Copy)]
+enum Shape {
+    String,
+    Bool,
+    Integer,
+    Float,
+    Optional,
+    StringList,
 }
 
-/// `ORION_` + the field path uppercased and joined with `__` — the single
-/// naming rule every override follows, with no exceptions since C22 retired
-/// the `ORION_ENV` alias in favour of the derived `ORION_ENVIRONMENT`.
-fn env_key(path: &[&str]) -> String {
-    let mut key = String::from("ORION_");
-    for (i, segment) in path.iter().enumerate() {
-        if i > 0 {
-            key.push_str("__");
+impl Shape {
+    fn expected(self) -> &'static str {
+        match self {
+            Self::String => "a string or supported enum variant",
+            Self::Bool => "true or false",
+            Self::Integer => "an integer within the setting's range",
+            Self::Float => "a finite number",
+            Self::Optional => "a value of the setting's type (empty clears numeric/bool options)",
+            Self::StringList => "a comma-separated list",
         }
-        key.push_str(&segment.to_ascii_uppercase());
     }
-    key
 }
 
-/// Every `ORION_*` variable the overrides below consult, in one set.
-///
-/// Derived by *running* them against a reader that records each name and
-/// reports it unset, rather than by listing the names a second time: an
-/// override that reads a variable has to ask this reader for it, so the set
-/// cannot drift from the macros the way a hand-maintained list would. Nothing
-/// is applied — every lookup returns `NotPresent` — so the throwaway config is
-/// discarded untouched.
-///
-/// The one rule this relies on: an override must consult its variable
-/// *unconditionally*. Every `ov*!` expansion does (`if let Ok(v) =
-/// env_var(&key)`), as do the hand-written enum/list/pair cases.
-///
-/// `config_docs_drift_test` asserts this set equals the one its scraper finds
-/// in this file's source, which is what would catch a conditional lookup.
-pub fn known_env_override_keys() -> BTreeSet<String> {
-    let seen = RefCell::new(BTreeSet::new());
-    let mut scratch = AppConfig::default();
-    // Cannot fail: every lookup reports "unset", so no value is ever parsed.
-    let _ = apply_env_overrides_with(&mut scratch, |key| {
-        seen.borrow_mut().insert(key.to_string());
-        Err(std::env::VarError::NotPresent)
+struct Override {
+    key: String,
+    pointer: String,
+    shape: Shape,
+}
+
+/// Derive the fixed configuration surface from serde, including unset options.
+/// JSON retains nulls and the full u64 range, which a TOML value would lose.
+/// Empty maps are file-only namespaces; arrays of tables are file-only too.
+static OVERRIDES: LazyLock<Vec<Override>> = LazyLock::new(|| {
+    let defaults = serde_json::to_value(AppConfig::default()).expect("config defaults serialize");
+    let mut overrides = Vec::new();
+    collect_overrides(&defaults, &defaults, &mut Vec::new(), &mut overrides);
+    overrides
+});
+
+fn collect_overrides(
+    defaults: &Value,
+    value: &Value,
+    path: &mut Vec<String>,
+    overrides: &mut Vec<Override>,
+) {
+    let pointer = path
+        .iter()
+        .map(|part| format!("/{}", part.replace('~', "~0").replace('/', "~1")))
+        .collect::<String>();
+    let mut shape = match value {
+        Value::Object(fields) => {
+            for (name, value) in fields {
+                path.push(name.clone());
+                collect_overrides(defaults, value, path, overrides);
+                path.pop();
+            }
+            return;
+        }
+        Value::Array(_) => {
+            // Serde distinguishes Vec<String> from Vec<struct>, even when the
+            // default is empty, without a second registry of field types.
+            if !accepts(defaults, &pointer, serde_json::json!([""])) {
+                return;
+            }
+            Shape::StringList
+        }
+        Value::Null => Shape::Optional,
+        Value::String(_) => Shape::String,
+        Value::Bool(_) => Shape::Bool,
+        Value::Number(number) if number.is_f64() => Shape::Float,
+        Value::Number(_) => Shape::Integer,
+    };
+    // Some options have a non-null default (e.g. admin_rps). Ask serde
+    // whether null is allowed rather than losing their clearing semantics.
+    if !matches!(shape, Shape::Optional | Shape::StringList)
+        && accepts(defaults, &pointer, Value::Null)
+    {
+        shape = Shape::Optional;
+    }
+    overrides.push(Override {
+        key: format!("ORION_{}", path.join("__").to_ascii_uppercase()),
+        pointer,
+        shape,
     });
-    seen.into_inner()
+}
+
+fn accepts(defaults: &Value, pointer: &str, value: Value) -> bool {
+    let mut probe = defaults.clone();
+    *probe.pointer_mut(pointer).expect("default field exists") = value;
+    serde_json::from_value::<AppConfig>(probe).is_ok()
+}
+
+/// Every fixed scalar or string-list setting, named from its serialized path.
+/// The same catalogue drives overrides and the unknown-variable guard. Dynamic
+/// maps and arrays of tables use config-file references instead of overrides.
+pub fn known_env_override_keys() -> BTreeSet<String> {
+    OVERRIDES.iter().map(|entry| entry.key.clone()).collect()
 }
 
 /// Apply ORION_* environment variable overrides.
@@ -79,13 +128,9 @@ pub(super) fn apply_env_overrides(
     apply_env_overrides_with(config, |key| std::env::var(key))
 }
 
-/// Testable version that accepts a custom env reader.
-///
-/// Every mapping below derives its variable name from the field path via
-/// [`env_key`], so an override cannot silently read the wrong variable and
-/// the docs drift test can predict the full set from the config structs.
-/// Only shapes the naming rule cannot express are written out by hand: enum
-/// fields with their own error wording.
+/// Apply overrides to a private copy and publish only after every value parses.
+/// Serde remains the type authority: it checks numeric bounds, optional types
+/// and enum variants instead of duplicating those declarations here.
 pub(super) fn apply_env_overrides_with<F>(
     config: &mut AppConfig,
     env_var: F,
@@ -93,298 +138,98 @@ pub(super) fn apply_env_overrides_with<F>(
 where
     F: Fn(&str) -> Result<String, std::env::VarError>,
 {
-    /// One scalar override, `FromStr`-parsed (covers `String` too):
-    /// `ov!(server.port: u16)` reads `ORION_SERVER__PORT`.
-    macro_rules! ov {
-        ($($path:ident).+ : $ty:ty) => {{
-            let key = env_key(&[$(stringify!($path)),+]);
-            if let Ok(v) = env_var(&key) {
-                config.$($path).+ = parse_env::<$ty>(&key, &v)?;
-            }
-        }};
+    let supplied: Vec<_> = OVERRIDES
+        .iter()
+        .filter_map(|entry| env_var(&entry.key).ok().map(|raw| (entry, raw)))
+        .collect();
+    if supplied.is_empty() {
+        return Ok(());
     }
-
-    /// `Option<T>` override. An empty value clears the setting, which is the
-    /// only way to say "no limit" from an environment that already has the
-    /// variable set.
-    macro_rules! ov_opt {
-        ($($path:ident).+ : $ty:ty) => {{
-            let key = env_key(&[$(stringify!($path)),+]);
-            if let Ok(v) = env_var(&key) {
-                config.$($path).+ = if v.trim().is_empty() {
-                    None
-                } else {
-                    Some(parse_env::<$ty>(&key, &v)?)
-                };
-            }
-        }};
+    // Vars are opaque TOML, including values with no lossless JSON form.
+    // They have no env overrides; keep them outside the typed round trip.
+    let mut scratch = config.clone();
+    let vars = std::mem::take(&mut scratch.vars);
+    let mut tree = serde_json::to_value(scratch).map_err(|_| OrionError::Config {
+        message: "cannot serialize configuration for environment overrides".to_string(),
+    })?;
+    let mut parsed = None;
+    for (entry, raw) in supplied {
+        let next = candidates(entry.shape, &raw).into_iter().find_map(|value| {
+            *tree
+                .pointer_mut(&entry.pointer)
+                .expect("config field exists") = value;
+            serde_json::from_value::<AppConfig>(tree.clone()).ok()
+        });
+        parsed = Some(next.ok_or_else(|| OrionError::Config {
+            // Neither raw input nor serde errors belong here: both can carry
+            // credentials, including values from elsewhere in the config tree.
+            message: format!(
+                "{}: invalid value; expected {}",
+                entry.key,
+                entry.shape.expected()
+            ),
+        })?);
     }
-
-    /// `Option<String>` override (no clearing: an empty value sets `Some("")`).
-    macro_rules! ov_opt_str {
-        ($($path:ident).+) => {{
-            let key = env_key(&[$(stringify!($path)),+]);
-            if let Ok(v) = env_var(&key) {
-                config.$($path).+ = Some(v);
-            }
-        }};
+    if let Some(mut parsed) = parsed {
+        parsed.vars = vars;
+        *config = parsed;
     }
-
-    /// Comma-separated list override; entries are trimmed and empties dropped,
-    /// so an explicitly empty value means "empty list" rather than `[""]`.
-    macro_rules! ov_list {
-        ($($path:ident).+) => {{
-            let key = env_key(&[$(stringify!($path)),+]);
-            if let Ok(v) = env_var(&key) {
-                config.$($path).+ = v
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-                    .collect();
-            }
-        }};
-    }
-
-    /// Enum override: a case-insensitive value out of a fixed set, with the
-    /// accepted values named back to the operator when it is not one of them.
-    /// The key is spelled out rather than derived from the field path, because
-    /// the docs drift test scrapes these literals out of the source.
-    macro_rules! ov_enum {
-        ($key:literal, $($path:ident).+, { $($lit:literal => $variant:expr),+ $(,)? }, $expected:literal) => {{
-            if let Ok(v) = env_var($key) {
-                config.$($path).+ = match v.to_lowercase().as_str() {
-                    $($lit => $variant,)+
-                    _ => {
-                        return Err(OrionError::Config {
-                            message: format!(
-                                "{}: invalid value '{}', expected {}",
-                                $key, v, $expected
-                            ),
-                        });
-                    }
-                };
-            }
-        }};
-    }
-
-    // Deployment environment. `ORION_ENVIRONMENT`, derived by the rule above
-    // — `ORION_ENV` was retired in 1.0 and is refused by
-    // `reject_retired_env_vars` rather than silently ignored.
-    ov!(environment: String);
-
-    // Server
-    ov!(server.host: String);
-    ov!(server.port: u16);
-    ov!(server.shutdown_drain_secs: u64);
-    ov!(server.shutdown_force_timeout_secs: u64);
-    ov!(server.tls.enabled: bool);
-    ov!(server.tls.cert_path: String);
-    ov!(server.tls.key_path: String);
-    ov!(server.compression.enabled: bool);
-    // Option<bool>: an empty value restores the unset default ("enabled
-    // outside production").
-    ov_opt!(server.docs.enabled: bool);
-    // Option<bool>: an empty value restores the unset default ("verbose
-    // outside production"). An explicit true is refused in production.
-    ov_opt!(server.verbose_errors: bool);
-    ov!(server.max_admin_body_size: usize);
-    ov_list!(server.data_mounts);
-
-    // Storage
-    ov!(storage.url: String);
-    ov!(storage.busy_timeout_ms: u64);
-    ov!(storage.acquire_timeout_secs: u64);
-    ov!(storage.connector_encryption_key: String);
-    ov!(storage.backup_dir: String);
-    ov_opt!(storage.backup_retention_count: u32);
-    ov!(storage.max_connections: u32);
-    ov!(storage.min_connections: u32);
-    ov!(storage.idle_timeout_secs: u64);
-    ov!(storage.auto_migrate: bool);
-    ov!(storage.connect_retry_secs: u64);
-    ov!(storage.artifact_gc_interval_secs: u64);
-    ov!(storage.artifact_gc_grace_secs: u64);
-    ov!(storage.deployment_retain_revisions: u32);
-
-    // Cluster
-    ov!(cron.enabled: bool);
-    ov!(cron.poll_interval_ms: u64);
-    ov!(cron.workers: usize);
-    ov!(cron.claim_batch_size: i64);
-    ov!(cron.claim_lease_secs: u64);
-    ov!(cron.heartbeat_interval_secs: u64);
-    ov!(cron.misfire_grace_secs: u64);
-    ov!(cron.max_catch_up: u32);
-    ov!(cron.default_timeout_ms: u64);
-    ov!(cron.shutdown_timeout_secs: u64);
-
-    ov!(cluster.enabled: bool);
-    ov!(cluster.epoch_poll_interval_ms: u64);
-    ov!(cluster.instance_id: String);
-
-    // Logging
-    ov!(logging.level: String);
-    ov!(logging.access_log: bool);
-    ov_enum!(
-        "ORION_LOGGING__FORMAT",
-        logging.format,
-        {
-            "json" => LogFormat::Json,
-            "pretty" => LogFormat::Pretty,
-        },
-        "'json' or 'pretty'"
-    );
-
-    // Ingest
-    ov!(ingest.max_payload_size: usize);
-
-    // Trace queue
-    ov!(trace_queue.workers: usize);
-    ov!(trace_queue.buffer_size: usize);
-    ov!(trace_queue.shutdown_timeout_secs: u64);
-    ov!(trace_queue.retention_hours: u64);
-    ov!(trace_queue.cleanup_interval_secs: u64);
-    ov!(trace_queue.processing_timeout_ms: u64);
-    ov!(trace_queue.max_result_size_bytes: usize);
-    ov!(trace_queue.max_queue_memory_bytes: usize);
-    ov!(trace_queue.dlq_retry_enabled: bool);
-    ov!(trace_queue.dlq_max_retries: i64);
-    ov!(trace_queue.dlq_poll_interval_secs: u64);
-    ov!(trace_queue.dlq_batch_size: i64);
-    ov!(trace_queue.dlq_lease_secs: u64);
-
-    // Audit-log retention
-    ov!(audit.retention_days: u64);
-    ov!(audit.cleanup_interval_secs: u64);
-    ov!(audit.max_pending: usize);
-    ov!(audit.drain_timeout_secs: u64);
-
-    // Plugins
-    ov!(plugins.enabled: bool);
-    ov!(plugins.cache_dir: String);
-    ov!(plugins.max_component_bytes: usize);
-    ov!(plugins.max_memory_bytes: usize);
-    ov!(plugins.max_request_bytes: usize);
-    ov!(plugins.max_response_bytes: usize);
-    ov!(plugins.max_timeout_ms: u64);
-    ov!(plugins.max_concurrency_per_function: u32);
-    ov!(plugins.max_live_instances: u32);
-    ov!(plugins.linear_memory_keep_resident_bytes: usize);
-    ov!(plugins.table_keep_resident_bytes: usize);
-    ov!(plugins.fuel_backstop: u64);
-    ov_list!(plugins.trust.public_keys);
-
-    // Query dialect
-    ov!(query.default_limit: u64);
-    ov!(query.max_limit: u64);
-    ov!(query.max_skip: u64);
-    ov!(query.max_result_bytes: usize);
-
-    // Write dialect
-    ov!(write.max_rows: u64);
-    ov!(write.allow_unfiltered: bool);
-
-    // Metrics
-    ov!(metrics.enabled: bool);
-    ov_opt_str!(metrics.bind_addr);
-
-    // Tracing
-    ov!(tracing.enabled: bool);
-    ov!(tracing.otlp_endpoint: String);
-    ov!(tracing.service_name: String);
-    ov!(tracing.sample_rate: f64);
-    ov!(tracing.debug_profile_enabled: bool);
-    ov!(trace_storage.sample_rate: f64);
-    ov!(trace_storage.errors_only: bool);
-    ov!(trace_storage.max_pending: usize);
-    ov!(trace_storage.overflow_block_timeout_ms: u64);
-    ov!(trace_storage.async_workers: usize);
-    ov!(trace_storage.batch_size: usize);
-    ov!(trace_storage.batch_flush_interval_ms: u64);
-    ov!(trace_storage.batch_workers: usize);
-    ov_enum!(
-        "ORION_TRACE_STORAGE__MODE",
-        trace_storage.mode,
-        {
-            "sync" => crate::config::TraceStorageMode::Sync,
-            "async" => crate::config::TraceStorageMode::Async,
-            "batch" => crate::config::TraceStorageMode::Batch,
-            "off" => crate::config::TraceStorageMode::Off,
-        },
-        "'sync', 'async', 'batch', or 'off'"
-    );
-    ov_enum!(
-        "ORION_TRACE_STORAGE__ASYNC_ON_OVERFLOW",
-        trace_storage.async_on_overflow,
-        {
-            "drop" => crate::config::AsyncOnOverflow::Drop,
-            "block" => crate::config::AsyncOnOverflow::Block,
-        },
-        "'drop' or 'block'"
-    );
-
-    // Engine
-    ov!(engine.health_check_timeout_secs: u64);
-    ov!(engine.max_channel_call_depth: u32);
-    ov!(engine.default_channel_call_timeout_ms: u64);
-    ov!(engine.max_loop_iterations: i64);
-    ov!(engine.ops_budget: u64);
-    ov!(engine.max_run_tasks: u64);
-    ov!(engine.max_run_expr_ops: u64);
-    ov!(engine.max_run_custom_units: u64);
-    ov!(engine.max_run_in_flight: u64);
-    ov!(engine.native_work_max_in_flight: usize);
-    ov!(engine.native_work_timeout_ms: u64);
-    ov!(engine.global_http_timeout_secs: u64);
-    ov!(engine.max_pool_cache_entries: usize);
-    ov!(engine.max_memory_cache_entries: usize);
-    ov!(engine.rollout_sticky_header: String);
-    ov!(engine.cache_cleanup_interval_secs: u64);
-    ov!(engine.fail_on_connector_load_error: bool);
-    ov!(engine.circuit_breaker.enabled: bool);
-    ov!(engine.circuit_breaker.failure_threshold: u32);
-    ov!(engine.circuit_breaker.recovery_timeout_secs: u64);
-    ov!(engine.circuit_breaker.max_breakers: usize);
-
-    // Rate limiting
-    ov!(rate_limit.enabled: bool);
-    ov!(rate_limit.default_rps: u32);
-    ov!(rate_limit.default_burst: u32);
-    ov_opt!(rate_limit.endpoints.admin_rps: u32);
-    ov_opt!(rate_limit.endpoints.data_rps: u32);
-    ov_list!(rate_limit.trusted_proxies);
-
-    // CORS
-    ov_list!(cors.allowed_origins);
-    ov_list!(cors.additional_allowed_headers);
-    ov_list!(cors.additional_exposed_headers);
-    ov!(cors.allow_credentials: bool);
-    ov_opt!(cors.max_age_secs: u64);
-
-    // Channel loading filters
-    ov_list!(channel_filter.include);
-    ov_list!(channel_filter.exclude);
-
-    // JWT verification (JWKS egress policy)
-    ov!(jwt.allow_private_jwks_urls: bool);
-
-    // Inbound OAuth2 sign-in (token-endpoint egress policy)
-    ov!(oauth2_login.allow_private_token_urls: bool);
-
-    // Admin auth
-    ov!(admin_auth.enabled: bool);
-    ov!(admin_auth.header: String);
-    ov_list!(admin_auth.api_keys);
-    ov_list!(admin_auth.read_only_api_keys);
-
     Ok(())
+}
+
+fn candidates(shape: Shape, raw: &str) -> Vec<Value> {
+    let mut values = Vec::new();
+    if matches!(shape, Shape::String | Shape::Optional) {
+        // Strings stay literal, including empty and numeric-looking values.
+        values.push(Value::String(raw.to_string()));
+        let lower = raw.to_lowercase();
+        if lower != raw {
+            // Enum variants historically accept case-insensitive input.
+            // Ordinary strings accept the first candidate unchanged.
+            values.push(Value::String(lower));
+        }
+    }
+    if matches!(shape, Shape::Optional) && raw.trim().is_empty() {
+        // A string option already accepted ""; numeric/bool options clear.
+        values.push(Value::Null);
+    }
+    if matches!(shape, Shape::Bool | Shape::Optional)
+        && let Ok(value) = raw.parse::<bool>()
+    {
+        values.push(Value::Bool(value));
+    }
+    if matches!(shape, Shape::Integer | Shape::Optional) {
+        if let Ok(value) = raw.parse::<i64>() {
+            values.push(Value::from(value));
+        } else if let Ok(value) = raw.parse::<u64>() {
+            values.push(Value::from(value));
+        }
+    }
+    if matches!(shape, Shape::Float | Shape::Optional)
+        && let Ok(value) = raw.parse::<f64>()
+        && let Some(value) = serde_json::Number::from_f64(value)
+    {
+        values.push(Value::Number(value));
+    }
+    if matches!(shape, Shape::StringList) {
+        values.push(Value::Array(
+            raw.split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| Value::String(value.to_string()))
+                .collect(),
+        ));
+    }
+    values
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::collections::HashMap;
+
+    use crate::config::LogFormat;
 
     fn make_env_reader<'a>(
         env: &'a HashMap<&'a str, &'a str>,
@@ -396,23 +241,20 @@ mod tests {
         }
     }
 
-    /// C4d: the allowlist the unknown-variable guard works from is derived by
-    /// running the overrides, so it must contain one entry per override —
-    /// including the hand-written enum / list / pair shapes, which no `ov*!`
-    /// macro produces.
+    /// The serde-derived catalogue includes every supported leaf shape.
     #[test]
     fn known_keys_cover_every_override_shape() {
         let keys = known_env_override_keys();
         for expected in [
-            // `ov!`, at three nesting depths.
+            // Scalars at three nesting depths.
             "ORION_ENVIRONMENT",
             "ORION_SERVER__PORT",
             "ORION_ENGINE__CIRCUIT_BREAKER__FAILURE_THRESHOLD",
-            // `ov_opt!` / `ov_opt_str!` / `ov_list!`.
+            // Optional scalars and string lists.
             "ORION_SERVER__DOCS__ENABLED",
             "ORION_METRICS__BIND_ADDR",
             "ORION_CORS__ALLOWED_ORIGINS",
-            // Hand-written: the enums.
+            // Enums.
             "ORION_LOGGING__FORMAT",
             "ORION_TRACE_STORAGE__MODE",
             "ORION_TRACE_STORAGE__ASYNC_ON_OVERFLOW",
@@ -421,26 +263,24 @@ mod tests {
         }
         assert!(
             keys.len() > 90,
-            "only {} keys derived — the recording reader is not seeing the \
+            "only {} keys derived — the catalogue is missing \
              overrides, which would make the guard reject real settings",
             keys.len()
         );
-        // `env_key` builds its name from the bare prefix upwards; only the
-        // finished names may reach the set.
         assert!(!keys.contains("ORION_"), "the bare prefix is not a key");
+        for file_only in [
+            "ORION_VARS",
+            "ORION_SECRETS",
+            "ORION_OAUTH2_LOGIN__PROVIDERS",
+            "ORION_PLUGINS__OVERRIDES",
+        ] {
+            assert!(!keys.contains(file_only), "{file_only} is file-only");
+        }
     }
 
-    /// Probing for the key set must leave the config exactly as it found it.
-    ///
-    /// The recording reader answers `NotPresent` to everything, so nothing can
-    /// be applied — but that is a property of the reader, and the assertion has
-    /// to be made against the config the derivation actually walks. Driving
-    /// `apply_env_overrides_with` here rather than calling
-    /// `known_env_override_keys` (which mutates a scratch config it then drops)
-    /// is what makes this test able to fail: swap the reader for one that
-    /// returns values and it does.
+    /// An unset environment consults the entire catalogue without changing config.
     #[test]
-    fn deriving_the_key_set_applies_nothing() {
+    fn unset_environment_consults_every_key_and_applies_nothing() {
         let seen = RefCell::new(BTreeSet::new());
         let mut scratch = AppConfig::default();
         apply_env_overrides_with(&mut scratch, |key| {
@@ -455,7 +295,7 @@ mod tests {
             toml::Value::try_from(&untouched).expect("config serializes"),
             "the key-set derivation modified the config it walked"
         );
-        // …and it did walk it: the same reader is what produces the allowlist.
+        // Every key in the guard allowlist is actually consulted.
         assert_eq!(seen.into_inner(), known_env_override_keys());
     }
 
@@ -759,5 +599,174 @@ mod tests {
         apply_env_overrides_with(&mut config, make_env_reader(&env)).expect("test");
 
         assert_eq!(config.admin_auth.api_keys, vec!["key-1", "key-2", "key-3"]);
+    }
+
+    #[test]
+    fn strings_stay_literal_and_optional_strings_do_not_clear() {
+        for value in ["", "  ", "00123", "true", "MiXeD", "[1,2]"] {
+            let env = HashMap::from([
+                ("ORION_METRICS__BIND_ADDR", value),
+                ("ORION_STORAGE__CONNECTOR_ENCRYPTION_KEY", value),
+            ]);
+            let mut config = AppConfig::default();
+            apply_env_overrides_with(&mut config, make_env_reader(&env))
+                .expect("test config parses");
+            assert_eq!(config.metrics.bind_addr.as_deref(), Some(value));
+            assert_eq!(config.storage.connector_encryption_key, value);
+        }
+    }
+
+    #[test]
+    fn optional_numbers_and_bools_can_be_set_then_cleared() {
+        let mut config = AppConfig::default();
+        let env = HashMap::from([
+            ("ORION_SERVER__VERBOSE_ERRORS", "false"),
+            ("ORION_STORAGE__BACKUP_RETENTION_COUNT", "7"),
+            ("ORION_CORS__MAX_AGE_SECS", "18446744073709551615"),
+        ]);
+        apply_env_overrides_with(&mut config, make_env_reader(&env)).expect("test config parses");
+        assert_eq!(config.server.verbose_errors, Some(false));
+        assert_eq!(config.storage.backup_retention_count, Some(7));
+        assert_eq!(config.cors.max_age_secs, Some(u64::MAX));
+        let env = HashMap::from([
+            ("ORION_SERVER__VERBOSE_ERRORS", "  "),
+            ("ORION_STORAGE__BACKUP_RETENTION_COUNT", ""),
+            ("ORION_CORS__MAX_AGE_SECS", "\t"),
+        ]);
+        apply_env_overrides_with(&mut config, make_env_reader(&env)).expect("test config parses");
+        assert_eq!(config.server.verbose_errors, None);
+        assert_eq!(config.storage.backup_retention_count, None);
+        assert_eq!(config.cors.max_age_secs, None);
+    }
+
+    #[test]
+    fn enums_remain_case_insensitive() {
+        let env = HashMap::from([
+            ("ORION_LOGGING__FORMAT", "JsOn"),
+            ("ORION_TRACE_STORAGE__MODE", "ASYNC"),
+            ("ORION_TRACE_STORAGE__ASYNC_ON_OVERFLOW", "BlOcK"),
+        ]);
+        let mut config = AppConfig::default();
+        apply_env_overrides_with(&mut config, make_env_reader(&env)).expect("test config parses");
+        let value = serde_json::to_value(config).expect("test config parses");
+        assert_eq!(value["logging"]["format"], "json");
+        assert_eq!(value["trace_storage"]["mode"], "async");
+        assert_eq!(value["trace_storage"]["async_on_overflow"], "block");
+    }
+
+    #[test]
+    fn numeric_bounds_and_strict_boolean_parsing_follow_field_types() {
+        let env = HashMap::from([
+            ("ORION_SERVER__PORT", "65535"),
+            ("ORION_STORAGE__BUSY_TIMEOUT_MS", "18446744073709551615"),
+            ("ORION_CRON__CLAIM_BATCH_SIZE", "-9223372036854775808"),
+        ]);
+        let mut config = AppConfig::default();
+        apply_env_overrides_with(&mut config, make_env_reader(&env)).expect("test config parses");
+        assert_eq!(config.server.port, u16::MAX);
+        assert_eq!(config.storage.busy_timeout_ms, u64::MAX);
+        assert_eq!(config.cron.claim_batch_size, i64::MIN);
+
+        for (key, value) in [
+            ("ORION_SERVER__PORT", "65536"),
+            ("ORION_SERVER__PORT", "-1"),
+            ("ORION_SERVER__PORT", "1.0"),
+            ("ORION_SERVER__PORT", " 3000"),
+            ("ORION_STORAGE__BUSY_TIMEOUT_MS", "18446744073709551616"),
+            ("ORION_RATE_LIMIT__ENDPOINTS__ADMIN_RPS", "4294967296"),
+            ("ORION_RATE_LIMIT__ENDPOINTS__ADMIN_RPS", "1e3"),
+            ("ORION_METRICS__ENABLED", "TRUE"),
+            ("ORION_SERVER__DOCS__ENABLED", "TRUE"),
+            ("ORION_TRACING__SAMPLE_RATE", "NaN"),
+        ] {
+            let env = HashMap::from([(key, value)]);
+            let err = apply_env_overrides_with(&mut config, make_env_reader(&env))
+                .expect_err("invalid override must fail");
+            assert!(err.to_string().contains(key), "{key}: {err}");
+        }
+    }
+
+    #[test]
+    fn lists_trim_drop_empty_entries_and_allow_empty_lists() {
+        let mut config = AppConfig::default();
+        let env = HashMap::from([("ORION_PLUGINS__TRUST__PUBLIC_KEYS", " KeyA, , KeyB, ")]);
+        apply_env_overrides_with(&mut config, make_env_reader(&env)).expect("test config parses");
+        assert_eq!(config.plugins.trust.public_keys, ["KeyA", "KeyB"]);
+        let env = HashMap::from([("ORION_PLUGINS__TRUST__PUBLIC_KEYS", " , ")]);
+        apply_env_overrides_with(&mut config, make_env_reader(&env)).expect("test config parses");
+        assert!(config.plugins.trust.public_keys.is_empty());
+    }
+
+    #[test]
+    fn invalid_override_is_atomic_and_does_not_echo_values() {
+        let mut config = AppConfig::default();
+        config
+            .secrets
+            .0
+            .insert("token".into(), "private-token".into());
+        let before = serde_json::to_value(&config).expect("test config parses");
+        let env = HashMap::from([
+            ("ORION_ADMIN_AUTH__ENABLED", "true"),
+            ("ORION_SERVER__PORT", "private-input"),
+        ]);
+        let err = apply_env_overrides_with(&mut config, make_env_reader(&env))
+            .expect_err("invalid override must fail");
+        let message = err.to_string();
+        assert!(message.contains("ORION_SERVER__PORT"));
+        assert!(!message.contains("private-input"));
+        assert!(!message.contains("private-token"));
+        assert_eq!(
+            serde_json::to_value(config).expect("config serializes"),
+            before
+        );
+    }
+
+    #[test]
+    fn overrides_preserve_file_only_maps_tables_and_toml_datetimes() {
+        let mut config: AppConfig = toml::from_str(
+            r#"
+[vars]
+date = 2026-10-26T12:34:56Z
+values = [1, 2, 3]
+nested = { enabled = true, count = 9223372036854775807 }
+[secrets]
+token = "env://MY_TOKEN"
+[oauth2_login.providers.work]
+kind = "oidc"
+client_secret = "private-value"
+scopes = ["openid", "email"]
+[[plugins.overrides]]
+id = "org.example.plugin"
+timeout_ms = 100
+"#,
+        )
+        .expect("test config parses");
+        let before = toml::Value::try_from(&config).expect("test config parses");
+        let env = HashMap::from([("ORION_SERVER__PORT", "9090")]);
+        let seen = RefCell::new(BTreeSet::new());
+        let reader = make_env_reader(&env);
+        apply_env_overrides_with(&mut config, |key| {
+            seen.borrow_mut().insert(key.to_string());
+            reader(key)
+        })
+        .expect("test config parses");
+        assert_eq!(config.server.port, 9090);
+        let after = toml::Value::try_from(&config).expect("test config parses");
+        for section in ["vars", "secrets", "oauth2_login", "plugins"] {
+            assert_eq!(before[section], after[section], "{section} changed");
+        }
+        // Configured map entries never enlarge the override allowlist.
+        assert_eq!(seen.into_inner(), known_env_override_keys());
+    }
+
+    #[test]
+    fn opaque_toml_numbers_survive_unrelated_overrides() {
+        let mut config: AppConfig =
+            toml::from_str("[vars]\nnan = nan\ninf = inf").expect("TOML accepts non-finite floats");
+        let env = HashMap::from([("ORION_SERVER__PORT", "9090")]);
+        apply_env_overrides_with(&mut config, make_env_reader(&env))
+            .expect("an unrelated override preserves opaque TOML");
+        assert!(config.vars.0["nan"].as_float().expect("float").is_nan());
+        assert_eq!(config.vars.0["inf"].as_float(), Some(f64::INFINITY));
     }
 }

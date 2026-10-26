@@ -9,9 +9,9 @@
 //!
 //! This module closes it from the other end: take the set of names the
 //! overrides actually consult ([`super::env_overrides::known_env_override_keys`],
-//! derived by running them against a recording reader, so it cannot drift from
-//! the macros) and refuse to start when the process environment holds a
-//! variable that *looks like* one of them and is not.
+//! derived from serde and shared with the override implementation) and refuse
+//! to start when the process environment holds a variable that *looks like*
+//! one of them and is not.
 //!
 //! # What counts as looking like one
 //!

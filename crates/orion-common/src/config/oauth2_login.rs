@@ -40,8 +40,8 @@ pub struct OAuth2LoginConfig {
     ///
     /// **File-only.** A nested, arbitrary-key map does not fit the
     /// `ORION_SECTION__KEY` environment scheme, so an individual provider cannot
-    /// be set through an environment variable (the same limit `models.runtimes`
-    /// and `plugins.overrides` have). Values inside still take `${VAR}`
+    /// be set through an environment variable (the same limit as
+    /// `plugins.overrides`). Values inside still take `${VAR}`
     /// substitution (applied to the whole file before it is parsed) and
     /// `env://NAME` references (resolved when the channel loads), which is how a
     /// per-deployment endpoint or secret is supplied.

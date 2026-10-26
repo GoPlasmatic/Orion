@@ -15,12 +15,9 @@
 //!    the suite until it appears in both documents — this is what C1/C3 were.
 //! 3. **No document invents a setting.** A key that is not a real field fails,
 //!    which is how `server.workers` (C4) survived for so long.
-//! 4. **Every env override is documented, and only real ones.** The overrides
-//!    in `src/config/env_overrides.rs` are the source of truth for the
-//!    reference page's env-var column: the `ov*!(path)` one-liners (whose
-//!    variable names derive from the field path) plus the hand-written
-//!    `"ORION_*"` literals for the alias/enum/list/pair shapes. A row claiming
-//!    "no env var" (`—`) is checked against the same list.
+//! 4. **Every env override is documented, and only real ones.** The serde-derived
+//!    catalogue used by the runtime guard is authoritative for the reference
+//!    page's env-var column, including rows claiming no env override (`—`).
 //!
 //! ## Conventions this relies on
 //!
@@ -45,11 +42,6 @@ const REFERENCE_DIR: &str = concat!(
     "/../../docs/src/reference/configuration"
 );
 const EXAMPLE_TOML: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml.example");
-const ENV_OVERRIDES_RS: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../orion-common/src/config/env_overrides.rs"
-);
-
 /// Real config fields that have no default value to state: `Option<T>` fields
 /// (unset means "don't send this setting at all") and the element fields of
 /// free-form maps and arrays of tables. Documented with an illustrative value,
@@ -194,82 +186,15 @@ fn flatten(prefix: &str, value: &toml::Value, out: &mut BTreeMap<String, toml::V
     }
 }
 
-/// Every env override `env_overrides.rs` honours, excluding its test module.
-/// Two shapes exist: `ov*!(path ...)` one-liners whose variable name derives
-/// from the field path (the same `ORION_SECTION__KEY` rule as
-/// [`expected_env_name`]), and hand-written `"ORION_*"` literals for the
-/// alias/enum/list/pair special cases.
+/// Use the same serde-derived catalogue as the runtime unknown-variable guard.
 fn env_override_names() -> BTreeSet<String> {
-    let source = read(ENV_OVERRIDES_RS);
-    let production = source
-        .split_once("#[cfg(test)]")
-        .map(|(before, _)| before)
-        .unwrap_or(&source);
-
-    let mut names = BTreeSet::new();
-    for (index, _) in production.match_indices("\"ORION_") {
-        let rest = &production[index + 1..];
-        let end = rest
-            .find(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
-            .unwrap_or(rest.len());
-        // Skip the bare "ORION_" prefix literal inside env_key itself.
-        if end > "ORION_".len() {
-            names.insert(rest[..end].to_string());
-        }
-    }
-    for line in production.lines() {
-        let trimmed = line.trim();
-        let rest = ["ov!(", "ov_opt!(", "ov_opt_str!(", "ov_list!("]
-            .iter()
-            .find_map(|prefix| trimmed.strip_prefix(prefix));
-        if let Some(rest) = rest {
-            let path = rest.split([':', ')']).next().unwrap_or("").trim();
-            if !path.is_empty() {
-                names.insert(format!("ORION_{}", path.to_uppercase().replace('.', "__")));
-            }
-        }
-    }
-    assert!(
-        names.len() > 90,
-        "env-override extraction found only {} names — the parser is broken, not the docs",
-        names.len()
-    );
-    names
-}
-
-/// C4d: the names the scraper finds in the source must be exactly the names
-/// the overrides consult at runtime.
-///
-/// `known_env_override_keys()` is the allowlist the unknown-variable guard
-/// refuses against, and it is derived by *running* the overrides with a
-/// recording reader. That is only equivalent to reading the source if every
-/// override consults its variable unconditionally — an override moved behind
-/// an `if` would drop out of the allowlist and turn a legitimate deployment
-/// variable into a startup error. This is the assertion that catches it.
-#[test]
-fn the_runtime_override_set_matches_the_source() {
-    let scraped = env_override_names();
-    let runtime = orion::config::known_env_override_keys();
-    let missing: Vec<&String> = scraped.difference(&runtime).collect();
-    let extra: Vec<&String> = runtime.difference(&scraped).collect();
-    assert!(
-        missing.is_empty(),
-        "src/config/env_overrides.rs declares {} override(s) that are not \
-         consulted at runtime, so the C4d guard would refuse them: {missing:?}",
-        missing.len()
-    );
-    assert!(
-        extra.is_empty(),
-        "{} variable(s) are consulted at runtime but invisible to the docs \
-         scraper, so the reference page cannot be checked against them: {extra:?}",
-        extra.len()
-    );
+    orion::config::known_env_override_keys()
 }
 
 /// The env var that overrides a setting: `ORION_SECTION__KEY`, uppercased with
 /// `__` between levels. No exceptions since C22 retired the `ORION_ENV` alias
-/// — retired names live in `src/config/retired_env.rs`, out of the scraper's
-/// reach, and are refused at startup rather than ignored.
+/// — retired names live in `src/config/retired_env.rs` and are refused at
+/// startup rather than ignored.
 fn expected_env_name(path: &str) -> String {
     format!("ORION_{}", path.to_uppercase().replace('.', "__"))
 }
@@ -876,7 +801,7 @@ fn reference_page_documents_every_setting() {
 }
 
 /// The env-var column is checked three ways: the name must be the one the
-/// `ORION_SECTION__KEY` scheme produces, it must exist in `env_overrides.rs`,
+/// `ORION_SECTION__KEY` scheme produces, it must exist in the runtime catalogue,
 /// and a `—` ("no override") must still be true.
 #[test]
 fn reference_page_matches_env_overrides() {
@@ -897,7 +822,7 @@ fn reference_page_matches_env_overrides() {
                 } else if !names.contains(&name) {
                     problems.push(format!(
                         "{}:{} documents `{name}` for `{}`, but no such \
-                         override exists in src/config/env_overrides.rs",
+                         override exists in the runtime catalogue",
                         setting.file, setting.line, setting.path
                     ));
                 }
@@ -907,7 +832,7 @@ fn reference_page_matches_env_overrides() {
                 if names.contains(&expected) {
                     problems.push(format!(
                         "{}:{} says `{}` has no env override, but \
-                         `{expected}` exists in src/config/env_overrides.rs",
+                         `{expected}` exists in the runtime catalogue",
                         setting.file, setting.line, setting.path
                     ));
                 }
@@ -918,7 +843,7 @@ fn reference_page_matches_env_overrides() {
     let undocumented: Vec<&String> = names.difference(&documented).collect();
     assert!(
         undocumented.is_empty(),
-        "src/config/env_overrides.rs defines {} override(s) the reference page \
+        "the runtime catalogue defines {} override(s) the reference page \
          does not list: {undocumented:?}",
         undocumented.len()
     );
