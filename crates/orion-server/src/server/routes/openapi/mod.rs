@@ -9,11 +9,7 @@ use utoipa::{Modify, OpenApi};
 
 use crate::server::admin_auth::is_guarded_path;
 
-pub(crate) use schemas::{
-    BackupFile, BackupListItem, CircuitBreakerReset, CircuitBreakerStates, DataEnvelope,
-    DlqPurgeResult, ErrorDetail, ErrorFieldDetail, ErrorResponse, FunctionSchemaItem, HealthStatus,
-    PaginatedEnvelope, TraceDetail, TracePageEnvelope,
-};
+pub(crate) use schemas::{ErrorDetail, ErrorFieldDetail, ErrorResponse};
 
 /// The spec is generated without a config, so it has to pick one deployment
 /// shape to describe for the paths whose registration is config-dependent.
@@ -506,7 +502,7 @@ mod tests {
     /// `*Response` DTO now, and none of the rows can derive `Serialize` at all.
     ///
     /// The generic envelopes inline their type parameter into the component
-    /// name (`DataEnvelope_ConnectorResponse`), so a row leaking in through a
+    /// name (`Data_ConnectorResponse`), so a row leaking in through a
     /// `body =` annotation is caught by the substring check too.
     #[test]
     fn no_storage_row_struct_is_published_unless_it_is_the_wire_shape() {

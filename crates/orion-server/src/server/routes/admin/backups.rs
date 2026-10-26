@@ -1,12 +1,11 @@
 use axum::extract::State;
 use axum::{Extension, Json};
-use serde_json::{Value, json};
 
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
-use crate::server::routes::openapi::{BackupFile, BackupListItem, DataEnvelope};
 use crate::server::routes::response_helpers::data_response;
 use crate::server::state::AppState;
+use orion_api::{BackupFileResponse, BackupListItemResponse, Data};
 
 use super::audit_log;
 
@@ -35,7 +34,7 @@ fn reject_in_cluster_mode(state: &AppState) -> Result<(), OrionError> {
     path = "/api/v2/admin/backups",
     tag = "Backups",
     responses(
-        (status = 200, description = "Backup created (SQLite only — VACUUM INTO a timestamped file)", body = DataEnvelope<BackupFile>),
+        (status = 200, description = "Backup created (SQLite only — VACUUM INTO a timestamped file)", body = Data<BackupFileResponse>),
         (status = 400, description = "Backup unavailable (non-SQLite backend, or cluster mode — use managed-DB snapshots/PITR)"),
     )
 )]
@@ -43,7 +42,7 @@ fn reject_in_cluster_mode(state: &AppState) -> Result<(), OrionError> {
 pub(crate) async fn create_backup(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-) -> Result<Json<Value>, OrionError> {
+) -> Result<Json<Data<BackupFileResponse>>, OrionError> {
     reject_in_cluster_mode(&state)?;
     let backup_dir = state.config.storage.backup_dir.clone();
 
@@ -127,12 +126,12 @@ pub(crate) async fn create_backup(
         &filename,
     );
 
-    Ok(data_response(json!({
-        "filename": filename,
-        "path": backup_path_str,
-        "size_bytes": metadata.len(),
-        "created_at": chrono::Utc::now().to_rfc3339(),
-    })))
+    Ok(data_response(BackupFileResponse {
+        filename,
+        path: backup_path_str,
+        size_bytes: metadata.len(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+    }))
 }
 
 /// A backup destination in `dir` that does not already exist, and its
@@ -255,58 +254,65 @@ fn prune_old_backups(backup_dir: &str, retain: usize) -> Vec<String> {
     path = "/api/v2/admin/backups",
     tag = "Backups",
     responses(
-        (status = 200, description = "List of backup files in the configured backup directory", body = DataEnvelope<Vec<BackupListItem>>),
+        (status = 200, description = "List of backup files in the configured backup directory", body = Data<Vec<BackupListItemResponse>>),
         (status = 400, description = "Unavailable in cluster mode — backups are node-local files"),
     )
 )]
 #[tracing::instrument(skip(state))]
-pub(crate) async fn list_backups(State(state): State<AppState>) -> Result<Json<Value>, OrionError> {
+pub(crate) async fn list_backups(
+    State(state): State<AppState>,
+) -> Result<Json<Data<Vec<BackupListItemResponse>>>, OrionError> {
     reject_in_cluster_mode(&state)?;
     let backup_dir = state.config.storage.backup_dir.clone();
 
     // Run all blocking filesystem I/O off the async runtime
-    let backups = tokio::task::spawn_blocking(move || -> Result<Vec<Value>, OrionError> {
-        let dir = match std::fs::read_dir(&backup_dir) {
-            Ok(d) => d,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Vec::new());
-            }
-            Err(e) => {
-                return Err(OrionError::Internal {
-                    context: format!("Failed to read backup directory '{backup_dir}'"),
-                    source: Some(Box::new(e)),
-                });
-            }
-        };
+    let backups =
+        tokio::task::spawn_blocking(move || -> Result<Vec<BackupListItemResponse>, OrionError> {
+            let dir = match std::fs::read_dir(&backup_dir) {
+                Ok(d) => d,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(Vec::new());
+                }
+                Err(e) => {
+                    return Err(OrionError::Internal {
+                        context: format!("Failed to read backup directory '{backup_dir}'"),
+                        source: Some(Box::new(e)),
+                    });
+                }
+            };
 
-        let mut backups = Vec::new();
-        for entry in dir.flatten() {
-            let path = entry.path();
-            if is_backup_file(&path)
-                && let Ok(meta) = entry.metadata()
-            {
-                let modified = meta
-                    .modified()
-                    .ok()
-                    .map(|t| {
-                        let dt: chrono::DateTime<chrono::Utc> = t.into();
-                        dt.to_rfc3339()
-                    })
-                    .unwrap_or_default();
-                backups.push(json!({
-                    "filename": path.file_name().unwrap_or_default().to_string_lossy(),
-                    "size_bytes": meta.len(),
-                    "modified_at": modified,
-                }));
+            let mut backups = Vec::new();
+            for entry in dir.flatten() {
+                let path = entry.path();
+                if is_backup_file(&path)
+                    && let Ok(meta) = entry.metadata()
+                {
+                    let modified = meta
+                        .modified()
+                        .ok()
+                        .map(|t| {
+                            let dt: chrono::DateTime<chrono::Utc> = t.into();
+                            dt.to_rfc3339()
+                        })
+                        .unwrap_or_default();
+                    backups.push(BackupListItemResponse {
+                        filename: path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned(),
+                        size_bytes: meta.len(),
+                        modified_at: modified,
+                    });
+                }
             }
-        }
 
-        // Sort by filename (which includes timestamp) descending
-        backups.sort_by(|a, b| b["filename"].as_str().cmp(&a["filename"].as_str()));
-        Ok(backups)
-    })
-    .await
-    .map_err(|e| OrionError::internal_from("spawn_blocking failed", e))??;
+            // Sort by filename (which includes timestamp) descending
+            backups.sort_by(|a, b| b.filename.cmp(&a.filename));
+            Ok(backups)
+        })
+        .await
+        .map_err(|e| OrionError::internal_from("spawn_blocking failed", e))??;
 
     Ok(data_response(backups))
 }

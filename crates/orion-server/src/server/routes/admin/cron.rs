@@ -13,18 +13,18 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::{Extension, http::StatusCode};
-use serde_json::Value;
 
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::extract::OrionQuery;
-use crate::server::routes::openapi::{DataEnvelope, PaginatedEnvelope};
+use crate::server::routes::openapi::ErrorResponse;
 use crate::server::routes::response_helpers::{data_response, paginated_response};
 use crate::server::state::AppState;
 use crate::storage::models::{
     CronOccurrenceResponse, CronOccurrenceSummaryResponse, CronScheduleStatusResponse,
 };
 use crate::storage::repositories::cron::{CronOccurrenceFilter, status, trigger};
+use orion_api::{Data, Paginated};
 
 use super::audit_log;
 
@@ -35,14 +35,14 @@ use super::audit_log;
     params(CronOccurrenceFilter),
     responses(
         (status = 200, description = "Paginated occurrences, newest first. Summaries only — \
-            fetch one by id for the failure reason, the trace id and the lease detail", body = PaginatedEnvelope<CronOccurrenceSummaryResponse>),
+            fetch one by id for the failure reason, the trace id and the lease detail", body = Paginated<CronOccurrenceSummaryResponse>),
     )
 )]
 #[tracing::instrument(skip(state))]
 pub(crate) async fn list_occurrences(
     State(state): State<AppState>,
     OrionQuery(filter): OrionQuery<CronOccurrenceFilter>,
-) -> Result<Json<Value>, OrionError> {
+) -> Result<Json<Paginated<CronOccurrenceSummaryResponse>>, OrionError> {
     let result = state.repos.cron.list_paginated(&filter).await?;
     let rows: Vec<CronOccurrenceSummaryResponse> = result
         .data
@@ -63,15 +63,15 @@ pub(crate) async fn list_occurrences(
     tag = "Cron",
     params(("id" = String, Path, description = "Occurrence id")),
     responses(
-        (status = 200, description = "One occurrence in full", body = DataEnvelope<CronOccurrenceResponse>),
-        (status = 404, description = "No such occurrence", body = crate::server::routes::openapi::ErrorResponse),
+        (status = 200, description = "One occurrence in full", body = Data<CronOccurrenceResponse>),
+        (status = 404, description = "No such occurrence", body = ErrorResponse),
     )
 )]
 #[tracing::instrument(skip(state))]
 pub(crate) async fn get_occurrence(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, OrionError> {
+) -> Result<Json<Data<CronOccurrenceResponse>>, OrionError> {
     let occurrence = state.repos.cron.get_by_id(&id).await?;
     Ok(data_response(CronOccurrenceResponse::from(&occurrence)))
 }
@@ -82,10 +82,10 @@ pub(crate) async fn get_occurrence(
     tag = "Cron",
     params(("id" = String, Path, description = "Occurrence id")),
     responses(
-        (status = 200, description = "Occurrence reset to `pending`; the next worker poll picks it up", body = DataEnvelope<CronOccurrenceResponse>),
-        (status = 404, description = "No such occurrence", body = crate::server::routes::openapi::ErrorResponse),
+        (status = 200, description = "Occurrence reset to `pending`; the next worker poll picks it up", body = Data<CronOccurrenceResponse>),
+        (status = 404, description = "No such occurrence", body = ErrorResponse),
         (status = 409, description = "The occurrence is not in a retryable state — \
-            `completed` work is re-run by triggering the channel, not by retrying a finished occurrence", body = crate::server::routes::openapi::ErrorResponse),
+            `completed` work is re-run by triggering the channel, not by retrying a finished occurrence", body = ErrorResponse),
     )
 )]
 #[tracing::instrument(skip(state, principal))]
@@ -93,7 +93,7 @@ pub(crate) async fn retry_occurrence(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, OrionError> {
+) -> Result<Json<Data<CronOccurrenceResponse>>, OrionError> {
     // The retry keeps the occurrence's identity and its `scheduled_for`: it is
     // another attempt at the work that was due then, not a new piece of work.
     // That is what makes `trigger.scheduled_for` usable as an idempotency key
@@ -117,9 +117,9 @@ pub(crate) async fn retry_occurrence(
     responses(
         (status = 200, description = "Occurrence settled `failed`. A running attempt stops at its \
             next heartbeat, and its singleton slot is free within two heartbeat intervals, \
-            whether or not its node is still alive", body = DataEnvelope<CronOccurrenceResponse>),
-        (status = 404, description = "No such occurrence", body = crate::server::routes::openapi::ErrorResponse),
-        (status = 409, description = "The occurrence has already finished", body = crate::server::routes::openapi::ErrorResponse),
+            whether or not its node is still alive", body = Data<CronOccurrenceResponse>),
+        (status = 404, description = "No such occurrence", body = ErrorResponse),
+        (status = 409, description = "The occurrence has already finished", body = ErrorResponse),
     )
 )]
 #[tracing::instrument(skip(state, principal))]
@@ -127,7 +127,7 @@ pub(crate) async fn cancel_occurrence(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, OrionError> {
+) -> Result<Json<Data<CronOccurrenceResponse>>, OrionError> {
     // Read first only to name the holder in the record. The cancel itself is
     // conditional on the status, so a run that settles in between is a 409,
     // not a cancelled success.
@@ -178,11 +178,13 @@ pub(crate) async fn cancel_occurrence(
     tag = "Cron",
     responses(
         (status = 200, description = "One row per active cron channel: its schedule, where its \
-            cursor has got to, its most recent occurrence and its backlog", body = DataEnvelope<Vec<CronScheduleStatusResponse>>),
+            cursor has got to, its most recent occurrence and its backlog", body = Data<Vec<CronScheduleStatusResponse>>),
     )
 )]
 #[tracing::instrument(skip(state))]
-pub(crate) async fn cron_status(State(state): State<AppState>) -> Result<Json<Value>, OrionError> {
+pub(crate) async fn cron_status(
+    State(state): State<AppState>,
+) -> Result<Json<Data<Vec<CronScheduleStatusResponse>>>, OrionError> {
     // One generation: the schedules reported and the cursors they are matched
     // against come from the same read, so a reload mid-response cannot produce
     // a row describing one channel's expression against another's cursor.
@@ -248,9 +250,9 @@ pub(crate) async fn cron_status(State(state): State<AppState>) -> Result<Json<Va
     responses(
         (status = 202, description = "An occurrence was created; a worker picks it up on its next \
             poll. It runs through the same claim, singleton and execution path a scheduled \
-            occurrence does", body = DataEnvelope<CronOccurrenceResponse>),
-        (status = 400, description = "Not an active cron channel", body = crate::server::routes::openapi::ErrorResponse),
-        (status = 409, description = "An occurrence already exists for this instant — retry in a second", body = crate::server::routes::openapi::ErrorResponse),
+            occurrence does", body = Data<CronOccurrenceResponse>),
+        (status = 400, description = "Not an active cron channel", body = ErrorResponse),
+        (status = 409, description = "An occurrence already exists for this instant — retry in a second", body = ErrorResponse),
     )
 )]
 #[tracing::instrument(skip(state, principal))]
@@ -258,7 +260,7 @@ pub(crate) async fn trigger_channel(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
-) -> Result<(StatusCode, Json<Value>), OrionError> {
+) -> Result<(StatusCode, Json<Data<CronOccurrenceResponse>>), OrionError> {
     let generation = state.runtime.load();
     let Some(runtime) = generation.channels.cron_by_channel_id(&id) else {
         // Deliberately one message for "not a cron channel", "not active" and

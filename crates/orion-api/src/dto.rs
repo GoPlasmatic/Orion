@@ -369,6 +369,233 @@ pub struct AuditLogEntryResponse {
     pub created_at: NaiveDateTime,
 }
 
+// ============================================================
+// Operational and admin-action responses
+// ============================================================
+
+/// This node's circuit breakers (`GET /api/v2/admin/connectors/circuit-breakers`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct CircuitBreakerStatesResponse {
+    /// Whether `engine.circuit_breaker.enabled` is set. When false, `breakers`
+    /// is empty because nothing is tracked.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub enabled: bool,
+    /// Always `"node"` — breaker state is per-replica, never cluster-wide.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub scope: String,
+    /// Which node's map this is.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub instance_id: String,
+    /// `channel:connector` → `closed` | `open` | `half_open`. Node-local.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub breakers: std::collections::BTreeMap<String, String>,
+}
+
+/// A reset breaker (`POST /api/v2/admin/connectors/circuit-breakers/{key}`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct CircuitBreakerResetResponse {
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub reset: bool,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub key: String,
+    /// Whether the breaker existed on the node that served the request.
+    /// Breakers are node-local; in cluster mode the reset reaches every node
+    /// regardless, so `false` here is not a failure.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub found_on_this_node: bool,
+}
+
+/// What a DLQ purge deleted (`POST /api/v2/admin/trace-dlq/purge`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct DlqPurgeResponse {
+    /// Rows deleted.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub purged: u64,
+    /// Echo of the requested age bound.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub older_than_hours: u64,
+}
+
+/// The backup `POST /api/v2/admin/backups` just wrote.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct BackupFileResponse {
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub filename: String,
+    /// Absolute path on the node that served the request.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub path: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub size_bytes: u64,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub created_at: String,
+}
+
+/// One row of `GET /api/v2/admin/backups`. Deliberately not
+/// [`BackupFileResponse`]: the listing reads `mtime` off the directory entry
+/// and has no `path`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct BackupListItemResponse {
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub filename: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub size_bytes: u64,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub modified_at: String,
+}
+
+/// `GET /api/v2/admin/traces/{id}` — the list row plus the payloads.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct TraceDetailResponse {
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub id: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub status: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub mode: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub channel: String,
+    #[serde(default)]
+    pub channel_id: Option<String>,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
+    pub created_at: NaiveDateTime,
+    /// The full engine message. Present only when `status = "completed"`.
+    /// `context.metadata` is stripped from the projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<serde_json::Value>,
+    /// Present only when `status = "failed"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<String>))]
+    pub started_at: Option<NaiveDateTime>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<String>))]
+    pub completed_at: Option<NaiveDateTime>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<f64>,
+    /// Per-task execution trace, when the channel enabled `task_details`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_trace_json: Option<serde_json::Value>,
+}
+
+/// `GET /healthz`: the process is serving.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct LivenessResponse {
+    /// Always `ok`.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub status: String,
+}
+
+/// `GET /readyz`: whether this node should take traffic.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct ReadinessResponse {
+    /// `ready` | `not_ready`.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub status: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub components: ReadinessComponents,
+}
+
+/// The parts of a [`ReadinessResponse`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct ReadinessComponents {
+    /// `ok` | `error`.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub database: String,
+    /// Always `ok`: the engine snapshot is lock-free and cannot be
+    /// unavailable once the process serves. Kept for shape stability.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub engine: String,
+    /// Whether startup has completed, `[packages] apply` included.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub initialized: bool,
+    /// `ok` | `degraded` | `error`.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub background_tasks: String,
+}
+
+/// `GET /health`: the detailed report. The fields after `components` are
+/// served only to a caller that may read the admin plane.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct HealthResponse {
+    /// `ok` | `degraded`.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub status: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub version: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub uptime_seconds: i64,
+    /// Per-subsystem state, each `ok`, `degraded`, `error` or `disabled`:
+    /// `database`, `engine`, `connectors`, `channels`, `background_tasks`,
+    /// `engine_reload`, `plugins`, and `cron` when this node schedules.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub components: std::collections::BTreeMap<String, String>,
+    /// Build provenance and detail, served only to an admin caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_timestamp: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflows_loaded: Option<usize>,
+    /// The breaker map (node-local) and the connectors that failed to load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connectors: Option<serde_json::Value>,
+    /// The quarantined channels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channels: Option<serde_json::Value>,
+    /// The plugins loaded, and those that failed to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugins: Option<serde_json::Value>,
+    /// The scheduler's own health, on a node that schedules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cron: Option<serde_json::Value>,
+    /// Each background task's state and restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_tasks: Option<serde_json::Value>,
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {

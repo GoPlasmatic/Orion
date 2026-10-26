@@ -1,16 +1,16 @@
 use axum::extract::{Path, State};
 use axum::{Extension, Json};
 use serde::Deserialize;
-use serde_json::{Value, json};
 
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::extract::{OrionJson, OrionQuery};
-use crate::server::routes::openapi::{DataEnvelope, DlqPurgeResult, PaginatedEnvelope};
+use crate::server::routes::openapi::ErrorResponse;
 use crate::server::routes::response_helpers::{data_response, paginated_response};
 use crate::server::state::AppState;
 use crate::storage::models::{TraceDlqEntryResponse, TraceDlqSummaryResponse};
 use crate::storage::repositories::trace_dlq::TraceDlqFilter;
+use orion_api::{Data, DlqPurgeResponse, Paginated};
 
 use super::audit_log;
 
@@ -36,14 +36,14 @@ pub(crate) struct PurgeTraceDlqRequest {
         // D28: the summary, not the full entry. The listing has never carried
         // `payload_json` / `metadata_json`, but the spec advertised them here
         // because the row struct that *did* have them was also the wire type.
-        (status = 200, description = "Paginated DLQ entries without payloads — fetch one by id for the payload", body = PaginatedEnvelope<TraceDlqSummaryResponse>),
+        (status = 200, description = "Paginated DLQ entries without payloads — fetch one by id for the payload", body = Paginated<TraceDlqSummaryResponse>),
     )
 )]
 #[tracing::instrument(skip(state))]
 pub(crate) async fn list_trace_dlq(
     State(state): State<AppState>,
     OrionQuery(filter): OrionQuery<TraceDlqFilter>,
-) -> Result<Json<Value>, OrionError> {
+) -> Result<Json<Paginated<TraceDlqSummaryResponse>>, OrionError> {
     let result = state.repos.trace_dlq.list_paginated(&filter).await?;
 
     let rows: Vec<TraceDlqSummaryResponse> = result
@@ -65,15 +65,15 @@ pub(crate) async fn list_trace_dlq(
     tag = "Trace DLQ",
     params(("id" = String, Path, description = "DLQ entry id")),
     responses(
-        (status = 200, description = "DLQ entry including the failed payload and metadata", body = DataEnvelope<TraceDlqEntryResponse>),
-        (status = 404, description = "No such DLQ entry", body = crate::server::routes::openapi::ErrorResponse),
+        (status = 200, description = "DLQ entry including the failed payload and metadata", body = Data<TraceDlqEntryResponse>),
+        (status = 404, description = "No such DLQ entry", body = ErrorResponse),
     )
 )]
 #[tracing::instrument(skip(state))]
 pub(crate) async fn get_trace_dlq_entry(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, OrionError> {
+) -> Result<Json<Data<TraceDlqEntryResponse>>, OrionError> {
     let entry = state.repos.trace_dlq.get_by_id(&id).await?;
     Ok(data_response(TraceDlqEntryResponse::from(&entry)))
 }
@@ -84,8 +84,8 @@ pub(crate) async fn get_trace_dlq_entry(
     tag = "Trace DLQ",
     params(("id" = String, Path, description = "DLQ entry id")),
     responses(
-        (status = 200, description = "Entry reset to retry_count = 0 and scheduled for immediate retry", body = DataEnvelope<TraceDlqEntryResponse>),
-        (status = 404, description = "No such DLQ entry", body = crate::server::routes::openapi::ErrorResponse),
+        (status = 200, description = "Entry reset to retry_count = 0 and scheduled for immediate retry", body = Data<TraceDlqEntryResponse>),
+        (status = 404, description = "No such DLQ entry", body = ErrorResponse),
     )
 )]
 #[tracing::instrument(skip(state, principal))]
@@ -93,7 +93,7 @@ pub(crate) async fn requeue_trace_dlq_entry(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, OrionError> {
+) -> Result<Json<Data<TraceDlqEntryResponse>>, OrionError> {
     let entry = state.repos.trace_dlq.requeue(&id).await?;
     audit_log(&state.audit_queue, &principal, "requeue", "trace_dlq", &id);
     Ok(data_response(TraceDlqEntryResponse::from(&entry)))
@@ -105,8 +105,8 @@ pub(crate) async fn requeue_trace_dlq_entry(
     tag = "Trace DLQ",
     request_body = PurgeTraceDlqRequest,
     responses(
-        (status = 200, description = "Exhausted entries older than `older_than_hours` deleted", body = DataEnvelope<DlqPurgeResult>),
-        (status = 400, description = "Missing or malformed `older_than_hours`", body = crate::server::routes::openapi::ErrorResponse),
+        (status = 200, description = "Exhausted entries older than `older_than_hours` deleted", body = Data<DlqPurgeResponse>),
+        (status = 400, description = "Missing or malformed `older_than_hours`", body = ErrorResponse),
     )
 )]
 #[tracing::instrument(skip(state, principal))]
@@ -114,7 +114,7 @@ pub(crate) async fn purge_trace_dlq(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
     OrionJson(req): OrionJson<PurgeTraceDlqRequest>,
-) -> Result<Json<Value>, OrionError> {
+) -> Result<Json<Data<DlqPurgeResponse>>, OrionError> {
     let purged = state
         .repos
         .trace_dlq
@@ -127,8 +127,8 @@ pub(crate) async fn purge_trace_dlq(
         "trace_dlq",
         &format!("older_than_hours={}", req.older_than_hours),
     );
-    Ok(data_response(json!({
-        "purged": purged,
-        "older_than_hours": req.older_than_hours,
-    })))
+    Ok(data_response(DlqPurgeResponse {
+        purged,
+        older_than_hours: req.older_than_hours,
+    }))
 }

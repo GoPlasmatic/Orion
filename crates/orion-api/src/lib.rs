@@ -53,9 +53,11 @@ pub mod v2;
 
 pub use digest::{Digest, DigestError};
 pub use dto::{
-    AuditLogEntryResponse, CronOccurrenceResponse, CronOccurrenceSummaryResponse,
-    CronScheduleStatusResponse, TraceDlqEntryResponse, TraceDlqSummaryResponse,
-    TraceListItemResponse,
+    AuditLogEntryResponse, BackupFileResponse, BackupListItemResponse, CircuitBreakerResetResponse,
+    CircuitBreakerStatesResponse, CronOccurrenceResponse, CronOccurrenceSummaryResponse,
+    CronScheduleStatusResponse, DlqPurgeResponse, HealthResponse, LivenessResponse,
+    ReadinessComponents, ReadinessResponse, TraceDetailResponse, TraceDlqEntryResponse,
+    TraceDlqSummaryResponse, TraceListItemResponse,
 };
 pub use engine::{
     CacheInvalidatedResponse, ChannelLoadIssueResponse, ConnectorLoadIssueResponse,

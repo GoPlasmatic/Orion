@@ -1,12 +1,11 @@
 use axum::extract::{Path, State};
 use axum::{Extension, Json};
-use serde_json::Value;
 
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
-use crate::server::routes::openapi::DataEnvelope;
 use crate::server::routes::response_helpers::data_response;
 use crate::server::state::AppState;
+use orion_api::Data;
 
 use super::audit_log;
 
@@ -27,7 +26,7 @@ use super::audit_log;
     responses(
         (status = 200, description = "Namespace invalidated. Entries stored under the old \
             version are no longer served, on every node sharing the store.",
-            body = DataEnvelope<orion_api::CacheInvalidatedResponse>),
+            body = Data<orion_api::CacheInvalidatedResponse>),
         (status = 400, description = "Not a valid namespace name"),
     )
 )]
@@ -36,7 +35,7 @@ pub(crate) async fn invalidate_namespace(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(namespace): Path<String>,
-) -> Result<Json<Value>, OrionError> {
+) -> Result<Json<Data<orion_api::CacheInvalidatedResponse>>, OrionError> {
     crate::channel::cache_namespace::check_name(&namespace).map_err(OrionError::validation)?;
     let stores = state
         .channel_loader

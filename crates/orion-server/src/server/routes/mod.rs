@@ -169,8 +169,8 @@ names and failure reasons) is included only for requests presenting a valid admi
 anonymous callers get status, version, uptime and coarse per-component states. \
 Probes should use `/healthz` and `/readyz`.",
     responses(
-        (status = 200, description = "Service healthy", body = crate::server::routes::openapi::HealthStatus),
-        (status = 503, description = "Service degraded"),
+        (status = 200, description = "Service healthy, or degraded with the database reachable", body = orion_api::HealthResponse),
+        (status = 503, description = "The database is unreachable; same body shape", body = orion_api::HealthResponse),
     )
 )]
 #[tracing::instrument(skip(state, headers))]
@@ -254,50 +254,63 @@ pub(crate) async fn health_check(
     let show_detail = !auth_cfg.enabled
         || crate::server::admin_auth::headers_present_valid_key(&headers, auth_cfg);
 
-    let mut body = json!({
-        "status": status_str,
-        "version": env!("CARGO_PKG_VERSION"),
-        "uptime_seconds": uptime.num_seconds(),
-        "components": {
-            "database": if db_healthy { "ok" } else { "error" },
-            // Constant by construction — see `workflows_loaded` (O16).
-            "engine": "ok",
-            "connectors": if connector_issues.is_empty() { "ok" } else { "degraded" },
-            "channels": if quarantined_channels.is_empty() { "ok" } else { "degraded" },
-            "background_tasks": tasks_state,
-            // `degraded`, not `error`, and absent from `/readyz`: this node is
-            // serving, just not the newest revision. Taking it out of rotation
-            // would trade a stale-config problem for an availability one.
-            "engine_reload": if reload_degraded { "degraded" } else { "ok" },
-            // `disabled` is a state, not a fault: a node without the sandbox
-            // serves everything else. It degrades only when an active plugin
-            // row exists that this node could not load.
-            "plugins": if state.plugins.is_none() && plugin_issues.is_empty() {
-                "disabled"
-            } else if plugin_issues.is_empty() {
-                "ok"
+    let ok_or = |fine: bool, otherwise: &str| if fine { "ok" } else { otherwise }.to_string();
+    let mut components = std::collections::BTreeMap::from([
+        ("database".to_string(), ok_or(db_healthy, "error")),
+        // Constant by construction — see `workflows_loaded` (O16).
+        ("engine".to_string(), "ok".to_string()),
+        (
+            "connectors".to_string(),
+            ok_or(connector_issues.is_empty(), "degraded"),
+        ),
+        (
+            "channels".to_string(),
+            ok_or(quarantined_channels.is_empty(), "degraded"),
+        ),
+        ("background_tasks".to_string(), tasks_state.to_string()),
+        // `degraded`, not `error`, and absent from `/readyz`: this node is
+        // serving, just not the newest revision. Taking it out of rotation
+        // would trade a stale-config problem for an availability one.
+        (
+            "engine_reload".to_string(),
+            ok_or(!reload_degraded, "degraded"),
+        ),
+        // `disabled` is a state, not a fault: a node without the sandbox
+        // serves everything else. It degrades only when an active plugin
+        // row exists that this node could not load.
+        (
+            "plugins".to_string(),
+            if state.plugins.is_none() && plugin_issues.is_empty() {
+                "disabled".to_string()
             } else {
-                "degraded"
+                ok_or(plugin_issues.is_empty(), "degraded")
             },
-        },
-    });
+        ),
+    ]);
     if let Some(cron) = cron_state {
-        body["components"]["cron"] = json!(cron);
+        components.insert("cron".to_string(), cron.to_string());
     }
+    let mut body = orion_api::HealthResponse {
+        status: status_str.to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        uptime_seconds: uptime.num_seconds(),
+        components,
+        ..Default::default()
+    };
     if show_detail {
-        body["git_hash"] = json!(env!("GIT_HASH"));
-        body["build_timestamp"] = json!(env!("BUILD_TIMESTAMP"));
-        body["workflows_loaded"] = json!(workflows_loaded);
-        body["connectors"] = json!({
+        body.git_hash = Some(env!("GIT_HASH").to_string());
+        body.build_timestamp = Some(env!("BUILD_TIMESTAMP").to_string());
+        body.workflows_loaded = Some(workflows_loaded);
+        body.connectors = Some(json!({
             // F21: node-local, like the admin endpoint's copy.
             "circuit_breaker_scope": "node",
             "circuit_breakers": cb_states,
             "failed_to_load": connector_issues,
-        });
-        body["channels"] = json!({
+        }));
+        body.channels = Some(json!({
             "quarantined": quarantined_channels,
-        });
-        body["plugins"] = json!({
+        }));
+        body.plugins = Some(json!({
             "loaded": generation.plugins.plugins.iter().map(|p| json!({
                 "plugin": p.id,
                 "version": p.version,
@@ -306,20 +319,20 @@ pub(crate) async fn health_check(
                 "compile_ms": p.compile_ms,
             })).collect::<Vec<_>>(),
             "failed_to_load": plugin_issues,
-        });
+        }));
         // O9: task names are internal topology, so the per-task breakdown
         // rides with the other admin-only detail. The coarse
         // `components.background_tasks` above is what a monitor keys on.
         if cron_state.is_some() {
-            body["cron"] = json!({
+            body.cron = Some(json!({
                 "last_reconcile_at": state.cron_status.last_reconcile_ok(),
                 "reconcile_age_secs": state.cron_status.reconcile_age_secs(),
                 "oldest_pending_age_secs": state.cron_status.oldest_pending_secs(),
                 "lease_renewal_failures": state.cron_status.renewal_failures(),
                 "scheduled_channels": generation.channels.cron_descriptors().len(),
-            });
+            }));
         }
-        body["background_tasks"] = json!(
+        body.background_tasks = Some(json!(
             task_reports
                 .iter()
                 .map(|r| json!({
@@ -329,7 +342,7 @@ pub(crate) async fn health_check(
                     "required": r.criticality == crate::runtime::Criticality::Required,
                 }))
                 .collect::<Vec<_>>()
-        );
+        ));
     }
 
     (http_status, Json(body))
@@ -382,11 +395,13 @@ dependency checks, so a database outage must not restart the pod. \
 Use `/readyz` for rotation decisions and `/health` for a detailed report. \
 Unauthenticated, so probes work without provisioning an admin key.",
     responses(
-        (status = 200, description = "Process is alive", body = crate::server::routes::openapi::HealthStatus),
+        (status = 200, description = "Process is alive", body = orion_api::LivenessResponse),
     )
 )]
-pub(crate) async fn liveness_check() -> impl IntoResponse {
-    (StatusCode::OK, Json(json!({ "status": "ok" })))
+pub(crate) async fn liveness_check() -> Json<orion_api::LivenessResponse> {
+    Json(orion_api::LivenessResponse {
+        status: "ok".to_string(),
+    })
 }
 
 /// How many workflows the running engine holds.
@@ -507,8 +522,8 @@ fails silently otherwise, dropping traces or audit rows while the data plane \
 keeps answering 200s. \
 Unauthenticated, so probes work without provisioning an admin key.",
     responses(
-        (status = 200, description = "All components ready", body = crate::server::routes::openapi::HealthStatus),
-        (status = 503, description = "At least one component is not ready — same body shape with `\"status\":\"not_ready\"`"),
+        (status = 200, description = "All components ready", body = orion_api::ReadinessResponse),
+        (status = 503, description = "At least one component is not ready — same body shape with `\"status\":\"not_ready\"`", body = orion_api::ReadinessResponse),
     )
 )]
 pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse {
@@ -525,17 +540,16 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
         StatusCode::SERVICE_UNAVAILABLE
     };
 
-    let components = json!({
-        "database": if db_healthy { "ok" } else { "error" },
-        // Constant by construction — see `workflows_loaded` (O16).
-        "engine": "ok",
-        "initialized": initialized,
-        "background_tasks": tasks_state,
-    });
-    let body = json!({
-        "status": if all_ready { "ready" } else { "not_ready" },
-        "components": components,
-    });
+    let body = orion_api::ReadinessResponse {
+        status: if all_ready { "ready" } else { "not_ready" }.to_string(),
+        components: orion_api::ReadinessComponents {
+            database: if db_healthy { "ok" } else { "error" }.to_string(),
+            // Constant by construction — see `workflows_loaded` (O16).
+            engine: "ok".to_string(),
+            initialized,
+            background_tasks: tasks_state.to_string(),
+        },
+    };
 
     (http_status, Json(body))
 }

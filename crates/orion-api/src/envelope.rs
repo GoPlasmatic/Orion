@@ -1,15 +1,14 @@
 //! The 2xx envelopes: `{"data": …}` (R17) and its paginated sibling.
 //!
-//! Admin endpoints wrap every success body this way. These types are the
-//! client-side reading of that shape — the server currently builds the same
-//! JSON through its response helpers and publishes matching schema-only
-//! envelopes in its OpenAPI document; the wire-shape tests on both sides keep
-//! the three in agreement.
+//! Admin endpoints wrap every success body this way. These types are the one
+//! definition of that shape: the server returns them, publishes them in its
+//! OpenAPI document, and clients read them back.
 
 use serde::{Deserialize, Serialize};
 
 /// `{"data": T}` — the envelope every admin 2xx carries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct Data<T> {
     pub data: T,
 }
@@ -21,6 +20,7 @@ pub struct Data<T> {
 /// plain `i64` and defaults to `0`, so a body that legitimately omits the field
 /// would read as "zero rows matched" rather than "not counted".
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct Paginated<T> {
     #[serde(default = "Vec::new")]
     pub data: Vec<T>,
@@ -47,19 +47,21 @@ pub struct Paginated<T> {
 ///   offset; when more rows follow, this carries the cursor to pass as
 ///   `?cursor=`. `Paginated` drops the field silently.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct TracePage<T> {
     #[serde(default = "Vec::new")]
     pub data: Vec<T>,
     /// Present only when the request asked for it with `?include_total=true`.
     /// `None` means "not counted", never "no rows".
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total: Option<i64>,
     #[serde(default)]
     pub limit: i64,
     #[serde(default)]
     pub offset: i64,
-    /// Keyset cursor for the next page; `None` on the last page.
-    #[serde(default)]
+    /// Keyset cursor for the next page; `None` on the last page. Opaque —
+    /// pass it back as `?cursor=`, do not parse it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
 }
 

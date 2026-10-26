@@ -1,11 +1,10 @@
 use axum::Json;
 use axum::extract::State;
-use serde_json::Value;
 
 use crate::errors::OrionError;
-use crate::server::routes::openapi::DataEnvelope;
 use crate::server::routes::response_helpers::data_response;
 use crate::server::state::AppState;
+use orion_api::Data;
 
 // ============================================================
 // Engine Control
@@ -19,13 +18,13 @@ use crate::server::state::AppState;
         (status = 200, description = "Engine status: the generation this node serves, what it \
             could not load (`load_issues` — the same lists `/health` shows an admin), and what \
             this node is configured to run (`capabilities`). Describes the node that answered; \
-            peers reload on their own and may differ.", body = DataEnvelope<orion_api::EngineStatusResponse>),
+            peers reload on their own and may differ.", body = Data<orion_api::EngineStatusResponse>),
     )
 )]
 #[tracing::instrument(skip(state))]
 pub(crate) async fn engine_status(
     State(state): State<AppState>,
-) -> Result<Json<Value>, OrionError> {
+) -> Result<Json<Data<orion_api::EngineStatusResponse>>, OrionError> {
     let generation = state.runtime.load();
     let workflows = generation.workflows();
 

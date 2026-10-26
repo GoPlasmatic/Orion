@@ -198,24 +198,34 @@ impl FunctionEntry {
 /// wire shape is pinned by `docs/openapi.json` and the two are allowed to grow
 /// at different rates: `writes` and the connector rule are the analysis's
 /// business and are not served.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct CatalogueEntry {
     pub name: String,
     pub description: String,
+    /// `connector`, `control`, `data`, `compute`, or `utility`.
     pub category: String,
+    /// `orion` for a handler Orion implements and input-schema validates,
+    /// `engine` for a dataflow-rs built-in the engine executes itself,
+    /// `plugin` for a WebAssembly plugin's function.
+    #[schema(value_type = String)]
     pub source: Source,
     /// **Absent**, not null, when the function declares no input schema —
     /// which is the honest JSON encoding of "there is nothing here", and what
     /// a consumer branches on.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<Object>>)]
     pub input_fields: Option<Vec<FieldSpec>>,
     /// What a second run of this function does — see [`RetrySafety`]. Served
     /// for every entry, built-ins included: "is it safe to retry this task?"
     /// is a question about every function a workflow can name, not only the
-    /// ones Orion declares an input schema for.
+    /// ones Orion declares an input schema for. `{"kind": …}`: `pure`,
+    /// `read`, `idempotent_write`, `unsafe_write`, or `depends_on` with the
+    /// `input` that decides it.
+    #[schema(value_type = Object)]
     pub retry_safety: RetrySafety,
     /// Present only on a `source: "plugin"` entry.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
     pub plugin: Option<PluginBinding>,
 }
 

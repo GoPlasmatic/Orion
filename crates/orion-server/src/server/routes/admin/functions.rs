@@ -12,25 +12,25 @@
 
 use axum::Json;
 use axum::extract::State;
-use serde_json::Value;
 
+use crate::engine::functions::registry::CatalogueEntry;
 use crate::errors::OrionError;
-use crate::server::routes::openapi::{DataEnvelope, FunctionSchemaItem};
 use crate::server::routes::response_helpers::data_response;
 use crate::server::state::AppState;
+use orion_api::Data;
 
 #[utoipa::path(
     get,
     path = "/api/v2/admin/functions",
     tag = "Functions",
     responses(
-        (status = 200, description = "Registered workflow function schemas", body = DataEnvelope<Vec<FunctionSchemaItem>>)
+        (status = 200, description = "Registered workflow function schemas", body = Data<Vec<CatalogueEntry>>)
     )
 )]
 #[tracing::instrument(skip(state))]
 pub(crate) async fn list_functions(
     State(state): State<AppState>,
-) -> Result<Json<Value>, OrionError> {
+) -> Result<Json<Data<Vec<CatalogueEntry>>>, OrionError> {
     // The serving generation's registry: what this node will actually
     // dispatch, plugin entries included once a generation carries them.
     Ok(data_response(state.runtime.load().functions.catalogue()))

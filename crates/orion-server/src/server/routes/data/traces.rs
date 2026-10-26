@@ -5,17 +5,17 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::errors::OrionError;
 use crate::server::extract::{OrionQuery, PeerAddr};
 // Referenced by the `#[utoipa::path]` `body = ErrorResponse` annotations below.
 use crate::server::routes::openapi::ErrorResponse;
-use crate::server::routes::openapi::{DataEnvelope, TraceDetail, TracePageEnvelope};
 use crate::server::routes::response_helpers::data_response;
 use crate::server::state::AppState;
 use crate::storage::models::TraceListItemResponse;
 use crate::storage::repositories::traces::TraceFilter;
+use orion_api::{Data, TraceDetailResponse, TracePage};
 
 #[utoipa::path(
     get,
@@ -23,7 +23,7 @@ use crate::storage::repositories::traces::TraceFilter;
     tag = "Traces",
     params(TraceFilter),
     responses(
-        (status = 200, description = "Page of traces", body = TracePageEnvelope),
+        (status = 200, description = "Page of traces. Not the common paginated envelope: `total` is present only with `include_total=true`, because the count scans the whole filtered set, and `next_cursor` carries the keyset position of the last row, to pass back as `?cursor=`, when the page is ordered by `created_at` (the default) and may have a successor.", body = TracePage<TraceListItemResponse>),
         (status = 400, description = "Malformed cursor, or cursor combined with offset or a non-default sort", body = ErrorResponse),
     )
 )]
@@ -31,7 +31,7 @@ use crate::storage::repositories::traces::TraceFilter;
 pub(crate) async fn list_traces(
     State(state): State<AppState>,
     OrionQuery(filter): OrionQuery<TraceFilter>,
-) -> Result<Json<Value>, OrionError> {
+) -> Result<Json<TracePage<TraceListItemResponse>>, OrionError> {
     let result = state.repos.traces.list_paginated(&filter).await?;
     // Payload-free projection (S14): `input_json` holds the caller's request
     // body and `result_json`/`task_trace_json` the full engine message, so a
@@ -43,20 +43,15 @@ pub(crate) async fn list_traces(
         .iter()
         .map(TraceListItemResponse::from)
         .collect();
-    // `total` and `next_cursor` are both conditional (D8), so this page is
-    // assembled here rather than through `paginated_response`.
-    let mut body = json!({
-        "data": rows,
-        "limit": result.limit,
-        "offset": result.offset,
-    });
-    if let Some(total) = result.total {
-        body["total"] = json!(total);
-    }
-    if let Some(cursor) = result.next_cursor {
-        body["next_cursor"] = json!(cursor);
-    }
-    Ok(Json(body))
+    // `total` and `next_cursor` are both conditional (D8): the trace page,
+    // not the common paginated envelope.
+    Ok(Json(TracePage {
+        data: rows,
+        total: result.total,
+        limit: result.limit,
+        offset: result.offset,
+        next_cursor: result.next_cursor,
+    }))
 }
 
 /// Query parameters for `GET /traces/{id}`.
@@ -120,7 +115,7 @@ nothing else stops a shared cache storing it.",
         TraceAccessQuery,
     ),
     responses(
-        (status = 200, description = "Trace status and result", body = DataEnvelope<TraceDetail>),
+        (status = 200, description = "Trace status and result", body = Data<TraceDetailResponse>),
         (status = 401, description = "Missing or wrong trace token / admin credential", body = ErrorResponse),
         (status = 404, description = "Trace not found", body = ErrorResponse),
     )
@@ -233,14 +228,18 @@ pub(crate) async fn get_trace(
         state.admin_auth_failures.record_success(&client);
     }
 
-    let mut response = json!({
-        "id": trace.id,
-        "status": trace.status,
-        "mode": trace.mode,
-        "channel": trace.channel,
-        "channel_id": trace.channel_id,
-        "created_at": trace.created_at,
-    });
+    let mut response = TraceDetailResponse {
+        id: trace.id.clone(),
+        status: trace.status.clone(),
+        mode: trace.mode.clone(),
+        channel: trace.channel.clone(),
+        channel_id: trace.channel_id.clone(),
+        created_at: trace.created_at,
+        started_at: trace.started_at,
+        completed_at: trace.completed_at,
+        duration_ms: trace.duration_ms,
+        ..TraceDetailResponse::default()
+    };
 
     use crate::storage::models;
     if trace.status == models::TRACE_STATUS_COMPLETED {
@@ -255,28 +254,19 @@ pub(crate) async fn get_trace(
             if let Some(ctx) = result_val.get_mut("context").and_then(Value::as_object_mut) {
                 ctx.remove("metadata");
             }
-            response["message"] = result_val;
+            response.message = Some(result_val);
         }
     } else if trace.status == models::TRACE_STATUS_FAILED
         && let Some(ref err) = trace.error_message
     {
-        response["error"] = json!(err);
+        response.error = Some(err.clone());
     }
 
-    if let Some(ref started) = trace.started_at {
-        response["started_at"] = json!(started);
-    }
-    if let Some(ref completed) = trace.completed_at {
-        response["completed_at"] = json!(completed);
-    }
-    if let Some(duration) = trace.duration_ms {
-        response["duration_ms"] = json!(duration);
-    }
     if let Some(ref tt) = trace.task_trace_json
         && let Ok(mut v) = serde_json::from_str::<Value>(tt)
     {
         strip_step_metadata(&mut v);
-        response["task_trace_json"] = v;
+        response.task_trace_json = Some(v);
     }
 
     // `no-store` on both lanes; `Deprecation` only on the one being retired.
