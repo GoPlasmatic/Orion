@@ -692,8 +692,12 @@ pub(super) async fn process_sync_for_channel(
         // change this made here: a run that finished with task errors used to be
         // counted `ok`, so a channel failing every request reported a 100% success
         // rate while the async path counted the same runs as `error`.
-        metrics::record_message(channel, outcome.status_label());
-        metrics::record_message_duration(channel, engine_duration.as_secs_f64());
+        channel_config
+            .metrics
+            .record_message(channel, outcome.status_label());
+        channel_config
+            .metrics
+            .record_message_duration(channel, engine_duration.as_secs_f64());
 
         match outcome {
             crate::engine::RunOutcome::Timeout(ms) => {

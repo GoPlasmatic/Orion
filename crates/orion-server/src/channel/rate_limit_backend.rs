@@ -23,6 +23,21 @@ pub trait RateLimitBackend: Send + Sync {
     /// callers already own one, and governor's keyed store wants `&String`.
     async fn check(&self, key: String) -> Result<bool, OrionError>;
 
+    /// The verdict in place, without a future, for a backend that can give
+    /// one — the in-process governor, which is a few atomic operations.
+    /// `None` means this backend must be asked through [`Self::check`].
+    ///
+    /// [`Self::check`] is an `async_trait` method, so every call boxes a
+    /// future; the per-channel limiters are consulted on every request, and
+    /// the local one never needs to await. Callers try this first.
+    ///
+    /// Takes `&String` because governor's keyed store is keyed by `String`
+    /// and looks up by `&K`.
+    #[allow(clippy::ptr_arg)]
+    fn check_now(&self, _key: &String) -> Option<bool> {
+        None
+    }
+
     /// Drop keys whose limiter state has fully replenished and release the
     /// slack their storage held. Governor's in-process keyed store only shrinks
     /// when asked, so a channel keyed by client identity would otherwise grow
@@ -49,6 +64,10 @@ impl LocalRateLimitBackend {
 impl RateLimitBackend for LocalRateLimitBackend {
     async fn check(&self, key: String) -> Result<bool, OrionError> {
         Ok(self.limiter.check_key(&key).is_ok())
+    }
+
+    fn check_now(&self, key: &String) -> Option<bool> {
+        Some(self.limiter.check_key(key).is_ok())
     }
 
     fn prune(&self) {

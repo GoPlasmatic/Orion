@@ -95,6 +95,26 @@ pub(crate) fn extract_client_ip(req: &Request, trusted_proxies: &[IpNet]) -> Str
     client_ip_from_parts(peer.as_ref(), req.headers(), trusted_proxies)
 }
 
+/// [`extract_client_ip`], read from the request context when the request is
+/// inside one — the context's middleware already resolved it, under the same
+/// policy — and resolved here only when it is not (a router built without that
+/// layer, as some tests build one).
+pub(crate) fn request_client_ip(req: &Request, trusted_proxies: &[IpNet]) -> String {
+    crate::request_context::with_client_ip(String::clone)
+        .unwrap_or_else(|| extract_client_ip(req, trusted_proxies))
+}
+
+/// [`client_ip_from_parts`], read from the request context when there is one,
+/// as [`request_client_ip`] is.
+pub(crate) fn request_client_ip_from_parts(
+    peer: Option<&SocketAddr>,
+    headers: &axum::http::HeaderMap,
+    trusted_proxies: &[IpNet],
+) -> String {
+    crate::request_context::with_client_ip(String::clone)
+        .unwrap_or_else(|| client_ip_from_parts(peer, headers, trusted_proxies))
+}
+
 /// [`extract_client_ip`] against a peer address and header map rather than a
 /// whole `Request`, so the data-plane handler — which has already consumed
 /// the body — can identify the caller for its channel's rate limit the same
@@ -242,7 +262,6 @@ pub async fn rate_limit_middleware(
         None => return next.run(req).await,
     };
 
-    let client_ip = extract_client_ip(&req, state.trusted_proxies());
     // Same rule as admin auth: under `server.data_mounts` the matched path is
     // a catch-all, which classifies as `Operational` and would meter
     // root-mounted data traffic against the default limiter instead of
@@ -265,7 +284,15 @@ pub async fn rate_limit_middleware(
         RouteGroup::Operational => &rate_limit_state.default_limiter,
     };
 
-    if limiter.check_key(&client_ip).is_err() {
+    // The address the request context resolved, borrowed in place; resolved
+    // here only outside one.
+    let refused = crate::request_context::with_client_ip(|ip| limiter.check_key(ip).is_err())
+        .unwrap_or_else(|| {
+            limiter
+                .check_key(&extract_client_ip(&req, state.trusted_proxies()))
+                .is_err()
+        });
+    if refused {
         metrics::record_rate_limit_rejected(route_group.label());
         return rate_limited_response();
     }

@@ -727,6 +727,7 @@ impl ChannelLoader {
             auth,
             oauth2_login,
             cron,
+            metrics: Default::default(),
         }))
     }
 

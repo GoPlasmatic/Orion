@@ -65,6 +65,21 @@ pub fn request_id() -> Option<String> {
         .filter(|id| !id.is_empty())
 }
 
+/// Run `f` over the caller's address as `request_context_scope` resolved it,
+/// or `None` outside a request scope (or inside one entered with no address,
+/// as a unit test's default context is).
+///
+/// The address is resolved once per request, by the middleware that opens the
+/// scope, under the trusted-proxy policy. The layers inside it — the platform
+/// rate limiter, admin auth, the data plane's channel guards — read it here
+/// rather than each walking `X-Forwarded-For` again.
+pub fn with_client_ip<R>(f: impl FnOnce(&String) -> R) -> Option<R> {
+    REQUEST_CONTEXT
+        .try_with(|ctx| (!ctx.client_ip.is_empty()).then(|| f(&ctx.client_ip)))
+        .ok()
+        .flatten()
+}
+
 /// A clone of the current request context, or `None` outside a request scope.
 pub fn current() -> Option<RequestContext> {
     REQUEST_CONTEXT.try_with(|ctx| ctx.clone()).ok()

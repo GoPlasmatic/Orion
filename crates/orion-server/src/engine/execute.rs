@@ -257,13 +257,20 @@ pub(crate) async fn execute_on(
         };
     }
 
-    let accountant = super::budget::SharedRunAccountant::new(budget_limits);
-    let mut run_opts = accountant.apply(
-        RunOptions::default()
-            .channel(channel)
-            .capture_changes(false)
-            .audit(AuditMode::Off),
-    );
+    // No accountant at all when no ceiling is set — the default. It could
+    // never refuse anything, nothing reads its counters, and without one the
+    // engine skips the per-task and per-expression accounting calls. A
+    // `channel_call` child inherits whatever its caller has, so a nested run
+    // is unbounded exactly when its root is.
+    let accountant = (!budget_limits.is_unbounded())
+        .then(|| super::budget::SharedRunAccountant::new(budget_limits));
+    let mut run_opts = RunOptions::default()
+        .channel(channel)
+        .capture_changes(false)
+        .audit(AuditMode::Off);
+    if let Some(accountant) = &accountant {
+        run_opts = accountant.apply(run_opts);
+    }
     if let Some(capture) = opts.capture {
         run_opts = run_opts.trace(v4_trace_options(capture.max_snapshot_bytes));
     }
@@ -408,6 +415,63 @@ mod tests {
                 .iter()
                 .all(|step| step.changes.iter().any(|c| &*c.path == "temp_data.seen")),
             "each step records its own write"
+        );
+    }
+
+    /// A run carries an accountant only when a ceiling is set: with none, it
+    /// could refuse nothing and is not attached.
+    #[tokio::test]
+    async fn an_accountant_is_attached_only_when_a_limit_is_set() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct SeesAccountant(Arc<AtomicBool>);
+        impl dataflow_rs::Function for SeesAccountant {
+            type Config = ();
+            async fn call(
+                &self,
+                ctx: &mut dataflow_rs::Ctx<'_>,
+                _: &(),
+            ) -> dataflow_rs::Result<dataflow_rs::Outcome> {
+                self.0.store(ctx.accountant().is_some(), Ordering::SeqCst);
+                Ok(dataflow_rs::Outcome::Ok)
+            }
+        }
+
+        let seen = Arc::new(AtomicBool::new(false));
+        let engine = dataflow_rs::Engine::builder()
+            .register("probe", SeesAccountant(seen.clone()))
+            .workflow_json(&serde_json::json!({
+                "id": "w", "name": "w", "channel": "c", "priority": 0, "condition": true,
+                "tasks": [{"id": "p", "name": "p", "function": {"name": "probe"}}]
+            }))
+            .build()
+            .expect("engine builds");
+        let (data, metadata) = (serde_json::json!({}), serde_json::json!({}));
+
+        let unbounded = crate::engine::budget::RunBudgetLimits::default();
+        assert!(unbounded.is_unbounded());
+        let run = execute_on(
+            &engine,
+            "c",
+            &data,
+            &metadata,
+            ExecOpts::default(),
+            unbounded,
+        )
+        .await;
+        assert!(run.outcome.is_ok());
+        assert!(!seen.load(Ordering::SeqCst), "no ceiling, no accountant");
+
+        let bounded = crate::engine::budget::RunBudgetLimits {
+            max_tasks: Some(10),
+            ..Default::default()
+        };
+        assert!(!bounded.is_unbounded());
+        let run = execute_on(&engine, "c", &data, &metadata, ExecOpts::default(), bounded).await;
+        assert!(run.outcome.is_ok());
+        assert!(
+            seen.load(Ordering::SeqCst),
+            "a ceiling attaches the accountant"
         );
     }
 

@@ -131,7 +131,11 @@ impl BreakerEntry {
 pub struct ConnectorRegistry {
     configs: ArcSwap<HashMap<String, Arc<ConnectorConfig>>>,
     reload_lock: Mutex<()>,
-    circuit_breakers: RwLock<HashMap<BreakerKey, BreakerEntry>>,
+    /// A synchronous lock, not an async one: no critical section awaits, and
+    /// the read side is taken on every guarded connector call. An async
+    /// `RwLock` made each of those a future and a semaphore acquisition for a
+    /// hash lookup that never yields.
+    circuit_breakers: std::sync::RwLock<HashMap<BreakerKey, BreakerEntry>>,
     cb_config: CircuitBreakerConfig,
     load_issues: RwLock<Vec<ConnectorLoadIssue>>,
     /// See [`ConnectorRegistry::config_generation`].
@@ -184,7 +188,7 @@ impl ConnectorRegistry {
         Self {
             configs: ArcSwap::from_pointee(HashMap::new()),
             reload_lock: Mutex::new(()),
-            circuit_breakers: RwLock::new(HashMap::new()),
+            circuit_breakers: std::sync::RwLock::new(HashMap::new()),
             cb_config,
             load_issues: RwLock::new(Vec::new()),
             generation: AtomicU64::new(CONNECTOR_GENERATION.fetch_add(1, Ordering::Relaxed)),
@@ -244,14 +248,20 @@ impl ConnectorRegistry {
         let lookup = BreakerKeyRef { channel, connector };
         // Fast path: read lock with zero-allocation borrowed lookup
         {
-            let breakers = self.circuit_breakers.read().await;
+            let breakers = self
+                .circuit_breakers
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(entry) = breakers.get(&lookup as &dyn BreakerKeyLookup) {
                 entry.touch();
                 return entry.breaker.clone();
             }
         }
         // Slow path: write lock on miss
-        let mut breakers = self.circuit_breakers.write().await;
+        let mut breakers = self
+            .circuit_breakers
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Double-check after acquiring write lock
         if let Some(entry) = breakers.get(&lookup as &dyn BreakerKeyLookup) {
             entry.touch();
@@ -327,7 +337,10 @@ impl ConnectorRegistry {
             return;
         }
         let live_configs = self.configs.load();
-        let mut breakers = self.circuit_breakers.write().await;
+        let mut breakers = self
+            .circuit_breakers
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         breakers.retain(|key, _| {
             live_configs.contains_key(&key.connector)
                 && live_channels.contains(key.channel.as_str())
@@ -336,7 +349,10 @@ impl ConnectorRegistry {
 
     /// Return all circuit breaker states for admin/health introspection.
     pub async fn circuit_breaker_states(&self) -> HashMap<String, String> {
-        let breakers = self.circuit_breakers.read().await;
+        let breakers = self
+            .circuit_breakers
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         breakers
             .values()
             .map(|v| (v.composite_key.clone(), v.breaker.state_name().to_string()))
@@ -345,7 +361,10 @@ impl ConnectorRegistry {
 
     /// Force-reset a circuit breaker by key. Returns `true` if the key existed.
     pub async fn reset_circuit_breaker(&self, key: &str) -> bool {
-        let breakers = self.circuit_breakers.read().await;
+        let breakers = self
+            .circuit_breakers
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(entry) = breakers.values().find(|e| e.composite_key == key) {
             entry.breaker.reset();
             true

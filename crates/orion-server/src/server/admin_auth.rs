@@ -174,7 +174,7 @@ pub async fn admin_auth_middleware(
 
     // Identify the caller with the same policy the rate limiter uses, so a
     // spoofed `X-Forwarded-For` cannot mint a fresh lockout budget per request.
-    let client = crate::server::rate_limit::extract_client_ip(&req, state.trusted_proxies());
+    let client = crate::server::rate_limit::request_client_ip(&req, state.trusted_proxies());
 
     if let Some(remaining) = state.admin_auth_failures.locked_for(&client) {
         metrics::record_admin_auth_failure("locked_out");

@@ -298,7 +298,7 @@ pub(crate) async fn dynamic_handler(
     // S8: the same trusted-proxy-gated identity the platform limiter uses, so
     // a channel's limit cannot be side-stepped with a spoofed
     // `X-Forwarded-For` that the platform limiter would have ignored.
-    let client_ip = crate::server::rate_limit::client_ip_from_parts(
+    let client_ip = crate::server::rate_limit::request_client_ip_from_parts(
         peer.as_ref(),
         &headers,
         state.trusted_proxies(),
@@ -694,10 +694,17 @@ async fn submit_async(
     // queued work turns out to do.
     let backpressure_permit = admission.backpressure_permit;
 
+    // The payload serialized once, here: it is the pending row's `input_json`,
+    // and its length is the payload half of the queue's memory estimate, which
+    // the admission check and the reservation both use. Each of the three used
+    // to serialize the payload for itself.
+    let input_json = serde_json::to_string(&data).ok();
+    let queued_bytes = crate::queue::message_size(&data, input_json.as_deref(), &metadata);
+
     // PERF-03: fast in-memory admission check before allocating tokens or
     // executing database round-trips (`create_pending` + compensating
     // `update_status`) when the queue is already closed, full, or over memory.
-    state.trace_queue.check_admissible(&data, &metadata)?;
+    state.trace_queue.check_admissible_sized(queued_bytes)?;
 
     let trace_headers = {
         let mut h = std::collections::HashMap::new();
@@ -711,7 +718,6 @@ async fn submit_async(
     // nullable id in the schema forever. Async submission *is* the request for
     // a later result, so persistence is not optional on this path; the sync
     // path still honours `off` exactly (see `for_async_submission`).
-    let input_json = serde_json::to_string(&data).ok();
     let channel_id = Some(channel_runtime.channel.channel_id.as_str());
     // R12: mint an opaque capability token for this submission. Only its hash
     // is stored; the plaintext exists once, in this 202. Polling requires it
@@ -734,15 +740,18 @@ async fn submit_async(
 
     let submitted = state
         .trace_queue
-        .submit(crate::queue::QueueMessage {
-            trace_id: trace_id.clone(),
-            channel,
-            payload: data,
-            metadata,
-            trace_headers,
-            profile_requested,
-            backpressure_permit,
-        })
+        .submit_sized(
+            crate::queue::QueueMessage {
+                trace_id: trace_id.clone(),
+                channel,
+                payload: data,
+                metadata,
+                trace_headers,
+                profile_requested,
+                backpressure_permit,
+            },
+            queued_bytes,
+        )
         .await;
     if let Err(e) = submitted {
         // Shed. The pending row is already committed, the caller gets a 503

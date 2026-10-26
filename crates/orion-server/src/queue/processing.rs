@@ -298,6 +298,7 @@ async fn settle_panicked_trace(
     let generation = ctx.runtime.load();
     let channel_runtime = generation.channels.get_by_name(channel);
     let effective_trace = channel_runtime
+        .as_ref()
         .map(|c| c.trace_storage)
         .unwrap_or_else(|| {
             crate::channel::registry::EffectiveTraceConfig::resolve(&ctx.global_trace_storage, None)
@@ -404,6 +405,7 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
     )
     .unwrap_or(ctx.processing_timeout_ms);
     let effective_trace = channel_runtime
+        .as_ref()
         .map(|c| c.trace_storage)
         .unwrap_or_else(|| {
             crate::channel::registry::EffectiveTraceConfig::resolve(&ctx.global_trace_storage, None)
@@ -502,8 +504,22 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
     // what the trace row reports. `engine_duration` is the engine call alone,
     // which is what the latency histogram measures.
     let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
-    metrics::record_message(metrics_channel, outcome.status_label());
-    metrics::record_message_duration(metrics_channel, engine_duration.as_secs_f64());
+    // A registered channel's own handles; an unregistered name has none, and
+    // is counted under `_unknown` through the uncached path.
+    match &channel_runtime {
+        Some(runtime) => {
+            runtime
+                .metrics
+                .record_message(metrics_channel, outcome.status_label());
+            runtime
+                .metrics
+                .record_message_duration(metrics_channel, engine_duration.as_secs_f64());
+        }
+        None => {
+            metrics::record_message(metrics_channel, outcome.status_label());
+            metrics::record_message_duration(metrics_channel, engine_duration.as_secs_f64());
+        }
+    }
 
     match outcome {
         crate::engine::RunOutcome::Ok => {

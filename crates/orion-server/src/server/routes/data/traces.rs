@@ -139,7 +139,7 @@ pub(crate) async fn get_trace(
     // could be guessed at full speed: unlimited attempts, none counted, no
     // lockout. Identify the caller exactly as the middleware and the rate
     // limiter do, so a spoofed `X-Forwarded-For` cannot mint a fresh budget.
-    let client = crate::server::rate_limit::client_ip_from_parts(
+    let client = crate::server::rate_limit::request_client_ip_from_parts(
         peer.as_ref(),
         &headers,
         state.trusted_proxies(),

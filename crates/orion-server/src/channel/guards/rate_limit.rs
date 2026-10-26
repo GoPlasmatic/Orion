@@ -95,7 +95,7 @@ pub(super) async fn check_rate_limit(
         .as_ref()
         .map(|rl| rl.on_backend_error)
         .unwrap_or_default();
-    match limiter.check(key).await {
+    match check_limiter(limiter.as_ref(), key).await {
         Ok(true) => Ok(()),
         Ok(false) => {
             metrics::record_rate_limit_rejected(channel);
@@ -318,7 +318,7 @@ pub(super) async fn check_principal_rate_limit(
         .as_ref()
         .map(|rl| rl.on_backend_error)
         .unwrap_or_default();
-    match limiter.check(key).await {
+    match check_limiter(limiter.as_ref(), key).await {
         Ok(true) => Ok(()),
         Ok(false) => {
             // The same counter as the address limit: 429 accounting stays
@@ -356,5 +356,18 @@ pub(super) async fn check_principal_rate_limit(
                 }
             }
         }
+    }
+}
+
+/// One limiter verdict: in place when the backend can give one
+/// ([`crate::channel::RateLimitBackend::check_now`] — the local governor),
+/// else through its boxed future.
+async fn check_limiter(
+    limiter: &dyn crate::channel::RateLimitBackend,
+    key: String,
+) -> Result<bool, OrionError> {
+    match limiter.check_now(&key) {
+        Some(allowed) => Ok(allowed),
+        None => limiter.check(key).await,
     }
 }

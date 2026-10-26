@@ -566,8 +566,12 @@ async fn execute(
 
     let duration = engine_start.elapsed();
     crate::metrics::record_cron_execution_duration(channel, duration.as_secs_f64());
-    crate::metrics::record_message(channel, execution.outcome.status_label());
-    crate::metrics::record_message_duration(channel, execution.duration.as_secs_f64());
+    runtime
+        .metrics
+        .record_message(channel, execution.outcome.status_label());
+    runtime
+        .metrics
+        .record_message_duration(channel, execution.duration.as_secs_f64());
 
     // 7. The trace, then 8. the occurrence.
     let task_trace_json = crate::engine::utils::serialize_task_trace_capped(

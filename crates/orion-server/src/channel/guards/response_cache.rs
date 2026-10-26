@@ -303,7 +303,7 @@ pub(super) async fn check_response_cache(
         cache_namespace::entry_key(&key)
     };
 
-    let first = lookup_once(channel, cache, key, ttl_secs, namespaces).await;
+    let first = lookup_once(channel, &cfg.metrics, cache, key, ttl_secs, namespaces).await;
     let Some(flights) = cfg.cache_flights.as_ref() else {
         return first;
     };
@@ -328,7 +328,8 @@ pub(super) async fn check_response_cache(
             let _ = tokio::time::timeout(wait, done.changed()).await;
             // The same lookup again, uncoalesced: a hit is the leader's entry;
             // anything else and this request runs the workflow itself.
-            let retry = lookup_once(channel, cache, ctx.key, ttl_secs, namespaces).await;
+            let retry =
+                lookup_once(channel, &cfg.metrics, cache, ctx.key, ttl_secs, namespaces).await;
             if matches!(retry, CacheLookup::Hit(_)) {
                 metrics::record_cache_coalesced(channel);
             }
@@ -345,6 +346,7 @@ const MAX_COALESCE_WAIT: std::time::Duration = std::time::Duration::from_secs(5)
 /// under. A namespaced channel reads its counters and its entry in one `MGET`.
 async fn lookup_once(
     channel: &str,
+    channel_metrics: &metrics::ChannelMetrics,
     cache: &Arc<dyn CacheBackend>,
     key: String,
     ttl_secs: u64,
@@ -353,11 +355,11 @@ async fn lookup_once(
     if namespaces.is_empty() {
         return match cache.get(&key).await {
             Ok(Some(cached)) => {
-                metrics::record_cache_hit(channel);
+                channel_metrics.record_cache_hit(channel);
                 CacheLookup::Hit(cached)
             }
             _ => {
-                metrics::record_cache_miss(channel);
+                channel_metrics.record_cache_miss(channel);
                 CacheStoreCtx::miss(key, cache, ttl_secs, None)
             }
         };
@@ -379,7 +381,7 @@ async fn lookup_once(
             if let Err(e) = other {
                 tracing::debug!(channel = %channel, error = %e, "Response-cache lookup failed");
             }
-            metrics::record_cache_miss(channel);
+            channel_metrics.record_cache_miss(channel);
             return CacheLookup::Miss(None);
         }
     };
@@ -394,14 +396,14 @@ async fn lookup_once(
             "A response-cache namespace counter holds something other than an integer; \
              bypassing the response cache"
         );
-        metrics::record_cache_miss(channel);
+        channel_metrics.record_cache_miss(channel);
         return CacheLookup::Miss(None);
     };
     if let Some(body) = entry.and_then(|stored| cache_namespace::decode_entry(stored, &versions)) {
-        metrics::record_cache_hit(channel);
+        channel_metrics.record_cache_hit(channel);
         return CacheLookup::Hit(body);
     }
-    metrics::record_cache_miss(channel);
+    channel_metrics.record_cache_miss(channel);
     CacheStoreCtx::miss(key, cache, ttl_secs, Some(versions))
 }
 

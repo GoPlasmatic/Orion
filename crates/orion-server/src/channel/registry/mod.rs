@@ -188,6 +188,9 @@ pub struct ChannelRuntimeConfig {
     /// surface at the first fire, in a background task with no caller to answer.
     /// `None` for every other protocol.
     pub cron: Option<Arc<crate::channel::CronDescriptor>>,
+    /// This channel's per-message metric handles, resolved on first use (see
+    /// [`crate::metrics::ChannelMetrics`]). Labelled with `channel.name`.
+    pub metrics: crate::metrics::ChannelMetrics,
 }
 
 /// A channel the registry refused to load, and why.

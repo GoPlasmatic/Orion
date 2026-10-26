@@ -636,6 +636,103 @@ pub fn record_rate_limit_key_unavailable(channel: &str) {
         .increment(1);
 }
 
+/// One channel's per-message metric handles, resolved through the recorder
+/// once and then reused.
+///
+/// The free `record_*` functions resolve the series on every sample: the
+/// `counter!`/`histogram!` macros hash the name and labels and look the series
+/// up in the recorder's registry, after owning the channel label. The four
+/// series below are sampled on every message a channel serves, so the channel's
+/// runtime config holds them instead, built on first use — not at load, so a
+/// channel loaded before the recorder is installed, or on a node with metrics
+/// off, never binds a handle to the wrong recorder. The names and labels are
+/// the free functions', so the exposition does not change.
+#[derive(Default)]
+pub struct ChannelMetrics {
+    handles: std::sync::OnceLock<ChannelHandles>,
+}
+
+struct ChannelHandles {
+    /// `orion_messages_total` by `status`, for the statuses a run can end in
+    /// (`RunOutcome::status_label`).
+    ok: metrics::Counter,
+    timeout: metrics::Counter,
+    error: metrics::Counter,
+    duration: metrics::Histogram,
+    cache_hits: metrics::Counter,
+    cache_misses: metrics::Counter,
+}
+
+impl ChannelMetrics {
+    fn handles(&self, channel: &str) -> &ChannelHandles {
+        self.handles.get_or_init(|| ChannelHandles {
+            ok: counter!("orion_messages_total", "channel" => channel.to_owned(), "status" => "ok"),
+            timeout: counter!(
+                "orion_messages_total",
+                "channel" => channel.to_owned(),
+                "status" => "timeout"
+            ),
+            error: counter!(
+                "orion_messages_total",
+                "channel" => channel.to_owned(),
+                "status" => "error"
+            ),
+            duration: histogram!(
+                "orion_message_duration_seconds",
+                "channel" => channel.to_owned()
+            ),
+            cache_hits: counter!(
+                "orion_response_cache_hits_total",
+                "channel" => channel.to_owned()
+            ),
+            cache_misses: counter!(
+                "orion_response_cache_misses_total",
+                "channel" => channel.to_owned()
+            ),
+        })
+    }
+
+    /// [`record_message`] for this channel. `channel` must be the name the
+    /// handles were built for — the channel this config belongs to.
+    pub fn record_message(&self, channel: &str, status: &'static str) {
+        if !is_enabled() {
+            return;
+        }
+        let handles = self.handles(channel);
+        match status {
+            "ok" => handles.ok.increment(1),
+            "timeout" => handles.timeout.increment(1),
+            "error" => handles.error.increment(1),
+            // A status the run outcomes do not produce: the uncached path.
+            other => record_message(channel, other),
+        }
+    }
+
+    /// [`record_message_duration`] for this channel.
+    pub fn record_message_duration(&self, channel: &str, duration_secs: f64) {
+        if !is_enabled() {
+            return;
+        }
+        self.handles(channel).duration.record(duration_secs);
+    }
+
+    /// [`record_cache_hit`] for this channel.
+    pub fn record_cache_hit(&self, channel: &str) {
+        if !is_enabled() {
+            return;
+        }
+        self.handles(channel).cache_hits.increment(1);
+    }
+
+    /// [`record_cache_miss`] for this channel.
+    pub fn record_cache_miss(&self, channel: &str) {
+        if !is_enabled() {
+            return;
+        }
+        self.handles(channel).cache_misses.increment(1);
+    }
+}
+
 /// Record a response cache hit.
 pub fn record_cache_hit(channel: &str) {
     if !is_enabled() {
@@ -1199,6 +1296,44 @@ mod tests {
     /// One per-channel invocation counter, not two.
     /// `orion_channel_executions_total` was `orion_messages_total` minus the
     /// status label; recording a message must not resurrect it.
+    /// The cached handles render exactly the series the free functions do:
+    /// same names, same labels, same counts.
+    #[test]
+    fn channel_handles_render_what_the_free_functions_render() {
+        let free = render_local(|| {
+            record_message("orders", "ok");
+            record_message("orders", "ok");
+            record_message("orders", "error");
+            record_message("orders", "timeout");
+            record_message("orders", "unauthorized");
+            record_message_duration("orders", 0.01);
+            record_cache_hit("orders");
+            record_cache_miss("orders");
+        });
+        let cached = render_local(|| {
+            let m = ChannelMetrics::default();
+            m.record_message("orders", "ok");
+            m.record_message("orders", "ok");
+            m.record_message("orders", "error");
+            m.record_message("orders", "timeout");
+            m.record_message("orders", "unauthorized");
+            m.record_message_duration("orders", 0.01);
+            m.record_cache_hit("orders");
+            m.record_cache_miss("orders");
+        });
+        let lines = |text: &str| {
+            let mut lines: Vec<String> = text
+                .lines()
+                .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+                .map(str::to_string)
+                .collect();
+            lines.sort();
+            lines
+        };
+        assert_eq!(lines(&free), lines(&cached));
+        assert!(free.contains("orion_messages_total"));
+    }
+
     #[test]
     fn one_per_channel_invocation_counter() {
         let out = render_local(|| {

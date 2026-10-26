@@ -1188,6 +1188,7 @@ mod tests {
                     updated_at: now,
                 },
                 cron: None,
+                metrics: Default::default(),
                 parsed_config: self.parsed_config,
                 rate_limiter: self.rate_limiter,
                 rate_limit_key_logic: self.rate_limit_key_logic,

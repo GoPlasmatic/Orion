@@ -40,6 +40,14 @@ pub struct RunBudgetLimits {
     pub max_in_flight: Option<u64>,
 }
 
+impl RunBudgetLimits {
+    /// Whether no ceiling is set. An accountant with these limits can never
+    /// refuse anything, so a run need not carry one at all.
+    pub fn is_unbounded(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// Point-in-time usage snapshot read from a [`SharedRunAccountant`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunBudgetSnapshot {

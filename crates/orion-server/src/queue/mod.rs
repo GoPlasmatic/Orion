@@ -230,6 +230,21 @@ fn json_serialized_len(value: &serde_json::Value) -> usize {
     counter.0
 }
 
+/// A queued message's memory estimate: the serialized length of its payload
+/// and metadata (approximate — it excludes struct overhead), counted with a
+/// zero-allocation byte counter rather than materializing two heap strings
+/// just to read `.len()`.
+///
+/// `payload_json` is the payload already serialized, when the caller has it —
+/// the async submission serializes it once for the pending trace row, and its
+/// length is exactly what the counter would count, so the payload is not
+/// walked again. Measured once per submission and carried to the admission
+/// check and the reservation, where each used to serialize it afresh.
+pub fn message_size(payload: &Value, payload_json: Option<&str>, metadata: &Value) -> usize {
+    payload_json.map_or_else(|| json_serialized_len(payload), str::len)
+        + json_serialized_len(metadata)
+}
+
 /// In-memory trace queue backed by a tokio mpsc channel.
 ///
 /// Traces are submitted via `submit()` and processed by a semaphore-limited
@@ -261,12 +276,24 @@ impl TraceQueue {
 
     /// Submit a trace to the queue for background processing.
     pub async fn submit(&self, msg: QueueMessage) -> Result<(), crate::errors::OrionError> {
+        let size = message_size(&msg.payload, None, &msg.metadata);
+        self.submit_sized(msg, size).await
+    }
+
+    /// [`Self::submit`] for a caller that already knows the message's
+    /// [`message_size`] — the async submission, which measured it once for
+    /// [`Self::check_admissible_sized`] and must reserve exactly that.
+    pub async fn submit_sized(
+        &self,
+        msg: QueueMessage,
+        size: usize,
+    ) -> Result<(), crate::errors::OrionError> {
         self.enqueue(QueuedItem {
             msg,
             dlq_retry_count: 0,
             dlq_entry_id: None,
             dlq_max_retries: None,
-            payload_size: 0,
+            payload_size: size,
         })
         .await
     }
@@ -283,6 +310,12 @@ impl TraceQueue {
         payload: &Value,
         metadata: &Value,
     ) -> Result<(), crate::errors::OrionError> {
+        self.check_admissible_sized(message_size(payload, None, metadata))
+    }
+
+    /// [`Self::check_admissible`] against a [`message_size`] the caller has
+    /// already measured.
+    pub fn check_admissible_sized(&self, size: usize) -> Result<(), crate::errors::OrionError> {
         if self.queue.is_all_closed() {
             return Err(crate::errors::OrionError::unavailable(
                 crate::errors::Unavailable::QueueClosed,
@@ -300,7 +333,7 @@ impl TraceQueue {
             ));
         }
         if self.max_memory_bytes > 0 {
-            let payload_size = json_serialized_len(payload) + json_serialized_len(metadata);
+            let payload_size = size;
             let current = self.memory_bytes.load(Ordering::Acquire);
             if current.saturating_add(payload_size) > self.max_memory_bytes {
                 metrics::record_trace_queue_rejected("memory");
@@ -327,12 +360,13 @@ impl TraceQueue {
         dlq_retry_count: i64,
         dlq_max_retries: i64,
     ) -> Result<(), crate::errors::OrionError> {
+        let payload_size = message_size(&msg.payload, None, &msg.metadata);
         self.enqueue(QueuedItem {
             msg,
             dlq_retry_count,
             dlq_entry_id: Some(dlq_entry_id),
             dlq_max_retries: Some(dlq_max_retries),
-            payload_size: 0,
+            payload_size,
         })
         .await
     }
@@ -341,13 +375,9 @@ impl TraceQueue {
     /// waiting room: awaiting capacity here parks the calling HTTP handler for
     /// as long as the workers stay behind, turning saturation into unbounded
     /// request latency instead of the documented 503 (Q1).
-    async fn enqueue(&self, mut item: QueuedItem) -> Result<(), crate::errors::OrionError> {
-        // Estimate payload memory (approximate — excludes struct overhead)
-        // using a zero-allocation byte counter rather than materializing two
-        // heap Strings just to read `.len()`.
-        let payload_size =
-            json_serialized_len(&item.msg.payload) + json_serialized_len(&item.msg.metadata);
-        item.payload_size = payload_size;
+    async fn enqueue(&self, item: QueuedItem) -> Result<(), crate::errors::OrionError> {
+        // The payload memory estimate the caller measured (`message_size`).
+        let payload_size = item.payload_size;
 
         // Q2: reserve first, then validate. The previous shape was
         // load -> compare -> send -> fetch_add, so N concurrent submitters all
@@ -547,6 +577,25 @@ mod tests {
             profile_requested: false,
             backpressure_permit: None,
         }
+    }
+
+    /// The async submission measures its message from the payload it already
+    /// serialized for the trace row; that must be the size the counter would
+    /// have counted, or admission and reservation would disagree with every
+    /// other enqueue path.
+    #[test]
+    fn a_pre_serialized_payload_measures_what_the_counter_counts() {
+        let payload = serde_json::json!({"a": [1, 2.5, "x"], "b": {"c": null}, "d": "é"});
+        let metadata = serde_json::json!({"headers": {"x-y": "z"}});
+        let json = serde_json::to_string(&payload).expect("serializes");
+        assert_eq!(
+            message_size(&payload, Some(&json), &metadata),
+            message_size(&payload, None, &metadata)
+        );
+        assert_eq!(
+            message_size(&payload, None, &metadata),
+            json.len() + serde_json::to_string(&metadata).expect("serializes").len()
+        );
     }
 
     #[tokio::test]

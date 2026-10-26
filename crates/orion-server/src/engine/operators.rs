@@ -653,12 +653,45 @@ pub fn orion_exprs(
 /// Built by datalogic's own conversion over the value's arena view, the one
 /// `eval_into` used, so it is that JSON exactly: a datetime is its
 /// `{"datetime": …}` sentinel and a non-finite number is `null`.
+///
+/// The view's arena is one per thread, reset after each call rather than
+/// built and dropped per call: the rate-limit and cache-key paths call this
+/// once per request, and a composite key (an array, an object) allocates its
+/// spine there. The result owns its data, so nothing borrows the arena past
+/// the reset. An arena that a large result grew past [`ARENA_KEEP_BYTES`] is
+/// dropped instead of kept, so one outsized key does not pin its memory to the
+/// thread for good.
 pub(crate) fn result_json(value: &OwnedDataValue) -> serde_json::Value {
-    let arena = datalogic::bumpalo::Bump::new();
-    <serde_json::Value as datalogic::FromDataValue>::from_arena(&value.to_arena(&arena))
-        // Infallible for this output: the conversion only walks the tree.
-        .unwrap_or(serde_json::Value::Null)
+    thread_local! {
+        static ARENA: std::cell::RefCell<datalogic::bumpalo::Bump> =
+            std::cell::RefCell::new(datalogic::bumpalo::Bump::new());
+    }
+    let convert = |arena: &datalogic::bumpalo::Bump| {
+        <serde_json::Value as datalogic::FromDataValue>::from_arena(&value.to_arena(arena))
+            // Infallible for this output: the conversion only walks the tree.
+            .unwrap_or(serde_json::Value::Null)
+    };
+    ARENA
+        .try_with(|cell| match cell.try_borrow_mut() {
+            Ok(mut arena) => {
+                let json = convert(&arena);
+                if arena.allocated_bytes() > ARENA_KEEP_BYTES {
+                    *arena = datalogic::bumpalo::Bump::new();
+                } else {
+                    arena.reset();
+                }
+                json
+            }
+            // Re-entered from inside a conversion, which nothing does today:
+            // fall back to an arena of its own rather than panic.
+            Err(_) => convert(&datalogic::bumpalo::Bump::new()),
+        })
+        // The thread is being torn down; same fallback.
+        .unwrap_or_else(|_| convert(&datalogic::bumpalo::Bump::new()))
 }
+
+/// The most a thread's [`result_json`] arena keeps between calls.
+const ARENA_KEEP_BYTES: usize = 64 * 1024;
 
 /// Orion's operators, for the datalogic engines Orion builds directly.
 ///
