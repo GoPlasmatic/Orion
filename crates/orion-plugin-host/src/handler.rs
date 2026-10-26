@@ -39,7 +39,7 @@ use super::limits::Limits;
 use super::runtime::{LoadedComponent, WasmRuntime};
 
 use crate::engine::{FunctionEntry, HandlerError};
-use crate::plugin::manifest::OUTPUT_FIELD;
+use crate::manifest::OUTPUT_FIELD;
 
 /// One registered plugin function. Cheap to clone — every field is shared —
 /// so a generation boxes a clone per engine it builds.
@@ -498,13 +498,14 @@ mod tests {
     use serde_json::json;
 
     use crate::config::PluginsConfig;
+    use crate::engine::PluginBinding;
     use crate::engine::functions::twin::{self, Seen};
     use crate::engine::kit::test_exprs;
-    use crate::engine::{FunctionRegistry, PluginBinding};
-    use crate::plugin::manifest::{ABI, Manifest};
+    use crate::manifest::{ABI, Manifest};
 
-    const COMPONENT: &[u8] = include_bytes!("../../tests/fixtures/plugins/fixture.wasm");
-    const MANIFEST: &str = include_str!("../../tests/fixtures/plugins/fixture.toml");
+    const COMPONENT: &[u8] =
+        include_bytes!("../../orion-server/tests/fixtures/plugins/fixture.wasm");
+    const MANIFEST: &str = include_str!("../../orion-server/tests/fixtures/plugins/fixture.toml");
 
     /// The fixture's `identity` under a manifest of every position and kind
     /// a field can take. The component dispatches on the function's last
@@ -1211,14 +1212,13 @@ resolvable = true
     /// template field, which 1.12 refused at authoring and at load evaluated
     /// into the guest's input, is refused at load, recorded as the guest's
     /// result may be (`SECRET_IN_MESSAGE_WRITE`); in an interpolated field
-    /// it is data, refused as such (`SECRET_IN_DOCUMENT`).
+    /// it is data, refused as such (`SECRET_IN_DOCUMENT`). The authoring
+    /// refusal is `validation`'s, pinned by
+    /// `a_plugin_function_refuses_a_secret_node_in_every_field`.
     #[tokio::test]
-    async fn a_secret_read_in_a_plugins_input_is_refused_at_load_as_at_authoring() {
+    async fn a_secret_read_in_a_plugins_input_is_refused_at_load() {
         let rich = functions_of(RICH, &config());
         let any = &rich["test.fixture.identity"];
-        let registry = FunctionRegistry::builtin()
-            .with_entries(vec![(*any.handler.entry).clone()])
-            .expect("the entry registers");
         for (input, code) in [
             (
                 json!({"greeting": {"secret": "api_key"}, "output": "data.x"}),
@@ -1233,12 +1233,6 @@ resolvable = true
                 IssueCode::SecretInDocument,
             ),
         ] {
-            let tasks =
-                json!([{"id": "t", "function": {"name": any.function.name(), "input": input}}]);
-            assert!(
-                !crate::validation::secret_reference_errors(&tasks, None, &registry).is_empty(),
-                "1.12's authoring refused {input}"
-            );
             let issues = v4_refusal(&any.function, input.clone()).await;
             assert!(
                 issues.iter().any(|(_, c)| *c == code),

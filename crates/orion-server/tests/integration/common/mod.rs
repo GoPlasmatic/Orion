@@ -33,7 +33,7 @@ pub fn empty_runtime() -> Arc<orion::runtime::RuntimeHandle> {
     ))
 }
 use orion::config::AppConfig;
-use orion::server::state::AppState;
+use orion::runtime::state::AppState;
 
 /// Create a test app with an in-memory SQLite database.
 ///
@@ -805,7 +805,7 @@ impl Drop for ScratchDir {
 /// deployment store as a deployment would upload it, answering the digest a
 /// manifest member names it by.
 pub async fn store_definition(
-    state: &orion::server::state::AppState,
+    state: &orion::runtime::state::AppState,
     definition: serde_json::Value,
 ) -> String {
     let definition: orion_api::v2::Definition =

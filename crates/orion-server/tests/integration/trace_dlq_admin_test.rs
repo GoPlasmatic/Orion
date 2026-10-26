@@ -8,7 +8,7 @@ use tower::ServiceExt;
 use crate::common;
 
 use orion::config::AppConfig;
-use orion::server::state::AppState;
+use orion::runtime::state::AppState;
 
 const PAYLOAD: &str = r#"{"order":"A-1"}"#;
 

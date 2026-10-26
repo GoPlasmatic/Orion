@@ -39,9 +39,6 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
     // The request path sits below the HTTP layer and the startup sequence.
     ("channel", &["crate::server::", "crate::bootstrap::"]),
     ("queue", &["crate::server::", "crate::bootstrap::"]),
-    // The plugin sandbox produces registry entries and handlers for a
-    // generation to carry; it names nothing above `engine`.
-    ("plugin", &["crate::server::", "crate::bootstrap::"]),
     // The cron scheduler sits beside `queue`: it consumes the
     // engine, the channel estate and the storage layer, and nothing below it
     // may name it back. `engine` reaching up here is how `TRIGGER_KEY` briefly
@@ -76,10 +73,6 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
     ),
     (
         "queue",
-        &["crate::runtime::reload", "crate::runtime::handler_deps"],
-    ),
-    (
-        "plugin",
         &["crate::runtime::reload", "crate::runtime::handler_deps"],
     ),
     // V2 extension seams and composition root sit below the HTTP server,

@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use crate::server::state::AppState;
+use crate::runtime::state::AppState;
 
 /// Build and publish the exact entity revisions declared in `target_revision`'s
 /// committed [`crate::extensions::deployment_store::CanonicalManifest`] before
@@ -388,7 +388,9 @@ fn refuse_route_collisions(
                 } else {
                     format!("{mount}{route}")
                 };
-                if let Some(platform) = crate::server::routes::shadowed_platform_route(&served) {
+                if let Some(platform) =
+                    orion_common::platform_routes::shadowed_platform_route(&served)
+                {
                     return Err(crate::errors::OrionError::validation(format!(
                         "channel '{}': with server.data_mounts entry '{mount}' its route \
                          would be served at {served}, which collides with the platform \

@@ -79,7 +79,7 @@ jobs:
 
       # The shared library crates (orion-api, orion-client, orion-definitions,
       # orion-extension-api, orion-common, orion-storage, orion-engine,
-      # orion-plugin-sdk) have no
+      # orion-plugin-host, orion-plugin-sdk) have no
       # release cycle of their own — no tag ever names
       # them. They ride along here:
       # crates.io refuses a crate whose dependency isn't on crates.io, so the
@@ -90,8 +90,9 @@ jobs:
       # the index has the crate, so each subsequent publish can resolve it
       # immediately. Listed in dependency order: orion-client,
       # orion-extension-api and orion-common depend on orion-api,
-      # orion-storage on orion-common, and orion-engine on all of those and
-      # orion-definitions. All seven are dependencies of orion-server, so they are still required even though the CLI no
+      # orion-storage on orion-common, orion-engine on all of those and
+      # orion-definitions, and orion-plugin-host on orion-engine. All eight are
+      # dependencies of orion-server, so they are still required even though the CLI no
       # longer publishes.
       # orion-plugin-sdk depends on none of them and nothing in the workspace
       # depends on it — it is what a plugin author links against — but it shares
@@ -105,7 +106,7 @@ jobs:
       # step diffing the rider directories; see RELEASING.md.)
       - name: Publish rider crates (only unpublished versions)
         if: ${{ steps.pkg.outputs.packages != '' }}
-        run: .github/scripts/publish-crates.sh orion-api orion-client orion-definitions orion-extension-api orion-common orion-storage orion-engine orion-plugin-sdk
+        run: .github/scripts/publish-crates.sh orion-api orion-client orion-definitions orion-extension-api orion-common orion-storage orion-engine orion-plugin-host orion-plugin-sdk
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
 

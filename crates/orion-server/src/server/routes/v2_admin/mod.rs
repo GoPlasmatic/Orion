@@ -40,8 +40,8 @@ use orion_api::{ErrorBody, ErrorEnvelope, ErrorKind};
 
 use crate::errors::OrionError;
 use crate::extensions::deployment_store::{DeploymentError, DeploymentErrorKind};
+use crate::runtime::state::AppState;
 use crate::server::admin_auth::AdminPrincipal;
-use crate::server::state::AppState;
 
 pub use deployments::{ConvergenceQuery, DeploymentsQuery};
 

@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use super::runtime::{EPOCH_TICK, WasmRuntime};
-use crate::runtime::{Criticality, TaskRegistry};
+use orion_common::tasks::{Criticality, TaskRegistry};
 
 pub const TASK_NAME: &str = "plugin_epoch_ticker";
 

@@ -17,8 +17,8 @@
 
 use std::time::Duration;
 
+use crate::runtime::state::AppState;
 use crate::runtime::{Criticality, TaskRegistry};
-use crate::server::state::AppState;
 
 pub const TASK_NAME: &str = "rate_limiter_prune";
 

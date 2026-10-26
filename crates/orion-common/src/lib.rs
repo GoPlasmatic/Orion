@@ -27,6 +27,7 @@ pub mod platform_routes;
 pub mod request_context;
 pub mod signatures;
 pub mod ssrf;
+pub mod tasks;
 pub mod text;
 pub mod trace_context;
 pub mod version;

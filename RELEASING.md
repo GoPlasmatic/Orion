@@ -66,7 +66,7 @@ version disagrees with `crates/orion-cli/Cargo.toml`. A prefixed
 mistake, not a server-only release.
 
 The library crates (`orion-api`, `orion-client`,
-`orion-definitions`, `orion-extension-api`, `orion-common`, `orion-storage`, `orion-engine`, `orion-plugin-sdk`) are never tagged: crates-publish publishes
+`orion-definitions`, `orion-extension-api`, `orion-common`, `orion-storage`, `orion-engine`, `orion-plugin-host`, `orion-plugin-sdk`) are never tagged: crates-publish publishes
 them automatically as riders — in dependency order, skipping versions already
 on crates.io — right before `orion-server`, since crates.io refuses a crate
 whose dependency it doesn't host. `orion-plugin-sdk` depends on nothing else

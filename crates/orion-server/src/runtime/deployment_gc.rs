@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use crate::server::state::AppState;
+use crate::runtime::state::AppState;
 
 /// The task, job-lease and job-metric name.
 pub const JOB: &str = "deployment_gc";

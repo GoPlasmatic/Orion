@@ -16,7 +16,7 @@ use crate::config::AdminAuthConfig;
 use crate::config::constant_time_eq;
 use crate::errors::OrionError;
 use crate::metrics;
-use crate::server::state::AppState;
+use crate::runtime::state::AppState;
 
 /// Domain separator for the audit key id. Keeps the derived value distinct
 /// from the digest `admin_auth` compares against, so an audit log that leaks

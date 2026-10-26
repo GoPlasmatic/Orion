@@ -6,9 +6,9 @@ use axum::{Extension, Json};
 use orion_api::{CircuitBreakerResetResponse, CircuitBreakerStatesResponse, Data};
 
 use crate::errors::OrionError;
+use crate::runtime::state::AppState;
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::routes::response_helpers::data_response;
-use crate::server::state::AppState;
 
 use super::audit_log;
 

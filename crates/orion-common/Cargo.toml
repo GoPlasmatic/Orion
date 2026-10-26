@@ -53,6 +53,7 @@ aws-lc-rs = "1"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 dashmap = "6"
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
 opentelemetry = { version = "0.33", default-features = false, features = ["trace"] }
 opentelemetry_sdk = { version = "0.33", default-features = false, features = ["rt-tokio", "trace"] }
 tracing-opentelemetry = { version = "0.34", default-features = false }

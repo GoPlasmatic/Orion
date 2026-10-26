@@ -196,7 +196,7 @@ pub async fn build_engine_components(
             config.engine.global_http_timeout_secs,
         ))
         .redirect(reqwest::redirect::Policy::none())
-        .dns_resolver(std::sync::Arc::new(crate::validation::PinnedDnsResolver))
+        .dns_resolver(std::sync::Arc::new(orion_common::ssrf::PinnedDnsResolver))
         .build()
         .map_err(|e| crate::errors::OrionError::internal_from("Failed to build HTTP client", e))?;
 
@@ -573,7 +573,7 @@ pub async fn run(
 /// to every registered stream, so both listeners see the same SIGTERM.
 pub fn start_metrics_listener(
     config: &Arc<config::AppConfig>,
-    state: &crate::server::state::AppState,
+    state: &crate::runtime::state::AppState,
 ) -> Result<
     Option<tokio::task::JoinHandle<Result<(), crate::errors::OrionError>>>,
     crate::errors::OrionError,
@@ -915,7 +915,7 @@ pub struct AssembleParams {
 /// handles that own the graceful-shutdown sequence. The caller keeps the
 /// handles so it, not `assemble`, decides when the drains run.
 pub struct Assembled {
-    pub state: crate::server::state::AppState,
+    pub state: crate::runtime::state::AppState,
     pub task_handles: TaskHandles,
 }
 
@@ -1131,7 +1131,7 @@ pub async fn assemble(
 /// [`Repositories`] / [`ServingComponents`] fields map onto `AppStateInner`.
 /// Called only by [`assemble`], which is the shared entry point `main.rs` and
 /// the test harness go through.
-pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState {
+pub fn build_app_state(params: AppStateParams) -> crate::runtime::state::AppState {
     let AppStateParams {
         config,
         pool,
@@ -1171,7 +1171,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
     // limit, which applies with the platform limiter off (S15) and keys on
     // the same client identity. See `AppStateInner::trusted_proxies`.
     let trusted_proxies = Arc::new(config.rate_limit.parsed_trusted_proxies());
-    crate::server::state::AppState::new(crate::server::state::AppStateInner {
+    crate::runtime::state::AppState::new(crate::runtime::state::AppStateInner {
         runtime,
         channel_loader,
         reload_lock: tokio::sync::Mutex::new(()),
@@ -1181,7 +1181,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         repos,
         audit_queue,
         connector_registry,
-        caches: crate::server::state::Caches {
+        caches: crate::runtime::state::Caches {
             cache_pool,
             sql_pool_cache,
         },

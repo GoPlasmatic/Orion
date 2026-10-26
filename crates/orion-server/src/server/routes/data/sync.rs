@@ -12,7 +12,7 @@ use crate::channel::guards::{Admission, CacheStoreCtx};
 use crate::errors::OrionError;
 use crate::metrics;
 use crate::queue::trace_record::{CompletedTrace, TracePlan, route_store_completed};
-use crate::server::state::AppState;
+use crate::runtime::state::AppState;
 
 /// Build an HTTP response from a pre-serialized JSON string, avoiding
 /// the double-serialization that `Json<Value>` would incur.

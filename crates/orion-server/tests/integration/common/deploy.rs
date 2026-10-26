@@ -233,7 +233,7 @@ pub async fn apply(app: &Router, base: u64, members: Vec<Value>) -> (StatusCode,
 /// with other plugins or settings, could have committed — answering the
 /// committed revision. Nothing is built.
 pub async fn commit_unchecked(
-    state: &orion::server::state::AppState,
+    state: &orion::runtime::state::AppState,
     base: u64,
     members: Vec<Value>,
 ) -> u64 {

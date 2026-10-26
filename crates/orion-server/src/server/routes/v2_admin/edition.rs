@@ -8,8 +8,8 @@ use orion_api::v2::{
     EditionTransitionPreflightResponse,
 };
 
+use crate::runtime::state::AppState;
 use crate::server::extract::OrionJson;
-use crate::server::state::AppState;
 
 /// `POST /api/v2/admin/edition-transition-preflight`.
 #[utoipa::path(

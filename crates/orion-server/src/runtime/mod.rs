@@ -27,7 +27,8 @@ pub mod generation;
 pub mod limiter_prune;
 pub mod load_issues;
 pub mod reload;
-pub mod tasks;
+pub mod state;
+pub use orion_common::tasks;
 pub mod workflow_providers;
 
 pub use execute::execute_admitted_on_generation;
@@ -49,11 +50,11 @@ pub use tasks::{Criticality, Shutdown, TaskGuard, TaskRegistry, TaskReport, Task
 /// node's live components ([`crate::engine::serving_registry`]). What a reload that
 /// changes the plugin set starts from; a reload that keeps it compiles on the
 /// running engine's registry instead.
-pub fn build_registry(state: &crate::server::state::AppState) -> dataflow_rs::Registry {
+pub fn build_registry(state: &crate::runtime::state::AppState) -> dataflow_rs::Registry {
     crate::engine::serving_registry(handler_deps(state))
 }
 
-pub fn handler_deps(state: &crate::server::state::AppState) -> crate::engine::HandlerDeps<'_> {
+pub fn handler_deps(state: &crate::runtime::state::AppState) -> crate::engine::HandlerDeps<'_> {
     let hosts = functions::NodeHosts::new(
         state.runtime.clone(),
         state.exprs.clone(),

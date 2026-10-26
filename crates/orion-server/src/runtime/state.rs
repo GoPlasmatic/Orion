@@ -4,11 +4,11 @@ use std::sync::atomic::AtomicBool;
 use dataflow_rs::expr::ExprEngine;
 use metrics_exporter_prometheus::PrometheusHandle;
 
+use crate::channel::platform_limits::RateLimitState;
 use crate::config::AppConfig;
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::CachePool;
 use crate::queue::TraceQueue;
-use crate::server::rate_limit::RateLimitState;
 use crate::storage::DbPool;
 use crate::storage::repositories::Repositories;
 

@@ -7,7 +7,7 @@
 # A workspace member so it rides the shared version and publishes as a rider
 # beside `orion-api` and `orion-client` (see the root `Cargo.toml` on why the
 # riders share one version). It depends on nothing in the server: the WIT
-# file it carries is a copy of `crates/orion-server/wit/orion-plugin.wit`, and
+# file it carries is a copy of `crates/orion-plugin-host/wit/orion-plugin.wit`, and
 # `plugin_sdk_test.rs` in the server suite refuses to let the two drift.
 [package]
 name = "orion-plugin-sdk"

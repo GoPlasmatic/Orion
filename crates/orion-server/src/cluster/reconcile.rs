@@ -9,7 +9,7 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use crate::server::state::AppState;
+use crate::runtime::state::AppState;
 
 /// Register the cluster background tasks with the supervisor. Registers
 /// the reconciler on single nodes too: a committed revision whose inline build

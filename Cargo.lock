@@ -2992,6 +2992,7 @@ dependencies = [
  "ctor",
  "dashmap",
  "dataflow-rs",
+ "futures",
  "hex",
  "hmac",
  "ipnet",
@@ -3086,6 +3087,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "orion-plugin-host"
+version = "1.12.0"
+dependencies = [
+ "dataflow-rs",
+ "orion-api",
+ "orion-common",
+ "orion-engine",
+ "orion-storage",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+ "wasmtime",
+]
+
+[[package]]
 name = "orion-plugin-sdk"
 version = "1.12.0"
 dependencies = [
@@ -3135,6 +3153,7 @@ dependencies = [
  "orion-definitions",
  "orion-engine",
  "orion-extension-api",
+ "orion-plugin-host",
  "orion-storage",
  "proptest",
  "rand 0.10.3",
@@ -3166,7 +3185,6 @@ dependencies = [
  "utoipa",
  "utoipa-swagger-ui",
  "uuid",
- "wasmtime",
 ]
 
 [[package]]

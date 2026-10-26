@@ -159,7 +159,7 @@ impl DiscoveryCache {
         // fetches — a host public when the channel was stored can be private by
         // the time it is dialled.
         if !self.allow_private {
-            crate::validation::validate_url_not_private(&url).await?;
+            orion_common::ssrf::validate_url_not_private(&url).await?;
         }
         let response = self
             .client

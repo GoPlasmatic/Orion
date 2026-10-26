@@ -156,7 +156,7 @@ fn default_http_client() -> reqwest::Client {
         .user_agent(crate::version::USER_AGENT)
         .timeout(Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none())
-        .dns_resolver(Arc::new(crate::validation::PinnedDnsResolver))
+        .dns_resolver(Arc::new(orion_common::ssrf::PinnedDnsResolver))
         .build()
         .unwrap_or_default()
 }
@@ -767,7 +767,7 @@ impl ProviderBackend for HttpProviderBackend {
             }
         };
 
-        if let Err(ssrf_reason) = crate::validation::ssrf::validate_url_not_private(&url).await {
+        if let Err(ssrf_reason) = orion_common::ssrf::validate_url_not_private(&url).await {
             return Err(ConnectorError::forbidden(
                 codes::CAPABILITY_INVALID,
                 "ssrf_validation",

@@ -18,9 +18,9 @@ use serde_json::Value;
 use super::V2Result;
 use crate::errors::{FieldError, OrionError};
 use crate::runtime::definitions;
+use crate::runtime::state::AppState;
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::extract::OrionJson;
-use crate::server::state::AppState;
 
 /// `POST /api/v2/admin/definitions`.
 #[utoipa::path(

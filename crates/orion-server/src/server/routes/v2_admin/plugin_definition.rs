@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::errors::{FieldError, OrionError};
 use crate::plugin::{Limits, Manifest, WasmRuntime};
-use crate::server::state::AppState;
+use crate::runtime::state::AppState;
 
 fn refused(message: &str, details: Vec<FieldError>) -> OrionError {
     OrionError::Validation {

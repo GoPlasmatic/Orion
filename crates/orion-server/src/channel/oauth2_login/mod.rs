@@ -889,7 +889,7 @@ impl CompiledOAuth2Login {
         label: &str,
     ) -> Result<Value, OrionError> {
         if !self.allow_private_token_urls
-            && let Err(msg) = crate::validation::validate_url_not_private(url).await
+            && let Err(msg) = orion_common::ssrf::validate_url_not_private(url).await
         {
             tracing::warn!(channel = %self.channel, error = %msg, "userinfo URL refused");
             return Err(self.refuse(label, "userinfo_rejected"));

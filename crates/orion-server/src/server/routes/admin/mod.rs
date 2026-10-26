@@ -12,8 +12,8 @@ use axum::Router;
 use axum::routing::{get, post};
 use serde_json::json;
 
+use crate::runtime::state::AppState;
 use crate::server::admin_auth::AdminPrincipal;
-use crate::server::state::AppState;
 
 /// The audit actor when no admin credential was presented — which is every
 /// request when `admin_auth.enabled = false`. `pub(crate)` because the v2

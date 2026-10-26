@@ -38,7 +38,7 @@ async fn serves_ok(app: &axum::Router, channel: &str) -> bool {
 /// could not build, naming every one of `fragments`, while the head stays
 /// where it was and the generation it served before keeps serving.
 async fn assert_revision_fails_whole(
-    state: &orion::server::state::AppState,
+    state: &orion::runtime::state::AppState,
     app: &axum::Router,
     upserts: Vec<common::deploy::Upsert>,
     fragments: &[&str],

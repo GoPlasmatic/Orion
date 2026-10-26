@@ -35,7 +35,7 @@ use testcontainers_modules::postgres::Postgres;
 use tower::ServiceExt;
 
 use common::{body_json, json_request, post_with_idempotency_key};
-use orion::server::state::AppState;
+use orion::runtime::state::AppState;
 
 /// One cluster node: full `AppState`, its router, and the queue drains.
 ///

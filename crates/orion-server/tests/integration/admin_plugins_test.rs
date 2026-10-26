@@ -16,7 +16,7 @@ use tower::ServiceExt;
 
 use crate::common::{self, body_json, deploy, json_request, test_state_with_config};
 use orion::config::AppConfig;
-use orion::server::state::AppState;
+use orion::runtime::state::AppState;
 
 const COMPONENT: &[u8] = include_bytes!("../fixtures/plugins/fixture.wasm");
 // The upload manifest: the functions that answer a probe. `fixture.toml`

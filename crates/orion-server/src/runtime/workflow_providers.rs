@@ -20,7 +20,7 @@ use crate::extensions::workflow_provider::{
     WorkflowHost, WorkflowPackage, WorkflowProviderBackend, describe,
 };
 use crate::extensions::{ImplementationKind, ProviderBackend};
-use crate::server::state::AppState;
+use crate::runtime::state::AppState;
 
 /// What a workflow package's backend gets from this node.
 pub fn host(state: &AppState) -> WorkflowHost {

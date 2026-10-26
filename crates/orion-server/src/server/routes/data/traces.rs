@@ -10,9 +10,9 @@ use serde_json::Value;
 use crate::errors::OrionError;
 use crate::server::extract::{OrionQuery, PeerAddr};
 // Referenced by the `#[utoipa::path]` `body = ErrorResponse` annotations below.
+use crate::runtime::state::AppState;
 use crate::server::routes::openapi::ErrorResponse;
 use crate::server::routes::response_helpers::data_response;
-use crate::server::state::AppState;
 use crate::storage::models::TraceListItemResponse;
 use crate::storage::repositories::traces::TraceFilter;
 use orion_api::{Data, TraceDetailResponse, TracePage};

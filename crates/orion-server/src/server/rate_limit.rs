@@ -9,76 +9,15 @@
 //! (`[rate_limit]`), keyed by client IP and applied per route group.
 
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
 
 use axum::extract::{ConnectInfo, MatchedPath, Request, State};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use ipnet::IpNet;
 
-use crate::channel::{KeyedLimiter, build_keyed_limiter};
-use crate::config::RateLimitConfig;
 use crate::metrics;
 
-/// Holds platform-level rate limiters (global defaults + endpoint-level).
-/// Per-channel rate limiters live in `ChannelSnapshot` and are applied by the
-/// ingress guards, not here.
-///
-/// `trusted_proxies` deliberately does **not** live here even though the key
-/// is spelled `rate_limit.trusted_proxies`: it decides whether a forwarded
-/// header may name the client, which the per-channel limit asks with the
-/// platform limiter off. It is on `AppState`
-/// ([`crate::server::state::AppStateInner::trusted_proxies`]).
-pub struct RateLimitState {
-    default_limiter: Arc<KeyedLimiter>,
-    admin_limiter: Option<Arc<KeyedLimiter>>,
-    data_limiter: Option<Arc<KeyedLimiter>>,
-}
-
-impl RateLimitState {
-    /// Build platform-level rate limiters from config.
-    pub fn from_config(config: &RateLimitConfig) -> Self {
-        let default_limiter = Arc::new(build_keyed_limiter(
-            config.default_rps,
-            config.default_burst,
-        ));
-
-        let admin_limiter = config
-            .endpoints
-            .admin_rps
-            .map(|rps| Arc::new(build_keyed_limiter(rps, rps / 2 + 1)));
-
-        let data_limiter = config
-            .endpoints
-            .data_rps
-            .map(|rps| Arc::new(build_keyed_limiter(rps, rps / 2 + 1)));
-
-        Self {
-            default_limiter,
-            admin_limiter,
-            data_limiter,
-        }
-    }
-
-    /// Prune every platform limiter's keyed store. The default limiter lives
-    /// for the whole process and keys on client IP, so without a periodic
-    /// sweep it grows one entry per address ever seen — unbounded behind a
-    /// proxy that forwards a caller-influenced identity. Called from the
-    /// supervised limiter-prune task alongside the per-channel limiters.
-    pub fn prune(&self) {
-        for limiter in [
-            Some(&self.default_limiter),
-            self.admin_limiter.as_ref(),
-            self.data_limiter.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            limiter.retain_recent();
-            limiter.shrink_to_fit();
-        }
-    }
-}
+pub use crate::channel::platform_limits::RateLimitState;
 
 /// Resolve the client identity used as the rate-limit key (S8).
 ///
@@ -252,7 +191,7 @@ fn under_a_data_mount(path: &str, data_mounts: &[String]) -> bool {
 /// therefore metered twice: once here against the platform budget, once in
 /// `apply_guards` against its channel's own limit.
 pub async fn rate_limit_middleware(
-    State(state): State<crate::server::state::AppState>,
+    State(state): State<crate::runtime::state::AppState>,
     matched_path: Option<MatchedPath>,
     req: Request,
     next: Next,
@@ -311,6 +250,7 @@ fn rate_limited_response() -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::RateLimitConfig;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
 

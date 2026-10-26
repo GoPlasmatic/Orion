@@ -7,7 +7,7 @@ pub mod rate_limit;
 pub mod request_context;
 pub mod routes;
 pub mod serve;
-pub mod state;
+pub use crate::runtime::state;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
@@ -21,7 +21,7 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 use tower_http::trace::TraceLayer;
 
 use crate::config::CorsConfig;
-use crate::server::state::AppState;
+use crate::runtime::state::AppState;
 
 pub mod tls;
 pub mod trace_context;

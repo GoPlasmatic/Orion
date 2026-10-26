@@ -21,9 +21,9 @@ use crate::extensions::{
     AdmittedRun, AuthorityGrant, BudgetLimits, ConnectionId, ConnectionReference,
     EffectiveConnectionIdentity, ProviderRef, Revision,
 };
+use crate::runtime::state::AppState;
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::extract::OrionJson;
-use crate::server::state::AppState;
 use orion_api::error::field_codes;
 
 fn connection_row_to_dto(row: &ConnectionRevisionRow) -> ConnectionRevisionResponse {
@@ -703,7 +703,7 @@ async fn probe_http(
         .port_or_known_default()
         .ok_or_else(|| "the url has no port".to_string())?;
     if !http.allow_private_urls {
-        crate::validation::ssrf::validate_hostport_not_private(authority_host, port)
+        orion_common::ssrf::validate_hostport_not_private(authority_host, port)
             .await
             .map_err(|e| {
                 format!("{e}; set allow_private_urls on the connection if that is intended")

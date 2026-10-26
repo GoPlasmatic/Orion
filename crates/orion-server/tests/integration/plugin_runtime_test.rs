@@ -124,7 +124,7 @@ fn the_world_imports_nothing() {
     // The security model is a property of the WIT, asserted on the file
     // rather than on a component: a world with an `import` is a different
     // ABI, whatever any component does with it.
-    let wit = include_str!("../../wit/orion-plugin.wit");
+    let wit = include_str!("../../../orion-plugin-host/wit/orion-plugin.wit");
     let world = wit.split("world plugin").nth(1).expect("world");
     assert!(
         !world.contains("import"),

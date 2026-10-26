@@ -69,6 +69,7 @@ workspace = true
 [dependencies]
 orion-common.workspace = true
 orion-engine.workspace = true
+orion-plugin-host.workspace = true
 orion-storage.workspace = true
 orion-definitions.workspace = true
 orion-extension-api.workspace = true
@@ -175,15 +176,6 @@ hashlink = "0.11"
 # Wait-free publication of the ChannelRegistry snapshot: every data-plane
 # request reads it, and the only writer stores a finished value (N17).
 arc-swap = "1"
-# The plugin sandbox (docs/src/concepts/plugins.md): WebAssembly Components behind the
-# `orion:plugin` WIT world. Exactly the features the runtime needs and no
-# default: `runtime` + `cranelift` to compile and run, `component-model` for
-# the world, `async` so a guest call is a future the executor can cancel,
-# `pooling-allocator` for microsecond instantiation, `std`. No `wasi` — the
-# world imports nothing — and none of `wat`, `gc`, `debug`, `cache` or the
-# backtrace symbolisers, which are what a default build's size is made of.
-# Wasmtime's MSRV (stable minus two) is what Orion's now tracks.
-wasmtime = { version = "49", default-features = false, features = ["runtime", "cranelift", "component-model", "async", "pooling-allocator", "std"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
 utoipa = { version = "6", features = ["axum_extras", "chrono"] }
 # The workspace patches this to upstream's unpublished ZIP 9 security fix.

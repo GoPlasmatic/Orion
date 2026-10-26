@@ -55,7 +55,7 @@ pub use orion_common::http_body;
 pub use orion_common::metrics;
 #[doc(hidden)]
 pub use orion_engine::jwt;
-pub mod plugin;
+pub use orion_plugin_host as plugin;
 pub mod queue;
 #[doc(hidden)]
 pub use orion_common::request_context;

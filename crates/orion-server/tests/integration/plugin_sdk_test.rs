@@ -5,7 +5,7 @@
 //! written twice, and this is what keeps them the same file. The SDK's `ABI`
 //! constant and the host's are pinned to each other the same way.
 
-const HOST_WIT: &str = include_str!("../../wit/orion-plugin.wit");
+const HOST_WIT: &str = include_str!("../../../orion-plugin-host/wit/orion-plugin.wit");
 const SDK_WIT: &str = include_str!("../../../orion-plugin-sdk/wit/orion-plugin.wit");
 const SDK_LIB: &str = include_str!("../../../orion-plugin-sdk/src/lib.rs");
 const SDK_MANIFEST: &str = include_str!("../../../orion-plugin-sdk/Cargo.toml");
@@ -15,7 +15,7 @@ fn the_sdk_ships_the_hosts_wit_file_byte_for_byte() {
     assert_eq!(
         HOST_WIT, SDK_WIT,
         "crates/orion-plugin-sdk/wit/orion-plugin.wit must be a copy of \
-         crates/orion-server/wit/orion-plugin.wit — copy it over and commit both"
+         crates/orion-plugin-host/wit/orion-plugin.wit — copy it over and commit both"
     );
 }
 

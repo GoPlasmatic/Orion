@@ -30,7 +30,7 @@ use wasmtime::{Config, Engine, InstanceAllocationStrategy, PoolingAllocationConf
 use super::error::{Category, Failure};
 use super::limits::{HostState, Limits};
 use crate::config::PluginsConfig;
-use crate::extensions::NativeWorkScheduler;
+use orion_common::native_work::NativeWorkScheduler;
 
 wasmtime::component::bindgen!({
     world: "plugin",

@@ -12,7 +12,7 @@ use axum::{Json, Router};
 use serde_json::json;
 use utoipa::OpenApi;
 
-use crate::server::state::AppState;
+use crate::runtime::state::AppState;
 
 /// What the main listener's router should contain, resolved from config by
 /// [`crate::server::build_router`].
@@ -45,7 +45,7 @@ pub struct RouteOptions {
     pub data_mounts: Vec<String>,
 }
 
-pub(crate) use orion_common::platform_routes::{path_claims, shadowed_platform_route};
+pub(crate) use orion_common::platform_routes::path_claims;
 
 /// The main listener's router.
 pub fn api_routes(options: RouteOptions) -> Router<AppState> {

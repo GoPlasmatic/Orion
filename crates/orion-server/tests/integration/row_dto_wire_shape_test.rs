@@ -17,7 +17,7 @@ use tower::ServiceExt;
 
 use crate::common;
 use orion::config::AppConfig;
-use orion::server::state::AppState;
+use orion::runtime::state::AppState;
 
 /// Sorted top-level keys of a JSON object, for exact-set assertions.
 #[track_caller]

@@ -1,0 +1,46 @@
+[package]
+name = "orion-plugin-host"
+# No release cycle of its own: no tag names this crate. crates-publish.yml
+# publishes it as a rider before the crates that depend on it, on the
+# workspace's version.
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The Orion runtime's WebAssembly plugin host: the Wasmtime sandbox and its ceilings, the plugin.toml manifest, plugin functions and the trust check"
+license.workspace = true
+repository.workspace = true
+homepage = "https://docs.goplasmatic.io/"
+readme = "README.md"
+keywords = ["workflow", "runtime", "wasm", "plugins"]
+categories = ["wasm"]
+include = ["src/**", "wit/**", "README.md"]
+
+[lints]
+workspace = true
+
+# The same requirements orion-server states, so the lockfile carries one copy
+# of each.
+[dependencies]
+orion-api = { workspace = true, features = ["utoipa"] }
+orion-common.workspace = true
+orion-engine.workspace = true
+orion-storage.workspace = true
+dataflow-rs = { version = "4.0.1", features = ["datetime", "budget"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
+tracing = "0.1"
+# The plugin sandbox (docs/src/concepts/plugins.md): WebAssembly Components behind the
+# `orion:plugin` WIT world. Exactly the features the runtime needs and no
+# default: `runtime` + `cranelift` to compile and run, `component-model` for
+# the world, `async` so a guest call is a future the executor can cancel,
+# `pooling-allocator` for microsecond instantiation, `std`. No `wasi` — the
+# world imports nothing — and none of `wat`, `gc`, `debug`, `cache` or the
+# backtrace symbolisers, which are what a default build's size is made of.
+# Wasmtime's MSRV (stable minus two) is what Orion's now tracks.
+wasmtime = { version = "49", default-features = false, features = ["runtime", "cranelift", "component-model", "async", "pooling-allocator", "std"] }
+
+[dev-dependencies]
+orion-engine = { workspace = true, features = ["test-support"] }
+tokio = { version = "1", features = ["test-util"] }

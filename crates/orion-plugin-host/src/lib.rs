@@ -9,6 +9,12 @@
 //! See `docs/src/concepts/plugins.md` for the design and
 //! `docs/src/reference/plugin-manifest.md` for the manifest, ABI and limits.
 
+// The crates below under their `crate::` names, so the host's paths read as
+// they did inside `orion-server`.
+pub(crate) use orion_common::{config, crypto, errors, metrics};
+pub(crate) use orion_engine as engine;
+pub(crate) use orion_storage as storage;
+
 pub mod error;
 pub mod handler;
 pub mod limits;

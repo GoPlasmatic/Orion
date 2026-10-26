@@ -464,34 +464,36 @@ mod tests {
     #[tokio::test]
     async fn every_named_plugin_load_break_quarantines_its_channel() {
         use serde_json::json;
-        const COMPONENT: &[u8] = include_bytes!("../../tests/fixtures/plugins/fixture.wasm");
-        const MANIFEST: &str = include_str!("../../tests/fixtures/plugins/fixture.toml");
+        const COMPONENT: &[u8] =
+            include_bytes!("../../orion-server/tests/fixtures/plugins/fixture.wasm");
+        const MANIFEST: &str =
+            include_str!("../../orion-server/tests/fixtures/plugins/fixture.toml");
         let config = crate::config::PluginsConfig {
             enabled: true,
             ..crate::config::PluginsConfig::default()
         };
-        let runtime = crate::plugin::WasmRuntime::new(&config).expect("the sandbox");
+        let runtime = crate::WasmRuntime::new(&config).expect("the sandbox");
         let loaded = runtime.load_blocking(COMPONENT).expect("the fixture loads");
-        let manifest = crate::plugin::Manifest::parse(MANIFEST).expect("the manifest");
+        let manifest = crate::Manifest::parse(MANIFEST).expect("the manifest");
         let binding = crate::engine::PluginBinding {
             id: manifest.name.clone(),
             version: 1,
             digest: loaded.digest.clone(),
-            abi: crate::plugin::ABI.to_string(),
+            abi: crate::ABI.to_string(),
         };
-        let limits = crate::plugin::Limits::effective(&config, &manifest.name);
+        let limits = crate::Limits::effective(&config, &manifest.name);
         let functions = manifest
             .entries(&binding)
             .into_iter()
             .zip(&manifest.functions)
             .map(|(entry, decl)| {
-                let handler = crate::plugin::PluginFunctionHandler::new(
+                let handler = crate::PluginFunctionHandler::new(
                     std::sync::Arc::new(entry),
                     loaded.clone(),
                     runtime.clone(),
                     limits,
                 );
-                crate::plugin::PluginFunction::new(handler, decl.runtime_fields())
+                crate::PluginFunction::new(handler, decl.runtime_fields())
             })
             .collect();
         let engines = Engines::orion_with(exprs_with_a_secret(), functions);

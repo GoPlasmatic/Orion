@@ -14,8 +14,8 @@ use crate::channel::guards;
 use crate::errors::OrionError;
 use crate::server::extract::{OrionBody, OrionQuery, PeerAddr};
 // Referenced by the `#[utoipa::path]` `body = ErrorResponse` annotations below.
+use crate::runtime::state::AppState;
 use crate::server::routes::openapi::ErrorResponse;
-use crate::server::state::AppState;
 
 use sync::process_sync_for_channel;
 

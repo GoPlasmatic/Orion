@@ -89,7 +89,7 @@ fn validate_http_like_fields(
 ) -> Vec<FieldError> {
     let mut out = Vec::new();
     match fields.methods {
-        Some(m) if !m.is_empty() => out.extend(crate::validation::channels::check_http_methods(m)),
+        Some(m) if !m.is_empty() => out.extend(crate::channel::field_checks::check_http_methods(m)),
         _ => out.push(
             FieldError::new(
                 "channel.methods",
@@ -103,7 +103,7 @@ fn validate_http_like_fields(
     }
     match fields.route_pattern {
         Some(r) if !r.trim().is_empty() => {
-            out.extend(crate::validation::channels::check_route_pattern(r))
+            out.extend(crate::channel::field_checks::check_route_pattern(r))
         }
         _ => out.push(
             FieldError::new(
@@ -139,7 +139,7 @@ impl ChannelDriver for CronChannelDriver {
     }
 
     fn validate_fields(&self, fields: &ChannelProtocolFields<'_>) -> Vec<FieldError> {
-        crate::validation::cron::cron_routing_errors(
+        crate::channel::cron_validation::cron_routing_errors(
             fields.channel_type,
             fields.methods,
             fields.route_pattern,
@@ -159,8 +159,8 @@ impl ChannelDriver for CronChannelDriver {
         channel_id: Option<&str>,
     ) -> Vec<FieldError> {
         let mut details =
-            crate::validation::cron::cron_transport_errors(transport_config, channel_id);
-        details.extend(crate::validation::cron::cron_config_errors(config));
+            crate::channel::cron_validation::cron_transport_errors(transport_config, channel_id);
+        details.extend(crate::channel::cron_validation::cron_config_errors(config));
         details
     }
 }
