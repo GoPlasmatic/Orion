@@ -18,14 +18,15 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use super::context::AttemptContext;
-use super::contract::{
+use super::AttemptContext;
+use super::ConnectionPoolCache;
+use super::ProviderBackend;
+use super::resource_pool::VersionedSessionPool;
+use super::{
     ConnectorError, ConnectorOutput, EffectStatus, EffectiveConnectionIdentity, ImplementationKind,
     codes,
 };
-use super::identity::{Digest, ProviderId, ProviderRef};
-use super::provider_backend::ProviderBackend;
-use super::resource_pool::{ConnectionPoolCache, VersionedSessionPool};
+use super::{Digest, ProviderId, ProviderRef};
 
 /// Canonical driver IDs for the five Community foundation Direct Rust providers.
 pub const DRIVER_HTTP: &str = "org.orion.http";
@@ -337,7 +338,7 @@ fn sql_error(driver: &str, e: sqlx::Error, in_flight: EffectStatus) -> Connector
         }
         sqlx::Error::Database(db) => {
             let mut err = ConnectorError::invalid_input(format!("{driver}: {db}"), None);
-            err.origin = super::contract::ErrorOrigin::provider("statement");
+            err.origin = super::ErrorOrigin::provider("statement");
             err
         }
         sqlx::Error::Io(_)
@@ -689,8 +690,7 @@ impl ProviderBackend for HttpProviderBackend {
         operation: &str,
         input: Value,
     ) -> Result<ConnectorOutput, ConnectorError> {
-        ctx.run_context()
-            .check_live(ctx.invocation().effect_status())?;
+        ctx.check_live()?;
 
         let method = match operation.to_ascii_lowercase().as_str() {
             "get" | "post" | "put" | "patch" | "delete" => operation.to_ascii_uppercase(),
@@ -704,7 +704,7 @@ impl ProviderBackend for HttpProviderBackend {
                     codes::OPERATION_FORBIDDEN,
                     "dispatch",
                     format!("Unsupported HTTP operation '{other}'"),
-                    ctx.invocation().effect_status(),
+                    ctx.effect_status(),
                 ));
             }
         };
@@ -725,7 +725,7 @@ impl ProviderBackend for HttpProviderBackend {
             ));
         }
 
-        let identity = ctx.invocation().effective_identity();
+        let identity = ctx.effective_identity();
         let conn = governed_connection(self.deployments.as_ref(), identity);
         let url = conn.as_ref().and_then(|conn| {
             conn.public_config
@@ -771,7 +771,7 @@ impl ProviderBackend for HttpProviderBackend {
                 codes::CAPABILITY_INVALID,
                 "ssrf_validation",
                 format!("Outbound HTTP target blocked by SSRF guard: {ssrf_reason}"),
-                ctx.invocation().effect_status(),
+                ctx.effect_status(),
             ));
         }
 
@@ -792,7 +792,7 @@ impl ProviderBackend for HttpProviderBackend {
         {
             req_builder = req_builder.json(body_val);
         }
-        ctx.invocation().record_effect(EffectStatus::Unknown);
+        ctx.record_effect(EffectStatus::Unknown);
         let resp = req_builder.send().await.map_err(|e| {
             ConnectorError::unavailable(
                 format!("HTTP request failed: {}", e.without_url()),
@@ -808,7 +808,7 @@ impl ProviderBackend for HttpProviderBackend {
                     EffectStatus::Completed,
                 )
             })?;
-        ctx.invocation().record_effect(EffectStatus::Completed);
+        ctx.record_effect(EffectStatus::Completed);
         let parsed_body: Value = serde_json::from_slice(&bytes)
             .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));
         let mut metadata = BTreeMap::new();
@@ -985,10 +985,9 @@ impl ProviderBackend for PostgresProviderBackend {
         operation: &str,
         input: Value,
     ) -> Result<ConnectorOutput, ConnectorError> {
-        ctx.run_context()
-            .check_live(ctx.invocation().effect_status())?;
+        ctx.check_live()?;
 
-        let identity = ctx.invocation().effective_identity();
+        let identity = ctx.effective_identity();
         let handle = self
             .sessions
             .acquire(identity, || async move {
@@ -1005,18 +1004,18 @@ impl ProviderBackend for PostgresProviderBackend {
                 codes::OPERATION_FORBIDDEN,
                 "dispatch",
                 format!("Unsupported PostgreSQL operation '{operation}'"),
-                ctx.invocation().effect_status(),
+                ctx.effect_status(),
             ));
         };
         refuse_input_target(&input, &["connection_string"])?;
         let statement = sql_statement(&input, sql_op.statement_keys(), DRIVER_POSTGRESQL)?;
         let params = sql_params(&input)?;
         let conn_str = self.resolve_connection_string(identity).await?;
-        ctx.invocation().record_effect(EffectStatus::Unknown);
+        ctx.record_effect(EffectStatus::Unknown);
         let data = self
             .execute_live_postgres(&conn_key, &conn_str, sql_op, statement, &params)
             .await?;
-        ctx.invocation().record_effect(EffectStatus::Completed);
+        ctx.record_effect(EffectStatus::Completed);
         let mut metadata = BTreeMap::new();
         metadata.insert("driver".to_string(), json!(DRIVER_POSTGRESQL));
         metadata.insert("session".to_string(), json!(handle.session()));
@@ -1283,10 +1282,9 @@ impl ProviderBackend for SqliteProviderBackend {
         operation: &str,
         input: Value,
     ) -> Result<ConnectorOutput, ConnectorError> {
-        ctx.run_context()
-            .check_live(ctx.invocation().effect_status())?;
+        ctx.check_live()?;
 
-        let identity = ctx.invocation().effective_identity();
+        let identity = ctx.effective_identity();
         let handle = self
             .sessions
             .acquire(identity, || async move {
@@ -1303,14 +1301,14 @@ impl ProviderBackend for SqliteProviderBackend {
                 codes::OPERATION_FORBIDDEN,
                 "dispatch",
                 format!("Unsupported SQLite operation '{operation}'"),
-                ctx.invocation().effect_status(),
+                ctx.effect_status(),
             ));
         };
         refuse_input_target(&input, &["connection_string"])?;
         let statement = sql_statement(&input, sql_op.statement_keys(), DRIVER_SQLITE)?;
         let params = sql_params(&input)?;
         let target_conn = self.resolve_connection_string(identity).await?;
-        ctx.invocation().record_effect(EffectStatus::Unknown);
+        ctx.record_effect(EffectStatus::Unknown);
         let data = self
             .execute_live_sqlite_for_connection(
                 Some(&conn_key),
@@ -1320,7 +1318,7 @@ impl ProviderBackend for SqliteProviderBackend {
                 &params,
             )
             .await?;
-        ctx.invocation().record_effect(EffectStatus::Completed);
+        ctx.record_effect(EffectStatus::Completed);
         let mut metadata = BTreeMap::new();
         metadata.insert("driver".to_string(), json!(DRIVER_SQLITE));
         metadata.insert("session".to_string(), json!(handle.session()));
@@ -1490,10 +1488,9 @@ impl ProviderBackend for MysqlProviderBackend {
         operation: &str,
         input: Value,
     ) -> Result<ConnectorOutput, ConnectorError> {
-        ctx.run_context()
-            .check_live(ctx.invocation().effect_status())?;
+        ctx.check_live()?;
 
-        let identity = ctx.invocation().effective_identity();
+        let identity = ctx.effective_identity();
         let handle = self
             .sessions
             .acquire(identity, || async move {
@@ -1510,18 +1507,18 @@ impl ProviderBackend for MysqlProviderBackend {
                 codes::OPERATION_FORBIDDEN,
                 "dispatch",
                 format!("Unsupported MySQL operation '{operation}'"),
-                ctx.invocation().effect_status(),
+                ctx.effect_status(),
             ));
         };
         refuse_input_target(&input, &["connection_string"])?;
         let statement = sql_statement(&input, sql_op.statement_keys(), DRIVER_MYSQL)?;
         let params = sql_params(&input)?;
         let conn_str = self.resolve_connection_string(identity).await?;
-        ctx.invocation().record_effect(EffectStatus::Unknown);
+        ctx.record_effect(EffectStatus::Unknown);
         let data = self
             .execute_live_mysql(&conn_key, &conn_str, sql_op, statement, &params)
             .await?;
-        ctx.invocation().record_effect(EffectStatus::Completed);
+        ctx.record_effect(EffectStatus::Completed);
         let mut metadata = BTreeMap::new();
         metadata.insert("driver".to_string(), json!(DRIVER_MYSQL));
         metadata.insert("session".to_string(), json!(handle.session()));
@@ -1735,9 +1732,8 @@ impl ProviderBackend for MemoryCacheProviderBackend {
         operation: &str,
         input: Value,
     ) -> Result<ConnectorOutput, ConnectorError> {
-        ctx.run_context()
-            .check_live(ctx.invocation().effect_status())?;
-        let identity = ctx.invocation().effective_identity();
+        ctx.check_live()?;
+        let identity = ctx.effective_identity();
 
         let Some(key) = input.get("key").and_then(Value::as_str) else {
             return Err(ConnectorError::invalid_input(
@@ -1810,7 +1806,7 @@ impl ProviderBackend for MemoryCacheProviderBackend {
                 codes::OPERATION_FORBIDDEN,
                 "dispatch",
                 format!("Unsupported memory-cache operation '{other}'"),
-                ctx.invocation().effect_status(),
+                ctx.effect_status(),
             )),
         }
     }

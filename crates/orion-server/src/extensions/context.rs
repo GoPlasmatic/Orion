@@ -13,8 +13,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use super::contract::{
-    ConnectionReference, ConnectorError, EffectStatus, EffectiveConnectionIdentity, codes,
+use orion_extension_api::{
+    AttemptContext, AttemptScope, ConnectionReference, ConnectorError, EffectStatus,
+    EffectiveConnectionIdentity, codes,
 };
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -803,10 +804,10 @@ impl Invocation {
         let _lease = reservation.commit_started();
 
         let attempt_number = self.attempt_counter.fetch_add(1, Ordering::SeqCst) + 1;
-        Ok(AttemptContext {
-            invocation: self.clone(),
-            attempt_number: u32::try_from(attempt_number).unwrap_or(u32::MAX),
-        })
+        Ok(AttemptContext::new(
+            Arc::new(self.clone()),
+            u32::try_from(attempt_number).unwrap_or(u32::MAX),
+        ))
     }
 
     /// Spawn a child dependency invocation declared in the workflow-group manifest (`V2-05.1`).
@@ -898,24 +899,58 @@ impl Invocation {
     }
 }
 
-/// Context for a single provider dispatch attempt (`V2-05.1`).
-#[derive(Debug, Clone)]
-pub struct AttemptContext {
-    invocation: Invocation,
-    attempt_number: u32,
-}
-
-impl AttemptContext {
-    pub fn invocation(&self) -> &Invocation {
-        &self.invocation
+/// The node's invocation state is what a provider's [`AttemptContext`] views.
+impl AttemptScope for Invocation {
+    fn run_id(&self) -> &str {
+        self.context.run_id()
     }
 
-    pub fn attempt_number(&self) -> u32 {
-        self.attempt_number
+    fn generation_id(&self) -> u64 {
+        self.context.generation_id()
     }
 
-    pub fn run_context(&self) -> &RunContext {
-        self.invocation.context()
+    fn deadline(&self) -> Instant {
+        self.context.deadline()
+    }
+
+    fn depth(&self) -> u32 {
+        self.context.depth()
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.context.cancellation().is_cancelled()
+    }
+
+    fn invocation_id(&self) -> u64 {
+        self.invocation_id
+    }
+
+    fn parent_invocation_id(&self) -> Option<u64> {
+        self.parent_invocation_id
+    }
+
+    fn connection(&self) -> &ConnectionReference {
+        &self.connection
+    }
+
+    fn effective_identity(&self) -> &EffectiveConnectionIdentity {
+        &self.effective_identity
+    }
+
+    fn operation(&self) -> &str {
+        &self.operation
+    }
+
+    fn idempotency_key(&self) -> Option<&str> {
+        self.idempotency_key.as_deref()
+    }
+
+    fn effect_status(&self) -> EffectStatus {
+        Invocation::effect_status(self)
+    }
+
+    fn record_effect(&self, observed: EffectStatus) -> EffectStatus {
+        Invocation::record_effect(self, observed)
     }
 }
 

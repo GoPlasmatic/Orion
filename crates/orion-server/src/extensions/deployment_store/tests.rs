@@ -159,7 +159,9 @@ fn typed_refs_disjoint_rollouts_and_canonical_manifest_verification() {
         digest: crate::crypto::Digest::from_sha256([0; 32]),
     };
     assert_eq!(
-        bad_provider.validate().unwrap_err().code,
+        super::manifest::validate_provider_ref(&bad_provider)
+            .unwrap_err()
+            .code,
         "PROVIDER_REF_INVALID"
     );
 

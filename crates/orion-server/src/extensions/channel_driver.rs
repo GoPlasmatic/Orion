@@ -27,7 +27,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use orion_extension_api::{ChannelDriver, ChannelDriverCapabilities, ChannelProtocolFields};
 use serde_json::Value;
 
 use crate::errors::FieldError;
@@ -38,52 +38,6 @@ pub const PROTOCOL_REST: &str = "rest";
 pub const PROTOCOL_HTTP: &str = "http";
 /// The `"cron"` protocol id.
 pub const PROTOCOL_CRON: &str = "cron";
-
-/// Capabilities declared by a native Rust [`ChannelDriver`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChannelDriverCapabilities {
-    pub supports_sync: bool,
-    pub supports_async: bool,
-    pub registers_http_routes: bool,
-    pub supports_oauth2_login: bool,
-}
-
-/// Protocol-conditional fields evaluated during channel validation (`V2-11.1`).
-#[derive(Debug, Clone)]
-pub struct ChannelProtocolFields<'a> {
-    pub protocol: &'a str,
-    pub channel_type: Option<&'a str>,
-    pub methods: Option<&'a [String]>,
-    pub route_pattern: Option<&'a str>,
-    pub topic: Option<&'a str>,
-    pub consumer_group: Option<&'a str>,
-}
-
-/// Native Rust channel driver interface (`V2-11.1`).
-///
-/// Implemented by the Community drivers (`rest`, `http`, `cron`) and by any
-/// driver an edition registers on its composition root.
-pub trait ChannelDriver: Send + Sync {
-    /// Lowercase wire protocol identifier (e.g. `"rest"`, `"http"`, `"cron"`).
-    fn protocol_id(&self) -> &'static str;
-
-    /// Transport and routing capabilities supported by this channel driver.
-    fn capabilities(&self) -> ChannelDriverCapabilities;
-
-    /// Validate protocol-conditional fields (`methods`, `route_pattern`, `topic`, etc.).
-    fn validate_fields(&self, fields: &ChannelProtocolFields<'_>) -> Vec<FieldError>;
-
-    /// Validate protocol-specific `transport_config` and `config` combinations,
-    /// one [`FieldError`] per problem (paths rooted at `channel.`).
-    fn validate_transport(
-        &self,
-        _transport_config: &Value,
-        _config: &Value,
-        _channel_id: Option<&str>,
-    ) -> Vec<FieldError> {
-        Vec::new()
-    }
-}
 
 /// Community `"rest"` channel driver.
 pub struct RestChannelDriver;

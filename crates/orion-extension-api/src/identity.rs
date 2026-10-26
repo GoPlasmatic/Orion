@@ -1,8 +1,8 @@
-//! The identity vocabulary of providers and connections (`V2-03.1`, `V2-05.4`).
+//! The identity vocabulary of providers and connections.
 //!
 //! - [`Digest`]: a content digest, `sha256:<64 lowercase hex>`, checked once
 //!   where the text comes in and trusted after (defined in `orion-api`, so
-//!   the CLI checks a digest the same way).
+//!   the CLI checks a digest the same way, and re-exported at this crate's root).
 //! - [`ProviderId`] and [`ConnectionId`]: the two names a call is made
 //!   under. They are not validated here (their rules belong to whoever
 //!   accepts them); the types exist so one is never passed for the other.
@@ -26,7 +26,7 @@ use std::ops::Deref;
 
 use serde::{Deserialize, Serialize};
 
-pub use orion_api::{Digest, DigestError};
+use orion_api::Digest;
 
 macro_rules! string_id {
     ($(#[$meta:meta])* $name:ident) => {
@@ -215,7 +215,7 @@ impl fmt::Display for Revision {
 /// One type for every place a provider is named: a deployment manifest's
 /// `providers`, an admission request, and the connection a running call is
 /// bound to. A built-in driver has no uploaded package; its reference is
-/// the synthetic one [`super::foundation::builtin_provider_ref`] gives it.
+/// a synthetic one the node gives it (its built-in digest).
 /// The field order is the canonical sort order of a manifest's providers.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ProviderRef {

@@ -68,6 +68,7 @@ workspace = true
 
 [dependencies]
 orion-definitions.workspace = true
+orion-extension-api.workspace = true
 # dataflow-rs 4 selects the JSONLogic extension families (string, array,
 # math, control, error handling, object) on its ExprEngineBuilder at runtime;
 # only `datetime` still needs a Cargo feature, and `budget` enables the

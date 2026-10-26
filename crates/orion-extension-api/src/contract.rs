@@ -1,4 +1,4 @@
-//! Normalized connector invocation, identity, result and error contract (`V2-10.1`).
+//! The connector call contract: what a call answers, and how it fails.
 //!
 //! All three connector implementation kinds (`rust`, `workflow`, `wasm`) share
 //! this semantic contract: a call answers `Result<`[`ConnectorOutput`]`,
@@ -13,15 +13,10 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use super::identity::{
-    ConnectionId, ConnectionReference, Digest, EffectiveConnectionIdentity, ProviderId,
-    ProviderRef, Revision,
-};
-
 /// The three supported connector implementation kinds in Orion v2.
 ///
 /// Channels are intentionally excluded here: channels are native Rust ingress
-/// and scheduler drivers ([`super::ChannelDriver`]), whereas connectors may be
+/// and scheduler drivers ([`crate::ChannelDriver`]), whereas connectors may be
 /// packaged as Direct Rust, Workflow-Group composites, or Wasm components.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

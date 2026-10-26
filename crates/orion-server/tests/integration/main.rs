@@ -66,6 +66,7 @@ mod dynamic_inputs_test;
 mod engine_budget_test;
 mod error_envelope_test;
 mod error_paths_test;
+mod extension_api_test;
 mod field_codes_drift_test;
 mod fmt_cases_test;
 mod fmt_cli_test;

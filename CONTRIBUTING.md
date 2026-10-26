@@ -40,12 +40,14 @@ Run `cargo clippy` and `cargo fmt` before committing — both must pass cleanly.
 
 ## Project Structure
 
-The repo is a cargo workspace of five crates: `crates/orion-server` (the
-runtime), `crates/orion-cli` (the CLI — see its own `CLAUDE.md`), two shared
-library crates — `crates/orion-api` (the wire contract) and
-`crates/orion-client` (the HTTP transport) — and `crates/orion-plugin-sdk`
-(the guest crate a plugin author links against; it depends on nothing else
-here). The end-to-end suite that drives the server with the CLI lives at the
+The repo is a cargo workspace of seven crates: `crates/orion-server` (the
+runtime), `crates/orion-cli` (the CLI — see its own `CLAUDE.md`), three shared
+library crates — `crates/orion-api` (the wire contract),
+`crates/orion-client` (the HTTP transport) and `crates/orion-definitions`
+(the static definition primitives) — `crates/orion-extension-api` (the
+traits and contract types an edition implements against) and
+`crates/orion-plugin-sdk` (the guest crate a plugin author links against; it
+depends on nothing else here). The end-to-end suite that drives the server with the CLI lives at the
 repo root (`tests/e2e/`). Bare cargo commands target the server via
 `default-members`.
 
@@ -310,12 +312,12 @@ rider crates only — `orion-cli` ships through the installers, the Homebrew
 tap and GHCR, because its crates.io name belongs to an unrelated crate. The
 secrets they need and the full procedure are in `RELEASING.md`.
 
-1. **Version bump.** All five crates share `workspace.package.version` in the
-   root `Cargo.toml`; `cargo release <level>` rewrites it and the two
-   `[workspace.dependencies]` requirements together, then tags. A bare
+1. **Version bump.** All seven crates share `workspace.package.version` in the
+   root `Cargo.toml`; `cargo release <level>` rewrites it and every
+   `[workspace.dependencies]` requirement together, then tags. A bare
    `v`-prefixed tag (`v1.0.0`) releases every package at that version, and
    lockstep is what keeps the rider crates (`orion-api`, `orion-client`,
-   `orion-plugin-sdk`) publishable — their version always moves with a
+   `orion-definitions`, `orion-extension-api`, `orion-plugin-sdk`) publishable — their version always moves with a
    release, so the skip-if-present rider publish can never leave
    `orion-server` resolving older crates.io content. The Helm chart needs **no** manual bump —
    `docker-release.yml` stamps both the chart version and `appVersion` from

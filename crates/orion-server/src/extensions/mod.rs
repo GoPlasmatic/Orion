@@ -75,10 +75,8 @@ pub mod channel_driver;
 #[cfg(test)]
 mod community_assembly;
 pub mod context;
-pub mod contract;
 pub mod deployment_store;
 pub mod foundation;
-pub mod identity;
 pub mod owned_native_work;
 pub mod package_identity;
 pub mod provider_backend;
@@ -90,22 +88,24 @@ pub mod workflow_provider;
 
 use std::sync::Arc;
 
-pub use admission::{
-    Admission, AdmissionRejection, AdmissionVerdict, CommunityPackageVerifier, EditionTier,
-    PackageAdmissionRequest, PackageVerifier, RevocationLedger,
+pub use orion_extension_api::{
+    AdmissionRejection, AdmissionVerdict, AttemptContext, AttemptScope, ChannelDriver,
+    ChannelDriverCapabilities, ChannelProtocolFields, CompositionError, ConnectionId,
+    ConnectionPoolCache, ConnectionReference, ConnectorError, ConnectorErrorClass, ConnectorOutput,
+    Digest, DigestError, DuplicateProvider, EditionTier, EffectStatus, EffectiveConnectionIdentity,
+    ErrorOrigin, ImplementationKind, OriginKind, PackageAdmissionRequest, PackageVerifier,
+    PoolEntry, ProviderBackend, ProviderId, ProviderRef, Registrar, RetryAdvice, Revision,
+    SourceBatchItem, SourceConnectorFacet, SourcePollBatch, SourceSettlement, codes,
 };
+
+pub use admission::{Admission, CommunityPackageVerifier, RevocationLedger};
 pub use channel_driver::{
-    ChannelDriver, ChannelDriverCapabilities, ChannelDriverRegistry, ChannelProtocolFields,
-    CronChannelDriver, HttpChannelDriver, PROTOCOL_CRON, PROTOCOL_HTTP, PROTOCOL_REST,
-    RestChannelDriver, community_drivers,
+    ChannelDriverRegistry, CronChannelDriver, HttpChannelDriver, PROTOCOL_CRON, PROTOCOL_HTTP,
+    PROTOCOL_REST, RestChannelDriver, community_drivers,
 };
 pub use context::{
-    AdmittedRun, AttemptContext, AuthorityGrant, BudgetCounters, BudgetLimits, BudgetScope,
-    CancellationScope, ChargeVector, Invocation, Reservation, RunContext, WorkLease,
-};
-pub use contract::{
-    ConnectorError, ConnectorErrorClass, ConnectorOutput, EffectStatus, ErrorOrigin,
-    ImplementationKind, OriginKind, RetryAdvice, codes,
+    AdmittedRun, AuthorityGrant, BudgetCounters, BudgetLimits, BudgetScope, CancellationScope,
+    ChargeVector, Invocation, Reservation, RunContext, WorkLease,
 };
 pub use deployment_store::{
     ArchiveEntryInput, ArtifactObjectRow, ArtifactState, CandidatePlan, CanonicalManifest,
@@ -119,10 +119,6 @@ pub use foundation::{
     MysqlProviderBackend, PartitionedMemoryCache, PostgresProviderBackend, SqlLimits,
     SqliteProviderBackend, register_community_foundation,
 };
-pub use identity::{
-    ConnectionId, ConnectionReference, Digest, DigestError, EffectiveConnectionIdentity,
-    ProviderId, ProviderRef, Revision,
-};
 pub use owned_native_work::{
     NativeJobInfo, NativeJobState, NativeWorkError, NativeWorkScheduler, OwnedPermit,
     ShutdownDrainReport,
@@ -133,18 +129,13 @@ pub use package_identity::{
     canonical_bytes, check_dependency_lock, sha256_digest, sha256_hex, signature_signing_bytes,
     validate_payload_path, verify_inventory,
 };
-pub use provider_backend::{
-    DuplicateProvider, ProviderBackend, ProviderRegistry, SourceBatchItem, SourceConnectorFacet,
-    SourcePollBatch, SourceSettlement,
-};
+pub use provider_backend::ProviderRegistry;
 pub use reconciler::{
     CandidateBuildIssue, ConvergenceReport, ConvergenceTarget, DEFAULT_CONVERGENCE_TIMEOUT_MS,
     DEFAULT_SECURITY_LEASE_MS, MAX_BACKOFF_MS, MIN_BACKOFF_MS, NodeIdentity, NodeReconciler,
     QuarantinedEntity, RuntimeNodeStatus, compute_reconcile_backoff_ms,
 };
-pub use resource_pool::{
-    ConnectionPoolCache, PoolEntry, ResourcePoolRegistry, SessionHandle, VersionedSessionPool,
-};
+pub use resource_pool::{ResourcePoolRegistry, SessionHandle, VersionedSessionPool};
 pub use schema_profile::{
     CompiledSchemaBundle, DIALECT_URI, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, PROFILE_ID,
     SchemaProfileFinding, SchemaProfileLimits, check_manifest_bundle, parse_json_pointer,
@@ -157,37 +148,6 @@ pub use source_runner::{
 pub use workflow_provider::{
     PackageDependency, PackageProblem, WorkflowHost, WorkflowPackage, WorkflowProviderBackend,
 };
-
-/// A second registration of something the composition already holds. Every
-/// extension point is keyed (a channel protocol, a provider's
-/// `(kind, driver_id)`, a pool's `cache_id`), and a node serves one of each.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CompositionError {
-    /// Two channel drivers for one protocol (compared case-insensitively).
-    DuplicateChannelDriver(String),
-    /// Two provider backends under one `(kind, driver_id)`.
-    DuplicateProvider(DuplicateProvider),
-    /// Two connection-pool caches with one `cache_id`.
-    DuplicatePool(String),
-}
-
-impl std::fmt::Display for CompositionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::DuplicateChannelDriver(protocol) => write!(
-                f,
-                "composition: a channel driver for protocol '{protocol}' is already registered"
-            ),
-            Self::DuplicateProvider(dup) => write!(f, "composition: {dup}"),
-            Self::DuplicatePool(id) => write!(
-                f,
-                "composition: a connection-pool cache '{id}' is already registered"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for CompositionError {}
 
 /// What a provider setup ([`CompositionBuilder::with_providers`]) is handed:
 /// the node services a backend binds to, and where to put what it builds.
@@ -371,6 +331,13 @@ impl CompositionBuilder {
         self
     }
 
+    /// Apply an edition's registration code, written against
+    /// [`Registrar`] (`orion-extension-api`) rather than this builder.
+    pub fn with_extension(mut self, register: impl FnOnce(&mut dyn Registrar)) -> Self {
+        register(&mut self);
+        self
+    }
+
     /// Freeze the composition over the node's services: run the provider
     /// setups, then key every driver, provider and pool. The first
     /// duplicate is the error.
@@ -432,6 +399,30 @@ impl CompositionBuilder {
             ledger: Arc::new(RevocationLedger::new()),
             foundation: FoundationOptions::default(),
         })
+    }
+}
+
+/// The registration surface an edition's code is written against (it needs
+/// `orion-extension-api` alone): each call is the matching `with_*`.
+impl Registrar for CompositionBuilder {
+    fn edition(&mut self, edition: EditionTier) {
+        self.edition = edition;
+    }
+
+    fn channel_driver(&mut self, driver: Arc<dyn ChannelDriver>) {
+        self.channels.push(driver);
+    }
+
+    fn provider_backend(&mut self, backend: Arc<dyn ProviderBackend>) {
+        self.providers.push(backend);
+    }
+
+    fn resource_pool(&mut self, pool: PoolEntry) {
+        self.pools.push(pool);
+    }
+
+    fn package_verifier(&mut self, verifier: Arc<dyn PackageVerifier>) {
+        self.verifier = verifier;
     }
 }
 
@@ -640,6 +631,44 @@ mod tests {
         assert_eq!(
             comp.admission().verify_package(&req).unwrap_err().code,
             "PROVIDER_REVOKED"
+        );
+    }
+
+    /// An edition's registration code, written against the extension API
+    /// alone, composes the node like the builder's own methods.
+    fn edition_extension(node: &mut dyn Registrar) {
+        node.edition(EditionTier::Enterprise);
+        node.package_verifier(Arc::new(AdmitAll));
+        node.resource_pool(PoolEntry::of(Arc::new(VersionedSessionPool::<u8>::new(
+            "com.example.pool",
+            1,
+        ))));
+    }
+
+    #[test]
+    fn an_edition_registers_through_the_extension_api() {
+        let comp = CompositionRoot::community()
+            .with_extension(edition_extension)
+            .build_in_memory()
+            .expect("composes");
+        assert_eq!(comp.edition(), EditionTier::Enterprise);
+        assert_eq!(comp.admission().policy_id(), "test.admit-all/1");
+        assert!(
+            comp.pools()
+                .get_by_id::<VersionedSessionPool<u8>>("com.example.pool")
+                .is_some()
+        );
+
+        // A duplicate through the API is the same build error.
+        let dup = CompositionRoot::community()
+            .with_extension(|node: &mut dyn Registrar| {
+                node.channel_driver(Arc::new(CronChannelDriver));
+            })
+            .build_in_memory()
+            .unwrap_err();
+        assert_eq!(
+            dup,
+            CompositionError::DuplicateChannelDriver("cron".to_string())
         );
     }
 

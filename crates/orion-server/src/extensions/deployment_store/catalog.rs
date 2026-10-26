@@ -31,7 +31,7 @@ use super::{
     ConnectionRevisionRow, DeploymentError, DeploymentRevisionRow, ImmutableDeploymentStore,
     ProviderAdmissionRow, ProviderPackageRow, rules, sql,
 };
-use crate::extensions::identity::Digest;
+use crate::extensions::Digest;
 use crate::extensions::schema_profile::CompiledSchemaBundle;
 use crate::storage::{DbPool, DbTransaction};
 

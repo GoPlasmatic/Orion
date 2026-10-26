@@ -29,12 +29,12 @@ pub use manifest::{
     validate_rollout_partition,
 };
 
-use super::contract::ImplementationKind;
-use super::identity::{
-    ConnectionId, ConnectionReference, Digest, EffectiveConnectionIdentity, ProviderId, Revision,
-};
+use super::ImplementationKind;
 use super::package_identity::{canonical_bytes, sha256_digest};
 use super::schema_profile::{CompiledSchemaBundle, SchemaProfileFinding};
+use super::{
+    ConnectionId, ConnectionReference, Digest, EffectiveConnectionIdentity, ProviderId, Revision,
+};
 use error::DeploymentErrorKind as Kind;
 
 /// Which of an uploaded package's declared schemas an instance is checked

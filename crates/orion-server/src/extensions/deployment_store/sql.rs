@@ -14,7 +14,7 @@ use super::{
     ArtifactState, ConnectionRevisionRow, DeploymentError, DeploymentErrorKind, DeploymentReceipt,
     DeploymentRevisionRow, ProviderAdmissionRow, ProviderPackageRow,
 };
-use crate::extensions::identity::{Digest, Revision};
+use crate::extensions::{Digest, Revision};
 use crate::storage::schema::{
     ArtifactObjects, ConnectionRevisions, DeploymentHead, DeploymentMembers, DeploymentOperations,
     DeploymentRevisions, ProviderAdmissions, ProviderPackages,

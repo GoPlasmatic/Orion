@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{DeploymentError, DeploymentErrorKind};
-pub use crate::extensions::identity::ProviderRef;
-use crate::extensions::identity::{Digest, Revision};
+pub use crate::extensions::ProviderRef;
 use crate::extensions::package_identity::canonical_bytes;
+use crate::extensions::{Digest, Revision};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -54,25 +54,23 @@ impl EntityRef {
     }
 }
 
-impl ProviderRef {
-    /// A manifest's provider entry: a publisher and an id, and a semantic
-    /// version (not an integer revision or a digest). The digest's shape is
-    /// the type's.
-    pub fn validate(&self) -> Result<(), DeploymentError> {
-        if self.publisher.is_empty() || self.provider_id.is_empty() {
-            return Err(DeploymentError::new(
-                DeploymentErrorKind::ProviderRefInvalid,
-                "publisher and provider_id are required",
-            ));
-        }
-        if !self.version.contains('.') || self.version.starts_with(Digest::PREFIX) {
-            return Err(DeploymentError::new(
-                DeploymentErrorKind::ProviderRefInvalid,
-                "provider version must be a semantic version string, not an integer revision or digest",
-            ));
-        }
-        Ok(())
+/// A manifest's provider entry: a publisher and an id, and a semantic
+/// version (not an integer revision or a digest). The digest's shape is the
+/// type's.
+pub fn validate_provider_ref(provider: &ProviderRef) -> Result<(), DeploymentError> {
+    if provider.publisher.is_empty() || provider.provider_id.is_empty() {
+        return Err(DeploymentError::new(
+            DeploymentErrorKind::ProviderRefInvalid,
+            "publisher and provider_id are required",
+        ));
     }
+    if !provider.version.contains('.') || provider.version.starts_with(Digest::PREFIX) {
+        return Err(DeploymentError::new(
+            DeploymentErrorKind::ProviderRefInvalid,
+            "provider version must be a semantic version string, not an integer revision or digest",
+        ));
+    }
+    Ok(())
 }
 
 /// Disjoint half-open rollout bucket interval `[start_bucket, end_bucket)` within `0..100` (`V2-03.1`).
@@ -179,7 +177,7 @@ impl CanonicalManifest {
         let mut provider_keys = HashSet::new();
         let mut provider_digests = HashSet::new();
         for p in &self.providers {
-            p.validate()?;
+            validate_provider_ref(p)?;
             if !provider_keys.insert((
                 p.publisher.clone(),
                 p.provider_id.clone(),

@@ -19,7 +19,7 @@
 use serde::Serialize;
 
 use super::Composition;
-use super::contract::ImplementationKind;
+use super::ImplementationKind;
 use super::foundation::COMMUNITY_RUST_DRIVERS;
 
 /// Canonical Community Edition native Rust channel driver protocol IDs (`DEC-003`).

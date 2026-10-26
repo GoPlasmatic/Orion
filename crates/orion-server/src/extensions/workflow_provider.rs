@@ -53,15 +53,17 @@ use dataflow_rs::program::{AuthoredPath, IssueCode};
 use dataflow_rs::{Ctx, Function, Issue, Outcome};
 use serde_json::{Value, json};
 
-use super::context::{AttemptContext, Invocation};
-use super::contract::{
-    ConnectionReference, ConnectorError, ConnectorErrorClass, ConnectorOutput, EffectStatus,
-    ErrorOrigin, ImplementationKind, ProviderRef, RetryAdvice, codes,
-};
+use super::AttemptContext;
+use super::ProviderBackend;
+use super::context::Invocation;
 use super::deployment_store::{
     ConnectionRevisionRow, ImmutableDeploymentStore, PackageSchema, ProviderPackageRow,
 };
-use super::provider_backend::{ProviderBackend, ProviderRegistry};
+use super::provider_backend::ProviderRegistry;
+use super::{
+    ConnectionReference, ConnectorError, ConnectorErrorClass, ConnectorOutput, EffectStatus,
+    ErrorOrigin, ImplementationKind, ProviderRef, RetryAdvice, codes,
+};
 
 /// The Orion functions a package workflow may name. `crypto`, `jwt_sign` and
 /// `jwt_verify` need no connection; `connector_call` is the package's own,
@@ -790,8 +792,8 @@ impl ProviderBackend for WorkflowProviderBackend {
         operation: &str,
         input: Value,
     ) -> Result<ConnectorOutput, ConnectorError> {
-        let effect = ctx.invocation().effect_status();
-        ctx.run_context().check_live(effect)?;
+        let effect = ctx.effect_status();
+        ctx.check_live()?;
         if !self.package.entries.contains_key(operation) {
             return Err(ConnectorError::forbidden(
                 codes::OPERATION_FORBIDDEN,
@@ -813,10 +815,17 @@ impl ProviderBackend for WorkflowProviderBackend {
                 )
             })?;
         let engine = self.engine_for(&generation)?;
-        let remaining = ctx
-            .run_context()
-            .deadline()
-            .saturating_duration_since(Instant::now());
+        // The package's own connector calls are dependencies of this
+        // invocation: they run under its authority and share its effect
+        // ledger, so the node's invocation is what the scope carries.
+        let invocation = ctx.scope::<Invocation>().cloned().ok_or_else(|| {
+            ConnectorError::contract_violation(
+                "dispatch",
+                "a workflow package runs only on an invocation this node started",
+                effect,
+            )
+        })?;
+        let remaining = ctx.deadline().saturating_duration_since(Instant::now());
         let opts = crate::engine::ExecOpts {
             timeout_ms: Some(
                 u64::try_from(remaining.as_millis())
@@ -827,7 +836,7 @@ impl ProviderBackend for WorkflowProviderBackend {
         };
         let execution = PACKAGE_INVOCATION
             .scope(
-                ctx.invocation().clone(),
+                invocation,
                 crate::engine::execute::execute_on(
                     &engine,
                     operation,
@@ -838,7 +847,7 @@ impl ProviderBackend for WorkflowProviderBackend {
                 ),
             )
             .await;
-        let effect = ctx.invocation().effect_status();
+        let effect = ctx.effect_status();
         match execution.outcome {
             crate::engine::RunOutcome::Ok => {
                 let mut metadata = BTreeMap::new();
@@ -1012,7 +1021,7 @@ async fn dispatch_dependency(
 struct DependencyTarget {
     kind: ImplementationKind,
     backend_id: String,
-    identity: super::contract::EffectiveConnectionIdentity,
+    identity: super::EffectiveConnectionIdentity,
 }
 
 fn dependency_target(
@@ -1271,7 +1280,7 @@ pub fn manifest_dependencies(
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::extensions::identity::Digest;
+    use crate::extensions::Digest;
 
     fn provider() -> ProviderRef {
         ProviderRef {

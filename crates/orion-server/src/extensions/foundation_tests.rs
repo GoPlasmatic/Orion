@@ -1,6 +1,6 @@
 use super::*;
 use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
-use crate::extensions::contract::{ConnectionReference, ConnectorError, ConnectorOutput};
+use crate::extensions::{ConnectionReference, ConnectorError, ConnectorOutput};
 use std::collections::BTreeSet;
 
 fn make_invocation(

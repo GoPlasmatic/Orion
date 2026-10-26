@@ -1,4 +1,4 @@
-//! Unified connector provider backend trait, source facet and registry (`V2-11.1`, `V2-10.1`, `V2-15`).
+//! The node's connector provider registry (`V2-11.1`, `V2-10.1`, `V2-15`).
 //!
 //! Connector implementations implement [`ProviderBackend`] and register into
 //! [`ProviderRegistry`]:
@@ -19,145 +19,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use arc_swap::ArcSwap;
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use orion_extension_api::{
+    ConnectorError, ConnectorOutput, DuplicateProvider, EffectStatus, ImplementationKind,
+    ProviderBackend,
+};
 use serde_json::Value;
 
 use super::admission::RevocationLedger;
-use super::context::{AttemptContext, Invocation};
-use super::contract::{
-    ConnectorError, ConnectorOutput, EffectStatus, EffectiveConnectionIdentity, ImplementationKind,
-};
+use super::context::Invocation;
 use super::deployment_store::ImmutableDeploymentStore;
-
-/// Source batch item emitted by [`SourceConnectorFacet::poll`] (`V2-15`, §7.2 of `v2-design.md`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SourceBatchItem {
-    pub delivery_id: String,
-    pub payload: Value,
-    #[serde(default)]
-    pub metadata: BTreeMap<String, Value>,
-}
-
-/// Source poll batch returned by [`SourceConnectorFacet::poll`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SourcePollBatch {
-    pub items: Vec<SourceBatchItem>,
-    pub next_checkpoint: Option<Value>,
-}
-
-/// Settlement disposition reported by the native Rust `source` channel runner
-/// back to [`SourceConnectorFacet::settle`] after workflow execution completes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceSettlement {
-    Ack,
-    NackRetryable,
-    DeadLetter,
-}
-
-/// Optional source facet (`open` / `poll` / `settle` / `close`) implemented by
-/// source-capable connectors of any backend kind (`rust`, `workflow`, `wasm`)
-/// and driven by the native Rust `source` channel runner (`V2-15`, §7.2).
-#[async_trait]
-pub trait SourceConnectorFacet: Send + Sync {
-    /// Open or resume a source cursor from `checkpoint`.
-    async fn open(
-        &self,
-        ctx: &AttemptContext,
-        checkpoint: Option<Value>,
-    ) -> Result<Value, ConnectorError>;
-
-    /// Poll up to `max_items` records starting from `cursor`.
-    async fn poll(
-        &self,
-        ctx: &AttemptContext,
-        cursor: &Value,
-        max_items: u32,
-    ) -> Result<SourcePollBatch, ConnectorError>;
-
-    /// Settle a delivered item (`Ack`, `NackRetryable`, or `DeadLetter`).
-    async fn settle(
-        &self,
-        ctx: &AttemptContext,
-        delivery_id: &str,
-        settlement: SourceSettlement,
-    ) -> Result<(), ConnectorError>;
-
-    /// Close the source cursor and release any cursor-specific state.
-    async fn close(&self, ctx: &AttemptContext, cursor: Value) -> Result<(), ConnectorError>;
-}
-
-/// Unified connector provider backend trait (`V2-11.1`, `V2-10.1`).
-///
-/// External Community and Enterprise providers register implementations of this
-/// trait without modifying core enums or built-in handler tables. Implement it
-/// with `#[async_trait::async_trait]`.
-#[async_trait]
-pub trait ProviderBackend: Send + Sync {
-    /// Implementation kind (`Rust`, `Workflow`, or `Wasm`).
-    fn kind(&self) -> ImplementationKind;
-
-    /// The id the backend registers under: a `rust` backend's driver id (its
-    /// [`ProviderId`](super::identity::ProviderId), e.g. `"org.orion.http"`),
-    /// or a `workflow`/`wasm` backend's package digest.
-    fn driver_id(&self) -> &str;
-
-    /// Validate resolved connection configuration against provider-specific invariants.
-    fn validate_config(&self, config: &Value) -> Result<(), ConnectorError>;
-
-    /// Execute one attempt of `operation` with validated `input`.
-    async fn invoke(
-        &self,
-        ctx: &AttemptContext,
-        operation: &str,
-        input: Value,
-    ) -> Result<ConnectorOutput, ConnectorError>;
-
-    /// Probe downstream connectivity or readiness under `ctx`.
-    async fn health_check(&self, ctx: &AttemptContext) -> Result<(), ConnectorError> {
-        let _ = ctx;
-        Ok(())
-    }
-
-    /// Dispose any provider-held resources for `identity`.
-    async fn dispose(&self, identity: &EffectiveConnectionIdentity) {
-        let _ = identity;
-    }
-
-    /// Input keys of `operation` that must be authored as literal strings:
-    /// `connector_call` refuses a task whose `input` builds one from the
-    /// message, at load. A SQL provider names its statement keys, so a
-    /// caller's values reach the database only as bind parameters.
-    fn literal_input_keys(&self, _operation: &str) -> &'static [&'static str] {
-        &[]
-    }
-
-    /// Return the optional [`SourceConnectorFacet`] if this provider supports
-    /// `source` channel polling.
-    fn as_source(&self) -> Option<&dyn SourceConnectorFacet> {
-        None
-    }
-}
-
-/// A second backend under a `(kind, driver_id)` that already has one.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DuplicateProvider {
-    pub kind: ImplementationKind,
-    pub driver_id: String,
-}
-
-impl std::fmt::Display for DuplicateProvider {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "a provider backend is already registered as ({}, '{}')",
-            self.kind, self.driver_id
-        )
-    }
-}
-
-impl std::error::Error for DuplicateProvider {}
 
 /// Backends by kind, then by driver id: a lookup borrows the id rather than
 /// building a `(kind, String)` key.
@@ -418,7 +288,9 @@ impl ProviderRegistry {
 mod tests {
     use super::*;
     use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
-    use crate::extensions::contract::{ConnectionReference, ProviderRef};
+    use crate::extensions::{
+        AttemptContext, ConnectionReference, EffectiveConnectionIdentity, ProviderRef,
+    };
     use serde_json::json;
     use std::time::{Duration, Instant};
 

@@ -14,8 +14,7 @@ use super::{
     DeploymentError, EntityKind, EntityRef, GcOutcome, ImplementationKind, ProviderAdmissionRow,
     ProviderPackageRow, extract_inventory_file_digests,
 };
-use crate::extensions::admission::{Admission, EditionTier, PackageAdmissionRequest};
-use crate::extensions::identity::{ConnectionId, Digest, ProviderId, Revision};
+use crate::extensions::admission::Admission;
 use crate::extensions::package_identity::{
     VerifiedArtifactMetadata, canonical_bytes, check_dependency_lock, sha256_digest,
     verify_inventory,
@@ -23,6 +22,8 @@ use crate::extensions::package_identity::{
 use crate::extensions::schema_profile::{
     CompiledSchemaBundle, check_manifest_bundle, validate_safe_package_path,
 };
+use crate::extensions::{ConnectionId, Digest, ProviderId, Revision};
+use crate::extensions::{EditionTier, PackageAdmissionRequest};
 
 // ============================================================
 // Archive ingestion
@@ -612,7 +613,7 @@ pub(super) fn recheck_admissions(
                 0,
                 &p.provider_id,
                 &ConnectionId::new(String::new()),
-                crate::extensions::contract::EffectStatus::NotStarted,
+                crate::extensions::EffectStatus::NotStarted,
             )
             .is_err()
         {

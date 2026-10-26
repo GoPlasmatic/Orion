@@ -10,55 +10,15 @@
 //!   cannot populate the current cache, and shares a stable capacity ceiling
 //!   keyed by `(provider_digest, connection_id)` across retained revisions (`CTX-08`).
 
-use std::any::{Any, TypeId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use orion_extension_api::{
+    ConnectionId, ConnectionPoolCache, ConnectorError, Digest, EffectStatus,
+    EffectiveConnectionIdentity, PoolEntry, Revision,
+};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-
-use super::contract::{ConnectorError, EffectStatus, EffectiveConnectionIdentity};
-use super::identity::{ConnectionId, Digest, Revision};
-
-/// Open trait for any connection-pool cache that participates in per-connector
-/// and cluster-resync blanket eviction (`V2-11.1`). Implement it with
-/// `#[async_trait::async_trait]`.
-#[async_trait]
-pub trait ConnectionPoolCache: Send + Sync {
-    /// Stable driver/cache identifier, unique on a node (e.g. `"org.orion.postgresql"`).
-    fn cache_id(&self) -> &str;
-
-    /// Evict all cached sessions/pools belonging to `connector_name`.
-    async fn evict(&self, connector_name: &str);
-
-    /// Evict every cached session/pool in this cache (used on cluster epoch resync).
-    async fn evict_all(&self);
-}
-
-/// One pool cache as the composition registers it: erased for eviction, and
-/// kept typed so [`ResourcePoolRegistry::get_by_id`] can hand it back.
-#[derive(Clone)]
-pub struct PoolEntry {
-    cache_id: String,
-    type_id: TypeId,
-    typed: Arc<dyn Any + Send + Sync>,
-    cache: Arc<dyn ConnectionPoolCache>,
-}
-
-impl PoolEntry {
-    pub fn of<C: ConnectionPoolCache + 'static>(cache: Arc<C>) -> Self {
-        Self {
-            cache_id: cache.cache_id().to_string(),
-            type_id: TypeId::of::<C>(),
-            typed: cache.clone(),
-            cache,
-        }
-    }
-
-    pub fn cache_id(&self) -> &str {
-        &self.cache_id
-    }
-}
 
 /// Registry of provider-owned connection-pool caches (`V2-11.1`).
 ///
@@ -86,10 +46,10 @@ impl ResourcePoolRegistry {
     pub fn new(entries: impl IntoIterator<Item = PoolEntry>) -> Result<Self, String> {
         let mut map = BTreeMap::new();
         for entry in entries {
-            if map.contains_key(&entry.cache_id) {
-                return Err(entry.cache_id);
+            if map.contains_key(entry.cache_id()) {
+                return Err(entry.cache_id().to_string());
             }
-            map.insert(entry.cache_id.clone(), entry);
+            map.insert(entry.cache_id().to_string(), entry);
         }
         Ok(Self {
             entries: Arc::new(map),
@@ -98,11 +58,7 @@ impl ResourcePoolRegistry {
 
     /// The pool registered as `cache_id`, when it is a `C` (`TD-28`).
     pub fn get_by_id<C: Send + Sync + 'static>(&self, cache_id: &str) -> Option<Arc<C>> {
-        let entry = self.entries.get(cache_id)?;
-        if entry.type_id != TypeId::of::<C>() {
-            return None;
-        }
-        Arc::downcast::<C>(entry.typed.clone()).ok()
+        self.entries.get(cache_id)?.downcast::<C>()
     }
 
     /// The registered cache ids, sorted.
@@ -122,14 +78,14 @@ impl ResourcePoolRegistry {
     /// Evict `connector_name` across all registered provider pool caches.
     pub async fn evict_connector(&self, connector_name: &str) {
         for entry in self.entries.values() {
-            entry.cache.evict(connector_name).await;
+            entry.cache().evict(connector_name).await;
         }
     }
 
     /// Evict all entries across all registered provider pool caches.
     pub async fn evict_all(&self) {
         for entry in self.entries.values() {
-            entry.cache.evict_all().await;
+            entry.cache().evict_all().await;
         }
     }
 }
@@ -414,10 +370,7 @@ mod tests {
             .acquire(&rev2_sec2, || async { Ok("session-rev2-secB".to_string()) })
             .await
             .expect_err("must enforce shared capacity ceiling of 2 across revisions");
-        assert_eq!(
-            third_err.code,
-            crate::extensions::contract::codes::BUDGET_EXHAUSTED
-        );
+        assert_eq!(third_err.code, crate::extensions::codes::BUDGET_EXHAUSTED);
 
         drop(h1);
         drop(h2);

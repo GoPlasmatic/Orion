@@ -31,11 +31,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::context::RunContext;
-use super::contract::{
+use super::provider_backend::ProviderRegistry;
+use super::{
     ConnectionReference, ConnectorError, EffectStatus, EffectiveConnectionIdentity,
     ImplementationKind, codes,
 };
-use super::provider_backend::{ProviderRegistry, SourcePollBatch, SourceSettlement};
+use super::{SourcePollBatch, SourceSettlement};
 
 /// Stable source partition key across revisions (`V2-15.2`).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -887,7 +888,7 @@ impl Default for SourceRunnerLimits {
 /// Host-owned native Rust `source` channel runner (`V2-15.1`–`V2-15.4`).
 ///
 /// Drives any registered connector (`rust`, `workflow`, or `wasm`) that exposes
-/// [`super::provider_backend::SourceConnectorFacet`].
+/// [`super::SourceConnectorFacet`].
 ///
 /// Revocation and the security lease are checked on the registry's
 /// [`super::RevocationLedger`] before every facet call.
@@ -1076,11 +1077,11 @@ impl SourceChannelRunner {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::extensions::AttemptContext;
     use crate::extensions::CompositionRoot;
-    use crate::extensions::context::AttemptContext;
     use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
-    use crate::extensions::contract::{ConnectorOutput, Digest, ProviderRef};
-    use crate::extensions::provider_backend::{ProviderBackend, SourceConnectorFacet};
+    use crate::extensions::{ConnectorOutput, Digest, ProviderRef};
+    use crate::extensions::{ProviderBackend, SourceConnectorFacet};
     use serde_json::json;
     use std::collections::BTreeSet;
     use std::time::{Duration, Instant};

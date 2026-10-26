@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::http::StatusCode;
-use orion::extensions::context::AttemptContext;
-use orion::extensions::provider_backend::ProviderBackend;
+use orion::extensions::AttemptContext;
+use orion::extensions::ProviderBackend;
 use orion::extensions::{ConnectorError, ConnectorOutput, ImplementationKind};
 use serde_json::{Value, json};
 use tower::ServiceExt;
