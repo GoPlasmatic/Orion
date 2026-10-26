@@ -962,7 +962,7 @@ mod tests {
             BEAT,
             fence(),
             started,
-            || async { Err(crate::errors::OrionError::Conflict("db down".into())) },
+            || async { Err(crate::errors::OrionError::conflict("db down")) },
             |_| {
                 errors.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             },

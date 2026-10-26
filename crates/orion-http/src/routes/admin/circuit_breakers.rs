@@ -61,7 +61,7 @@ pub(crate) async fn reset_circuit_breaker(
     // and the fan-out below is what actually clears it. 404 only when there is
     // no other node it could be on.
     if !found && !state.cluster.enabled {
-        return Err(OrionError::NotFound(format!(
+        return Err(OrionError::not_found(format!(
             "Circuit breaker '{key}' not found"
         )));
     }

@@ -263,7 +263,16 @@ async fn a_slug_selects_its_provider_on_the_authorize_leg() {
 async fn an_unknown_slug_is_not_found() {
     let login = compiled(&multi_config()).await;
     let err = login.begin(Some("nope"), None, None).expect_err("must 404");
-    assert!(matches!(err, OrionError::NotFound(_)), "{err:?}");
+    assert!(
+        matches!(
+            err,
+            OrionError::Http {
+                status: orion_common::errors::StatusCode::NOT_FOUND,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
     assert!(login.require_provider(Some("nope")).is_err());
     assert!(login.require_provider(Some("github")).is_ok());
 }
@@ -294,7 +303,16 @@ async fn the_state_seals_the_provider_and_a_mismatch_is_refused() {
         .complete(Some("acme"), &query, &[jar.as_str()])
         .await
         .expect_err("must refuse");
-    assert!(matches!(err, OrionError::Unauthorized(_)), "{err:?}");
+    assert!(
+        matches!(
+            err,
+            OrionError::Http {
+                status: orion_common::errors::StatusCode::UNAUTHORIZED,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
 }
 
 /// #307's second trap: two sign-ins in the same second get different states.
@@ -362,7 +380,13 @@ async fn a_callback_without_the_cookie_is_refused_before_the_exchange() {
         .await
         .expect_err("must refuse");
     assert!(
-        matches!(err, OrionError::Unauthorized(_)),
+        matches!(
+            err,
+            OrionError::Http {
+                status: orion_common::errors::StatusCode::UNAUTHORIZED,
+                ..
+            }
+        ),
         "expected a 401, got {err:?}"
     );
 }
@@ -386,7 +410,16 @@ async fn a_state_that_does_not_match_the_cookie_is_refused() {
         .complete(None, &query, &[jar.as_str()])
         .await
         .expect_err("must refuse");
-    assert!(matches!(err, OrionError::Unauthorized(_)), "{err:?}");
+    assert!(
+        matches!(
+            err,
+            OrionError::Http {
+                status: orion_common::errors::StatusCode::UNAUTHORIZED,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
 }
 
 #[tokio::test]
@@ -397,7 +430,16 @@ async fn a_provider_error_is_refused_without_looking_at_the_state() {
         .complete(None, &query, &[])
         .await
         .expect_err("must refuse");
-    assert!(matches!(err, OrionError::Unauthorized(_)), "{err:?}");
+    assert!(
+        matches!(
+            err,
+            OrionError::Http {
+                status: orion_common::errors::StatusCode::UNAUTHORIZED,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
 }
 
 #[test]

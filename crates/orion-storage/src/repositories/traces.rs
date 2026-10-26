@@ -349,7 +349,7 @@ fn trace_select(id: &str) -> sea_query::SelectStatement {
 }
 
 fn trace_not_found(id: &str) -> OrionError {
-    OrionError::NotFound(format!("Trace '{id}' not found"))
+    OrionError::not_found(format!("Trace '{id}' not found"))
 }
 
 /// The UPDATE both completion paths share, for the same reason.

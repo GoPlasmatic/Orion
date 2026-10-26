@@ -515,7 +515,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
         orion_common::metrics::timed_db_op("trace_dlq.get_by_id", async {
             let (sql, values) = build_sqlx(self.pool.backend(), &mut dlq_select(id));
             super::helpers::fetch_required::<TraceDlqEntry>(&self.pool, &sql, values, || {
-                OrionError::NotFound(format!("DLQ entry '{id}' not found"))
+                OrionError::not_found(format!("DLQ entry '{id}' not found"))
             })
             .await
         })
@@ -542,7 +542,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                 super::helpers::WriteStatement::Update(&mut update),
                 &mut dlq_select(id),
                 OrionError::Storage,
-                || OrionError::NotFound(format!("DLQ entry '{id}' not found")),
+                || OrionError::not_found(format!("DLQ entry '{id}' not found")),
             )
             .await
         })

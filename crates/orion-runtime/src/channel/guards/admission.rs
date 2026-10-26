@@ -132,7 +132,7 @@ pub(super) fn check_allowed_origin(
         && let Some(origin) = origin
         && !allowed_origins.iter().any(|o| o == "*" || o == origin)
     {
-        return Err(OrionError::Forbidden(format!(
+        return Err(OrionError::forbidden(format!(
             "Origin '{origin}' is not allowed for channel '{channel}'"
         )));
     }

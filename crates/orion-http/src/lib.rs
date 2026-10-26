@@ -266,7 +266,7 @@ pub fn metrics_router(state: AppState) -> Router {
     Router::new()
         .route("/metrics", axum::routing::get(routes::metrics_endpoint))
         .fallback(|| async {
-            crate::errors::OrionError::NotFound(
+            crate::errors::OrionError::not_found(
                 "This listener serves GET /metrics only".to_string(),
             )
         })

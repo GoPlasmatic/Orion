@@ -724,7 +724,11 @@ async fn persist_success(
                 // cannot make one appear — and the run itself succeeded, so
                 // it is reported and the run settles as a success, as when
                 // the status write was the one to miss.
-                Err(crate::errors::OrionError::NotFound(missing)) => Ok(Some(missing)),
+                Err(crate::errors::OrionError::Http {
+                    status: orion_common::errors::StatusCode::NOT_FOUND,
+                    message: missing,
+                    ..
+                }) => Ok(Some(missing)),
                 other => other.map(|()| None),
             }
         })

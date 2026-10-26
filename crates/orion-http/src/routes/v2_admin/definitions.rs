@@ -90,11 +90,11 @@ pub(crate) async fn get_definition(
         .await
         .map_err(|e| OrionError::internal(e.to_string()))?
         .and_then(|row| row.bytes)
-        .ok_or_else(|| OrionError::NotFound(format!("no definition is stored as '{digest}'")))?;
+        .ok_or_else(|| OrionError::not_found(format!("no definition is stored as '{digest}'")))?;
     // A stored artifact that is not a definition — a connection's
     // configuration, a package file — is not one to serve here.
     let mut definition = definitions::parse(&bytes)
-        .map_err(|_| OrionError::NotFound(format!("'{digest}' is not a definition")))?;
+        .map_err(|_| OrionError::not_found(format!("'{digest}' is not a definition")))?;
     // Masked for the read only: the stored bytes, and so the digest, keep
     // the credential a channel serves with.
     if let Definition::Channel(channel) = &mut definition {

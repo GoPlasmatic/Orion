@@ -721,11 +721,17 @@ async fn a_finished_occurrence_cannot_be_cancelled() {
 
     assert!(matches!(
         repo.cancel(&occurrence.id, "x", 30).await,
-        Err(OrionError::Conflict(_))
+        Err(OrionError::Http {
+            status: orion_common::errors::StatusCode::CONFLICT,
+            ..
+        })
     ));
     assert!(matches!(
         repo.cancel("no-such-occurrence", "x", 30).await,
-        Err(OrionError::NotFound(_))
+        Err(OrionError::Http {
+            status: orion_common::errors::StatusCode::NOT_FOUND,
+            ..
+        })
     ));
 }
 
@@ -1182,7 +1188,16 @@ async fn a_completed_occurrence_cannot_be_retried() {
     .expect("settle");
 
     let err = repo.requeue("occ").await.expect_err("must refuse");
-    assert!(matches!(err, OrionError::Conflict(_)), "{err:?}");
+    assert!(
+        matches!(
+            err,
+            OrionError::Http {
+                status: orion_common::errors::StatusCode::CONFLICT,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
 }
 
 // ---- retention and reporting ----

@@ -187,7 +187,7 @@ pub(crate) async fn dynamic_handler(
             crate::channel::routing::RouteRole::Primary,
         )
     } else {
-        return Err(OrionError::NotFound(format!(
+        return Err(OrionError::not_found(format!(
             "No channel matches {method} /{route_path}"
         )));
     };
@@ -199,7 +199,7 @@ pub(crate) async fn dynamic_handler(
     // accepted and established nothing. Refuse it instead of admitting the
     // half-request.
     if is_async && route_role == crate::channel::routing::RouteRole::OAuthCallback {
-        return Err(OrionError::MethodNotAllowed(
+        return Err(OrionError::method_not_allowed(
             "an OAuth2 callback cannot be submitted asynchronously: the redirect that \
              follows it is the response"
                 .to_string(),
@@ -215,7 +215,7 @@ pub(crate) async fn dynamic_handler(
         let is_json =
             content_type.starts_with("application/json") || content_type.contains("+json");
         if !is_json {
-            return Err(OrionError::UnsupportedMediaType(
+            return Err(OrionError::unsupported_media_type(
                 "Content-Type must be application/json for requests with a body".to_string(),
             ));
         }
@@ -251,7 +251,7 @@ pub(crate) async fn dynamic_handler(
     if let Some(runtime) = channel_runtime.as_ref()
         && runtime.cron.is_some()
     {
-        return Err(OrionError::MethodNotAllowed(format!(
+        return Err(OrionError::method_not_allowed(format!(
             "channel '{channel}' is a cron channel: it runs on its schedule, not on \
              request. To run it now, POST /api/v2/admin/channels/{}/trigger — that \
              records an occurrence and respects the channel's concurrency policy.",
@@ -287,7 +287,7 @@ pub(crate) async fn dynamic_handler(
     // reference and is shared with the cron and channel_call ingresses; the
     // clone below is the `Arc` every path past the gate is entitled to.
     let Some(channel_config) = channel_runtime.clone() else {
-        return Err(OrionError::NotFound(format!(
+        return Err(OrionError::not_found(format!(
             "Channel '{channel}' not found: no deployed channel has that name"
         )));
     };

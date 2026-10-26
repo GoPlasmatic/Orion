@@ -150,7 +150,7 @@ pub async fn admin_auth_middleware(
             remaining_ms = remaining.as_millis() as u64,
             "Admin API authentication refused: client is in failed-auth backoff"
         );
-        return Err(OrionError::Unauthorized("Invalid API key".into()));
+        return Err(OrionError::unauthorized("Invalid API key"));
     }
 
     let token = match extract_api_key(req.headers(), &state.config.admin_auth) {
@@ -181,7 +181,7 @@ pub async fn admin_auth_middleware(
             lockout_ms = lockout.map(|d| d.as_millis() as u64),
             "Admin API authentication failed: invalid API key"
         );
-        return Err(OrionError::Unauthorized("Invalid API key".into()));
+        return Err(OrionError::unauthorized("Invalid API key"));
     };
 
     state.admin_auth_failures.record_success(&client);
@@ -198,8 +198,8 @@ pub async fn admin_auth_middleware(
             path = %req.uri().path(),
             "Admin API request refused: read-only key attempted a mutation"
         );
-        return Err(OrionError::Forbidden(
-            "This API key is read-only; mutating admin requests need a full-access key".into(),
+        return Err(OrionError::forbidden(
+            "This API key is read-only; mutating admin requests need a full-access key",
         ));
     }
 
@@ -255,7 +255,7 @@ fn extract_api_key(
     let header_value = headers
         .get(&config.header)
         .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| OrionError::Unauthorized(format!("Missing {} header", config.header)))?;
+        .ok_or_else(|| OrionError::unauthorized(format!("Missing {} header", config.header)))?;
 
     if config.header.eq_ignore_ascii_case("authorization") {
         // "Bearer <token>", parsed the way RFC 9110 defines it — the channel
@@ -264,9 +264,7 @@ fn extract_api_key(
         crate::channel::auth::scheme_credential(header_value, "Bearer")
             .map(str::to_string)
             .map_err(|_| {
-                OrionError::Unauthorized(
-                    "Authorization header must use 'Bearer <token>' format".into(),
-                )
+                OrionError::unauthorized("Authorization header must use 'Bearer <token>' format")
             })
     } else {
         // Custom header — use raw value

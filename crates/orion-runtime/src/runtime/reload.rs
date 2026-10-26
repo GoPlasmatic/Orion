@@ -493,7 +493,7 @@ async fn build_and_publish(
             .map_err(|e| crate::errors::OrionError::internal(e.to_string()))?
             .map(|rev| rev.manifest.clone())
             .ok_or_else(|| {
-                crate::errors::OrionError::NotFound(format!(
+                crate::errors::OrionError::not_found(format!(
                     "Deployment revision {revision} not found"
                 ))
             })?;
@@ -585,7 +585,7 @@ async fn build_and_publish(
         let (latest_head, _) = state.deployments.current_head();
         let desired = local.desired_revision.max(latest_head);
         if revision < desired || revision <= local.applied_revision {
-            return Err(crate::errors::OrionError::Conflict(format!(
+            return Err(crate::errors::OrionError::conflict(format!(
                 "candidate revision {revision} is superseded (applied={}, desired={desired})",
                 local.applied_revision
             )));

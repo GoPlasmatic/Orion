@@ -1,4 +1,6 @@
-use axum::http::StatusCode;
+use std::borrow::Cow;
+
+pub use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 // The wire half of this module — the `{"error": {...}}` envelope, the
@@ -38,8 +40,19 @@ impl BearerChallenge {
 
 #[derive(Debug, thiserror::Error)]
 pub enum OrionError {
-    #[error("Not found: {0}")]
-    NotFound(String),
+    /// A refusal that is nothing but its HTTP status, wire code and a message
+    /// the caller may read: not found, unauthorized, forbidden, conflict,
+    /// payload too large, unsupported media type, method not allowed, upgrade
+    /// required. Built with the constructor of that name
+    /// ([`OrionError::not_found`], …); `Display` keeps the label each had as
+    /// a variant of its own ("Not found: …"), so logs and persisted error text
+    /// read as they did.
+    #[error("{}: {message}", http_label(*status))]
+    Http {
+        status: StatusCode,
+        code: &'static str,
+        message: String,
+    },
 
     /// A request the server refuses to act on, with structured per-field
     /// details when the refusal names a field. Maps to HTTP 400 with `code`
@@ -59,9 +72,6 @@ pub enum OrionError {
         details: Vec<FieldError>,
     },
 
-    #[error("Unauthorized: {0}")]
-    Unauthorized(String),
-
     /// A refused bearer token (#267): 401 carrying `WWW-Authenticate: Bearer`
     /// (RFC 6750). `challenge` is everything the wire says about the cause —
     /// see `jwt::RejectReason::challenge`; the body stays uniform.
@@ -70,12 +80,6 @@ pub enum OrionError {
         message: String,
         challenge: BearerChallenge,
     },
-
-    #[error("Forbidden: {0}")]
-    Forbidden(String),
-
-    #[error("Conflict: {0}")]
-    Conflict(String),
 
     /// An internal failure, with the cause attached when there is one.
     ///
@@ -113,12 +117,6 @@ pub enum OrionError {
     #[error("Rate limit key unavailable: {0}")]
     RateLimitKeyUnavailable(String),
 
-    /// The client sent more than the plane's body limit allows. A 413, and —
-    /// unlike the bare `Bytes` extractor's own rejection — one that carries
-    /// the error envelope like every other refusal.
-    #[error("Payload too large: {0}")]
-    PayloadTooLarge(String),
-
     #[error("Response too large: {0}")]
     ResponseTooLarge(String),
 
@@ -130,17 +128,6 @@ pub enum OrionError {
 
     #[error("Timeout: channel '{channel}' exceeded {timeout_ms}ms")]
     Timeout { channel: String, timeout_ms: u64 },
-
-    #[error("Unsupported media type: {0}")]
-    UnsupportedMediaType(String),
-
-    #[error("Method not allowed: {0}")]
-    MethodNotAllowed(String),
-
-    /// V2-07.5: Pre-mutation 426 UPGRADE_REQUIRED for unsupported v1 deferred writes
-    /// once v2 immutable deployments are active.
-    #[error("Upgrade required: {0}")]
-    UpgradeRequired(String),
 
     #[error("Storage error: {0}")]
     Storage(#[from] sqlx::Error),
@@ -197,6 +184,87 @@ impl Unavailable {
             Self::GuardBackend => Some(5),
             Self::ChannelQuarantined | Self::QueueClosed => None,
         }
+    }
+}
+
+/// The label an [`OrionError::Http`] refusal's `Display` opens with.
+fn http_label(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::NOT_FOUND => "Not found",
+        StatusCode::UNAUTHORIZED => "Unauthorized",
+        StatusCode::FORBIDDEN => "Forbidden",
+        StatusCode::CONFLICT => "Conflict",
+        StatusCode::PAYLOAD_TOO_LARGE => "Payload too large",
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => "Unsupported media type",
+        StatusCode::METHOD_NOT_ALLOWED => "Method not allowed",
+        StatusCode::UPGRADE_REQUIRED => "Upgrade required",
+        _ => status.canonical_reason().unwrap_or("Error"),
+    }
+}
+
+impl OrionError {
+    fn http(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
+        OrionError::Http {
+            status,
+            code,
+            message: message.into(),
+        }
+    }
+
+    /// 404 `NOT_FOUND`.
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::http(StatusCode::NOT_FOUND, codes::NOT_FOUND, message)
+    }
+
+    /// 401 `UNAUTHORIZED`, with no bearer challenge (see [`OrionError::UnauthorizedToken`]).
+    pub fn unauthorized(message: impl Into<String>) -> Self {
+        Self::http(StatusCode::UNAUTHORIZED, codes::UNAUTHORIZED, message)
+    }
+
+    /// 403 `FORBIDDEN`.
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self::http(StatusCode::FORBIDDEN, codes::FORBIDDEN, message)
+    }
+
+    /// 409 `CONFLICT`.
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::http(StatusCode::CONFLICT, codes::CONFLICT, message)
+    }
+
+    /// 415 `UNSUPPORTED_MEDIA_TYPE`.
+    pub fn unsupported_media_type(message: impl Into<String>) -> Self {
+        Self::http(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            codes::UNSUPPORTED_MEDIA_TYPE,
+            message,
+        )
+    }
+
+    /// 405 `METHOD_NOT_ALLOWED`.
+    pub fn method_not_allowed(message: impl Into<String>) -> Self {
+        Self::http(
+            StatusCode::METHOD_NOT_ALLOWED,
+            codes::METHOD_NOT_ALLOWED,
+            message,
+        )
+    }
+
+    /// 426 `UPGRADE_REQUIRED`: a pre-v2 write refused once v2 deployments are active (V2-07.5).
+    pub fn upgrade_required(message: impl Into<String>) -> Self {
+        Self::http(
+            StatusCode::UPGRADE_REQUIRED,
+            codes::UPGRADE_REQUIRED,
+            message,
+        )
+    }
+
+    /// 413 `PAYLOAD_TOO_LARGE`: the client sent more than the plane's body limit allows — a 413 that carries the error envelope like every other refusal, unlike the bare `Bytes` extractor's own.
+    pub fn payload_too_large(message: impl Into<String>) -> Self {
+        Self::http(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            codes::PAYLOAD_TOO_LARGE,
+            message,
+        )
     }
 }
 
@@ -278,48 +346,36 @@ impl OrionError {
     /// message safe to show?" — which is what let the bulk-import handlers
     /// embed raw driver text in a 200 body.
     ///
-    /// Does not log: callers that surface the error (`IntoResponse`) log the
-    /// internal detail separately via `log_internal_detail`.
-    pub fn response_parts(&self) -> (StatusCode, &'static str, String) {
+    /// The message is borrowed when the error's own text is what the client
+    /// sees, and owned when it is redacted or formatted, so asking costs no
+    /// copy. Does not log: callers that surface the error (`IntoResponse`) log
+    /// the internal detail separately via `log_internal_detail`.
+    pub fn response_parts(&self) -> (StatusCode, &'static str, Cow<'_, str>) {
         match self {
-            OrionError::NotFound(msg) => (StatusCode::NOT_FOUND, codes::NOT_FOUND, msg.clone()),
-            OrionError::Validation { code, message, .. } => {
-                (StatusCode::BAD_REQUEST, code, message.clone())
-            }
-            OrionError::Unauthorized(msg) => {
-                (StatusCode::UNAUTHORIZED, codes::UNAUTHORIZED, msg.clone())
-            }
+            OrionError::Http {
+                status,
+                code,
+                message,
+            } => (*status, code, Cow::Borrowed(message.as_str())),
+            OrionError::Validation { code, message, .. } => (
+                StatusCode::BAD_REQUEST,
+                code,
+                Cow::Borrowed(message.as_str()),
+            ),
             OrionError::UnauthorizedToken { message, .. } => (
                 StatusCode::UNAUTHORIZED,
                 codes::UNAUTHORIZED,
-                message.clone(),
-            ),
-            OrionError::Forbidden(msg) => (StatusCode::FORBIDDEN, codes::FORBIDDEN, msg.clone()),
-            OrionError::Conflict(msg) => (StatusCode::CONFLICT, codes::CONFLICT, msg.clone()),
-            OrionError::UnsupportedMediaType(msg) => (
-                StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                codes::UNSUPPORTED_MEDIA_TYPE,
-                msg.clone(),
-            ),
-            OrionError::MethodNotAllowed(msg) => (
-                StatusCode::METHOD_NOT_ALLOWED,
-                codes::METHOD_NOT_ALLOWED,
-                msg.clone(),
-            ),
-            OrionError::UpgradeRequired(msg) => (
-                StatusCode::UPGRADE_REQUIRED,
-                codes::UPGRADE_REQUIRED,
-                msg.clone(),
+                Cow::Borrowed(message.as_str()),
             ),
             OrionError::ServiceUnavailable { message, .. } => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 codes::SERVICE_UNAVAILABLE,
-                message.clone(),
+                Cow::Borrowed(message.as_str()),
             ),
             OrionError::RateLimited(msg) | OrionError::RateLimitKeyUnavailable(msg) => (
                 StatusCode::TOO_MANY_REQUESTS,
                 codes::RATE_LIMITED,
-                msg.clone(),
+                Cow::Borrowed(msg.as_str()),
             ),
             OrionError::Timeout {
                 channel,
@@ -327,9 +383,9 @@ impl OrionError {
             } => (
                 StatusCode::GATEWAY_TIMEOUT,
                 codes::TIMEOUT,
-                format!(
+                Cow::Owned(format!(
                     "Workflow execution on channel '{channel}' exceeded {timeout_ms}ms timeout"
-                ),
+                )),
             ),
             // G11: this answered 502 `BAD_GATEWAY`, but the condition is a
             // workflow *result* exceeding the operator's own
@@ -340,15 +396,10 @@ impl OrionError {
             // byte counts and nothing sensitive.
             // The caller's own doing and fixable by them: a 4xx, with the
             // message naming the limit rather than the raw buffering error.
-            OrionError::PayloadTooLarge(msg) => (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                codes::PAYLOAD_TOO_LARGE,
-                msg.clone(),
-            ),
             OrionError::ResponseTooLarge(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 codes::RESPONSE_TOO_LARGE,
-                msg.clone(),
+                Cow::Borrowed(msg.as_str()),
             ),
             // G2: `Internal` and `Config` used to return their message verbatim.
             // Reachable `Config` messages carry filesystem paths (TLS cert/key)
@@ -358,19 +409,22 @@ impl OrionError {
             OrionError::Internal { .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 codes::INTERNAL_ERROR,
-                "An internal error occurred".to_string(),
+                Cow::Borrowed("An internal error occurred"),
             ),
             OrionError::Config { .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 codes::CONFIG_ERROR,
-                "A configuration error occurred".to_string(),
+                Cow::Borrowed("A configuration error occurred"),
             ),
             OrionError::Storage(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 codes::STORAGE_ERROR,
-                "An internal storage error occurred".to_string(),
+                Cow::Borrowed("An internal storage error occurred"),
             ),
-            OrionError::Engine(e) => engine_error_response(e),
+            OrionError::Engine(e) => {
+                let (status, code, message) = engine_error_response(e);
+                (status, code, Cow::Owned(message))
+            }
             // G14 (revising G8): every `?` reach of this variant is
             // server-side — decoding stored rows the repositories wrote, or
             // serializing a response — because client-input parses all handle
@@ -385,7 +439,7 @@ impl OrionError {
             OrionError::Serialization(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 codes::SERIALIZATION_ERROR,
-                "An internal serialization error occurred".to_string(),
+                Cow::Borrowed("An internal serialization error occurred"),
             ),
         }
     }
@@ -394,7 +448,7 @@ impl OrionError {
     /// embedded in a response body outside `IntoResponse` — notably the bulk
     /// import handlers, which report per-item failures inside a 200.
     pub fn client_message(&self) -> String {
-        self.response_parts().2
+        self.response_parts().2.into_owned()
     }
 
     /// Emit the internal detail to the log for the variants whose client-facing
@@ -461,19 +515,22 @@ impl OrionError {
 
 impl IntoResponse for OrionError {
     fn into_response(self) -> Response {
-        // Pull the validation details out before consuming `self` in the match,
-        // since the response body needs them as a separate JSON field.
-        let details = match &self {
-            OrionError::Validation { details, .. } => details.clone(),
-            _ => Vec::new(),
-        };
-        let bearer_challenge = match &self {
-            OrionError::UnauthorizedToken { challenge, .. } => Some(challenge.header_value()),
-            _ => None,
-        };
-
         self.log_internal_detail();
         let (status, code, message) = self.response_parts();
+        let message = message.into_owned();
+        let retry_after = match &self {
+            OrionError::ServiceUnavailable { reason, .. } => reason.retry_after_secs(),
+            _ => None,
+        };
+        // What the body and headers need beyond the message, moved out of the
+        // error rather than copied: the field errors and the bearer challenge.
+        let (details, bearer_challenge) = match self {
+            OrionError::Validation { details, .. } => (details, None),
+            OrionError::UnauthorizedToken { challenge, .. } => {
+                (Vec::new(), Some(challenge.header_value()))
+            }
+            _ => (Vec::new(), None),
+        };
 
         // The shared envelope's serde attributes carry the compat rules this
         // used to spell imperatively: `details` is omitted when empty (v0.1
@@ -506,9 +563,7 @@ impl IntoResponse for OrionError {
         // one. A cause that will not clear on its own — a quarantined channel,
         // a queue whose consumer died — deliberately sends no header rather
         // than inviting a retry loop against a node an operator has to fix.
-        if let OrionError::ServiceUnavailable { reason, .. } = self
-            && let Some(secs) = reason.retry_after_secs()
-        {
+        if let Some(secs) = retry_after {
             response.headers_mut().insert(
                 axum::http::header::RETRY_AFTER,
                 axum::http::HeaderValue::from(secs),
@@ -668,26 +723,26 @@ mod tests {
 
     #[test]
     fn test_not_found_status() {
-        let err = OrionError::NotFound("workflow xyz".to_string());
+        let err = OrionError::not_found("workflow xyz".to_string());
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]
     fn test_unauthorized_status() {
-        let err = OrionError::Unauthorized("missing token".to_string());
+        let err = OrionError::unauthorized("missing token".to_string());
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[test]
     fn test_unauthorized_not_retryable() {
-        assert!(!OrionError::Unauthorized("bad".to_string()).is_retryable());
+        assert!(!OrionError::unauthorized("bad".to_string()).is_retryable());
     }
 
     #[test]
     fn test_conflict_status() {
-        let err = OrionError::Conflict("duplicate".to_string());
+        let err = OrionError::conflict("duplicate".to_string());
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::CONFLICT);
     }
@@ -881,12 +936,12 @@ mod tests {
 
     #[test]
     fn test_not_found_not_retryable() {
-        assert!(!OrionError::NotFound("x".to_string()).is_retryable());
+        assert!(!OrionError::not_found("x".to_string()).is_retryable());
     }
 
     #[test]
     fn test_conflict_not_retryable() {
-        assert!(!OrionError::Conflict("dup".to_string()).is_retryable());
+        assert!(!OrionError::conflict("dup".to_string()).is_retryable());
     }
 
     #[test]
@@ -925,13 +980,13 @@ mod tests {
     #[test]
     fn test_error_display_messages() {
         assert!(
-            OrionError::NotFound("workflow".to_string())
+            OrionError::not_found("workflow".to_string())
                 .to_string()
                 .contains("workflow")
         );
         assert!(OrionError::validation("bad").to_string().contains("bad"));
         assert!(
-            OrionError::Conflict("dup".to_string())
+            OrionError::conflict("dup".to_string())
                 .to_string()
                 .contains("dup")
         );
@@ -959,30 +1014,24 @@ mod tests {
     /// prompt to give it a sample in [`wire_contract`] too.
     fn variant_name(err: &OrionError) -> &'static str {
         match err {
-            OrionError::NotFound(_) => "NotFound",
+            OrionError::Http { status, .. } => http_label(*status),
             OrionError::Validation { .. } => "Validation",
-            OrionError::Unauthorized(_) => "Unauthorized",
             OrionError::UnauthorizedToken { .. } => "UnauthorizedToken",
-            OrionError::Forbidden(_) => "Forbidden",
-            OrionError::Conflict(_) => "Conflict",
             OrionError::Internal { .. } => "Internal",
             OrionError::Config { .. } => "Config",
             OrionError::RateLimited(_) => "RateLimited",
             OrionError::RateLimitKeyUnavailable(_) => "RateLimitKeyUnavailable",
-            OrionError::PayloadTooLarge(_) => "PayloadTooLarge",
             OrionError::ResponseTooLarge(_) => "ResponseTooLarge",
             OrionError::ServiceUnavailable { .. } => "ServiceUnavailable",
             OrionError::Timeout { .. } => "Timeout",
-            OrionError::UnsupportedMediaType(_) => "UnsupportedMediaType",
-            OrionError::MethodNotAllowed(_) => "MethodNotAllowed",
             OrionError::Storage(_) => "Storage",
             OrionError::Engine(_) => "Engine",
             OrionError::Serialization(_) => "Serialization",
-            OrionError::UpgradeRequired(_) => "UpgradeRequired",
         }
     }
 
-    /// The number of variants [`variant_name`] enumerates. Bumping this is the
+    /// The number of variants [`variant_name`] enumerates, counting each
+    /// [`OrionError::Http`] constructor as its own. Bumping this is the
     /// second half of the prompt: the compile error says "name the variant",
     /// this assertion says "and state its wire contract below".
     const VARIANT_COUNT: usize = 20;
@@ -998,7 +1047,7 @@ mod tests {
     fn wire_contract() -> Vec<(OrionError, StatusCode, &'static str)> {
         vec![
             (
-                OrionError::NotFound("workflow xyz".into()),
+                OrionError::not_found("workflow xyz"),
                 StatusCode::NOT_FOUND,
                 "NOT_FOUND",
             ),
@@ -1016,17 +1065,17 @@ mod tests {
                 "VALIDATION_ERROR",
             ),
             (
-                OrionError::Unauthorized("no key".into()),
+                OrionError::unauthorized("no key"),
                 StatusCode::UNAUTHORIZED,
                 "UNAUTHORIZED",
             ),
             (
-                OrionError::Forbidden("nope".into()),
+                OrionError::forbidden("nope"),
                 StatusCode::FORBIDDEN,
                 "FORBIDDEN",
             ),
             (
-                OrionError::Conflict("dup".into()),
+                OrionError::conflict("dup"),
                 StatusCode::CONFLICT,
                 "CONFLICT",
             ),
@@ -1055,7 +1104,7 @@ mod tests {
                 "RATE_LIMITED",
             ),
             (
-                OrionError::PayloadTooLarge("body too big".into()),
+                OrionError::payload_too_large("body too big"),
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "PAYLOAD_TOO_LARGE",
             ),
@@ -1078,12 +1127,12 @@ mod tests {
                 "TIMEOUT",
             ),
             (
-                OrionError::UnsupportedMediaType("text/plain".into()),
+                OrionError::unsupported_media_type("text/plain"),
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 "UNSUPPORTED_MEDIA_TYPE",
             ),
             (
-                OrionError::MethodNotAllowed("PUT".into()),
+                OrionError::method_not_allowed("PUT"),
                 StatusCode::METHOD_NOT_ALLOWED,
                 "METHOD_NOT_ALLOWED",
             ),
@@ -1107,7 +1156,7 @@ mod tests {
                 "SERIALIZATION_ERROR",
             ),
             (
-                OrionError::UpgradeRequired("use /api/v2/admin/deployments".into()),
+                OrionError::upgrade_required("use /api/v2/admin/deployments"),
                 StatusCode::UPGRADE_REQUIRED,
                 "UPGRADE_REQUIRED",
             ),
@@ -1271,7 +1320,7 @@ mod tests {
     async fn test_v01_envelope_unchanged_for_non_validation_errors() {
         // A detail-free error must produce the v0.1 envelope: code+message,
         // no details key.
-        let err = OrionError::NotFound("classic v0.1 message".to_string());
+        let err = OrionError::not_found("classic v0.1 message".to_string());
         let response = err.into_response();
         let body = body_to_value(response).await;
         let error = &body["error"];

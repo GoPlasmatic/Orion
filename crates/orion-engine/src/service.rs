@@ -287,6 +287,13 @@ mod service_error_tests {
         )
     }
 
+    /// How `e` answers over HTTP: status, wire code and client-safe message.
+    fn mapped(e: &dataflow_rs::Error) -> (StatusCode, &'static str, String) {
+        let error = OrionError::Engine(e.clone());
+        let (status, code, message) = error.response_parts();
+        (status, code, message.into_owned())
+    }
+
     fn facts(
         code: &str,
         message: &str,
@@ -343,7 +350,7 @@ mod service_error_tests {
                 facts(code, "refused", retryable, None),
                 "{status}"
             );
-            let (answered, wire_code, message) = OrionError::Engine(e.clone()).response_parts();
+            let (answered, wire_code, message) = mapped(&e);
             let expected = if status == StatusCode::BAD_GATEWAY {
                 StatusCode::SERVICE_UNAVAILABLE
             } else {
@@ -359,7 +366,7 @@ mod service_error_tests {
         let message = "Circuit breaker open for connector 'billing' on channel 'orders'";
         assert_eq!(seen(&e), facts(kind::CIRCUIT_OPEN, message, true, None));
         assert_eq!(
-            OrionError::Engine(e.clone()).response_parts(),
+            mapped(&e),
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 codes::CIRCUIT_OPEN,
@@ -378,7 +385,7 @@ mod service_error_tests {
             )
         );
         assert_eq!(
-            OrionError::Engine(e.clone()).response_parts(),
+            mapped(&e),
             (
                 StatusCode::BAD_REQUEST,
                 codes::VALIDATION_ERROR,
@@ -423,7 +430,7 @@ mod service_error_tests {
                 "{integrity:?}"
             );
             assert_eq!(
-                OrionError::Engine(e.clone()).response_parts(),
+                mapped(&e),
                 (status, wire, message.to_string()),
                 "{integrity:?}"
             );

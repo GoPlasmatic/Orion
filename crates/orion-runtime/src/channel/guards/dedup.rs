@@ -185,7 +185,7 @@ pub(super) async fn check_deduplication(
             );
         }
         Some(_) => {
-            return Err(OrionError::Conflict(format!(
+            return Err(OrionError::conflict(format!(
                 "Duplicate request: idempotency key '{key}' already seen"
             )));
         }

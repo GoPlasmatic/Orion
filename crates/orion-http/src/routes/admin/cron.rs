@@ -304,7 +304,7 @@ pub(crate) async fn trigger_channel(
         // The identity index refused it: a scheduled occurrence already owns
         // this instant. A second's wait is a real fix, and inventing a
         // different instant would put a manual run at a time nothing scheduled.
-        return Err(OrionError::Conflict(format!(
+        return Err(OrionError::conflict(format!(
             "An occurrence for channel '{id}' already exists at {scheduled_for} — \
              a scheduled run claimed this instant. Try again in a second."
         )));

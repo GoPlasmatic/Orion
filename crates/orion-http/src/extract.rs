@@ -96,7 +96,7 @@ where
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         match axum::body::Bytes::from_request(req, state).await {
             Ok(bytes) => Ok(OrionBody(bytes)),
-            Err(_) => Err(OrionError::PayloadTooLarge(
+            Err(_) => Err(OrionError::payload_too_large(
                 "Request body exceeded `ingest.max_payload_size`".to_string(),
             )),
         }
@@ -118,13 +118,13 @@ fn map_rejection(rej: JsonRejection) -> OrionError {
         JsonRejection::JsonSyntaxError(e) => {
             OrionError::validation(format!("Invalid JSON: {}", e.body_text()))
         }
-        JsonRejection::MissingJsonContentType(_) => OrionError::UnsupportedMediaType(
+        JsonRejection::MissingJsonContentType(_) => OrionError::unsupported_media_type(
             "Expected `content-type: application/json`".to_string(),
         ),
         // The body exceeded the plane's limit. Matched explicitly because the
         // catch-all below turns it into a 400 `VALIDATION_ERROR`, which tells
         // the caller to fix their JSON when the JSON was never read.
-        JsonRejection::BytesRejection(_) => OrionError::PayloadTooLarge(
+        JsonRejection::BytesRejection(_) => OrionError::payload_too_large(
             "Request body exceeded the configured limit — see \
              `ingest.max_payload_size` (data plane) or `server.max_admin_body_size` \
              (admin plane)"

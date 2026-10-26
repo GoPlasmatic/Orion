@@ -145,7 +145,7 @@ struct TimestampSpec {
 /// signature — because distinguishing them tells an unauthenticated caller
 /// which half of the credential they got right.
 pub(crate) fn refused() -> OrionError {
-    OrionError::Unauthorized("Channel authentication failed".into())
+    OrionError::unauthorized("Channel authentication failed")
 }
 
 impl CompiledAuth {
@@ -440,7 +440,7 @@ impl CompiledJwt {
                 .map(|v| super::guards::is_truthy(&v.value))
                 .unwrap_or(false);
             if !allowed {
-                return Err(OrionError::Forbidden(
+                return Err(OrionError::forbidden(
                     "insufficient_scope: the token's claims do not authorize this request"
                         .to_string(),
                 ));
@@ -2082,7 +2082,11 @@ mod tests {
         let headers = bearer(&token);
         let pairs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
         match auth.authenticate(&lookup(&pairs), None, &dl_engine).await {
-            Err(OrionError::Forbidden(msg)) => assert!(msg.contains("insufficient_scope"), "{msg}"),
+            Err(OrionError::Http {
+                status: orion_common::errors::StatusCode::FORBIDDEN,
+                message: msg,
+                ..
+            }) => assert!(msg.contains("insufficient_scope"), "{msg}"),
             other => unreachable!("expected Forbidden, got {other:?}"),
         }
 
@@ -2110,7 +2114,10 @@ mod tests {
         let pairs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
         assert!(matches!(
             auth.authenticate(&lookup(&pairs), None, &dl_engine).await,
-            Err(OrionError::Forbidden(_))
+            Err(OrionError::Http {
+                status: orion_common::errors::StatusCode::FORBIDDEN,
+                ..
+            })
         ));
     }
 

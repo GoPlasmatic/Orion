@@ -200,11 +200,11 @@ fn with_limit(
 }
 
 async fn not_found() -> crate::errors::OrionError {
-    crate::errors::OrionError::NotFound("No route matches this path".to_string())
+    crate::errors::OrionError::not_found("No route matches this path".to_string())
 }
 
 async fn method_not_allowed() -> crate::errors::OrionError {
-    crate::errors::OrionError::MethodNotAllowed(
+    crate::errors::OrionError::method_not_allowed(
         "The HTTP method is not allowed for this path".to_string(),
     )
 }

@@ -148,8 +148,8 @@ pub(crate) async fn get_trace(
             remaining_ms = remaining.as_millis() as u64,
             "Trace read refused: client is in failed-auth backoff"
         );
-        return Err(OrionError::Unauthorized(
-            "This trace requires its trace_token (returned with the async 202) or an admin credential".into(),
+        return Err(OrionError::unauthorized(
+            "This trace requires its trace_token (returned with the async 202) or an admin credential",
         ));
     }
 
@@ -203,8 +203,8 @@ pub(crate) async fn get_trace(
                     "Trace read refused: neither a valid trace token nor an admin credential"
                 );
             }
-            return Err(OrionError::Unauthorized(
-                "This trace requires its trace_token (returned with the async 202) or an admin credential".into(),
+            return Err(OrionError::unauthorized(
+                "This trace requires its trace_token (returned with the async 202) or an admin credential",
             ));
         }
         // Counted only once the token actually authorised: a wrong `?token=`

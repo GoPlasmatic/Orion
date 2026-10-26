@@ -494,7 +494,7 @@ impl CompiledOAuth2Login {
                 .get_key_value(slug)
                 .map(|(k, p)| (k.as_str(), p))
                 .ok_or_else(|| {
-                    OrionError::NotFound("no such identity provider on this channel".to_string())
+                    OrionError::not_found("no such identity provider on this channel".to_string())
                 })
         } else {
             let (k, p) = self
@@ -1035,7 +1035,7 @@ impl CompiledOAuth2Login {
     /// The uniform refusal, counted by its real reason and provider.
     fn refuse(&self, provider: &str, outcome: &'static str) -> OrionError {
         self.count(provider, outcome);
-        OrionError::Unauthorized("sign-in could not be completed".to_string())
+        OrionError::unauthorized("sign-in could not be completed".to_string())
     }
 
     fn count(&self, provider: &str, outcome: &'static str) {

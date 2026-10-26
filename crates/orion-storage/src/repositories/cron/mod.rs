@@ -1035,7 +1035,7 @@ impl CronRepository for SqlCronRepository {
         orion_common::metrics::timed_db_op("cron.get_by_id", async {
             let (sql, values) = build_sqlx(self.pool.backend(), &mut occurrence_select(id));
             helpers::fetch_required(&self.pool, &sql, values, || {
-                OrionError::NotFound(format!("Cron occurrence '{id}' not found"))
+                OrionError::not_found(format!("Cron occurrence '{id}' not found"))
             })
             .await
         })
@@ -1089,7 +1089,7 @@ impl CronRepository for SqlCronRepository {
                 // Distinguish "no such occurrence" from "wrong state", which
                 // are a 404 and a 409 at the route.
                 let current = self.get_by_id(id).await?;
-                return Err(OrionError::Conflict(format!(
+                return Err(OrionError::conflict(format!(
                     "Cron occurrence '{id}' is '{}' and cannot be retried. Retry applies \
                      to {}; to run this schedule again now, trigger the channel.",
                     current.status,
@@ -1135,7 +1135,7 @@ impl CronRepository for SqlCronRepository {
             if tx.execute_query(&sql, values).await? == 0 {
                 drop(tx);
                 let current = self.get_by_id(id).await?;
-                return Err(OrionError::Conflict(format!(
+                return Err(OrionError::conflict(format!(
                     "Cron occurrence '{id}' is '{}' and has already finished. Cancel \
                      applies to {}.",
                     current.status,

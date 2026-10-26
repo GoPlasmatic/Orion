@@ -699,7 +699,13 @@ async fn after_dedup(
                     Err(e) => {
                         // An unknown provider is the caller's 404; anything else
                         // (a URL that will not parse, a signing failure) is ours.
-                        if matches!(e, OrionError::NotFound(_)) {
+                        if matches!(
+                            e,
+                            OrionError::Http {
+                                status: orion_common::errors::StatusCode::NOT_FOUND,
+                                ..
+                            }
+                        ) {
                             return Err(e);
                         }
                         tracing::error!(
@@ -1604,7 +1610,13 @@ mod tests {
         // `Deny` on a dedup backend error is a 503; authentication refuses 401.
         // Seeing the 503 would mean the dedup guard ran first.
         assert!(
-            matches!(err, OrionError::Unauthorized(_)),
+            matches!(
+                err,
+                OrionError::Http {
+                    status: orion_common::errors::StatusCode::UNAUTHORIZED,
+                    ..
+                }
+            ),
             "expected a 401 from the auth guard, got {err:?} — the dedup guard ran first"
         );
     }
@@ -2249,7 +2261,13 @@ mod tests {
             let mut req = request(transport, &runtime, &dl, &data, &meta);
             req.origin = Some("https://evil.example");
             assert!(
-                matches!(apply_guards(req).await, Err(OrionError::Forbidden(_))),
+                matches!(
+                    apply_guards(req).await,
+                    Err(OrionError::Http {
+                        status: orion_common::errors::StatusCode::FORBIDDEN,
+                        ..
+                    })
+                ),
                 "{transport:?} must refuse an unlisted origin"
             );
         }
@@ -2346,7 +2364,13 @@ mod tests {
         let cfg = dedup_runtime(StubOutcome::Duplicate);
         let result =
             super::check_deduplication("test-channel", &cfg, &idempotency_lookup, None, None).await;
-        assert!(matches!(result, Err(OrionError::Conflict(_))));
+        assert!(matches!(
+            result,
+            Err(OrionError::Http {
+                status: orion_common::errors::StatusCode::CONFLICT,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]
@@ -2381,7 +2405,13 @@ mod tests {
         let cfg = dedup_runtime_with_policy(StubOutcome::Duplicate, BackendErrorPolicy::Deny);
         let result =
             super::check_deduplication("test-channel", &cfg, &idempotency_lookup, None, None).await;
-        assert!(matches!(result, Err(OrionError::Conflict(_))));
+        assert!(matches!(
+            result,
+            Err(OrionError::Http {
+                status: orion_common::errors::StatusCode::CONFLICT,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]
@@ -2467,7 +2497,13 @@ mod tests {
             let mut req = request(transport, &runtime, &dl, &data, &meta);
             req.header = &idempotency_lookup;
             assert!(
-                matches!(apply_guards(req).await, Err(OrionError::Conflict(_))),
+                matches!(
+                    apply_guards(req).await,
+                    Err(OrionError::Http {
+                        status: orion_common::errors::StatusCode::CONFLICT,
+                        ..
+                    })
+                ),
                 "{transport:?} must reject a duplicate"
             );
         }
@@ -2566,7 +2602,13 @@ mod tests {
         req.dedup_key_fallback = Some("ORD-77");
         req.dedup_owner = Some("delivery-12");
         assert!(
-            matches!(apply_guards(req).await, Err(OrionError::Conflict(_))),
+            matches!(
+                apply_guards(req).await,
+                Err(OrionError::Http {
+                    status: orion_common::errors::StatusCode::CONFLICT,
+                    ..
+                })
+            ),
             "a settled key must refuse a later message carrying it"
         );
 
@@ -2577,7 +2619,13 @@ mod tests {
         req.dedup_key_fallback = Some("ORD-77");
         req.dedup_owner = Some("delivery-7");
         assert!(
-            matches!(apply_guards(req).await, Err(OrionError::Conflict(_))),
+            matches!(
+                apply_guards(req).await,
+                Err(OrionError::Http {
+                    status: orion_common::errors::StatusCode::CONFLICT,
+                    ..
+                })
+            ),
             "a settled key must refuse a replay of the delivery that settled it"
         );
     }
@@ -2602,7 +2650,13 @@ mod tests {
         let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &meta);
         req.header = &idempotency_lookup;
         assert!(
-            matches!(apply_guards(req).await, Err(OrionError::Conflict(_))),
+            matches!(
+                apply_guards(req).await,
+                Err(OrionError::Http {
+                    status: orion_common::errors::StatusCode::CONFLICT,
+                    ..
+                })
+            ),
             "the second must be refused"
         );
     }
@@ -2863,7 +2917,10 @@ mod tests {
         req.header = &idempotency_lookup;
         assert!(matches!(
             apply_guards(req).await,
-            Err(OrionError::Conflict(_))
+            Err(OrionError::Http {
+                status: orion_common::errors::StatusCode::CONFLICT,
+                ..
+            })
         ));
     }
 
