@@ -65,7 +65,7 @@ pub(crate) fn lookup<'a>(jar: impl IntoIterator<Item = &'a str>, name: &str) -> 
 ///
 /// A listed-but-absent cookie is simply not present — never `null`, never an
 /// error — matching how the `claims_to_metadata` filter behaves.
-pub(crate) fn collect<'a>(
+pub fn collect<'a>(
     jar: impl IntoIterator<Item = &'a str>,
     allowlist: &[String],
 ) -> serde_json::Map<String, Value> {
@@ -104,7 +104,7 @@ pub(crate) fn collect<'a>(
 /// into a cookie inject further attributes, or split the header entirely.
 ///
 /// Attribute order follows RFC 6265 §4.1.1: the pair first, then attributes.
-pub(crate) fn format_set_cookie(spec: &Value) -> Result<String, String> {
+pub fn format_set_cookie(spec: &Value) -> Result<String, String> {
     let obj = spec.as_object().ok_or("cookie must be an object")?;
 
     let name = obj

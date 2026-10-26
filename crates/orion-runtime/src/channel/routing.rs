@@ -1,4 +1,4 @@
-pub(crate) use orion_common::text::percent_decode_segment;
+pub use orion_common::text::percent_decode_segment;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -203,11 +203,11 @@ fn declared_route_segments(
     out
 }
 
-/// [`declared_route_segments`] in canonical-string form, for the callers
+/// `declared_route_segments` in canonical-string form, for the callers
 /// deciding whether two routes collide rather than which one matches.
 ///
 /// The role is dropped: a collision is a collision whichever leg claimed it.
-pub(crate) fn declared_route_parts(
+pub fn declared_route_parts(
     drivers: &ChannelDriverRegistry,
     protocol: &str,
     route_pattern: Option<&str>,
@@ -257,7 +257,7 @@ pub fn methods_overlap(a: &[String], b: &[String]) -> bool {
 /// The one place the `{param}` grammar lives, so a check on a route pattern —
 /// the `oauth2_login` callback/redirect shape (#355) and the activation gate —
 /// reads it the same way the router does, empty segments filtered and all.
-pub(crate) fn route_param_names(pattern: &str) -> Vec<String> {
+pub fn route_param_names(pattern: &str) -> Vec<String> {
     parse_route_pattern(pattern)
         .into_iter()
         .filter_map(|seg| match seg {

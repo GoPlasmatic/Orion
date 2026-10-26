@@ -17,7 +17,19 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use orion_api::V2Code;
 
-const SRC_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+/// The sources of every crate the runtime is built from. Not `orion-api`:
+/// it defines the registry, so scanning it would find every code raised.
+const SRC_DIRS: &[&str] = &[
+    concat!(env!("CARGO_MANIFEST_DIR"), "/src"),
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-common/src"),
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-storage/src"),
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-engine/src"),
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-plugin-host/src"),
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-runtime/src"),
+];
+
+/// Where [`PRODUCERS`] live.
+const PRODUCERS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-runtime/src");
 const ERRORS_MD: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../docs/src/reference/errors.md"
@@ -63,11 +75,11 @@ fn code_literals(source: &str) -> BTreeSet<String> {
 }
 
 fn read(relative: &str) -> String {
-    std::fs::read_to_string(std::path::Path::new(SRC_DIR).join(relative))
+    std::fs::read_to_string(std::path::Path::new(PRODUCERS_DIR).join(relative))
         .unwrap_or_else(|e| panic!("read {relative}: {e}"))
 }
 
-/// All production source under `src/`, concatenated.
+/// All production source of the runtime's crates, concatenated.
 fn all_production_source() -> String {
     fn walk(dir: &std::path::Path, out: &mut String) {
         for entry in std::fs::read_dir(dir).expect("read src dir") {
@@ -81,7 +93,9 @@ fn all_production_source() -> String {
         }
     }
     let mut out = String::new();
-    walk(std::path::Path::new(SRC_DIR), &mut out);
+    for dir in SRC_DIRS {
+        walk(std::path::Path::new(dir), &mut out);
+    }
     out
 }
 

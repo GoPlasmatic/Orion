@@ -1,0 +1,80 @@
+[package]
+name = "orion-runtime"
+# No release cycle of its own: no tag names this crate. crates-publish.yml
+# publishes it as a rider before the crates that depend on it, on the
+# workspace's version.
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The Orion runtime's serving node: channels and their guards, the runtime generation and deployment builds, cron, the trace queues, cluster coordination and the v2 extension boundary"
+license.workspace = true
+repository.workspace = true
+homepage = "https://docs.goplasmatic.io/"
+readme = "README.md"
+keywords = ["workflow", "runtime", "channels", "deployment"]
+categories = ["web-programming"]
+include = ["src/**", "README.md"]
+
+[lints]
+workspace = true
+
+[features]
+# The helpers orion-server's own tests call.
+test-support = []
+
+# The same requirements orion-server states, so the lockfile carries one copy
+# of each.
+[dependencies]
+orion-api = { workspace = true, features = ["utoipa"] }
+orion-common.workspace = true
+orion-definitions.workspace = true
+orion-engine.workspace = true
+orion-extension-api.workspace = true
+orion-plugin-host.workspace = true
+orion-storage.workspace = true
+dataflow-rs = { version = "4.0.1", features = ["datetime", "budget"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path", "multipart"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "sqlite", "postgres", "mysql"] }
+bigdecimal = "0.4"
+sea-query = { version = "1.0", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
+sea-query-sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
+tracing = "0.1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_path_to_error = "0.1"
+semver = "1"
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+cron = "0.17"
+chrono-tz = "0.10"
+thiserror = "2"
+async-trait = "0.1"
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
+url = "2"
+ipnet = "2"
+sha2 = "0.11"
+hmac = "0.13"
+hex = "0.4"
+base64 = "0.23"
+bytes = "1"
+rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
+governor = { version = "0.10", default-features = false, features = ["dashmap", "std"] }
+dashmap = "6"
+hashlink = "0.11"
+arc-swap = "1"
+tower = { version = "0.5", default-features = false, features = ["util"] }
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
+sha1 = "0.11"
+jsonwebtoken = { version = "11.1.0", features = ["aws_lc_rs"] }
+
+[dev-dependencies]
+orion-common = { workspace = true, features = ["test-support"] }
+orion-engine = { workspace = true, features = ["test-support"] }
+orion-storage = { workspace = true, features = ["test-support"] }
+tokio = { version = "1", features = ["test-util"] }
+proptest = "1"
+ctor = "1.0"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi", "tracing-log", "env-filter", "json"] }

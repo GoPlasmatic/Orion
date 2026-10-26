@@ -28,17 +28,17 @@ use super::{TracePersistenceQueue, TracePersistenceTask};
 /// request. `input_json` and `task_trace_json` are built for the trace alone,
 /// so they always move; `response_json` moves when nothing else needs it
 /// after the trace is handed over (it is often also the HTTP body).
-pub(crate) struct CompletedTrace<'a> {
+pub struct CompletedTrace<'a> {
     /// `"sync"`, `"async"` or `"cron"` — how the message reached the runtime.
     /// Stored on the row and offered as a filter by `GET /data/traces`.
-    pub(crate) mode: &'a str,
-    pub(crate) channel: &'a str,
-    pub(crate) channel_id: Option<&'a str>,
-    pub(crate) input_json: Option<String>,
-    pub(crate) response_json: std::borrow::Cow<'a, str>,
-    pub(crate) duration_ms: f64,
-    pub(crate) has_errors: bool,
-    pub(crate) task_trace_json: Option<String>,
+    pub mode: &'a str,
+    pub channel: &'a str,
+    pub channel_id: Option<&'a str>,
+    pub input_json: Option<String>,
+    pub response_json: std::borrow::Cow<'a, str>,
+    pub duration_ms: f64,
+    pub has_errors: bool,
+    pub task_trace_json: Option<String>,
 }
 
 /// Route a completed sync trace through the chosen persistence mode.
@@ -46,7 +46,7 @@ pub(crate) struct CompletedTrace<'a> {
 /// The drop decision is the caller's, not this function's: it gates work that
 /// happens *before* a `CompletedTrace` can be built. See
 /// [`TracePlan::decide`].
-pub(crate) async fn route_store_completed(
+pub async fn route_store_completed(
     cfg: &EffectiveTraceConfig,
     trace_repo: &dyn crate::storage::repositories::traces::TraceSink,
     persistence_queue: &TracePersistenceQueue,
@@ -101,7 +101,7 @@ pub(crate) async fn route_store_completed(
 /// `errors_only` on a clean run, or any `sample_rate` below 1.
 ///
 /// Deciding first makes the drop actually free.
-pub(crate) enum TracePlan {
+pub enum TracePlan {
     Persist,
     /// The reason is not carried: `decide` has already reported it to
     /// `orion_traces_dropped_total`, which is where an operator looks.
@@ -113,7 +113,7 @@ impl TracePlan {
     /// single point a sync trace's persistence is decided — so a sampled-out
     /// trace produces no rows at all (the sync path writes no separate status
     /// row; skipping this write skips the trace entirely).
-    pub(crate) fn decide(cfg: &EffectiveTraceConfig, has_errors: bool) -> Self {
+    pub fn decide(cfg: &EffectiveTraceConfig, has_errors: bool) -> Self {
         match cfg.should_drop(has_errors, cfg.draw_sample()) {
             Some(reason) => {
                 metrics::record_trace_dropped(reason);
@@ -123,7 +123,7 @@ impl TracePlan {
         }
     }
 
-    pub(crate) fn persists(&self) -> bool {
+    pub fn persists(&self) -> bool {
         matches!(self, Self::Persist)
     }
 }

@@ -8,8 +8,8 @@ use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
 
 fn sample_archive_entries() -> Vec<ArchiveEntryInput> {
-    let fixture_dir =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2/package-identity");
+    let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../orion-server/tests/fixtures/v2/package-identity");
     let bundle: Value =
         serde_json::from_str(&std::fs::read_to_string(fixture_dir.join("bundle.json")).unwrap())
             .unwrap();

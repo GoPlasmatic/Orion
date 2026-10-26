@@ -3113,6 +3113,59 @@ dependencies = [
 ]
 
 [[package]]
+name = "orion-runtime"
+version = "1.12.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "axum",
+ "base64 0.23.1",
+ "bigdecimal",
+ "bytes",
+ "chrono",
+ "chrono-tz",
+ "cron",
+ "ctor",
+ "dashmap",
+ "dataflow-rs",
+ "futures",
+ "governor",
+ "hashlink",
+ "hex",
+ "hmac",
+ "ipnet",
+ "jsonwebtoken",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "orion-api",
+ "orion-common",
+ "orion-definitions",
+ "orion-engine",
+ "orion-extension-api",
+ "orion-plugin-host",
+ "orion-storage",
+ "proptest",
+ "rand 0.10.3",
+ "reqwest",
+ "sea-query",
+ "sea-query-sqlx",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "sha1",
+ "sha2 0.11.1",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "orion-server"
 version = "1.12.0"
 dependencies = [
@@ -3154,6 +3207,7 @@ dependencies = [
  "orion-engine",
  "orion-extension-api",
  "orion-plugin-host",
+ "orion-runtime",
  "orion-storage",
  "proptest",
  "rand 0.10.3",

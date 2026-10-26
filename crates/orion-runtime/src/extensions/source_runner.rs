@@ -888,7 +888,7 @@ impl Default for SourceRunnerLimits {
 /// Host-owned native Rust `source` channel runner (`V2-15.1`–`V2-15.4`).
 ///
 /// Drives any registered connector (`rust`, `workflow`, or `wasm`) that exposes
-/// [`super::SourceConnectorFacet`].
+/// `super::SourceConnectorFacet`.
 ///
 /// Revocation and the security lease are checked on the registry's
 /// [`super::RevocationLedger`] before every facet call.

@@ -31,7 +31,7 @@
 //! runtime).
 
 #[doc(hidden)]
-pub mod auth;
+pub use orion_runtime::auth;
 /// Startup wiring shared by the binary and the test harness. Doc-hidden:
 /// reachable so tests exercise the REAL boot path (engine components,
 /// fail-fast connector refusal, background tasks) instead of reimplementing
@@ -40,26 +40,35 @@ pub mod auth;
 pub mod bootstrap;
 #[doc(hidden)]
 pub use orion_common::canonical;
-pub mod channel;
-pub mod cluster;
 pub use orion_common::config;
-pub use orion_engine::connector;
-pub mod cron;
 pub use orion_common::crypto;
+pub use orion_engine::connector;
+pub use orion_runtime::channel;
+pub use orion_runtime::cluster;
+pub use orion_runtime::cron;
 pub mod definitions;
 pub use orion_common::errors;
 pub use orion_engine as engine;
-pub mod extensions;
+/// The v2 extension boundary, as an edition binary composes a node: the
+/// [`extensions::CompositionBuilder`] it hands [`run`], and the frozen
+/// [`extensions::Composition`] the node serves with. One path per item; the
+/// internals stay reachable to this crate and, for tests, through
+/// [`test_support`].
+pub mod extensions {
+    #[allow(unused_imports)]
+    pub(crate) use orion_runtime::extensions::*;
+    pub use orion_runtime::extensions::{Composition, CompositionBuilder, CompositionRoot};
+}
 #[doc(hidden)]
 pub use orion_common::http_body;
 pub use orion_common::metrics;
 #[doc(hidden)]
+pub use orion_common::request_context;
+#[doc(hidden)]
 pub use orion_engine::jwt;
 pub use orion_plugin_host as plugin;
-pub mod queue;
-#[doc(hidden)]
-pub use orion_common::request_context;
-pub mod runtime;
+pub use orion_runtime::queue;
+pub use orion_runtime::runtime;
 pub mod server;
 #[doc(hidden)]
 pub use orion_common::signatures;

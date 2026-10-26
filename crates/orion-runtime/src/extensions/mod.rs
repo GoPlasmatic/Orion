@@ -13,7 +13,7 @@
 //!   package verifier. It implements `Registrar`, so an edition's
 //!   registration code is written against the API crate and applied with
 //!   [`CompositionBuilder::with_extension`].
-//! - [`crate::run`] / `bootstrap::assemble` create the node's services
+//! - `orion_server::run` / `bootstrap::assemble` create the node's services
 //!   (its identity, deployment store, revocation ledger and native work
 //!   scheduler) and freeze the builder over them into a [`Composition`]:
 //!   plain maps, private fields, nothing registered after boot. A duplicate
@@ -27,30 +27,30 @@
 //! Community foundation drivers and the source runner. Tests that drive
 //! them from outside the crate go through `crate::test_support`.
 
-pub(crate) mod admission;
-pub(crate) mod authoring;
-pub(crate) mod channel_driver;
+pub mod admission;
+pub mod authoring;
+pub mod channel_driver;
 #[cfg(test)]
-mod community_assembly;
-pub(crate) mod context;
-pub(crate) mod deployment_store;
-pub(crate) mod foundation;
-pub(crate) use orion_common::native_work as owned_native_work;
-pub(crate) mod package_identity;
-pub(crate) mod provider_backend;
-pub(crate) mod reconciler;
-pub(crate) mod resource_pool;
-pub(crate) mod schema_profile;
+pub mod community_assembly;
+pub mod context;
+pub mod deployment_store;
+pub mod foundation;
+pub use orion_common::native_work as owned_native_work;
+pub mod package_identity;
+pub mod provider_backend;
+pub mod reconciler;
+pub mod resource_pool;
+pub mod schema_profile;
 #[allow(
     dead_code,
     reason = "no channel driver runs a source yet: the runner is exercised by its tests and the repository contract"
 )]
-pub(crate) mod source_runner;
-pub(crate) mod workflow_provider;
+pub mod source_runner;
+pub mod workflow_provider;
 
 use std::sync::Arc;
 
-pub(crate) use orion_extension_api::{
+pub use orion_extension_api::{
     AttemptContext, ChannelDriver, ChannelProtocolFields, CompositionError, ConnectionId,
     ConnectionPoolCache, ConnectionReference, ConnectorError, ConnectorErrorClass, ConnectorOutput,
     Digest, EditionTier, EffectStatus, EffectiveConnectionIdentity, ErrorOrigin,
@@ -59,21 +59,21 @@ pub(crate) use orion_extension_api::{
     codes,
 };
 
-pub(crate) use admission::{Admission, CommunityPackageVerifier, RevocationLedger};
-pub(crate) use channel_driver::ChannelDriverRegistry;
-pub(crate) use context::{AdmittedRun, AuthorityGrant, BudgetLimits, RunContext};
-pub(crate) use deployment_store::ImmutableDeploymentStore;
-pub(crate) use foundation::{COMMUNITY_RUST_DRIVERS, FoundationOptions, SqlLimits};
-pub(crate) use owned_native_work::NativeWorkScheduler;
-pub(crate) use provider_backend::ProviderRegistry;
-pub(crate) use reconciler::{NodeIdentity, NodeReconciler};
-pub(crate) use resource_pool::ResourcePoolRegistry;
-pub(crate) use schema_profile::PROFILE_ID;
-pub(crate) use workflow_provider::PackageProblem;
+pub use admission::{Admission, CommunityPackageVerifier, RevocationLedger};
+pub use channel_driver::ChannelDriverRegistry;
+pub use context::{AdmittedRun, AuthorityGrant, BudgetLimits, RunContext};
+pub use deployment_store::ImmutableDeploymentStore;
+pub use foundation::{COMMUNITY_RUST_DRIVERS, FoundationOptions, SqlLimits};
+pub use owned_native_work::NativeWorkScheduler;
+pub use provider_backend::ProviderRegistry;
+pub use reconciler::{NodeIdentity, NodeReconciler};
+pub use resource_pool::ResourcePoolRegistry;
+pub use schema_profile::PROFILE_ID;
+pub use workflow_provider::PackageProblem;
 
-/// What a provider setup ([`CompositionBuilder::with_providers`]) is handed:
+/// What a provider setup (`CompositionBuilder::with_providers`) is handed:
 /// the node services a backend binds to, and where to put what it builds.
-pub(crate) struct ProviderRegistrar<'a> {
+pub struct ProviderRegistrar<'a> {
     deployments: &'a ImmutableDeploymentStore,
     options: &'a FoundationOptions,
     providers: Vec<Arc<dyn ProviderBackend>>,
@@ -107,7 +107,7 @@ type ProviderSetup = Box<dyn FnOnce(&mut ProviderRegistrar<'_>) + Send>;
 
 /// The node services a composition is built over: bootstrap creates them
 /// once per node, before the composition.
-pub(crate) struct BuildContext {
+pub struct BuildContext {
     /// The node's deployment store, created with the node's identity.
     pub deployments: ImmutableDeploymentStore,
     /// The node's revocation ledger.
@@ -124,9 +124,9 @@ pub(crate) struct BuildContext {
 ///
 /// Community's is [`CompositionRoot::community`]. An edition starts from it
 /// (or from [`Self::new`]) and applies its own registration, written against
-/// `orion-extension-api`'s `Registrar`:
+/// `orion-extension-api`'s `Registrar`, and hands it to `orion_server::run`:
 ///
-/// ```no_run
+/// ```ignore
 /// use orion_extension_api::{EditionTier, Registrar};
 ///
 /// fn enterprise(node: &mut dyn Registrar) {
@@ -269,7 +269,7 @@ impl CompositionBuilder {
     /// Freeze the composition over the node's services: run the provider
     /// setups, then key every driver, provider and pool. The first
     /// duplicate is the error.
-    pub(crate) fn build(self, node: BuildContext) -> Result<Composition, CompositionError> {
+    pub fn build(self, node: BuildContext) -> Result<Composition, CompositionError> {
         let Self {
             edition,
             channels,
@@ -391,7 +391,7 @@ impl Composition {
     }
 
     /// The channel drivers: which protocols this node serves.
-    pub(crate) fn channels(&self) -> &ChannelDriverRegistry {
+    pub fn channels(&self) -> &ChannelDriverRegistry {
         &self.channels
     }
 

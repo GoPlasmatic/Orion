@@ -25,6 +25,7 @@ const SRC_DIRS: &[&str] = &[
     concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-storage/src"),
     concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-engine/src"),
     concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-plugin-host/src"),
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-runtime/src"),
 ];
 const ERRORS_MD: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),

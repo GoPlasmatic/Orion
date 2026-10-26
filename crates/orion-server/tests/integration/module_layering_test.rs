@@ -36,57 +36,46 @@ use std::path::{Path, PathBuf};
 /// every pair — only the ones that were actually violated, plus the ones the
 /// same reasoning obviously extends to.
 const FORBIDDEN: &[(&str, &[&str])] = &[
-    // The request path sits below the HTTP layer and the startup sequence.
-    ("channel", &["crate::server::", "crate::bootstrap::"]),
-    ("queue", &["crate::server::", "crate::bootstrap::"]),
-    // The cron scheduler sits beside `queue`: it consumes the
-    // engine, the channel estate and the storage layer, and nothing below it
-    // may name it back. `engine` reaching up here is how `TRIGGER_KEY` briefly
-    // ended up in the wrong module.
-    ("cron", &["crate::server::", "crate::bootstrap::"]),
-    ("channel", &["crate::cron::"]),
-    ("queue", &["crate::cron::"]),
-    // The one SQL lexer: read by `db_read`/`db_write` (below `definitions`),
-    // by the `$sql` pass and the clippy rules (above `engine`), and by the
-    // binary's `sql check`. None of them may reach the others for it.
-    (
-        "sql_lex.rs",
-        &[
-            "crate::server::",
-            "crate::engine::",
-            "crate::definitions::",
-            "crate::connector::",
-        ],
-    ),
+    // The cron scheduler sits beside `queue`: it consumes the engine, the
+    // channel estate and the storage layer, and nothing below it may name it
+    // back. `engine` reaching up here is how `TRIGGER_KEY` briefly ended up in
+    // the wrong module.
+    ("orion-runtime/src/channel", &["crate::cron::"]),
+    ("orion-runtime/src/queue", &["crate::cron::"]),
     // `runtime::reload` and `runtime::handler_deps` take an `AppState`, so
-    // nothing below the HTTP layer may name them. `runtime::tasks` and
-    // `runtime::generation` are deliberately *not* on this list: both are
-    // leaves that depend on nothing above them, and both are injected
-    // downward as a parameter or a field — `queue`, `cluster` and the
-    // retention jobs take a `&TaskRegistry`; `engine`, `channel`, `cron` and
+    // nothing the node is built from may name them. `runtime::generation` is
+    // deliberately *not* on this list: it is a leaf that depends on nothing
+    // above it, injected downward — `engine`'s hosts, `channel`, `cron` and
     // `queue` are handed an `Arc<RuntimeHandle>` and read the generation they
-    // were given. That is the same shape as `metrics`. Forbidding all of
-    // `runtime::` would refuse it.
+    // were given. Forbidding all of `runtime::` would refuse it.
     (
-        "channel",
+        "orion-runtime/src/channel",
         &["crate::runtime::reload", "crate::runtime::handler_deps"],
     ),
     (
-        "queue",
+        "orion-runtime/src/queue",
         &["crate::runtime::reload", "crate::runtime::handler_deps"],
     ),
-    // V2 extension seams and composition root sit below the HTTP server,
-    // bootstrap, reload, and background workers (`TD-36`).
+    // V2 extension seams and composition root sit below reload and the
+    // background workers (`TD-36`).
     (
-        "extensions",
+        "orion-runtime/src/extensions",
         &[
-            "crate::server::",
-            "crate::bootstrap::",
             "crate::runtime::reload",
             "crate::runtime::handler_deps",
             "crate::cron::",
             "crate::queue::",
         ],
+    ),
+    // The authoring checks sit below the HTTP layer and the startup
+    // sequence, which both call them.
+    (
+        "orion-server/src/definitions",
+        &["crate::server::", "crate::bootstrap::"],
+    ),
+    (
+        "orion-server/src/validation",
+        &["crate::server::", "crate::bootstrap::"],
     ),
 ];
 
@@ -96,12 +85,14 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
 /// lesser evil, and the next reader gets to judge that.
 const ALLOWED: &[(&str, &str)] = &[];
 
+/// The workspace's `crates/` directory: a row names a module by its crate
+/// and its path inside it.
 fn src_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
-/// Every `.rs` file under `src/<module>` (or the file `src/<module>` itself
-/// when the entry names one).
+/// Every `.rs` file under `crates/<module>` (or the file itself when the entry
+/// names one).
 fn files_of(module: &str) -> Vec<PathBuf> {
     let root = src_dir().join(module);
     if root.is_file() {

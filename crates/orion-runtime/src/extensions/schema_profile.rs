@@ -1426,8 +1426,8 @@ mod tests {
 
     #[test]
     fn passes_all_36_schema_and_manifest_fixture_cases() {
-        let fixture_dir =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2/schema-validation");
+        let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../orion-server/tests/fixtures/v2/schema-validation");
         let cases_raw = std::fs::read_to_string(fixture_dir.join("cases.json")).unwrap();
         let catalog: Value = serde_json::from_str(&cases_raw).unwrap();
         let base_raw = std::fs::read_to_string(fixture_dir.join("bundle.json")).unwrap();

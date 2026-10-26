@@ -1051,7 +1051,7 @@ fn jwt_plan(cfg: &ChannelAuthConfig) -> Result<JwtPlan, String> {
 
 /// Why a presented header yielded no credential under a scheme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SchemeRefusal {
+pub enum SchemeRefusal {
     /// The value names another scheme, or none: `Basic …`, `Bearer<token>`.
     Mismatch,
     /// The scheme, with nothing after it.
@@ -1068,10 +1068,7 @@ pub(crate) enum SchemeRefusal {
 /// and `Bearer  <tok>` from spec-conforming clients and made the delimiter
 /// part of the configured value (#331). The credential comes back byte-exact:
 /// an `api_key` digest is over exactly what was sent.
-pub(crate) fn scheme_credential<'v>(
-    value: &'v str,
-    scheme: &str,
-) -> Result<&'v str, SchemeRefusal> {
+pub fn scheme_credential<'v>(value: &'v str, scheme: &str) -> Result<&'v str, SchemeRefusal> {
     let (name, rest) = value.split_once(' ').unwrap_or((value, ""));
     if !name.eq_ignore_ascii_case(scheme) {
         return Err(SchemeRefusal::Mismatch);
