@@ -100,7 +100,7 @@ impl DedupClaim {
 pub(super) async fn check_deduplication(
     channel: &str,
     channel_config: &Option<Arc<ChannelRuntimeConfig>>,
-    header: HeaderLookup<'_>,
+    header: HeaderLookup<'_, '_>,
     key_fallback: Option<&str>,
     owner: Option<&str>,
 ) -> Result<Option<DedupClaim>, OrionError> {
@@ -113,7 +113,7 @@ pub(super) async fn check_deduplication(
     let Some(ref store) = cfg.dedup_store else {
         return Ok(None);
     };
-    let Some(key) = header(&dedup.header).or_else(|| key_fallback.map(str::to_string)) else {
+    let Some(key) = header(&dedup.header).or(key_fallback) else {
         return Ok(None);
     };
 

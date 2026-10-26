@@ -263,10 +263,13 @@ pub(crate) async fn dynamic_handler(
         .as_ref()
         .and_then(|rt| rt.parsed_config.request.as_ref());
     let body_mode = request_config.map(|r| r.body_mode).unwrap_or_default();
-    let req = ProcessRequest::classify(parsed_body, body_mode);
+    let ProcessRequest {
+        data,
+        metadata: req_metadata,
+    } = ProcessRequest::classify(parsed_body, body_mode);
 
-    let mut metadata = build_request_metadata(RequestMetadataParts {
-        req_metadata: &req.metadata,
+    let metadata = build_request_metadata(RequestMetadataParts {
+        req_metadata,
         channel: &channel,
         method: &method,
         route_params: &route_params,
@@ -289,12 +292,7 @@ pub(crate) async fn dynamic_handler(
         )));
     };
 
-    let header_lookup = |name: &str| {
-        headers
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string)
-    };
+    let header_lookup = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
     // S8: the same trusted-proxy-gated identity the platform limiter uses, so
     // a channel's limit cannot be side-stepped with a spoofed
     // `X-Forwarded-For` that the platform limiter would have ignored.
@@ -318,19 +316,21 @@ pub(crate) async fn dynamic_handler(
             crate::channel::routing::RouteRole::OAuthCallback => crate::channel::OAuthLeg::Callback,
             crate::channel::routing::RouteRole::Primary => crate::channel::OAuthLeg::Authorize,
         });
+    // The message the guards read and the engine runs, built once: both halves
+    // move in here and come back out, intact, once every guard has passed.
+    let mut guard_context = guards::GuardContext::new(data, metadata);
     let guard_verdict = match guards::apply_guards(guards::GuardRequest {
         transport,
         channel: &channel,
         runtime: &channel_runtime,
-        data: &req.data,
-        metadata: &metadata,
+        context: &mut guard_context,
         exprs: &state.exprs,
         origin: headers.get("origin").and_then(|v| v.to_str().ok()),
         caller_identity: &client_ip,
         // The HTTP transports are the two that present a credential (S12).
         auth_backoff: Some(&state.channel_auth_failures),
         header: &header_lookup,
-        // The bytes as received, not `req.data`. A webhook signature is
+        // The bytes as received, not the parsed payload. A webhook signature is
         // computed over the wire body, and `ProcessRequest::from_body` has
         // already parsed and possibly unwrapped the `data` envelope — signing
         // over that would never match.
@@ -401,6 +401,7 @@ pub(crate) async fn dynamic_handler(
     // `build_request_metadata` always returns an object — it starts from
     // `json!({})` for a non-object base and then stamps `channel`, which would
     // itself panic otherwise — so `as_object_mut` here is total.
+    let (data, mut metadata) = guard_context.into_parts();
     if let Some(oauth) = admission.oauth.as_mut()
         && let Some(map) = metadata.as_object_mut()
     {
@@ -422,7 +423,7 @@ pub(crate) async fn dynamic_handler(
         return submit_async(
             &state,
             channel,
-            req.data,
+            data,
             metadata,
             channel_config,
             profile_requested,
@@ -434,7 +435,7 @@ pub(crate) async fn dynamic_handler(
     process_sync_for_channel(
         &state,
         &channel,
-        req.data,
+        data,
         metadata,
         sync::AdmittedOn {
             generation,
@@ -573,7 +574,9 @@ fn shape_guard_rejection(
 /// a transposition would type-check and silently swap a request's query
 /// parameters for its path parameters.
 struct RequestMetadataParts<'a> {
-    req_metadata: &'a Value,
+    /// The caller's envelope `metadata`, moved in: it is the base the
+    /// server-owned keys are stamped onto, and nothing reads it afterwards.
+    req_metadata: Value,
     channel: &'a str,
     method: &'a axum::http::Method,
     route_params: &'a std::collections::HashMap<String, String>,
@@ -600,7 +603,7 @@ fn build_request_metadata(parts: RequestMetadataParts<'_>) -> Value {
     } = parts;
     // Build metadata with all request context available for validation_logic
     let mut metadata = if req_metadata.is_object() {
-        req_metadata.clone()
+        req_metadata
     } else {
         json!({})
     };
@@ -651,6 +654,11 @@ fn build_request_metadata(parts: RequestMetadataParts<'_>) -> Value {
     // so a plaintext value here is a plaintext credential at rest — and,
     // before S14, one readable over HTTP. The key survives so logic can
     // still test presence; the value is never recoverable downstream.
+    //
+    // Every header, not only the ones a channel declares: the rate limiter
+    // can key on just the headers its `key_logic` names (`COMMON_KEY_HEADERS`),
+    // but this map is the message's, and a workflow condition or task reads
+    // `metadata.headers.<any name>` with nothing declaring which beforehand.
     let mut header_map = serde_json::Map::with_capacity(headers.len());
     for (name, value) in headers {
         let name_str = name.as_str();

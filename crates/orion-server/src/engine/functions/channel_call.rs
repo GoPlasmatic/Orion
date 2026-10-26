@@ -204,13 +204,16 @@ impl Function for ChannelCallFunction {
             // `validation_logic` is the one guard of this transport that
             // reads the message, as JSON; a target without one is admitted
             // with no copy of either.
-            let view = target_runtime
+            let mut view = if target_runtime
                 .as_ref()
                 .is_some_and(|rt| rt.validation_logic.is_some())
-                .then(|| (Value::from(&data), Value::from(&metadata)));
-            let (view_data, view_metadata) = match &view {
-                Some((data, metadata)) => (data, metadata),
-                None => (&Value::Null, &Value::Null),
+            {
+                crate::channel::guards::GuardContext::new(
+                    Value::from(&data),
+                    Value::from(&metadata),
+                )
+            } else {
+                crate::channel::guards::GuardContext::new(Value::Null, Value::Null)
             };
             // The header view is the metadata inherited from the originating
             // request, so a target whose `rate_limit.key_logic` reads a
@@ -220,14 +223,12 @@ impl Function for ChannelCallFunction {
                     .get("headers")
                     .and_then(|headers| headers.get(name))
                     .and_then(OwnedDataValue::as_str)
-                    .map(str::to_string)
             };
             crate::channel::guards::admit(crate::channel::guards::GuardRequest {
                 transport: crate::channel::guards::Transport::ChannelCall,
                 channel: &target,
                 runtime: &target_runtime,
-                data: view_data,
-                metadata: view_metadata,
+                context: &mut view,
                 exprs: &self.exprs,
                 origin: None,
                 caller_identity: &caller,

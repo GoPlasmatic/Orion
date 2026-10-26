@@ -338,7 +338,7 @@ impl CompiledAuth {
 
     pub async fn authenticate(
         &self,
-        header: HeaderLookup<'_>,
+        header: HeaderLookup<'_, '_>,
         raw_body: Option<&[u8]>,
         exprs: &ExprEngine,
     ) -> Result<AuthOutcome, OrionError> {
@@ -350,8 +350,8 @@ impl CompiledAuth {
             } => {
                 let presented = header(name).ok_or_else(refused)?;
                 let credential = match scheme {
-                    Some(scheme) => scheme_credential(&presented, scheme).map_err(|_| refused())?,
-                    None => presented.as_str(),
+                    Some(scheme) => scheme_credential(presented, scheme).map_err(|_| refused())?,
+                    None => presented,
                 };
                 let digest: [u8; 32] = Sha256::digest(credential.as_bytes()).into();
                 if digests.iter().any(|d| constant_time_eq(&digest, d)) {
@@ -371,7 +371,7 @@ impl CompiledAuth {
 impl CompiledJwt {
     async fn authenticate(
         &self,
-        header: HeaderLookup<'_>,
+        header: HeaderLookup<'_, '_>,
         exprs: &ExprEngine,
     ) -> Result<AuthOutcome, OrionError> {
         use crate::jwt::RejectReason;
@@ -388,7 +388,7 @@ impl CompiledJwt {
                         // A present header with the wrong scheme is a bad
                         // presentation, not a missing token, so `required:
                         // false` does not admit it.
-                        let credential = scheme_credential(&value, scheme).map_err(|refusal| {
+                        let credential = scheme_credential(value, scheme).map_err(|refusal| {
                             self.refuse(match refusal {
                                 SchemeRefusal::Mismatch => RejectReason::SchemeMismatch,
                                 SchemeRefusal::NoCredential => RejectReason::Malformed,
@@ -396,7 +396,7 @@ impl CompiledJwt {
                         })?;
                         Some(credential.to_string())
                     }
-                    None => Some(value),
+                    None => Some(value.to_string()),
                 },
             },
             // One RFC 6265 parser for the whole estate (#270), which fixes the
@@ -405,8 +405,9 @@ impl CompiledJwt {
             // several `cookie` headers is still only searched in the first —
             // the transport behind this abstraction (channel_call) has no
             // multi-valued headers to justify widening it.
-            JwtSource::Cookie { cookie } => header("cookie")
-                .and_then(|jar| super::cookies::lookup([jar.as_str()], cookie.as_str())),
+            JwtSource::Cookie { cookie } => {
+                header("cookie").and_then(|jar| super::cookies::lookup([jar], cookie.as_str()))
+            }
         };
         let Some(token) = token else {
             // "Optional" means a MISSING token proceeds identity-less; a
@@ -489,7 +490,7 @@ impl CompiledHmac {
     /// is testable; production passes the clock).
     fn authenticate_at(
         &self,
-        header: HeaderLookup<'_>,
+        header: HeaderLookup<'_, '_>,
         raw_body: Option<&[u8]>,
         now: i64,
     ) -> Result<(), OrionError> {
@@ -499,12 +500,12 @@ impl CompiledHmac {
             SigExtraction::Prefix(prefix) => {
                 let one = match prefix {
                     Some(p) => presented.strip_prefix(p.as_str()).ok_or_else(refused)?,
-                    None => presented.as_str(),
+                    None => presented,
                 };
                 vec![one]
             }
             SigExtraction::Key(key) => {
-                let values = packed_values(&presented, key);
+                let values = packed_values(presented, key);
                 if values.is_empty() {
                     return Err(refused());
                 }
@@ -519,9 +520,9 @@ impl CompiledHmac {
                 None => header(&spec.header).ok_or_else(refused)?,
                 Some(key) => {
                     let value = header(&spec.header).ok_or_else(refused)?;
-                    packed_values(&value, key)
+                    packed_values(value, key)
                         .first()
-                        .map(|v| v.to_string())
+                        .copied()
                         .ok_or_else(refused)?
                 }
             };
@@ -550,9 +551,9 @@ impl CompiledHmac {
                 }
                 Segment::HeaderPart(name, key) => {
                     let value = header(name).ok_or_else(refused)?;
-                    let part = packed_values(&value, key)
+                    let part = packed_values(value, key)
                         .first()
-                        .map(|v| v.to_string())
+                        .copied()
                         .ok_or_else(refused)?;
                     message.extend_from_slice(part.as_bytes());
                 }
@@ -1144,12 +1145,12 @@ mod tests {
             .expect("Orion's expression engine builds")
     }
 
-    fn lookup<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+    fn lookup<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<&'a str> + 'a {
         move |name: &str| {
             pairs
                 .iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case(name))
-                .map(|(_, v)| v.to_string())
+                .map(|(_, v)| *v)
         }
     }
 

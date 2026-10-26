@@ -83,16 +83,25 @@ pub(super) fn resolve_key_field<'a>(data: &'a Value, field: &str) -> Option<&'a 
 ///
 /// SHA-256 truncated to 128 bits keeps the determinism the cache actually
 /// requires and puts a collision beyond construction. The cost lands next to
-/// the `serde_json::to_vec` of the same bytes, which this function already
-/// pays, and only on channels that enable caching.
+/// the serialization of the same bytes, which this function already pays, and
+/// only on channels that enable caching.
+///
+/// # One buffer, not one per chunk
+///
+/// Every chunk is length-prefixed (below), so its length has to be known
+/// before its bytes reach the digest, and a chunk cannot simply be streamed
+/// into the hasher without changing every key ever stored. What can go is the
+/// allocation per chunk: each value is serialized into one scratch buffer,
+/// cleared and reused for the next, so a key costs one allocation however many
+/// fields, parameters and query keys feed it.
 pub(super) fn compute_cache_key(
     channel: &str,
-    data: &Value,
-    metadata: &Value,
+    context: &super::GuardContext,
     cache_cfg: &crate::channel::ChannelCacheConfig,
     key_logic: Option<&Expr>,
     exprs: &ExprEngine,
 ) -> Option<String> {
+    let (data, metadata) = (context.data(), context.metadata());
     // `key_logic` replaces the whole payload-derived half of the key rather
     // than adding to it: an expression that says what varies the response is a
     // complete answer, and mixing it with a payload hash would put back the
@@ -108,6 +117,7 @@ pub(super) fn compute_cache_key(
         h.update((bytes.len() as u64).to_be_bytes());
         h.update(bytes);
     }
+    let mut scratch = Vec::new();
 
     // The request's route identity must always distinguish keys: for a REST
     // channel like `GET /orders/{id}` the body is empty, so hashing only the
@@ -120,26 +130,25 @@ pub(super) fn compute_cache_key(
             .unwrap_or("")
             .as_bytes(),
     );
-    feed_object_sorted(&mut h, metadata.get("params"));
-    feed_object_sorted(&mut h, metadata.get("query"));
+    feed_object_sorted(&mut h, metadata.get("params"), &mut scratch);
+    feed_object_sorted(&mut h, metadata.get("query"), &mut scratch);
 
     // `key_logic` first: it is the general form and the documented one to win
     // when both are declared. The two branches used to be the other way round,
     // so a channel declaring both keyed on the fields and never evaluated the
     // expression its author wrote to say what varies the response (#354).
     if let Some(compiled) = key_logic {
-        let context = serde_json::json!({ "data": data, "metadata": metadata });
         // No usable key means bypass, exactly as an unresolvable
         // `cache_key_fields` does: a key that cannot be computed must not
         // collapse onto one shared entry and serve one caller's body to the
         // next. The key is hashed as the JSON 1.12 hashed (`result_json`), so
         // every entry stored before this build is still found by its key.
-        let key = exprs.eval(compiled, &context).ok()?;
+        let key = exprs.eval(compiled, context.root()).ok()?;
         let key = crate::engine::operators::result_json(&key.value);
         if key.is_null() {
             return None;
         }
-        feed(&mut h, &serde_json::to_vec(&key).unwrap_or_default());
+        feed(&mut h, serialize_into(&mut scratch, &key));
     } else if let Some(ref fields) = cache_cfg.cache_key_fields {
         // Hash selected fields directly — no intermediate Map or clones. An
         // absent field feeds its *name* and a marker byte rather than nothing,
@@ -152,7 +161,7 @@ pub(super) fn compute_cache_key(
                 Some(v) => {
                     resolved += 1;
                     h.update([1u8]);
-                    feed(&mut h, &serde_json::to_vec(v).unwrap_or_default());
+                    feed(&mut h, serialize_into(&mut scratch, v));
                 }
                 None => h.update([0u8]),
             }
@@ -161,7 +170,7 @@ pub(super) fn compute_cache_key(
             return None;
         }
     } else {
-        feed(&mut h, &serde_json::to_vec(data).unwrap_or_default());
+        feed(&mut h, serialize_into(&mut scratch, data));
     };
 
     // 128 bits of a 256-bit digest: the birthday bound is 2^64 distinct
@@ -171,9 +180,20 @@ pub(super) fn compute_cache_key(
     Some(format!("cache:{channel}:{}", hex::encode(&digest[..16])))
 }
 
+/// `value` as compact JSON in `scratch`, which is cleared first: the bytes
+/// `serde_json::to_vec` produced, without a buffer of their own. A failure
+/// leaves it empty, as `to_vec(…).unwrap_or_default()` did.
+fn serialize_into<'b>(scratch: &'b mut Vec<u8>, value: &Value) -> &'b [u8] {
+    scratch.clear();
+    if serde_json::to_writer(&mut *scratch, value).is_err() {
+        scratch.clear();
+    }
+    scratch
+}
+
 /// Feed an optional JSON object into the digest in sorted-key order, so the
 /// key is independent of map iteration and query-string order.
-pub(super) fn feed_object_sorted(h: &mut Sha256, v: Option<&Value>) {
+pub(super) fn feed_object_sorted(h: &mut Sha256, v: Option<&Value>, scratch: &mut Vec<u8>) {
     let Some(Value::Object(map)) = v else {
         h.update([0u8]);
         return;
@@ -185,9 +205,9 @@ pub(super) fn feed_object_sorted(h: &mut Sha256, v: Option<&Value>) {
     for k in keys {
         h.update((k.len() as u64).to_be_bytes());
         h.update(k.as_bytes());
-        let bytes = serde_json::to_vec(&map[k.as_str()]).unwrap_or_default();
+        let bytes = serialize_into(scratch, &map[k.as_str()]);
         h.update((bytes.len() as u64).to_be_bytes());
-        h.update(&bytes);
+        h.update(bytes);
     }
 }
 
@@ -254,8 +274,7 @@ pub(super) enum CacheLookup {
 /// the eventual response on success.
 pub(super) async fn check_response_cache(
     channel: &str,
-    data: &Value,
-    metadata: &Value,
+    context: &super::GuardContext,
     channel_config: &Option<Arc<ChannelRuntimeConfig>>,
     exprs: &ExprEngine,
 ) -> CacheLookup {
@@ -273,8 +292,7 @@ pub(super) async fn check_response_cache(
     };
     let Some(key) = compute_cache_key(
         channel,
-        data,
-        metadata,
+        context,
         cache_cfg,
         cfg.cache_key_logic.as_deref(),
         exprs,

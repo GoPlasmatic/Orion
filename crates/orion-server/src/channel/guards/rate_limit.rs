@@ -31,7 +31,7 @@ pub(super) async fn check_rate_limit(
     channel_config: &Option<Arc<ChannelRuntimeConfig>>,
     exprs: &ExprEngine,
     caller_identity: &str,
-    header: HeaderLookup<'_>,
+    header: HeaderLookup<'_, '_>,
 ) -> Result<(), OrionError> {
     let Some(cfg) = channel_config else {
         return Ok(());
@@ -178,14 +178,14 @@ pub(crate) const COMMON_KEY_HEADERS: &[&str] = &[
 pub(super) fn rate_limit_context(
     caller_identity: &str,
     channel: &str,
-    header: HeaderLookup<'_>,
+    header: HeaderLookup<'_, '_>,
     declared: Option<&[String]>,
 ) -> Value {
     let declared = declared.unwrap_or(&[]);
     let mut headers = serde_json::Map::with_capacity(COMMON_KEY_HEADERS.len() + declared.len());
     for &name in COMMON_KEY_HEADERS {
         if let Some(value) = header(name) {
-            headers.insert(name.to_string(), Value::String(value));
+            headers.insert(name.to_string(), Value::String(value.to_string()));
         }
     }
     // Declared names are already lowercased at load. A redundant declaration
@@ -195,7 +195,7 @@ pub(super) fn rate_limit_context(
             continue;
         }
         if let Some(value) = header(name) {
-            headers.insert(name.clone(), Value::String(value));
+            headers.insert(name.clone(), Value::String(value.to_string()));
         }
     }
     json!({
@@ -274,7 +274,7 @@ pub(super) async fn check_principal_rate_limit(
     channel_config: &Option<Arc<ChannelRuntimeConfig>>,
     exprs: &ExprEngine,
     caller_identity: &str,
-    header: HeaderLookup<'_>,
+    header: HeaderLookup<'_, '_>,
     claims: Option<&Value>,
 ) -> Result<(), OrionError> {
     let Some(cfg) = channel_config else {

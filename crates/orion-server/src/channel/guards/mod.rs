@@ -233,7 +233,77 @@ impl Transport {
 /// inherited `metadata.headers`.
 /// Used by deduplication (the idempotency header is per-channel config) and
 /// by `rate_limit.key_logic`.
-pub type HeaderLookup<'a> = &'a (dyn Fn(&str) -> Option<String> + Send + Sync);
+///
+/// The value is lent from the transport's own storage — the `HeaderMap`, or
+/// the metadata — for as long as the request: a guard that only compares or
+/// hashes a header (every credential check) copies nothing, and one that
+/// keeps it owns it explicitly. `'r` is the lookup's own borrow and `'v` the
+/// values', kept apart so a lookup built for one call can lend values that
+/// outlive it.
+pub type HeaderLookup<'r, 'v> = &'r (dyn Fn(&str) -> Option<&'v str> + Send + Sync + 'r);
+
+/// The message as a channel's own expressions read it: one
+/// `{"data": …, "metadata": …}` object, built once per message by moving the
+/// transport's payload and metadata into it.
+///
+/// `validation_logic` and the response cache's `key_logic` both evaluate
+/// against exactly this shape. Each used to build it afresh with
+/// `json!({"data": data, "metadata": metadata})`, a deep copy of the payload
+/// and of every request header per reader, and `apply_guards` deep-copied the
+/// metadata a third time to merge verified claims into it. Now the transport
+/// moves its two values in, the guards read and (for the claims) edit them in
+/// place, and [`Self::into_parts`] hands them back for the engine.
+#[derive(Debug)]
+pub struct GuardContext(Value);
+
+/// What [`GuardContext::data`] and [`GuardContext::metadata`] lend when a part
+/// is absent — which only a context built from something other than
+/// [`GuardContext::new`] could be.
+static NULL: Value = Value::Null;
+
+impl GuardContext {
+    /// The context for one message, taking ownership of both halves.
+    pub fn new(data: Value, metadata: Value) -> Self {
+        let mut root = serde_json::Map::with_capacity(2);
+        root.insert("data".to_string(), data);
+        root.insert("metadata".to_string(), metadata);
+        Self(Value::Object(root))
+    }
+
+    /// The payload, as `validation_logic` and the cache key see it.
+    pub fn data(&self) -> &Value {
+        self.0.get("data").unwrap_or(&NULL)
+    }
+
+    /// The message metadata, as `validation_logic` sees it.
+    pub fn metadata(&self) -> &Value {
+        self.0.get("metadata").unwrap_or(&NULL)
+    }
+
+    /// The whole object, the root an expression is evaluated against.
+    pub(crate) fn root(&self) -> &Value {
+        &self.0
+    }
+
+    /// Merge verified claims into the metadata at `auth.claims`, in place —
+    /// [`merge_auth_claims`]'s shape, without a copy of the metadata.
+    fn merge_auth_claims(&mut self, claims: Value) {
+        if let Some(metadata) = self.0.get_mut("metadata") {
+            *metadata = merge_auth_claims(std::mem::take(metadata), claims);
+        }
+    }
+
+    /// The payload and the metadata, handed back for the engine.
+    pub fn into_parts(self) -> (Value, Value) {
+        match self.0 {
+            Value::Object(mut root) => (
+                root.remove("data").unwrap_or(Value::Null),
+                root.remove("metadata").unwrap_or(Value::Null),
+            ),
+            _ => (Value::Null, Value::Null),
+        }
+    }
+}
 
 /// Everything [`apply_guards`] needs, lowered to transport-neutral values.
 pub struct GuardRequest<'a> {
@@ -245,10 +315,9 @@ pub struct GuardRequest<'a> {
     /// registry, and every guard is a no-op — callers reject that case
     /// before getting here.
     pub runtime: &'a Option<Arc<ChannelRuntimeConfig>>,
-    /// The payload, as `validation_logic` and the cache key see it.
-    pub data: &'a Value,
-    /// The message metadata, as `validation_logic` sees it.
-    pub metadata: &'a Value,
+    /// The message as the channel's own expressions read it — the payload
+    /// and the metadata, built once by the transport (see [`GuardContext`]).
+    pub context: &'a mut GuardContext,
     /// The process's expression engine, which compiled the channel's
     /// expressions and evaluates them (I188).
     pub exprs: &'a ExprEngine,
@@ -259,7 +328,7 @@ pub struct GuardRequest<'a> {
     /// `channel_call`.
     pub caller_identity: &'a str,
     /// Named header lookup (see [`HeaderLookup`]).
-    pub header: HeaderLookup<'a>,
+    pub header: HeaderLookup<'a, 'a>,
     /// Failed-credential budget for `auth.mode = "api_key"` / `"hmac"` (S12).
     /// `None` for the transports that present no credential — an in-process
     /// `channel_call` authenticated at the edge, and a cron occurrence has no
@@ -520,32 +589,27 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
         check_allowed_origin(req.channel, req.runtime, req.origin)?;
     }
     // Verified claims join the metadata the channel's own logic sees, so
-    // "claim vs request" checks are one-line JSONLogic. Built once, for both
-    // readers below: `validation_logic` and the response cache's `key_logic`.
-    // The cache key must read this view and never `req.metadata` — keyed on
-    // the subject before the merge, it read whatever the caller wrote at
-    // `metadata.auth` and stored one caller's body under another's key (#354).
-    // Only a channel with an expression to read the claims pays for the
-    // copy: `validate_input` returns before looking without `validation_logic`,
-    // and the cache key reads metadata beyond params and query only through
-    // `key_logic`.
+    // "claim vs request" checks are one-line JSONLogic. Merged once, into the
+    // one context both readers below evaluate against: `validation_logic` and
+    // the response cache's `key_logic`. The cache key must read this view and
+    // never the metadata before the merge — keyed on the subject before it, it
+    // read whatever the caller wrote at `metadata.auth` and stored one
+    // caller's body under another's key (#354). Only a channel with an
+    // expression to read the claims pays for the copy of the claims:
+    // `validate_input` returns before looking without `validation_logic`, and
+    // the cache key reads metadata beyond params and query only through
+    // `key_logic`. The transport merges the claims into the message itself
+    // afterwards (`merge_auth_claims`), the same key with the same value, so
+    // what the engine sees does not depend on whether this merge ran.
     let reads_claims = req.runtime.as_ref().is_some_and(|rt| {
         (set.validation && rt.validation_logic.is_some())
             || (set.response_cache && rt.cache_key_logic.is_some())
     });
-    let metadata_with_auth = auth_claims
-        .as_ref()
-        .filter(|_| reads_claims)
-        .map(|claims| merge_auth_claims(req.metadata.clone(), claims.clone()));
-    let guard_metadata = metadata_with_auth.as_ref().unwrap_or(req.metadata);
+    if reads_claims && let Some(claims) = auth_claims.as_ref() {
+        req.context.merge_auth_claims(claims.clone());
+    }
     if set.validation {
-        validate_input(
-            req.channel,
-            req.runtime,
-            req.data,
-            guard_metadata,
-            req.exprs,
-        )?;
+        validate_input(req.channel, req.runtime, req.context, req.exprs)?;
     }
     let dedup_claim = if set.deduplication {
         check_deduplication(
@@ -566,7 +630,7 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
     // it on its merits. An answer — a cache hit, the sign-in redirect — leaves it
     // standing: a replay of the key is a duplicate of a delivery that
     // succeeded.
-    match after_dedup(&req, set, guard_metadata, auth_claims).await {
+    match after_dedup(&req, set, auth_claims).await {
         Ok(GuardVerdict::Admitted(admission)) => Ok(GuardVerdict::Admitted(Admission {
             dedup_claim,
             ..admission
@@ -587,19 +651,10 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
 async fn after_dedup(
     req: &GuardRequest<'_>,
     set: GuardSet,
-    guard_metadata: &Value,
     auth_claims: Option<Value>,
 ) -> Result<GuardVerdict, OrionError> {
     let cache_store = if set.response_cache {
-        match check_response_cache(
-            req.channel,
-            req.data,
-            guard_metadata,
-            req.runtime,
-            req.exprs,
-        )
-        .await
-        {
+        match check_response_cache(req.channel, req.context, req.runtime, req.exprs).await {
             // The request was answered, so the claim stands: a later replay
             // of the same key is a duplicate of a delivery that succeeded.
             CacheLookup::Hit(body) => return Ok(GuardVerdict::CacheHit(body)),
@@ -1223,22 +1278,39 @@ mod tests {
 
     /// Header-lookup view matching what the HTTP path passes: the
     /// idempotency header resolves to "token-1", everything else to None.
-    fn idempotency_lookup(name: &str) -> Option<String> {
-        (name == "idempotency-key").then(|| "token-1".to_string())
+    // Generic over the value lifetime rather than `'static`: the lookup's
+    // value type is invariant inside the `dyn Fn`, so a `'static` one would
+    // pin every request it is set on to `'static` too.
+    fn idempotency_lookup<'v>(name: &str) -> Option<&'v str> {
+        (name == "idempotency-key").then_some("token-1")
     }
 
-    fn no_headers(_name: &str) -> Option<String> {
+    fn no_headers<'v>(_name: &str) -> Option<&'v str> {
         None
     }
-
-    const IDEMPOTENCY: HeaderLookup<'static> = &idempotency_lookup;
-    const NO_HEADERS: HeaderLookup<'static> = &no_headers;
 
     /// The process's expression engine as boot builds it with no secrets and
     /// no budget.
     fn engine() -> ExprEngine {
         crate::engine::operators::orion_exprs(&crate::engine::ResolvedSecrets::empty(), 0)
             .expect("Orion's expression engine builds")
+    }
+
+    /// The context hands back exactly what the transport moved in, and its
+    /// root is the `{"data", "metadata"}` object each reader used to build for
+    /// itself.
+    #[test]
+    fn a_guard_context_hands_back_what_it_was_given() {
+        let data = json!({"order": {"id": 7}});
+        let metadata = json!({"headers": {"x-tenant-id": "acme"}, "channel": "orders"});
+        let context = super::GuardContext::new(data.clone(), metadata.clone());
+        assert_eq!(context.data(), &data);
+        assert_eq!(context.metadata(), &metadata);
+        assert_eq!(
+            context.root(),
+            &json!({"data": data.clone(), "metadata": metadata.clone()})
+        );
+        assert_eq!(context.into_parts(), (data, metadata));
     }
 
     /// The two readers that moved off the JSON 1.12 evaluated into each give,
@@ -1313,6 +1385,11 @@ mod tests {
 
     /// One guard request with everything defaulted, so a test names only
     /// what it is about.
+    ///
+    /// The context is a copy of `data` and `metadata`, leaked: a test calls
+    /// this many times over the same two values, and a `&'static mut` keeps
+    /// every call site the one line it was before the guards took the message
+    /// as one owned [`GuardContext`]. Test-only, and a few bytes per call.
     fn request<'a>(
         transport: Transport,
         runtime: &'a Option<Arc<ChannelRuntimeConfig>>,
@@ -1324,13 +1401,15 @@ mod tests {
             transport,
             channel: "orders",
             runtime,
-            data,
-            metadata,
+            context: Box::leak(Box::new(super::GuardContext::new(
+                data.clone(),
+                metadata.clone(),
+            ))),
             exprs,
             auth_backoff: None,
             origin: None,
             caller_identity: "10.0.0.1",
-            header: NO_HEADERS,
+            header: &no_headers,
             raw_body: None,
             dedup_key_fallback: None,
             dedup_owner: None,
@@ -1456,8 +1535,8 @@ mod tests {
             );
 
             let runtime = Runtime::new().api_key("s3cret").await.build();
-            let present: HeaderLookup<'_> =
-                &|name: &str| (name == "X-API-Key").then(|| "s3cret".to_string());
+            let present: HeaderLookup<'_, '_> =
+                &|name: &str| (name == "X-API-Key").then_some("s3cret");
             let mut req = request(transport, &runtime, &dl, &data, &metadata);
             req.header = present;
             assert!(
@@ -1515,7 +1594,7 @@ mod tests {
             .build();
 
         let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &metadata);
-        req.header = IDEMPOTENCY;
+        req.header = &idempotency_lookup;
         // `GuardVerdict` is not `Debug`, so `expect_err` is unavailable;
         // `.err().expect(..)` asserts the same thing without it.
         let err = apply_guards(req)
@@ -1767,8 +1846,8 @@ mod tests {
             .build();
         let (data, meta) = (json!({}), json!({}));
 
-        let acme = |name: &str| (name == "x-tenant-id").then(|| "acme".to_string());
-        let globex = |name: &str| (name == "x-tenant-id").then(|| "globex".to_string());
+        let acme = |name: &str| (name == "x-tenant-id").then_some("acme");
+        let globex = |name: &str| (name == "x-tenant-id").then_some("globex");
 
         let mut req = request(Transport::ChannelCall, &runtime, &dl, &data, &meta);
         req.header = &acme;
@@ -1808,8 +1887,8 @@ mod tests {
             )
             .build();
         let (data, meta) = (json!({}), json!({}));
-        let acme = |name: &str| (name == "x-tenant-id").then(|| "acme".to_string());
-        let globex = |name: &str| (name == "x-tenant-id").then(|| "globex".to_string());
+        let acme = |name: &str| (name == "x-tenant-id").then_some("acme");
+        let globex = |name: &str| (name == "x-tenant-id").then_some("globex");
 
         let mut req = request(Transport::HttpAsync, &runtime, &dl, &data, &meta);
         req.header = &acme;
@@ -1905,7 +1984,7 @@ mod tests {
             .build();
         let (data, meta) = (json!({}), json!({}));
 
-        let device = |name: &str| (name == "deviceid").then(|| "phone-1".to_string());
+        let device = |name: &str| (name == "deviceid").then_some("phone-1");
         let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &meta);
         req.header = &device;
 
@@ -1939,7 +2018,7 @@ mod tests {
         let (data, meta) = (json!({}), json!({}));
 
         for caller in ["phone-1", "phone-2"] {
-            let lookup = move |name: &str| (name == "deviceid").then(|| caller.to_string());
+            let lookup = move |name: &str| (name == "deviceid").then_some(caller);
             let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &meta);
             req.header = &lookup;
             assert!(
@@ -1968,7 +2047,7 @@ mod tests {
             .build();
         let (data, meta) = (json!({}), json!({}));
 
-        let blank = |name: &str| (name == "x-tenant-id").then(|| "   ".to_string());
+        let blank = |name: &str| (name == "x-tenant-id").then_some("   ");
         let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &meta);
         req.header = &blank;
         assert!(
@@ -2001,8 +2080,8 @@ mod tests {
                 .build();
             let (data, meta) = (json!({}), json!({}));
 
-            let phone = |name: &str| (name == "deviceid").then(|| "phone".to_string());
-            let tablet = |name: &str| (name == "deviceid").then(|| "tablet".to_string());
+            let phone = |name: &str| (name == "deviceid").then_some("phone");
+            let tablet = |name: &str| (name == "deviceid").then_some("tablet");
 
             // Each device gets its own bucket...
             let mut req = request(transport, &runtime, &dl, &data, &meta);
@@ -2046,8 +2125,8 @@ mod tests {
         let (data, meta) = (json!({}), json!({}));
 
         let both = |name: &str| match name {
-            "deviceid" => Some("phone".to_string()),
-            "x-partner" => Some("acme".to_string()),
+            "deviceid" => Some("phone"),
+            "x-partner" => Some("acme"),
             _ => None,
         };
         let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &meta);
@@ -2076,7 +2155,7 @@ mod tests {
             .build();
         let (data, meta) = (json!({}), json!({}));
 
-        let acme = |name: &str| (name == "x-tenant-id").then(|| "acme".to_string());
+        let acme = |name: &str| (name == "x-tenant-id").then_some("acme");
         let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &meta);
         req.header = &acme;
         assert!(apply_guards(req).await.is_ok());
@@ -2258,7 +2337,7 @@ mod tests {
     async fn test_dedup_new_key_passes() {
         let cfg = dedup_runtime(StubOutcome::New);
         let result =
-            super::check_deduplication("test-channel", &cfg, IDEMPOTENCY, None, None).await;
+            super::check_deduplication("test-channel", &cfg, &idempotency_lookup, None, None).await;
         assert!(result.is_ok());
     }
 
@@ -2266,7 +2345,7 @@ mod tests {
     async fn test_dedup_duplicate_rejected() {
         let cfg = dedup_runtime(StubOutcome::Duplicate);
         let result =
-            super::check_deduplication("test-channel", &cfg, IDEMPOTENCY, None, None).await;
+            super::check_deduplication("test-channel", &cfg, &idempotency_lookup, None, None).await;
         assert!(matches!(result, Err(OrionError::Conflict(_))));
     }
 
@@ -2274,7 +2353,7 @@ mod tests {
     async fn test_dedup_fails_open_on_backend_error_by_default() {
         let cfg = dedup_runtime(StubOutcome::BackendError);
         let result =
-            super::check_deduplication("test-channel", &cfg, IDEMPOTENCY, None, None).await;
+            super::check_deduplication("test-channel", &cfg, &idempotency_lookup, None, None).await;
         assert!(result.is_ok(), "backend errors must fail open, not 409");
     }
 
@@ -2284,7 +2363,7 @@ mod tests {
     async fn test_dedup_fails_closed_when_policy_is_deny() {
         let cfg = dedup_runtime_with_policy(StubOutcome::BackendError, BackendErrorPolicy::Deny);
         let result =
-            super::check_deduplication("test-channel", &cfg, IDEMPOTENCY, None, None).await;
+            super::check_deduplication("test-channel", &cfg, &idempotency_lookup, None, None).await;
         assert!(
             matches!(result, Err(OrionError::ServiceUnavailable { .. })),
             "deny must refuse with 503"
@@ -2297,11 +2376,11 @@ mod tests {
     async fn test_deny_policy_does_not_affect_healthy_backend() {
         let cfg = dedup_runtime_with_policy(StubOutcome::New, BackendErrorPolicy::Deny);
         let result =
-            super::check_deduplication("test-channel", &cfg, IDEMPOTENCY, None, None).await;
+            super::check_deduplication("test-channel", &cfg, &idempotency_lookup, None, None).await;
         assert!(result.is_ok());
         let cfg = dedup_runtime_with_policy(StubOutcome::Duplicate, BackendErrorPolicy::Deny);
         let result =
-            super::check_deduplication("test-channel", &cfg, IDEMPOTENCY, None, None).await;
+            super::check_deduplication("test-channel", &cfg, &idempotency_lookup, None, None).await;
         assert!(matches!(result, Err(OrionError::Conflict(_))));
     }
 
@@ -2314,7 +2393,7 @@ mod tests {
                 BackendErrorPolicy::Allow,
             )
             .build();
-        super::check_deduplication("orders", &cfg, IDEMPOTENCY, None, None)
+        super::check_deduplication("orders", &cfg, &idempotency_lookup, None, None)
             .await
             .expect("dedup check should pass");
         let keys = seen.lock().expect("test lock poisoned");
@@ -2334,7 +2413,7 @@ mod tests {
                 BackendErrorPolicy::Allow,
             )
             .build();
-        super::check_deduplication("orders", &cfg, NO_HEADERS, Some("ORD-77"), None)
+        super::check_deduplication("orders", &cfg, &no_headers, Some("ORD-77"), None)
             .await
             .expect("dedup check should pass");
         assert_eq!(
@@ -2350,7 +2429,7 @@ mod tests {
                 BackendErrorPolicy::Allow,
             )
             .build();
-        super::check_deduplication("orders", &cfg, IDEMPOTENCY, Some("ORD-77"), None)
+        super::check_deduplication("orders", &cfg, &idempotency_lookup, Some("ORD-77"), None)
             .await
             .expect("dedup check should pass");
         assert_eq!(
@@ -2377,7 +2456,7 @@ mod tests {
         let (data, meta) = (json!({}), json!({}));
 
         let mut req = request(Transport::ChannelCall, &runtime, &dl, &data, &meta);
-        req.header = IDEMPOTENCY;
+        req.header = &idempotency_lookup;
         assert!(
             apply_guards(req).await.is_ok(),
             "channel_call must not consult the dedup store"
@@ -2386,7 +2465,7 @@ mod tests {
         // The same store refuses the same key over HTTP.
         for transport in [Transport::HttpSync, Transport::HttpAsync] {
             let mut req = request(transport, &runtime, &dl, &data, &meta);
-            req.header = IDEMPOTENCY;
+            req.header = &idempotency_lookup;
             assert!(
                 matches!(apply_guards(req).await, Err(OrionError::Conflict(_))),
                 "{transport:?} must reject a duplicate"
@@ -2517,11 +2596,11 @@ mod tests {
         let (data, meta) = (json!({}), json!({}));
 
         let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &meta);
-        req.header = IDEMPOTENCY;
+        req.header = &idempotency_lookup;
         assert!(apply_guards(req).await.is_ok(), "the first request passes");
 
         let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &meta);
-        req.header = IDEMPOTENCY;
+        req.header = &idempotency_lookup;
         assert!(
             matches!(apply_guards(req).await, Err(OrionError::Conflict(_))),
             "the second must be refused"
@@ -2551,7 +2630,7 @@ mod tests {
 
         // A keyed request is shed...
         let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &meta);
-        req.header = IDEMPOTENCY;
+        req.header = &idempotency_lookup;
         assert!(matches!(
             apply_guards(req).await,
             Err(OrionError::ServiceUnavailable { .. })
@@ -2568,7 +2647,7 @@ mod tests {
         // ...and its retry, once capacity is back, is not a duplicate.
         drop(held);
         let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &meta);
-        req.header = IDEMPOTENCY;
+        req.header = &idempotency_lookup;
         assert!(
             apply_guards(req).await.is_ok(),
             "the retry of a shed request must not be refused as a duplicate"
@@ -2781,7 +2860,7 @@ mod tests {
         let (data, meta) = (json!({}), json!({}));
 
         let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &meta);
-        req.header = IDEMPOTENCY;
+        req.header = &idempotency_lookup;
         assert!(matches!(
             apply_guards(req).await,
             Err(OrionError::Conflict(_))
@@ -2836,8 +2915,14 @@ mod tests {
         metadata: &serde_json::Value,
         cfg: &crate::channel::ChannelCacheConfig,
     ) -> String {
-        super::response_cache::compute_cache_key(channel, data, metadata, cfg, None, &engine())
-            .expect("this request must have a cache key")
+        super::response_cache::compute_cache_key(
+            channel,
+            &super::GuardContext::new(data.clone(), metadata.clone()),
+            cfg,
+            None,
+            &engine(),
+        )
+        .expect("this request must have a cache key")
     }
 
     fn meta(
@@ -3038,8 +3123,7 @@ mod tests {
         assert!(
             super::response_cache::compute_cache_key(
                 "acct",
-                &serde_json::json!({"unrelated": 1}),
-                &m,
+                &super::GuardContext::new(serde_json::json!({"unrelated": 1}), m),
                 &cache_cfg(fields),
                 None,
                 &engine(),
@@ -3077,8 +3161,14 @@ mod tests {
         let m = meta("POST", serde_json::json!({}), serde_json::json!({}));
         let cfg = cache_cfg(Some(vec!["a".to_string()]));
         let k = |data: serde_json::Value| {
-            super::response_cache::compute_cache_key("c", &data, &m, &cfg, Some(&logic), &engine)
-                .expect("key_logic resolves")
+            super::response_cache::compute_cache_key(
+                "c",
+                &super::GuardContext::new(data, m.clone()),
+                &cfg,
+                Some(&logic),
+                &engine,
+            )
+            .expect("key_logic resolves")
         };
         assert_ne!(
             k(serde_json::json!({"a": 1, "b": 1})),

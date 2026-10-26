@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use dataflow_rs::expr::ExprEngine;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::ChannelRuntimeConfig;
 use super::*;
@@ -31,7 +31,7 @@ use crate::metrics;
 pub(super) async fn check_auth(
     channel: &str,
     channel_config: &Option<Arc<ChannelRuntimeConfig>>,
-    header: HeaderLookup<'_>,
+    header: HeaderLookup<'_, '_>,
     raw_body: Option<&[u8]>,
     exprs: &ExprEngine,
     backoff: Option<&crate::auth::FailedAuthTracker>,
@@ -144,15 +144,13 @@ pub(super) fn check_allowed_origin(
 pub(super) fn validate_input(
     channel: &str,
     channel_config: &Option<Arc<ChannelRuntimeConfig>>,
-    data: &Value,
-    metadata: &Value,
+    context: &super::GuardContext,
     exprs: &ExprEngine,
 ) -> Result<(), OrionError> {
     if let Some(cfg) = channel_config
         && let Some(ref compiled) = cfg.validation_logic
     {
-        let context = json!({ "data": data, "metadata": metadata });
-        match exprs.eval(compiled, &context) {
+        match exprs.eval(compiled, context.root()) {
             Ok(result) => {
                 if !is_truthy(&result.value) {
                     return Err(OrionError::validation(

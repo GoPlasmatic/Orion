@@ -447,12 +447,14 @@ async fn execute(
     // 5. `Transport::Cron`'s row of the guard matrix — validation and
     // backpressure, and nothing caller-shaped.
     let header_lookup = |_: &str| None;
+    // The payload and metadata move into the one context the guards read;
+    // the engine below borrows them back out of it.
+    let mut message = crate::channel::guards::GuardContext::new(payload, metadata);
     let admission = crate::channel::guards::admit(crate::channel::guards::GuardRequest {
         transport: crate::channel::guards::Transport::Cron,
         channel,
         runtime: &Some(runtime.clone()),
-        data: &payload,
-        metadata: &metadata,
+        context: &mut message,
         exprs: &deps.exprs,
         origin: None,
         // The bucket key if a channel somehow declared a rate limit — it
@@ -536,8 +538,8 @@ async fn execute(
     let run = crate::engine::execute_admitted_on_generation(
         generation,
         channel,
-        &payload,
-        &metadata,
+        message.data(),
+        message.metadata(),
         crate::engine::ExecOpts {
             timeout_ms: Some(timeout_ms),
             capture,
