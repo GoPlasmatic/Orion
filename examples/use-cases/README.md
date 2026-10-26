@@ -11,8 +11,8 @@ package directory, and the runner deploys it as it ships — its own
 channels, workflows, plugin and connector — so a package edit is
 automatically tested here and the two can't drift apart. The difference from
 [`../workflow-tests/`](../workflow-tests/): `workflow-tests` runs a workflow
-through the engine offline (`orion-server test`), while these cases exercise
-the whole runtime — `orion-server compile`, `orion-cli deployments apply -d`,
+through the engine offline (`orion-cli test`), while these cases exercise
+the whole runtime — `orion-cli compile`, `orion-cli deployments apply -d`,
 HTTP channel routing and the engine — against a real `orion-server`.
 
 > Cases that test **runtime behaviour** rather than a scenario (definition
@@ -30,7 +30,7 @@ just e2e                # the whole e2e suite (from the repo root)
 The runner (`tests/e2e/`, suite `06_use_cases.sh`) picks up every `*.json`
 file in this directory — adding a case needs no code changes. For each case
 it writes one definition set (the packages, plugins, connectors, workflows
-and channels the case lists), compiles it with `orion-server compile`,
+and channels the case lists), compiles it with `orion-cli compile`,
 deploys it with `orion-cli deployments apply -d` — replacing whatever the
 previous case deployed — then runs the tests in order.
 

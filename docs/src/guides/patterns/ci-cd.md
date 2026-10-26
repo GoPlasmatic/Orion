@@ -6,11 +6,11 @@
 
 A delivery pipeline for Orion has three jobs: prove the logic offline, plan the change against the target, then apply it. The offline checks need no server or secrets. Planning and applying need access to the target instance.
 
-The definitions are the source of truth. [`orion-server compile`](../../reference/cli/orion-server/compile.md) turns them into a deployment directory, and `orion-cli deployments apply -d` deploys it. The same set compiles to the same bytes, so the deployment that passed staging is the one production gets. Each target assigns its own revision numbers.
+The definitions are the source of truth. [`orion-cli compile`](../../reference/cli/orion-cli/compile.md) turns them into a deployment directory, and `orion-cli deployments apply -d` deploys it. The same set compiles to the same bytes, so the deployment that passed staging is the one production gets. Each target assigns its own revision numbers.
 
 ## Before you start
 
-Tested with Orion 1.12.0. You need Git, `orion-server`, `orion-cli`, a repository for the definitions, and a CI system that can run shell commands. Planning and applying also need network access to the target instance and an admin key from the CI secret store. The GitHub Actions YAML below is an example; adapt its secret names and installation policy for your provider.
+Tested with Orion 1.12.0. You need Git, `orion-cli`, a repository for the definitions, and a CI system that can run shell commands. Planning and applying also need network access to the target instance and an admin key from the CI secret store. The GitHub Actions YAML below is an example; adapt its secret names and installation policy for your provider.
 
 ## Lay out the repository
 
@@ -28,7 +28,7 @@ services/payments/
 `dist/` is a build output. Compile it in each job from the commit being deployed:
 
 ```bash
-orion-server compile services -o dist/deployment
+orion-cli compile services -o dist/deployment
 ```
 
 ## Gate the pull request
@@ -49,26 +49,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install orion-server
+      - name: Install orion-cli
         run: |
           curl --proto '=https' --tlsv1.2 -LsSf \
-            https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-server-installer.sh | sh
+            https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-cli-installer.sh | sh
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Check formatting
-        run: orion-server fmt --check services
+        run: orion-cli fmt --check services
 
       - name: Lint the definition set
-        run: orion-server lint services --deny-warnings
+        run: orion-cli lint services --deny-warnings
 
       - name: Advisory checks
-        run: orion-server clippy services
+        run: orion-cli clippy services
 
       - name: Run the offline regression suite
-        run: orion-server test services
+        run: orion-cli test services
 
       - name: Compile the deployment
-        run: orion-server compile services -o dist/deployment
+        run: orion-cli compile services -o dist/deployment
 ```
 
 Five checks catch five failure modes before review. `fmt` catches a file not in the house style. `lint` catches a definition the server would reject, or one that disagrees with the definitions beside it. `clippy`'s `deny` rules catch a definition that is valid but cannot behave as written; its warnings print and do not fail the step. `test` catches logic that changed behaviour, and `compile` catches a set that cannot become a deployment, such as a connector holding a literal credential.
@@ -76,7 +76,7 @@ Five checks catch five failure modes before review. `fmt` catches a file not in 
 Point `lint` at the directory, not at each file in turn. A per-file loop validates each workflow in isolation and cannot see whether it is consistent with the channels and connectors next to it. It misses a `channel_call` to a channel that exists nowhere, a task naming a connector of the wrong type, and two channels claiming one route. Set mode resolves those, and resolves any shared `$from` or `use` references at the same time.
 
 > [!TIP]
-> `orion-server test` walks a directory for `*.case.json` files, so pointing it at `services` picks up every service's cases. Cases resolve `workflow` paths relative to themselves, so each service's tests live next to the workflow they test.
+> `orion-cli test` walks a directory for `*.case.json` files, so pointing it at `services` picks up every service's cases. Cases resolve `workflow` paths relative to themselves, so each service's tests live next to the workflow they test.
 
 ## Deploy to staging
 
@@ -100,16 +100,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install orion-server and orion-cli
+      - name: Install orion-cli
         run: |
-          curl --proto '=https' --tlsv1.2 -LsSf \
-            https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-server-installer.sh | sh
           curl --proto '=https' --tlsv1.2 -LsSf \
             https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-cli-installer.sh | sh
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Compile
-        run: orion-server compile services -o dist/deployment
+        run: orion-cli compile services -o dist/deployment
 
       - name: Plan
         run: orion-cli deployments plan -d dist/deployment
@@ -141,16 +139,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install orion-server and orion-cli
+      - name: Install orion-cli
         run: |
-          curl --proto '=https' --tlsv1.2 -LsSf \
-            https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-server-installer.sh | sh
           curl --proto '=https' --tlsv1.2 -LsSf \
             https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-cli-installer.sh | sh
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Compile
-        run: orion-server compile services -o dist/deployment
+        run: orion-cli compile services -o dist/deployment
 
       - name: Plan
         run: orion-cli deployments plan -d dist/deployment
@@ -192,5 +188,5 @@ A deployment carries secret references only. `compile` moves every `env://` or `
 
 - [Deployment endpoints](../../reference/admin-api/deployments.md): plan, apply, rollback and convergence.
 - [Test a workflow offline](../author/testing.md): the gates the first job runs.
-- [`orion-server compile`](../../reference/cli/orion-server/compile.md): what a deployment directory holds.
+- [`orion-cli compile`](../../reference/cli/orion-cli/compile.md): what a deployment directory holds.
 - [Audit logs](../../operate/run/audit-logs.md): every deployment is recorded with its reason.

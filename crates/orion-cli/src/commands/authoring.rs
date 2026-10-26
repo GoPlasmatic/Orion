@@ -1,6 +1,251 @@
-// ============================================================
-// A6: CLI subcommands — lint / dry-run / test-connectivity
-// ============================================================
+//! The offline authoring commands — `lint`, `compile`, `fmt` and `clippy` —
+//! over a definition set on disk. Nothing here talks to a server: each runs
+//! the checks and passes `orion-authoring` and the engine define, the same
+//! ones a node holds an upload to.
+
+use orion_authoring::definitions::Boundary;
+
+/// Statically validate a workflow JSON file.
+///
+/// Runs the same checks a workflow in a definition set is held to:
+/// name/id/description, task uniqueness, and the A1 function-input
+/// schema registry. Exits non-zero with field-pathed errors on
+/// failure — wire into CI to catch broken workflows before deploy.
+#[derive(clap::Args)]
+pub struct LintCmd {
+    /// Path to a workflow JSON file, or a directory of definitions.
+    ///
+    /// A directory is linted as a **set**: every channel, workflow and
+    /// connector under it, plus the references between them — the checks
+    /// a per-file lint cannot make.
+    pub workflow: String,
+    /// Channel name that may be referenced without being in the set.
+    /// Repeatable. Directory mode only; a package declares this in
+    /// `requires`.
+    #[arg(long = "requires-channel", value_name = "NAME")]
+    pub requires_channels: Vec<String>,
+    /// Connector name that may be referenced without being in the set.
+    /// Repeatable.
+    #[arg(long = "requires-connector", value_name = "NAME")]
+    pub requires_connectors: Vec<String>,
+    /// Exit non-zero on advisory findings too, not just errors.
+    ///
+    /// Named for `cargo clippy -- -D warnings` rather than `--strict`,
+    /// which would read as a no-op on a command whose whole job is strict
+    /// validation.
+    #[arg(long)]
+    pub deny_warnings: bool,
+    /// Directory holding the set's shared definitions — the `constants`,
+    /// `errors` and `fragments` documents a `$from` or a `use` resolves
+    /// against. Expansion happens before validation, so what is checked
+    /// is the expanded form. Implicit when linting a directory.
+    #[arg(long, value_name = "DIR")]
+    pub definitions: Option<String>,
+    /// Directory of plugin manifests (`plugin.toml`) beyond the set's
+    /// own tree, so a workflow naming a plugin function is checked
+    /// against the manifest. Repeatable. Without one such a function is
+    /// reported as unverifiable, never as an error.
+    #[arg(long = "plugin-dir", value_name = "DIR")]
+    pub plugin_dirs: Vec<String>,
+}
+
+impl LintCmd {
+    pub fn run(&self) -> anyhow::Result<i32> {
+        let boundary = Boundary {
+            channels: self.requires_channels.clone(),
+            connectors: self.requires_connectors.clone(),
+        };
+        run_lint(
+            &self.workflow,
+            self.deny_warnings,
+            boundary,
+            self.definitions.as_deref(),
+            &self.plugin_dirs,
+        )
+        .map_err(boxed)?;
+        Ok(0)
+    }
+}
+
+/// Compile a definition set into a deployment directory.
+///
+/// The authoring conveniences a set may use — `$from` for a shared value,
+/// `use` for a task fragment — resolve when the set is loaded, and the
+/// admin API loads no set. This is the step between the two: it runs
+/// every gate `lint <dir>` runs, then writes `deployment.json`,
+/// `definitions/<hex>.json` and `connections/<id>.json`, which
+/// `orion-cli deployments apply -d` deploys.
+#[derive(clap::Args)]
+pub struct CompileCmd {
+    /// Directory of definitions to compile.
+    pub dir: String,
+    /// The directory to write.
+    #[arg(short, long)]
+    pub out: Option<String>,
+    /// What to write.
+    #[arg(long, value_enum, default_value = "deployment")]
+    pub format: CompileFormat,
+    /// Exit non-zero on advisory findings too, not just errors.
+    #[arg(long)]
+    pub deny_warnings: bool,
+    /// Directory of plugin manifests (`plugin.toml`) beyond the set's
+    /// own tree. A manifest in the set compiles into the deployment with
+    /// its component inlined. Repeatable.
+    #[arg(long = "plugin-dir", value_name = "DIR")]
+    pub plugin_dirs: Vec<String>,
+}
+
+impl CompileCmd {
+    pub fn run(&self) -> anyhow::Result<i32> {
+        run_compile(CompileRequest {
+            dir: &self.dir,
+            output: self.out.as_deref(),
+            format: self.format,
+            deny_warnings: self.deny_warnings,
+            plugin_dirs: &self.plugin_dirs,
+        })
+        .map_err(boxed)?;
+        Ok(0)
+    }
+}
+
+/// Format definition files to the house style (like `cargo fmt`).
+///
+/// Every `.json` under each PATH is rewritten in place — entities, shared
+/// documents, `*.case.json` files and fixtures alike. There is one style
+/// and nothing to configure: known keys of known shapes in canonical
+/// order, unary JSONLogic nodes always on one line, leaf nodes on one
+/// line when they fit in 100 columns, everything deeper broken one
+/// argument per line. Values, number spellings and the order of unknown
+/// keys are never changed, and the output is re-parsed and compared with
+/// the input before anything is written.
+#[derive(clap::Args)]
+pub struct FmtCmd {
+    /// Files or directories. Default: the current directory.
+    #[arg(default_value = ".")]
+    pub paths: Vec<String>,
+    /// Write nothing; print a diff for each file that is not formatted
+    /// and exit 1 if there is one.
+    #[arg(long)]
+    pub check: bool,
+    /// Format one document from stdin to stdout. PATH is ignored.
+    #[arg(long, conflicts_with = "check")]
+    pub stdin: bool,
+}
+
+impl FmtCmd {
+    pub fn run(&self) -> anyhow::Result<i32> {
+        run_fmt(&self.paths, self.check, self.stdin).map_err(boxed)
+    }
+}
+
+/// Advisory checks beyond `lint`, said only when certain (like `cargo clippy`).
+///
+/// Runs `lint`'s gate over the set, then every rule: a workflow condition
+/// that can never match, steps after an unconditional terminal step, an
+/// unconditional channel_call cycle, a read of `payload`, a mapping
+/// overwritten before it is read, runs of steps an existing fragment
+/// already expresses, objects repeated across the set, and more —
+/// `--list` names them, `--explain <rule>` states each one's proof and
+/// when it stays silent. There is no configuration and no suppression:
+/// a rule fires only when its finding is certain.
+#[derive(clap::Args)]
+pub struct ClippyCmd {
+    /// A directory of definitions (set mode: every rule), or one file.
+    pub path: Option<String>,
+    /// Exit non-zero on warnings too, not just errors.
+    #[arg(long)]
+    pub deny_warnings: bool,
+    /// `text` (default) or `json` — one object per diagnostic on stdout.
+    #[arg(long, value_enum, default_value = "text")]
+    pub format: ClippyFormat,
+    /// Print every rule with its level, scope and summary, and exit.
+    #[arg(long, conflicts_with_all = ["explain", "path"])]
+    pub list: bool,
+    /// Print one rule's rationale, proof and exclusions, and exit.
+    #[arg(long, value_name = "RULE", conflicts_with = "path")]
+    pub explain: Option<String>,
+    /// Directory holding the set's shared definitions, for a single-file
+    /// run. Implicit in set mode.
+    #[arg(long, value_name = "DIR")]
+    pub definitions: Option<String>,
+    /// Channel name that may be referenced without being in the set.
+    /// Repeatable.
+    #[arg(long = "requires-channel", value_name = "NAME")]
+    pub requires_channels: Vec<String>,
+    /// Connector name that may be referenced without being in the set.
+    /// Repeatable.
+    #[arg(long = "requires-connector", value_name = "NAME")]
+    pub requires_connectors: Vec<String>,
+    /// Directory of plugin manifests beyond the set's own tree, so a
+    /// plugin function's template fields are analysed as the server
+    /// evaluates them. Repeatable.
+    #[arg(long = "plugin-dir", value_name = "DIR")]
+    pub plugin_dirs: Vec<String>,
+    /// Apply the fixes the rules can prove — today, folding a run of
+    /// steps that repeat one condition into a task group — to the source
+    /// files, each verified by recompiling the edited file, then report
+    /// what remains.
+    #[arg(long, conflicts_with_all = ["list", "explain"])]
+    pub fix: bool,
+    /// With --fix: print the diff of each file that would change, write
+    /// nothing, and exit 1 when anything would.
+    #[arg(long, requires = "fix")]
+    pub check: bool,
+    /// The server config (`orion-server -c`) whose `[vars]` and `[secrets]`
+    /// the `vars.*`/`secrets.*` rules check against. Without one those rules
+    /// stay silent: the defaults say nothing about a deployment's config.
+    #[arg(short = 'c', long = "server-config", value_name = "FILE")]
+    pub server_config: Option<String>,
+}
+
+impl ClippyCmd {
+    pub fn run(&self) -> anyhow::Result<i32> {
+        if self.list {
+            return run_clippy_list().map_err(boxed);
+        }
+        if let Some(rule) = &self.explain {
+            return run_clippy_explain(rule).map_err(boxed);
+        }
+        let Some(path) = &self.path else {
+            anyhow::bail!("clippy needs a directory or file to check (or --list / --explain)");
+        };
+        // Only a config the author named counts as "the serving config".
+        let config = self
+            .server_config
+            .as_deref()
+            .map(|file| orion_common::config::load_config(Some(file)))
+            .transpose()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        run_clippy(ClippyRequest {
+            path,
+            deny_warnings: self.deny_warnings,
+            format: self.format,
+            definitions: self.definitions.as_deref(),
+            plugin_dirs: &self.plugin_dirs,
+            boundary: Boundary {
+                channels: self.requires_channels.clone(),
+                connectors: self.requires_connectors.clone(),
+            },
+            config: config.as_ref(),
+            fix: self.fix,
+            fix_check: self.check,
+        })
+        .map_err(boxed)
+    }
+}
+
+/// An error from the offline tools, which predate this crate's `anyhow`:
+/// its message, then each cause.
+pub(crate) fn boxed(err: Box<dyn std::error::Error>) -> anyhow::Error {
+    let mut message = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        message.push_str(&format!("\n  Caused by: {cause}"));
+        source = cause.source();
+    }
+    anyhow::anyhow!(message)
+}
 
 /// Lint a workflow JSON file. Mirrors the checks the admin create
 /// endpoint performs (`validate_create_workflow` plus A1 function-input
@@ -11,11 +256,11 @@
 pub(crate) fn run_lint(
     workflow_path: &str,
     deny_warnings: bool,
-    boundary: orion::definitions::Boundary,
+    boundary: orion_authoring::definitions::Boundary,
     definitions: Option<&str>,
     plugin_dirs: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use orion::definitions::documents::CreateWorkflowRequest;
+    use orion_authoring::definitions::documents::CreateWorkflowRequest;
 
     // A directory is a definition set, and the checks that matter there are
     // the ones *between* files — which a per-file lint cannot see by
@@ -48,15 +293,17 @@ pub(crate) fn run_lint(
     // is used, which can only make lint *stricter* than an instance that has
     // raised `engine.max_loop_iterations` — the safe direction for a
     // pre-flight tool (R20).
-    let loop_cap = orion::config::EngineConfig::default().max_loop_iterations;
-    if let Err(err) = orion::validation::validate_create_workflow(&req, loop_cap, &registry) {
+    let loop_cap = orion_common::config::EngineConfig::default().max_loop_iterations;
+    if let Err(err) =
+        orion_authoring::validation::validate_create_workflow(&req, loop_cap, &registry)
+    {
         return Err(format_lint_error(workflow_path, err).into());
     }
 
     for name in &unverifiable {
         eprintln!(
             "{}",
-            orion::definitions::Diagnostic::note(
+            orion_authoring::definitions::Diagnostic::note(
                 "plugin.unverifiable",
                 format!("workflow '{}'", req.name),
                 format!(
@@ -77,15 +324,15 @@ pub(crate) fn run_lint(
     // one rule instead of reaching for `--deny-warnings` and silencing every
     // rule. Printing it as a bare string here would leave the most-used entry
     // point — one file — as the one that cannot be selected against.
-    let mut warnings: Vec<orion::definitions::Diagnostic> =
-        orion::validation::unresolvable_logic_warnings(
+    let mut warnings: Vec<orion_authoring::definitions::Diagnostic> =
+        orion_authoring::validation::unresolvable_logic_warnings(
             &req.tasks,
             req.loop_config.as_ref(),
             &registry,
         )
         .into_iter()
         .map(|(path, message)| {
-            orion::definitions::Diagnostic::warning(
+            orion_authoring::definitions::Diagnostic::warning(
                 "logic.unresolvable",
                 format!("workflow '{}' {path}", req.name),
                 message,
@@ -96,15 +343,19 @@ pub(crate) fn run_lint(
     // that do nothing. `check_workflow` reports all three and `build` refuses
     // none, so this is the surface where an author still can act on one.
     warnings.extend(
-        orion::validation::engine_advisories(&req.tasks, req.loop_config.as_ref(), &registry)
-            .into_iter()
-            .map(|advisory| {
-                orion::definitions::Diagnostic::warning(
-                    advisory.check,
-                    format!("workflow '{}' {}", req.name, advisory.path),
-                    advisory.message,
-                )
-            }),
+        orion_authoring::validation::engine_advisories(
+            &req.tasks,
+            req.loop_config.as_ref(),
+            &registry,
+        )
+        .into_iter()
+        .map(|advisory| {
+            orion_authoring::definitions::Diagnostic::warning(
+                advisory.check,
+                format!("workflow '{}' {}", req.name, advisory.path),
+                advisory.message,
+            )
+        }),
     );
     for finding in &warnings {
         eprintln!("{finding}");
@@ -143,7 +394,7 @@ pub(crate) fn read_expanded_workflow(
     // `--definitions`. The set root, when one is named, bounds where it may
     // point.
     let catalog = definitions.filter(|c| c.dir.is_some());
-    let empty = orion::definitions::SharedDefinitions::default();
+    let empty = orion_authoring::definitions::SharedDefinitions::default();
     let base_dir = std::path::Path::new(path).parent().map(|p| {
         if p.as_os_str().is_empty() {
             std::path::PathBuf::from(".")
@@ -155,9 +406,9 @@ pub(crate) fn read_expanded_workflow(
         .and_then(|c| c.dir.as_deref())
         .map(std::path::Path::new);
     let mut findings = Vec::new();
-    orion::definitions::compile::compile(
+    orion_authoring::definitions::compile::compile(
         &mut doc,
-        &orion::definitions::Cx {
+        &orion_authoring::definitions::Cx {
             shared: catalog.map_or(&empty, |c| &c.shared),
             origin: path,
             base_dir: base_dir.as_deref(),
@@ -208,11 +459,11 @@ pub(crate) struct Catalog {
     /// The `--definitions` directory, for the message when a reference does
     /// not resolve against it. `None` when only `--plugin-dir` was given.
     dir: Option<String>,
-    shared: orion::definitions::SharedDefinitions,
+    shared: orion_authoring::definitions::SharedDefinitions,
     /// The plugin manifests found under the definitions directory and every
     /// `--plugin-dir`, with the component beside each when there is one.
     /// What the registry validates against, and what an offline run loads.
-    pub(super) plugins: Vec<orion::definitions::PluginDefinition>,
+    pub(super) plugins: Vec<orion_authoring::definitions::PluginDefinition>,
     /// The sandbox over those components, built on first use: a `test` run
     /// over many cases compiles each component once.
     sandbox: std::sync::OnceLock<Result<OfflineSandbox, String>>,
@@ -221,12 +472,12 @@ pub(crate) struct Catalog {
 /// The plugin components an offline run executes — for real, in the same
 /// sandbox the server uses, with the host's default ceilings.
 pub(crate) struct OfflineSandbox {
-    runtime: std::sync::Arc<orion::plugin::WasmRuntime>,
+    runtime: std::sync::Arc<orion_plugin_host::WasmRuntime>,
     /// Plugin id → its compiled component. A manifest with no component
     /// beside it is absent here, and a run naming one of its functions fails
     /// as `PLUGIN_ARTIFACT_UNAVAILABLE` rather than being stubbed.
-    loaded: std::collections::HashMap<String, std::sync::Arc<orion::plugin::LoadedComponent>>,
-    config: orion::config::PluginsConfig,
+    loaded: std::collections::HashMap<String, std::sync::Arc<orion_plugin_host::LoadedComponent>>,
+    config: orion_common::config::PluginsConfig,
 }
 
 impl Catalog {
@@ -236,11 +487,13 @@ impl Catalog {
         plugin_dirs: &[String],
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut findings = Vec::new();
-        let mut shared = orion::definitions::SharedDefinitions::default();
-        let mut set = orion::definitions::DefinitionSet::default();
+        let mut shared = orion_authoring::definitions::SharedDefinitions::default();
+        let mut set = orion_authoring::definitions::DefinitionSet::default();
         if let Some(dir) = dir {
             let (loaded, shared_findings) =
-                orion::definitions::SharedDefinitions::from_directory(std::path::Path::new(dir))?;
+                orion_authoring::definitions::SharedDefinitions::from_directory(
+                    std::path::Path::new(dir),
+                )?;
             // Before anything the catalog reports: a set this binary is too
             // old for says so in one line.
             if let Some(decl) = &loaded.package {
@@ -288,10 +541,10 @@ impl Catalog {
     /// every function the catalog's manifests declare.
     pub(crate) fn registry(
         &self,
-    ) -> Result<orion::engine::FunctionRegistry, Box<dyn std::error::Error>> {
-        let set = orion::definitions::DefinitionSet {
+    ) -> Result<orion_engine::FunctionRegistry, Box<dyn std::error::Error>> {
+        let set = orion_authoring::definitions::DefinitionSet {
             plugins: self.plugins.clone(),
-            ..orion::definitions::DefinitionSet::default()
+            ..orion_authoring::definitions::DefinitionSet::default()
         };
         Ok(set.function_registry()?)
     }
@@ -300,11 +553,11 @@ impl Catalog {
     fn sandbox(&self) -> Result<&OfflineSandbox, Box<dyn std::error::Error>> {
         self.sandbox
             .get_or_init(|| {
-                let config = orion::config::PluginsConfig {
+                let config = orion_common::config::PluginsConfig {
                     enabled: true,
-                    ..orion::config::PluginsConfig::default()
+                    ..orion_common::config::PluginsConfig::default()
                 };
-                let runtime = orion::plugin::WasmRuntime::new(&config)
+                let runtime = orion_plugin_host::WasmRuntime::new(&config)
                     .map_err(|e| format!("the plugin sandbox could not be created: {e}"))?;
                 let mut loaded = std::collections::HashMap::new();
                 for plugin in &self.plugins {
@@ -349,18 +602,20 @@ impl Catalog {
         for plugin in &self.plugins {
             match sandbox.loaded.get(&plugin.manifest.name) {
                 Some(component) => {
-                    let limits =
-                        orion::plugin::Limits::effective(&sandbox.config, &plugin.manifest.name);
+                    let limits = orion_plugin_host::Limits::effective(
+                        &sandbox.config,
+                        &plugin.manifest.name,
+                    );
                     for (entry, decl) in
                         plugin.entries().into_iter().zip(&plugin.manifest.functions)
                     {
-                        let handler = orion::plugin::PluginFunctionHandler::new(
+                        let handler = orion_plugin_host::PluginFunctionHandler::new(
                             std::sync::Arc::new(entry),
                             component.clone(),
                             sandbox.runtime.clone(),
                             limits,
                         );
-                        handlers.push(orion::plugin::PluginFunction::new(
+                        handlers.push(orion_plugin_host::PluginFunction::new(
                             handler,
                             decl.runtime_fields(),
                         ));
@@ -381,7 +636,7 @@ impl Catalog {
 #[derive(Default)]
 pub(crate) struct OfflinePluginHandlers {
     /// The functions of every plugin whose component loaded.
-    pub(crate) handlers: Vec<orion::plugin::PluginFunction>,
+    pub(crate) handlers: Vec<orion_plugin_host::PluginFunction>,
     /// Function name → the manifest's origin, for every plugin whose
     /// component is not beside its manifest and so cannot run here.
     pub(crate) unavailable: Vec<(String, String)>,
@@ -391,10 +646,10 @@ pub(crate) struct OfflinePluginHandlers {
 /// the built-ins otherwise.
 pub(super) fn offline_registry(
     catalog: Option<&Catalog>,
-) -> Result<orion::engine::FunctionRegistry, Box<dyn std::error::Error>> {
+) -> Result<orion_engine::FunctionRegistry, Box<dyn std::error::Error>> {
     match catalog {
         Some(catalog) => catalog.registry(),
-        None => Ok(orion::engine::FunctionRegistry::builtin()
+        None => Ok(orion_engine::FunctionRegistry::builtin()
             .with_entries(Vec::new())
             .expect("the built-in registry extends by nothing")),
     }
@@ -413,11 +668,11 @@ pub(super) fn offline_registry(
 pub(super) fn unverifiable_functions(
     tasks: &serde_json::Value,
     loop_config: Option<&serde_json::Value>,
-    registry: &orion::engine::FunctionRegistry,
-    manifests: &[orion::definitions::PluginDefinition],
+    registry: &orion_engine::FunctionRegistry,
+    manifests: &[orion_authoring::definitions::PluginDefinition],
 ) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for task in orion::engine::leaf_tasks(tasks, loop_config) {
+    for task in orion_engine::leaf_tasks(tasks, loop_config) {
         let Some(name) = task
             .get("function")
             .and_then(|f| f.get("name"))
@@ -441,17 +696,17 @@ pub(super) fn unverifiable_functions(
 
 /// [`unverifiable_functions`] as registry entries: no schema, so nothing
 /// about their input is checked, exactly like an engine built-in.
-fn placeholder_entries(names: &[String]) -> Vec<orion::engine::FunctionEntry> {
+fn placeholder_entries(names: &[String]) -> Vec<orion_engine::FunctionEntry> {
     names
         .iter()
-        .map(|name| orion::engine::FunctionEntry {
+        .map(|name| orion_engine::FunctionEntry {
             name: name.clone(),
             description: "plugin function with no manifest in this run".to_string(),
             category: "plugin".to_string(),
-            source: orion::engine::functions::schema::Source::Plugin,
+            source: orion_engine::functions::schema::Source::Plugin,
             input_fields: None,
-            writes: orion::engine::functions::schema::WriteShape::OutputPath { default_root: None },
-            retry_safety: orion::engine::functions::schema::RetrySafety::Pure,
+            writes: orion_engine::functions::schema::WriteShape::OutputPath { default_root: None },
+            retry_safety: orion_engine::functions::schema::RetrySafety::Pure,
             deny_unknown: false,
             validate_static: None,
             connector: None,
@@ -469,7 +724,7 @@ fn placeholder_entries(names: &[String]) -> Vec<orion::engine::FunctionEntry> {
 fn run_lint_set(
     dir: &str,
     deny_warnings: bool,
-    boundary: orion::definitions::Boundary,
+    boundary: orion_authoring::definitions::Boundary,
     plugin_dirs: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     // `false`: a directory being authored may hold a workflow with no id yet.
@@ -488,21 +743,21 @@ fn run_lint_set(
 /// `require_ids`, and in nothing else, on purpose.
 fn load_and_gate(
     dir: &str,
-    boundary: orion::definitions::Boundary,
+    boundary: orion_authoring::definitions::Boundary,
     require_ids: bool,
     deny_warnings: bool,
     plugin_dirs: &[String],
 ) -> Result<
     (
-        orion::definitions::DefinitionSet,
-        Option<orion::definitions::PackageDecl>,
+        orion_authoring::definitions::DefinitionSet,
+        Option<orion_authoring::definitions::PackageDecl>,
     ),
     Box<dyn std::error::Error>,
 > {
-    let report = orion::definitions::gate_directory(
+    let report = orion_authoring::definitions::gate_directory(
         std::path::Path::new(dir),
         &boundary,
-        orion::definitions::GateOpts {
+        orion_authoring::definitions::GateOpts {
             require_ids,
             want_raw: false,
         },
@@ -541,7 +796,7 @@ fn load_and_gate(
         println!("compiled: {pass} rewrote {count} document(s)");
     }
 
-    use orion::definitions::Entity;
+    use orion_authoring::definitions::Entity;
     let shared = if report.shared.is_empty() {
         String::new()
     } else {
@@ -609,7 +864,7 @@ pub(crate) fn run_compile(req: CompileRequest<'_>) -> Result<(), Box<dyn std::er
     // references may live outside it: the boundary is empty.
     let (set, _) = load_and_gate(
         req.dir,
-        orion::definitions::Boundary::default(),
+        orion_authoring::definitions::Boundary::default(),
         true,
         req.deny_warnings,
         req.plugin_dirs,
@@ -622,17 +877,17 @@ pub(crate) fn run_compile(req: CompileRequest<'_>) -> Result<(), Box<dyn std::er
 }
 
 /// Write the set as a revision-free deployment directory
-/// ([`orion::definitions::deployment`]).
+/// ([`orion_authoring::definitions::deployment`]).
 ///
 /// The files a previous compile left in `definitions/` and `connections/`
 /// that this one does not write are removed: they are named by digest and
 /// id, so a stale one is a definition the set no longer has, and a deployer
 /// that read the directory would upload it for nothing.
 fn emit_deployment(
-    set: &orion::definitions::DefinitionSet,
+    set: &orion_authoring::definitions::DefinitionSet,
     out: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let deployment = match orion::definitions::deployment::build(set) {
+    let deployment = match orion_authoring::definitions::deployment::build(set) {
         Ok(deployment) => deployment,
         Err(errors) => {
             for error in &errors {
@@ -710,7 +965,7 @@ pub(crate) fn run_fmt(
     check: bool,
     stdin: bool,
 ) -> Result<i32, Box<dyn std::error::Error>> {
-    use orion::definitions::fmt::{FmtError, Outcome, format_str};
+    use orion_authoring::definitions::fmt::{FmtError, Outcome, format_str};
 
     if stdin {
         return run_fmt_stdin();
@@ -721,7 +976,7 @@ pub(crate) fn run_fmt(
     for path in paths {
         let path = std::path::Path::new(path);
         if path.is_dir() {
-            match orion::definitions::json_files(path) {
+            match orion_authoring::definitions::json_files(path) {
                 Ok(found) => files.extend(found),
                 Err(e) => {
                     eprintln!("error: {e}");
@@ -746,15 +1001,15 @@ pub(crate) fn run_fmt(
         if !path.is_dir() {
             continue;
         }
-        for file in orion::definitions::json_files(path).unwrap_or_default() {
+        for file in orion_authoring::definitions::json_files(path).unwrap_or_default() {
             let Some(doc) = std::fs::read_to_string(&file)
                 .ok()
                 .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-                .filter(orion::definitions::SharedDefinitions::is_package_declaration)
+                .filter(orion_authoring::definitions::SharedDefinitions::is_package_declaration)
             else {
                 continue;
             };
-            let decl = orion::definitions::PackageDecl {
+            let decl = orion_authoring::definitions::PackageDecl {
                 origin: file.display().to_string(),
                 name: None,
                 requires_orion: doc["package"]["requires"]["orion"]
@@ -838,7 +1093,7 @@ pub(crate) fn run_fmt(
 /// stdout on failure, so an editor that replaces the buffer with the output
 /// never replaces it with an error message.
 fn run_fmt_stdin() -> Result<i32, Box<dyn std::error::Error>> {
-    use orion::definitions::fmt::{Outcome, format_str};
+    use orion_authoring::definitions::fmt::{Outcome, format_str};
     use std::io::{Read, Write};
 
     let mut text = String::new();
@@ -929,10 +1184,10 @@ pub(crate) struct ClippyRequest<'a> {
     pub(crate) definitions: Option<&'a str>,
     /// Directories of plugin manifests beyond the set's own tree.
     pub(crate) plugin_dirs: &'a [String],
-    pub(crate) boundary: orion::definitions::Boundary,
+    pub(crate) boundary: orion_authoring::definitions::Boundary,
     /// The serving instance's config when `-c` named one — the rules that
     /// need it are skipped otherwise, and say so.
-    pub(crate) config: Option<&'a orion::config::AppConfig>,
+    pub(crate) config: Option<&'a orion_common::config::AppConfig>,
     /// Apply the fixes the rules proved to the source files.
     pub(crate) fix: bool,
     /// With `fix`: print the diffs and write nothing.
@@ -941,13 +1196,13 @@ pub(crate) struct ClippyRequest<'a> {
 
 /// `clippy --list`: the registry as a table.
 pub(crate) fn run_clippy_list() -> Result<i32, Box<dyn std::error::Error>> {
-    print!("{}", orion::definitions::clippy::list_table());
+    print!("{}", orion_authoring::definitions::clippy::list_table());
     Ok(0)
 }
 
 /// `clippy --explain <rule>`.
 pub(crate) fn run_clippy_explain(rule: &str) -> Result<i32, Box<dyn std::error::Error>> {
-    match orion::definitions::clippy::find(rule) {
+    match orion_authoring::definitions::clippy::find(rule) {
         Some(found) => {
             println!(
                 "{} — {} ({}, {})\n\n{}",
@@ -974,10 +1229,10 @@ const MAX_FIX_PASSES: usize = 8;
 /// What `clippy` loaded: the source set, the compiled one, the catalog and
 /// the gate's findings.
 struct ClippyLoaded {
-    raw: orion::definitions::DefinitionSet,
-    compiled: orion::definitions::DefinitionSet,
-    shared: orion::definitions::SharedDefinitions,
-    findings: Vec<orion::definitions::clippy::Diagnostic>,
+    raw: orion_authoring::definitions::DefinitionSet,
+    compiled: orion_authoring::definitions::DefinitionSet,
+    shared: orion_authoring::definitions::SharedDefinitions,
+    findings: Vec<orion_authoring::definitions::clippy::Diagnostic>,
 }
 
 /// `clippy <path>`: `lint`'s gate first, then every rule over the set.
@@ -994,7 +1249,7 @@ struct ClippyLoaded {
 /// `--fix --check` nothing is written: the diffs are printed, and exit `1`
 /// says something would change.
 pub(crate) fn run_clippy(req: ClippyRequest<'_>) -> Result<i32, Box<dyn std::error::Error>> {
-    use orion::definitions::Entity;
+    use orion_authoring::definitions::Entity;
     let mut pass = 0usize;
     let mut reported: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut would_change = false;
@@ -1050,7 +1305,7 @@ pub(crate) fn run_clippy(req: ClippyRequest<'_>) -> Result<i32, Box<dyn std::err
                         loaded.compiled.count(Entity::Workflow),
                         loaded.compiled.count(Entity::Channel),
                         loaded.compiled.count(Entity::Connector),
-                        orion::definitions::clippy::registry().len() - skipped.len()
+                        orion_authoring::definitions::clippy::registry().len() - skipped.len()
                     );
                 }
             }
@@ -1071,7 +1326,7 @@ fn clippy_load(
     req: &ClippyRequest<'_>,
     report_notices: bool,
 ) -> Result<Option<ClippyLoaded>, Box<dyn std::error::Error>> {
-    use orion::definitions::{DefinitionSet, Entity, SharedDefinitions};
+    use orion_authoring::definitions::{DefinitionSet, Entity, SharedDefinitions};
 
     let path = std::path::Path::new(req.path);
     if path.is_dir() {
@@ -1079,10 +1334,10 @@ fn clippy_load(
         // command cannot read is reported by both or by neither. `want_raw`
         // because the duplication rules read the *source* form: two documents
         // that share a `$from` are not duplicates of each other.
-        let report = orion::definitions::gate_directory(
+        let report = orion_authoring::definitions::gate_directory(
             path,
             &req.boundary,
-            orion::definitions::GateOpts {
+            orion_authoring::definitions::GateOpts {
                 require_ids: false,
                 want_raw: true,
             },
@@ -1129,10 +1384,10 @@ fn clippy_load(
     let mut findings = Vec::new();
     let mut compiled_doc = doc.clone();
     let base_dir = clippy_base_dir(req.path);
-    let mut provenance = orion::definitions::SourceMap::default();
-    orion::definitions::compile::compile_with_map(
+    let mut provenance = orion_authoring::definitions::SourceMap::default();
+    orion_authoring::definitions::compile::compile_with_map(
         &mut compiled_doc,
-        &orion::definitions::Cx {
+        &orion_authoring::definitions::Cx {
             shared: &shared,
             origin: req.path,
             base_dir: base_dir.as_deref(),
@@ -1144,7 +1399,7 @@ fn clippy_load(
     let mut raw = DefinitionSet::from_entries([(entity, req.path.to_string(), doc)]);
     // The source text, for `--fix` — the edit lands in it.
     if let Some(def) = raw.definitions.first_mut() {
-        def.spans = orion::definitions::json::Document::parse(&text).ok();
+        def.spans = orion_authoring::definitions::json::Document::parse(&text).ok();
     }
     let mut compiled = DefinitionSet::from_entries([(entity, req.path.to_string(), compiled_doc)]);
     if let Some(def) = compiled.definitions.first_mut() {
@@ -1152,7 +1407,7 @@ fn clippy_load(
     }
     compiled.plugins = plugins;
     let registry = compiled.function_registry()?;
-    findings.extend(orion::definitions::check(
+    findings.extend(orion_authoring::definitions::check(
         &compiled,
         &req.boundary,
         false,
@@ -1180,7 +1435,7 @@ fn clippy_base_dir(path: &str) -> Option<std::path::PathBuf> {
 /// What one analysis produced: every diagnostic, the rules skipped for want
 /// of `-c`, and how many of the diagnostics are `lint` errors.
 struct ClippyAnalysis {
-    diagnostics: Vec<orion::definitions::clippy::Diagnostic>,
+    diagnostics: Vec<orion_authoring::definitions::clippy::Diagnostic>,
     skipped: Vec<&'static str>,
     lint_errors: usize,
 }
@@ -1200,14 +1455,14 @@ fn clippy_analyse(
         // built-ins, so a plugin function's template fields are analysed
         // exactly as the server would evaluate them.
         let registry = loaded.compiled.function_registry()?;
-        let analysis = orion::definitions::analysis::Analysis::new(
+        let analysis = orion_authoring::definitions::analysis::Analysis::new(
             &loaded.raw,
             &loaded.compiled,
             &loaded.shared,
             req.config,
             &registry,
         );
-        let report = orion::definitions::clippy::run(&analysis);
+        let report = orion_authoring::definitions::clippy::run(&analysis);
         diagnostics.extend(report.diagnostics);
         skipped = report.skipped;
     }
@@ -1225,10 +1480,10 @@ fn clippy_analyse(
 fn clippy_fix(
     req: &ClippyRequest<'_>,
     loaded: &ClippyLoaded,
-    diagnostics: &[orion::definitions::clippy::Diagnostic],
+    diagnostics: &[orion_authoring::definitions::clippy::Diagnostic],
     reported: &mut std::collections::BTreeSet<String>,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    use orion::definitions::fix::{Fix, Refusal};
+    use orion_authoring::definitions::fix::{Fix, Refusal};
     let mut by_file: std::collections::BTreeMap<&str, Vec<(&'static str, Fix)>> =
         std::collections::BTreeMap::new();
     for d in diagnostics {
@@ -1271,9 +1526,9 @@ fn clippy_fix(
         let recompile = |value: &serde_json::Value| {
             let mut doc = value.clone();
             let mut findings = Vec::new();
-            orion::definitions::compile::compile(
+            orion_authoring::definitions::compile::compile(
                 &mut doc,
-                &orion::definitions::Cx {
+                &orion_authoring::definitions::Cx {
                     shared: &loaded.shared,
                     origin: file,
                     base_dir: base_dir.as_deref(),
@@ -1284,7 +1539,7 @@ fn clippy_fix(
             (!findings.iter().any(|f| f.is_error())).then_some(doc)
         };
         let only: Vec<Fix> = fixes.iter().map(|(_, fix)| fix.clone()).collect();
-        let outcome = orion::definitions::fix::apply(
+        let outcome = orion_authoring::definitions::fix::apply(
             source.and_then(|d| d.spans.as_ref()),
             &compiled.doc,
             &only,
@@ -1312,7 +1567,7 @@ fn clippy_fix(
     }
     let registry = edited.function_registry()?;
     let broken: std::collections::BTreeMap<String, String> =
-        orion::definitions::check(&edited, &req.boundary, false, &registry)
+        orion_authoring::definitions::check(&edited, &req.boundary, false, &registry)
             .into_iter()
             .filter(|f| f.is_error())
             .filter_map(|f| Some((f.file.clone()?, f.message.clone())))
@@ -1351,8 +1606,11 @@ fn clippy_fix(
 
 /// Format an `OrionError::Validation` into a multi-line CLI message
 /// listing each field detail with its path and code.
-pub(super) fn format_lint_error(workflow_path: &str, err: orion::errors::OrionError) -> String {
-    use orion::errors::OrionError;
+pub(super) fn format_lint_error(
+    workflow_path: &str,
+    err: orion_common::errors::OrionError,
+) -> String {
+    use orion_common::errors::OrionError;
     match err {
         OrionError::Validation {
             code: _,

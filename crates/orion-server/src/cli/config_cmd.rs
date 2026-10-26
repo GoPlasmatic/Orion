@@ -232,3 +232,26 @@ impl std::error::Error for WaitExhausted {
         Some(&*self.source)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn parse_wait_accepts_seconds_and_units() {
+        assert_eq!(parse_wait("60"), Ok(Duration::from_secs(60)));
+        assert_eq!(parse_wait("60s"), Ok(Duration::from_secs(60)));
+        assert_eq!(parse_wait("5m"), Ok(Duration::from_secs(300)));
+        assert_eq!(parse_wait("1h"), Ok(Duration::from_secs(3600)));
+        assert_eq!(parse_wait("0"), Ok(Duration::ZERO));
+        assert_eq!(parse_wait("0s"), Ok(Duration::ZERO));
+    }
+
+    #[test]
+    fn parse_wait_refuses_garbage() {
+        for bad in ["", "soon", "5x", "-1", "1.5m"] {
+            assert!(parse_wait(bad).is_err(), "{bad}");
+        }
+    }
+}

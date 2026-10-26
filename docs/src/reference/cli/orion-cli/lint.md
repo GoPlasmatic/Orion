@@ -1,15 +1,15 @@
-<!-- description: orion-server lint validates one workflow or a whole definition set with the server's checks, resolves cross-references, and reports stable [check] ids. -->
+<!-- description: orion-cli lint validates one workflow or a whole definition set with the server's checks, resolves cross-references, and reports stable [check] ids. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-20 -->
 
-# `orion-server lint`
+# `orion-cli lint`
 
 Statically validates a workflow JSON file with the same checks the server runs when the definition is uploaded. Exits non-zero with field-pathed errors, so it can gate CI. Needs no config, database, or server.
 
 ## Synopsis
 
 ```bash
-orion-server lint <workflow.json | dir> [--deny-warnings]
+orion-cli lint <workflow.json | dir> [--deny-warnings]
                   [--requires-channel NAME]... [--requires-connector NAME]...
 ```
 
@@ -51,7 +51,7 @@ A fourth id, `[engine.advisory]`, is the catch-all. An engine newer than this Or
 ## Examples
 
 ```
-$ orion-server lint ./definitions
+$ orion-cli lint ./definitions
 note: definitions/request.json is not a channel, workflow or connector — skipped
 error: [closure.connector] workflow 'auth-login': connector 'app-db' is neither in the set nor declared on the boundary
 warning: [closure.channel_call_dynamic] workflow 'route': resolves channel_call targets dynamically — closure checking cannot cover those calls
@@ -59,7 +59,7 @@ warning: [closure.channel_call_dynamic] workflow 'route': resolves channel_call 
 ```
 
 ```bash
-orion-server lint examples/packages/high-value-order/workflow.json
+orion-cli lint examples/packages/high-value-order/workflow.json
 ```
 
 ## Related
@@ -68,4 +68,4 @@ orion-server lint examples/packages/high-value-order/workflow.json
 - [Advisory checks (`clippy`)](../../clippy/index.md): the rules that run after lint passes.
 - [Shared definitions](../shared-definitions.md): the `$from` and `use` forms a set may use.
 - [Errors and response envelopes](../../errors.md): the field codes a finding names.
-- [`orion-server` commands](./index.md): every `orion-server` subcommand.
+- [`orion-cli` commands](./index.md): every `orion-cli` subcommand.

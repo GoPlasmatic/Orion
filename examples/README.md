@@ -3,7 +3,7 @@
 Ready-to-deploy example **packages** you can deploy to a running Orion instance
 and call immediately. A package here is one directory holding the channel,
 workflow, and connector that belong to one service. Each directory is a
-definition set: `orion-server compile` turns it into a deployment.
+definition set: `orion-cli compile` turns it into a deployment.
 
 **The walkthrough lives in the documentation:**
 [Run the Examples](https://docs.goplasmatic.io/get-started/tutorials/examples.html)
@@ -28,7 +28,7 @@ Start Orion (`orion-server`, listening on `http://localhost:8080`), then compile
 one package and deploy it:
 
 ```bash
-orion-server compile examples/packages/high-value-order -o dist/high-value-order
+orion-cli compile examples/packages/high-value-order -o dist/high-value-order
 orion-cli deployments apply -d dist/high-value-order
 curl -s -X POST http://localhost:8080/api/v2/data/high-value-orders \
   -H 'Content-Type: application/json' --data @examples/packages/high-value-order/request.json
@@ -43,10 +43,9 @@ one set — `deploy.sh` does that, then sends each package's `request.json`:
 ./examples/deploy.sh order-classification webhook-transform # both, as one deployment
 ```
 
-It finds `orion-server` and `orion-cli` under `target/` (build both with
-`cargo build -p orion-server -p orion-cli`), on `PATH`, or through
-`ORION_BIN` / `ORION_CLI`. `quickstart.sh` deploys a one-workflow service the
-same way.
+It finds `orion-cli` under `target/` (build it with `cargo build -p orion-cli`),
+on `PATH`, or through `ORION_CLI`. `quickstart.sh` deploys a one-workflow
+service the same way. Both scripts need a running Orion server.
 
 ## The packages
 
@@ -67,7 +66,7 @@ same way.
 ## Testing
 
 ```bash
-orion-server test examples/workflow-tests \
+orion-cli test examples/workflow-tests \
   --plugin-dir examples/packages/fixed-width-statement \
   --plugin-dir examples/packages/c4-referee            # offline: real engine, no server or network
 just e2e                                                # live: tests/e2e drives a real server via orion-cli

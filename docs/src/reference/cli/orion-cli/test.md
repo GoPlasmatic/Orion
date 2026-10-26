@@ -1,15 +1,15 @@
-<!-- description: orion-server test runs a directory of *.case.json workflow regression cases offline, with shared definitions and plugin components. -->
+<!-- description: orion-cli test runs a directory of *.case.json workflow regression cases offline, with shared definitions and plugin components. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-25 -->
 
-# `orion-server test`
+# `orion-cli test`
 
 Runs a directory of offline workflow test cases. Each `*.case.json` file names a workflow, an input, optional request metadata and connector stubs, and what it expects. Prints a per-case diff and exits non-zero on any failure.
 
 ## Synopsis
 
 ```bash
-orion-server test <path>
+orion-cli test <path>
 ```
 
 ## Description
@@ -31,12 +31,12 @@ A case runs the way a node runs a message whose channel does not trace task deta
 ## Examples
 
 ```bash
-orion-server test examples/workflow-tests
+orion-cli test examples/workflow-tests
 ```
 
 ## Related
 
 - [Test a workflow offline](../../../guides/author/testing.md): the case format, with every `expect` root.
-- [`orion-server dry-run`](./dry-run.md): one execution, printed in full.
+- [`orion-cli dry-run`](./dry-run.md): one execution, printed in full.
 - [CI/CD with packages](../../../guides/patterns/ci-cd.md): the suite as a pipeline stage.
-- [`orion-server` commands](./index.md): every `orion-server` subcommand.
+- [`orion-cli` commands](./index.md): every `orion-cli` subcommand.

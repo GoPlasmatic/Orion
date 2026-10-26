@@ -1,4 +1,4 @@
-//! `orion-server clippy`: what a definition set could do better, said only
+//! `orion-cli clippy`: what a definition set could do better, said only
 //! when it is certain.
 //!
 //! `lint` is `cargo check` — what the admin API and the engine refuse.

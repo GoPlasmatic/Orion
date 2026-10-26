@@ -1,5 +1,5 @@
 //! Deployment manifests: what a deployment deploys, as the wire spells it,
-//! and the revision-free form `orion-server compile --format deployment`
+//! and the revision-free form `orion-cli compile --format deployment`
 //! writes.
 //!
 //! These are the *shapes*. The server reads a [`DeploymentManifest`] into
@@ -111,7 +111,7 @@ pub struct RolloutInterval {
 }
 
 // ============================================================
-// Compiled deployments: what `orion-server compile --format deployment`
+// Compiled deployments: what `orion-cli compile --format deployment`
 // writes and `orion-cli deployments apply -d` reads
 // ============================================================
 

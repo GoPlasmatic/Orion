@@ -33,6 +33,6 @@ Every rule's proof is one of these, and nothing else is admitted — no patterns
 ## Related
 
 - [Advisory checks](./index.md): every rule, with its level and scope.
-- [`orion-server clippy`](../cli/orion-server/clippy.md): the command, its flags and exit codes.
-- [`orion-server lint`](../cli/orion-server/lint.md): the gate that runs first, and must pass.
+- [`orion-cli clippy`](../cli/orion-cli/clippy.md): the command, its flags and exit codes.
+- [`orion-cli lint`](../cli/orion-cli/lint.md): the gate that runs first, and must pass.
 - [Test workflows offline](../../guides/author/testing.md): running the rules against a set.

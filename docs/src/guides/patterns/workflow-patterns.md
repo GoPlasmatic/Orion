@@ -100,7 +100,7 @@ The called channel is an ordinary service with its own workflow, channel and ver
 Run the example:
 
 ```bash
-orion-server compile examples/packages/channel-composition -o /tmp/channel-composition
+orion-cli compile examples/packages/channel-composition -o /tmp/channel-composition
 orion-cli deployments apply -d /tmp/channel-composition
 
 curl -s -X POST http://localhost:8080/api/v2/data/order-enrichment \
@@ -190,7 +190,7 @@ The sweeps are sequential and inside one request. Twenty calls at 50 ms is a sec
 Dry-run the pattern against a payload that exercises its boundary. That is the exact threshold value for a branch, an empty list for a loop, or a missing field for a normalizer:
 
 ```bash
-orion-server dry-run -w workflow.json -i boundary.json | jq '.trace.steps[] | {task_id, status}'
+orion-cli dry-run -w workflow.json -i boundary.json | jq '.trace.steps[] | {task_id, status}'
 ```
 
 The trace names every task and whether it ran or was skipped, which is the answer to "did exactly one branch fire".

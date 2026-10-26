@@ -204,6 +204,14 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
             cmd.run();
             Ok(0)
         }
+        Commands::Lint(cmd) => cmd.run(),
+        Commands::Compile(cmd) => cmd.run(),
+        Commands::DryRun(cmd) => cmd.run().await,
+        Commands::Test(cmd) => cmd.run().await,
+        Commands::Fmt(cmd) => cmd.run(),
+        Commands::Clippy(cmd) => cmd.run(),
+        Commands::Sql(cmd) => cmd.run().await,
+        Commands::Plugin(cmd) => cmd.run(),
     }
 }
 

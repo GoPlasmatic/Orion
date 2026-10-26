@@ -14,14 +14,14 @@ A deployment replaces all of that with one value. The node serves exactly what i
 
 ## How it works
 
-You author a *definition set*: a directory of workflow, channel and connector files, with optional shared fragments and plugins. `orion-server compile` checks it and writes a deployment directory. `orion-cli deployments apply -d` uploads that directory and commits it as the next revision. The node then builds a new engine from the revision and swaps it in.
+You author a *definition set*: a directory of workflow, channel and connector files, with optional shared fragments and plugins. `orion-cli compile` checks it and writes a deployment directory. `orion-cli deployments apply -d` uploads that directory and commits it as the next revision. The node then builds a new engine from the revision and swaps it in.
 
 ```orion-diagram
 {
   "direction": "LR",
   "nodes": [
     { "id": "set", "label": "Definition set", "sublabel": "your files", "type": "service" },
-    { "id": "dir", "label": "Deployment directory", "sublabel": "orion-server compile", "type": "ci" },
+    { "id": "dir", "label": "Deployment directory", "sublabel": "orion-cli compile", "type": "ci" },
     { "id": "head", "label": "Head revision", "sublabel": "deployments apply", "type": "datastore" },
     { "id": "gen", "label": "Serving generation", "sublabel": "every node builds it", "type": "channel" }
   ],
@@ -98,7 +98,7 @@ order-summary/
 Compile it, then apply it to an instance with nothing deployed:
 
 ```bash
-orion-server compile order-summary -o dist/deployment
+orion-cli compile order-summary -o dist/deployment
 orion-cli deployments apply -d dist/deployment
 ```
 
@@ -136,5 +136,5 @@ The apply answers `"committed_revision": 1`. Applying the same directory again c
 - [Build your first service](../get-started/tutorials/first-service.md): write two files, compile them and apply the deployment.
 - [Test and deploy a service](../get-started/tutorials/test-and-promote.md): test offline, plan, apply and roll back one revision.
 - [Deployment endpoints](../reference/admin-api/deployments.md): every route, field and error behind plan, apply, rollback and convergence.
-- [`orion-server compile`](../reference/cli/orion-server/compile.md): what a definition set compiles to, file by file.
+- [`orion-cli compile`](../reference/cli/orion-cli/compile.md): what a definition set compiles to, file by file.
 - [Run a cluster](../operate/deploy/cluster.md): how every replica converges on one head.

@@ -3,7 +3,7 @@ use super::*;
 /// Where [`validate_shape`] runs, which decides what a reference string means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShapeCheck {
-    /// `POST /channels`, `orion-server lint`, `package lint`: the deployment's
+    /// `POST /channels`, `orion-cli lint`, `package lint`: the deployment's
     /// values are not at hand, so a reference is accepted where a value would
     /// be checked. It is checked at load, against the instance that resolves
     /// it — by this same function, in the other mode.

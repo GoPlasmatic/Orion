@@ -1,16 +1,16 @@
-//! `orion-server plugin …`: digest, sign and verify the components
+//! `orion-cli plugin …`: digest, sign and verify the components
 //! `[plugins.trust]` checks.
 //!
 //! A manifest resolves to the file whose digest is signed — its
 //! `component` — and `-c` names the trust table. The digest, the signature and the check are the server's own
 //! (`crypto::sha256_digest`, `crypto::ed25519`), so what these verbs produce
 //! is exactly what an upload is verified against, and the file convention
-//! is `orion::signatures`.
+//! is `orion_common::signatures`.
 
 use std::path::{Path, PathBuf};
 
-use orion::crypto::ed25519::{self, SigningKey};
-use orion::signatures::{self, Kind, SignatureDir, Subject};
+use orion_common::crypto::ed25519::{self, SigningKey};
+use orion_common::signatures::{self, Kind, SignatureDir, Subject};
 
 type CliError = Box<dyn std::error::Error>;
 
@@ -18,12 +18,26 @@ type CliError = Box<dyn std::error::Error>;
 /// absent — a CI secret store hands out variables, not files.
 pub(crate) const SIGNING_KEY_ENV: &str = "ORION_SIGNING_KEY";
 
-#[derive(clap::Subcommand)]
-pub(crate) enum SigningCommand {
+/// Digest, sign and verify plugin components — what `[plugins.trust]`
+/// checks. PATH is a `plugin.toml`, a directory of them, or any file.
+#[derive(clap::Args)]
+pub struct PluginCmd {
+    #[command(subcommand)]
+    pub command: SigningCommand,
+}
+
+impl PluginCmd {
+    pub fn run(&self) -> anyhow::Result<i32> {
+        run(Kind::Plugin, self.command.clone()).map_err(super::authoring::boxed)
+    }
+}
+
+#[derive(Clone, clap::Subcommand)]
+pub enum SigningCommand {
     /// Print the `sha256:` digest a signature is made over.
     ///
     /// PATH is a manifest, a directory of manifests, or any file. For one
-    /// target the bare digest is printed, so `$(orion-server plugin digest
+    /// target the bare digest is printed, so `$(orion-cli plugin digest
     /// …)` works; for several, one `digest  id  file` line each.
     Digest {
         /// A manifest, a directory searched for manifests, or a bare file.
@@ -36,7 +50,7 @@ pub(crate) enum SigningCommand {
     Keygen {
         /// Where to write the private key; `-` writes it to stdout.
         #[arg(short, long, value_name = "FILE")]
-        output: String,
+        out: String,
         /// Overwrite an existing file.
         #[arg(long)]
         force: bool,
@@ -62,7 +76,7 @@ pub(crate) enum SigningCommand {
         /// receives flat `<artifact file>.sig` names — the layout `package
         /// apply --signatures` reads.
         #[arg(short, long, value_name = "FILE|DIR")]
-        output: Option<String>,
+        out: Option<String>,
         /// Name each file `<plugin id>.sig` rather than after the
         /// artifact file, for ids whose artifact files share a name.
         #[arg(long)]
@@ -85,6 +99,10 @@ pub(crate) enum SigningCommand {
         /// artifact is read.
         #[arg(long, value_name = "DIR")]
         signatures: Option<String>,
+        /// The server config (`orion-server -c`) whose `[plugins.trust]`
+        /// keys are trusted when no `--public-key` is given.
+        #[arg(short = 'c', long = "server-config", value_name = "FILE")]
+        server_config: Option<String>,
     },
 }
 
@@ -122,14 +140,10 @@ impl Target {
 }
 
 /// Run one verb; the returned code is the process exit code.
-pub(crate) fn run(
-    kind: Kind,
-    command: SigningCommand,
-    config_path: Option<&str>,
-) -> Result<i32, CliError> {
+pub(crate) fn run(kind: Kind, command: SigningCommand) -> Result<i32, CliError> {
     match command {
         SigningCommand::Digest { path } => digest(kind, &path),
-        SigningCommand::Keygen { output, force } => keygen(&output, force),
+        SigningCommand::Keygen { out, force } => keygen(&out, force),
         SigningCommand::Pubkey { key } => {
             println!("{}", read_key_file(&key)?.public_key_base64());
             Ok(0)
@@ -137,21 +151,22 @@ pub(crate) fn run(
         SigningCommand::Sign {
             path,
             key,
-            output,
+            out,
             by_id,
-        } => sign(kind, &path, key.as_deref(), output.as_deref(), by_id),
+        } => sign(kind, &path, key.as_deref(), out.as_deref(), by_id),
         SigningCommand::Verify {
             path,
             public_keys,
             signature,
             signatures,
+            server_config,
         } => verify(
             kind,
             &path,
             public_keys,
             signature.as_deref(),
             signatures.as_deref(),
-            config_path,
+            server_config.as_deref(),
         ),
     }
 }
@@ -181,7 +196,7 @@ fn resolve(kind: Kind, path: &str) -> Result<Vec<Target>, CliError> {
     // A file: a manifest, or a bare artifact.
     let as_plugin = std::fs::read_to_string(p)
         .ok()
-        .is_some_and(|text| orion::definitions::is_plugin_manifest(&text));
+        .is_some_and(|text| orion_authoring::definitions::is_plugin_manifest(&text));
     match as_plugin {
         true => from_manifests(kind, path),
         false => {
@@ -189,7 +204,7 @@ fn resolve(kind: Kind, path: &str) -> Result<Vec<Target>, CliError> {
             Ok(vec![Target {
                 id: None,
                 file: p.to_path_buf(),
-                digest: orion::crypto::sha256_digest(&bytes).into_string(),
+                digest: orion_common::crypto::sha256_digest(&bytes).into_string(),
             }])
         }
     }
@@ -199,7 +214,7 @@ fn resolve(kind: Kind, path: &str) -> Result<Vec<Target>, CliError> {
 /// its artifact. A manifest problem or an artifact that is not on disk is an
 /// error naming the manifest.
 fn from_manifests(kind: Kind, path: &str) -> Result<Vec<Target>, CliError> {
-    let mut set = orion::definitions::DefinitionSet::default();
+    let mut set = orion_authoring::definitions::DefinitionSet::default();
     let dirs = [path.to_string()];
     let findings = match kind {
         Kind::Plugin => set.add_plugin_dirs(&dirs)?,
@@ -490,7 +505,7 @@ fn trusted_keys(kind: Kind, config_path: Option<&str>) -> Result<Vec<String>, Cl
         )
         .into());
     };
-    let config = orion::config::load_config(Some(config_path))?;
+    let config = orion_common::config::load_config(Some(config_path))?;
     let keys = match kind {
         Kind::Plugin => config.plugins.trust.public_keys,
     };

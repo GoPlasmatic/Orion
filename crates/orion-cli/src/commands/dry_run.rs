@@ -3,6 +3,120 @@ use super::authoring::{
     unverifiable_functions,
 };
 
+/// Dry-run a workflow against a JSON input file.
+///
+/// Boots an in-process engine with just the supplied workflow, then prints
+/// the per-task execution trace from dataflow_rs.
+///
+/// Connector-backed tasks (`http_call`, `db_read`, `data_query`,
+/// `channel_call`, …) are answered from `--stubs`; nothing reaches a real
+/// backend. Without a stub file such a task fails naming the stub that
+/// would satisfy it, so a workflow is never silently half-run.
+#[derive(clap::Args)]
+pub struct DryRunCmd {
+    /// Path to a workflow JSON file.
+    #[arg(short, long)]
+    pub workflow: String,
+    /// Path to a JSON file used as the message payload.
+    #[arg(short, long)]
+    pub input: String,
+    /// Path to a JSON file used as the message metadata — `headers`,
+    /// `params`, `query`, `cookies`, `auth.claims`, `channel`, as the HTTP
+    /// ingress would have built them. Header keys are lowercased and
+    /// credential headers masked, so an offline run sees what production
+    /// would.
+    #[arg(short, long)]
+    pub metadata: Option<String>,
+    /// Path to a JSON file of canned connector responses:
+    /// `{"http_call": {"crm": {...}}, "db_read": {"*": [...]}}`.
+    /// The inner key is the task's `connector` (or `channel` for
+    /// `channel_call`); `"*"` matches any.
+    #[arg(short, long)]
+    pub stubs: Option<String>,
+    /// Path to a JSON file of stand-in values for the
+    /// `{"secret": "name"}` references the workflow reads:
+    /// `{"partner_hmac": "test-key"}`. An offline run has no `[secrets]`
+    /// config to resolve, and an engine with no store refuses a workflow
+    /// that names a secret. Values are used verbatim — use throwaway ones.
+    #[arg(long)]
+    pub secrets: Option<String>,
+    /// Directory holding the set's shared definitions — the `constants`,
+    /// `errors` and `fragments` documents a `$from` or a `use` resolves
+    /// against. Expansion happens before validation, so what is checked
+    /// and run is the expanded form.
+    #[arg(long, value_name = "DIR")]
+    pub definitions: Option<String>,
+    /// Directory of plugin manifests and their components. A plugin
+    /// function runs for real in the sandbox, never stubbed; a workflow
+    /// naming one whose component is absent fails as
+    /// PLUGIN_ARTIFACT_UNAVAILABLE. Repeatable.
+    #[arg(long = "plugin-dir", value_name = "DIR")]
+    pub plugin_dirs: Vec<String>,
+    /// How much of the run to record: `full` (every step with a message
+    /// snapshot and its changes), `steps` (ids, timing and changes, no
+    /// snapshots) or `none` (no trace and no per-write capture, as a node
+    /// runs an untraced message). `tasks` lists what ran in every mode.
+    #[arg(long, value_enum, default_value = "full")]
+    pub trace: DryRunTrace,
+}
+
+impl DryRunCmd {
+    pub async fn run(&self) -> anyhow::Result<i32> {
+        run_dry_run(DryRunRequest {
+            workflow: &self.workflow,
+            input: &self.input,
+            stubs: self.stubs.as_deref(),
+            metadata: self.metadata.as_deref(),
+            secrets: self.secrets.as_deref(),
+            definitions: self.definitions.as_deref(),
+            plugin_dirs: &self.plugin_dirs,
+            trace: self.trace,
+        })
+        .await
+        .map_err(super::authoring::boxed)?;
+        Ok(0)
+    }
+}
+
+/// Run a directory of workflow test cases.
+///
+/// Each `*.case.json` case names a workflow, an input, optional connector stubs
+/// and the values expected in the output:
+///
+///     {"name": "flags high-value orders", "workflow": "wf.json",
+///      "input": {...}, "stubs": {...},
+///      "expect": {"data.order.flagged": true}}
+///
+/// Paths inside a case are resolved relative to the case file. Prints a
+/// per-case diff and exits non-zero on any failure, so it gates CI the way
+/// `lint` and `validate-config` already do.
+#[derive(clap::Args)]
+pub struct TestCmd {
+    /// Directory of case files, or a single case file.
+    pub path: String,
+    /// Directory holding the set's shared definitions — the `constants`,
+    /// `errors` and `fragments` documents a `$from` or a `use` resolves
+    /// against. Expansion happens before validation, so what is checked
+    /// and run is the expanded form.
+    #[arg(long, value_name = "DIR")]
+    pub definitions: Option<String>,
+    /// Directory of plugin manifests and their components, loaded once
+    /// for the whole suite. A plugin function runs for real; a case
+    /// naming one whose component is absent fails as
+    /// PLUGIN_ARTIFACT_UNAVAILABLE. Repeatable.
+    #[arg(long = "plugin-dir", value_name = "DIR")]
+    pub plugin_dirs: Vec<String>,
+}
+
+impl TestCmd {
+    pub async fn run(&self) -> anyhow::Result<i32> {
+        run_test(&self.path, self.definitions.as_deref(), &self.plugin_dirs)
+            .await
+            .map_err(super::authoring::boxed)?;
+        Ok(0)
+    }
+}
+
 /// Build a dry-run engine over one workflow file, with connector-backed
 /// functions answered from `stubs_path` instead of from real backends.
 ///
@@ -12,15 +126,15 @@ pub(crate) fn build_dry_run_engine(
     workflow_path: &str,
     stubs_path: Option<&str>,
     definitions: Option<&Catalog>,
-    secrets: &orion::engine::ResolvedSecrets,
+    secrets: &orion_engine::ResolvedSecrets,
 ) -> Result<OfflineRun, Box<dyn std::error::Error>> {
     let stubs = match stubs_path {
         Some(path) => {
             let raw = std::fs::read_to_string(path)
                 .map_err(|e| format!("Failed to read stubs '{path}': {e}"))?;
-            orion::engine::functions::stub::parse_stubs(&raw, path)?
+            orion_engine::functions::stub::parse_stubs(&raw, path)?
         }
-        None => orion::engine::functions::stub::StubTable::new(),
+        None => orion_engine::functions::stub::StubTable::new(),
     };
     build_dry_run_engine_with_stubs(workflow_path, stubs, definitions, secrets)
 }
@@ -34,7 +148,7 @@ pub(crate) fn build_dry_run_engine(
 pub(crate) fn offline_secrets(
     value: &serde_json::Value,
     source: &str,
-) -> Result<orion::engine::ResolvedSecrets, String> {
+) -> Result<orion_engine::ResolvedSecrets, String> {
     match value {
         serde_json::Value::Object(map) => {
             // Checked here rather than left to the first task that reads one.
@@ -46,15 +160,15 @@ pub(crate) fn offline_secrets(
                 if !value.is_string() {
                     return Err(format!(
                         "{source}: secrets.{name} must be a string, got {}",
-                        orion::engine::utils::json_kind(value)
+                        orion_engine::utils::json_kind(value)
                     ));
                 }
             }
-            Ok(orion::engine::ResolvedSecrets::from_values(map.clone()))
+            Ok(orion_engine::ResolvedSecrets::from_values(map.clone()))
         }
         other => Err(format!(
             "{source}: secrets must be a JSON object of name -> value, got {}",
-            orion::engine::utils::json_kind(other)
+            orion_engine::utils::json_kind(other)
         )),
     }
 }
@@ -67,7 +181,7 @@ pub(crate) struct OfflineRun {
     pub engine: dataflow_rs::Engine,
     /// The connector calls the run makes, filled in as it runs, each one
     /// labelled with the task that made it.
-    pub log: std::sync::Arc<orion::engine::functions::stub::CallLog>,
+    pub log: std::sync::Arc<orion_engine::functions::stub::CallLog>,
     /// The tasks the run dispatched, in order.
     pub tasks: std::sync::Arc<TaskRecorder>,
     /// The stubs, around every host call.
@@ -80,14 +194,14 @@ impl OfflineRun {
         &self,
         input: &serde_json::Value,
         metadata: &serde_json::Value,
-        trace: Option<orion::engine::offline::OfflineTrace>,
+        trace: Option<orion_engine::offline::OfflineTrace>,
         capture_changes: bool,
-    ) -> orion::engine::offline::OfflineResult {
-        orion::engine::offline::run_single(
+    ) -> orion_engine::offline::OfflineResult {
+        orion_engine::offline::run_single(
             &self.engine,
             input,
             metadata,
-            orion::engine::offline::OfflineRun {
+            orion_engine::offline::OfflineRun {
                 trace,
                 max_snapshot_bytes: 0,
                 capture_changes,
@@ -140,11 +254,12 @@ impl dataflow_rs::Observer for TaskRecorder {
 /// runner — whose stubs may be inline in the case file rather than on disk.
 pub(crate) fn build_dry_run_engine_with_stubs(
     workflow_path: &str,
-    stubs: orion::engine::functions::stub::StubTable,
+    stubs: orion_engine::functions::stub::StubTable,
     definitions: Option<&Catalog>,
-    secrets: &orion::engine::ResolvedSecrets,
+    secrets: &orion_engine::ResolvedSecrets,
 ) -> Result<OfflineRun, Box<dyn std::error::Error>> {
-    use orion::{definitions::documents::CreateWorkflowRequest, engine::workflow_json};
+    use orion_authoring::definitions::documents::CreateWorkflowRequest;
+    use orion_engine::workflow_json;
 
     let doc = read_expanded_workflow(workflow_path, definitions)?;
     let req: CreateWorkflowRequest = serde_json::from_value(doc)
@@ -166,16 +281,16 @@ pub(crate) fn build_dry_run_engine_with_stubs(
         )
         .into());
     }
-    orion::validation::validate_create_workflow(
+    orion_authoring::validation::validate_create_workflow(
         &req,
-        orion::config::EngineConfig::default().max_loop_iterations,
+        orion_common::config::EngineConfig::default().max_loop_iterations,
         &registry,
     )
     .map_err(|e| format_lint_error(workflow_path, e))?;
 
     // Build a synthetic Workflow row from the request to reuse the
     // existing dataflow conversion. Version + timestamps are placeholders.
-    let synthetic = orion::definitions::documents::synthetic_workflow(
+    let synthetic = orion_authoring::definitions::documents::synthetic_workflow(
         &req,
         req.workflow_id.as_deref().unwrap_or("dry-run"),
     )?;
@@ -189,7 +304,7 @@ pub(crate) fn build_dry_run_engine_with_stubs(
 
     // The stub layer answers every connector-backed call, even with no stub
     // file: an unstubbed call then reports which stub to add.
-    let log = std::sync::Arc::new(orion::engine::functions::stub::CallLog::new());
+    let log = std::sync::Arc::new(orion_engine::functions::stub::CallLog::new());
     // Plugin functions are never stubbed: a plugin is capability-free, so the
     // real component runs, exactly as `crypto` does. A manifest whose
     // component is not beside it has functions this run cannot execute, and
@@ -201,7 +316,7 @@ pub(crate) fn build_dry_run_engine_with_stubs(
             handlers,
             unavailable,
         } = catalog.plugin_handlers()?;
-        for task in orion::engine::leaf_tasks(&req.tasks, req.loop_config.as_ref()) {
+        for task in orion_engine::leaf_tasks(&req.tasks, req.loop_config.as_ref()) {
             let Some(name) = task
                 .get("function")
                 .and_then(|f| f.get("name"))
@@ -225,11 +340,11 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     // compiles a row: a workflow a node would quarantine is refused here, and
     // the run speaks the serving engine's expressions. Unbounded: an offline
     // run has no `[engine]` config to read a budget from.
-    let compiler = orion::runtime::functions::offline_compiler(secrets, plugin_functions)?;
-    let engine = orion::engine::offline::single_engine(&compiler, &json)?;
+    let compiler = orion_runtime::runtime::functions::offline_compiler(secrets, plugin_functions)?;
+    let engine = orion_engine::offline::single_engine(&compiler, &json)?;
     let layers: Vec<std::sync::Arc<dyn dataflow_rs::function::CallLayer>> =
         vec![std::sync::Arc::new(
-            orion::engine::functions::stub::StubLayer::new(stubs, log.clone()),
+            orion_engine::functions::stub::StubLayer::new(stubs, log.clone()),
         )];
     Ok(OfflineRun {
         engine,
@@ -242,7 +357,7 @@ pub(crate) fn build_dry_run_engine_with_stubs(
 /// Dry-run a workflow against an input JSON file.
 ///
 /// Connector-backed tasks are answered from the stub file when one is supplied
-/// (see [`orion::engine::functions::stub`]); without one, any such task fails
+/// (see [`orion_engine::functions::stub`]); without one, any such task fails
 /// naming the stub that would satisfy it. Nothing reaches a real backend
 /// either way — this is the offline counterpart to
 /// `POST /definitions/test`, which runs against live connectors.
@@ -263,10 +378,10 @@ pub(crate) enum DryRunTrace {
 
 impl DryRunTrace {
     /// The trace to record, or `None` for none.
-    fn options(self) -> Option<orion::engine::offline::OfflineTrace> {
+    fn options(self) -> Option<orion_engine::offline::OfflineTrace> {
         match self {
-            Self::Full => Some(orion::engine::offline::OfflineTrace::Changes),
-            Self::Steps => Some(orion::engine::offline::OfflineTrace::Steps),
+            Self::Full => Some(orion_engine::offline::OfflineTrace::Changes),
+            Self::Steps => Some(orion_engine::offline::OfflineTrace::Steps),
             Self::Off => None,
         }
     }
@@ -306,7 +421,7 @@ pub(crate) async fn run_dry_run(req: DryRunRequest<'_>) -> Result<(), Box<dyn st
             serde_json::from_str(&raw)
                 .map_err(|e| format!("'{path}' is not valid JSON: {e}"))
                 .and_then(|v| {
-                    orion::engine::utils::prepare_offline_metadata(v)
+                    orion_engine::utils::prepare_offline_metadata(v)
                         .map_err(|e| format!("'{path}': {e}"))
                 })?
         }
@@ -321,7 +436,7 @@ pub(crate) async fn run_dry_run(req: DryRunRequest<'_>) -> Result<(), Box<dyn st
                 .map_err(|e| format!("'{path}' is not valid JSON: {e}"))?;
             offline_secrets(&value, path)?
         }
-        None => orion::engine::ResolvedSecrets::empty(),
+        None => orion_engine::ResolvedSecrets::empty(),
     };
 
     let catalog = Catalog::load_opt(definitions, plugin_dirs)?;
@@ -351,7 +466,7 @@ pub(crate) async fn run_dry_run(req: DryRunRequest<'_>) -> Result<(), Box<dyn st
     if let Some(trace) = &result.trace {
         output["trace"] = serde_json::to_value(trace)?;
     }
-    for (name, document) in orion::engine::functions::stub::run_documents(message, &run.log) {
+    for (name, document) in orion_engine::functions::stub::run_documents(message, &run.log) {
         output[name] = document;
     }
     if let Some(ref e) = result.error {
@@ -360,7 +475,7 @@ pub(crate) async fn run_dry_run(req: DryRunRequest<'_>) -> Result<(), Box<dyn st
     println!("{}", serde_json::to_string_pretty(&output)?);
 
     // The trace is on stdout either way; the exit status still reports the
-    // failure, so `orion-server dry-run` stays usable as a CI gate.
+    // failure, so `orion-cli dry-run` stays usable as a CI gate.
     match result.error {
         Some(e) => Err(e.into()),
         None => Ok(()),
@@ -390,7 +505,7 @@ struct TestCase {
     /// `headers`, `params`, `query`, `cookies`, `auth.claims`, `channel`,
     /// `http_method`, plus any caller-supplied keys.
     ///
-    /// Normalized by [`orion::engine::utils::prepare_offline_metadata`] so an
+    /// Normalized by [`orion_engine::utils::prepare_offline_metadata`] so an
     /// offline pass means the same thing as a production pass — header keys
     /// lowercased, credential headers masked.
     #[serde(default)]
@@ -411,7 +526,7 @@ struct TestCase {
     #[serde(default)]
     stubs_file: Option<String>,
     /// Dotted paths to their expected values, each **rooted** at one of
-    /// [`RUN_DOCUMENTS`](orion::engine::functions::stub::RUN_DOCUMENTS):
+    /// [`RUN_DOCUMENTS`](orion_engine::functions::stub::RUN_DOCUMENTS):
     /// `data.order.flagged`, `metadata.headers.deviceid`,
     /// `temp_data.user_id`, `calls.http_call[0].input.body.id`,
     /// `audit_trail[1].status`.
@@ -587,12 +702,12 @@ async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) ->
     // a parsed value, so they go straight to the validator rather than through a
     // serialize-and-reparse.
     let stubs = match (&case.stubs, &case.stubs_file) {
-        (Some(inline), _) => orion::engine::functions::stub::parse_stub_value(inline, "stubs"),
+        (Some(inline), _) => orion_engine::functions::stub::parse_stub_value(inline, "stubs"),
         (None, Some(file)) => match std::fs::read_to_string(base.join(file)) {
-            Ok(raw) => orion::engine::functions::stub::parse_stubs(&raw, file),
+            Ok(raw) => orion_engine::functions::stub::parse_stubs(&raw, file),
             Err(e) => Err(format!("cannot read stubs '{file}': {e}")),
         },
-        (None, None) => Ok(orion::engine::functions::stub::StubTable::new()),
+        (None, None) => Ok(orion_engine::functions::stub::StubTable::new()),
     };
     let stubs = match stubs {
         Ok(stubs) => stubs,
@@ -605,7 +720,7 @@ async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) ->
     let unrooted: Vec<String> = case
         .expect
         .keys()
-        .filter(|path| !orion::engine::functions::stub::is_rooted(path))
+        .filter(|path| !orion_engine::functions::stub::is_rooted(path))
         .map(|path| unrooted_message(path))
         .collect();
     if !unrooted.is_empty() {
@@ -615,7 +730,7 @@ async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) ->
         };
     }
 
-    let metadata = match orion::engine::utils::prepare_offline_metadata(case.metadata.clone()) {
+    let metadata = match orion_engine::utils::prepare_offline_metadata(case.metadata.clone()) {
         Ok(metadata) => metadata,
         Err(e) => return fail(&name, e),
     };
@@ -625,7 +740,7 @@ async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) ->
             Ok(secrets) => secrets,
             Err(e) => return fail(&name, e),
         },
-        None => orion::engine::ResolvedSecrets::empty(),
+        None => orion_engine::ResolvedSecrets::empty(),
     };
 
     let run = match build_dry_run_engine_with_stubs(&workflow_path, stubs, definitions, &secrets) {
@@ -644,7 +759,7 @@ async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) ->
     let capture = case
         .expect
         .keys()
-        .any(|path| orion::engine::functions::stub::path_root(path) == "audit_trail");
+        .any(|path| orion_engine::functions::stub::path_root(path) == "audit_trail");
     let result = run.run(&case.input, &metadata, None, capture).await;
     let message = &result.message;
     let run_error = result.error;
@@ -661,7 +776,7 @@ async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) ->
         }
     }
 
-    let roots = serde_json::Value::Object(orion::engine::functions::stub::run_documents(
+    let roots = serde_json::Value::Object(orion_engine::functions::stub::run_documents(
         message, &run.log,
     ));
     for (path, expected) in &case.expect {
@@ -731,7 +846,7 @@ fn unrooted_message(path: &str) -> String {
     format!(
         "expect path '{path}' has no root — did you mean 'data.{path}'? \
          roots: {}",
-        orion::engine::functions::stub::RUN_DOCUMENTS.join(", ")
+        orion_engine::functions::stub::RUN_DOCUMENTS.join(", ")
     )
 }
 
@@ -780,7 +895,7 @@ fn lookup_path(roots: &serde_json::Value, path: &str) -> Option<serde_json::Valu
 /// Check a case's `expect_calls` against what the run recorded.
 fn check_expected_calls(
     expected: &std::collections::BTreeMap<String, Vec<serde_json::Value>>,
-    log: &orion::engine::functions::stub::CallLog,
+    log: &orion_engine::functions::stub::CallLog,
 ) -> Vec<String> {
     if expected.is_empty() {
         return Vec::new();
@@ -788,7 +903,7 @@ fn check_expected_calls(
     let recorded = log.calls();
     let mut failures = Vec::new();
     for (function, expected_calls) in expected {
-        let actual: Vec<&orion::engine::functions::stub::RecordedCall> = recorded
+        let actual: Vec<&orion_engine::functions::stub::RecordedCall> = recorded
             .iter()
             .filter(|call| call.function == function.as_str())
             .collect();
@@ -845,28 +960,5 @@ fn subset_mismatch(
         }
         _ if expected == actual => Vec::new(),
         _ => vec![format!("{path}: expected {expected}, got {actual}")],
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::*;
-    use std::time::Duration;
-
-    #[test]
-    fn parse_wait_accepts_seconds_and_units() {
-        assert_eq!(parse_wait("60"), Ok(Duration::from_secs(60)));
-        assert_eq!(parse_wait("60s"), Ok(Duration::from_secs(60)));
-        assert_eq!(parse_wait("5m"), Ok(Duration::from_secs(300)));
-        assert_eq!(parse_wait("1h"), Ok(Duration::from_secs(3600)));
-        assert_eq!(parse_wait("0"), Ok(Duration::ZERO));
-        assert_eq!(parse_wait("0s"), Ok(Duration::ZERO));
-    }
-
-    #[test]
-    fn parse_wait_refuses_garbage() {
-        for bad in ["", "soon", "5x", "-1", "1.5m"] {
-            assert!(parse_wait(bad).is_err(), "{bad}");
-        }
     }
 }

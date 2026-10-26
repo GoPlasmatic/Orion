@@ -31,11 +31,11 @@ The function receives the task's evaluated `input` as one JSON object and return
 
 It has no other way in and no other way out. The WebAssembly world it implements imports nothing: no filesystem, clock, randomness, sockets, logging, connectors or secrets.
 
-Every plugin function enters the same registry the built-in functions live in. `GET /api/v2/admin/functions` lists it with `source: "plugin"`. Validation checks its input against the manifest's field table, and `orion-server lint` and `clippy` reason about its reads and writes. A retry is always safe: a function with no side channel is pure by construction.
+Every plugin function enters the same registry the built-in functions live in. `GET /api/v2/admin/functions` lists it with `source: "plugin"`. Validation checks its input against the manifest's field table, and `orion-cli lint` and `clippy` reason about its reads and writes. A retry is always safe: a function with no side channel is pure by construction.
 
 ## The definition
 
-In a definition set, a plugin is its `plugin.toml` and the component file it names. `orion-server compile` turns the pair into one [definition](../reference/admin-api/deployments.md#definitions): the manifest as JSON and the component in base64, with an optional detached signature. The upload validates it the way a node loads it, and a deployment names it as a member like any workflow or channel.
+In a definition set, a plugin is its `plugin.toml` and the component file it names. `orion-cli compile` turns the pair into one [definition](../reference/admin-api/deployments.md#definitions): the manifest as JSON and the component in base64, with an optional detached signature. The upload validates it the way a node loads it, and a deployment names it as a member like any workflow or channel.
 
 The identity of a component is its SHA-256 digest, computed by the server. It is what a generation, a trace and the catalogue all name.
 

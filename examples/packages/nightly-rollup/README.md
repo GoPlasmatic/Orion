@@ -32,7 +32,7 @@ fails before it is deployed.
 ## Deploy it
 
 ```bash
-orion-server compile examples/packages/nightly-rollup -o dist/nightly-rollup
+orion-cli compile examples/packages/nightly-rollup -o dist/nightly-rollup
 orion-cli deployments apply -d dist/nightly-rollup
 ```
 

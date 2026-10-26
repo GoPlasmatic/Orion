@@ -8,7 +8,10 @@ use std::process::Command;
 
 use crate::common::{ScratchDir, orion_bin};
 
-const CASES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/clippy-fix");
+const CASES: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../orion-server/tests/fixtures/clippy-fix"
+);
 
 fn clippy(args: &[&str]) -> (i32, String) {
     let out = Command::new(orion_bin())

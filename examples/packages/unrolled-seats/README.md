@@ -25,13 +25,13 @@ It splices the fragment's JSONLogic in place, with its `weight` parameter left
 at its default of `10`.
 
 **The server never sees any of this.** `$each`, `$use`, `{{seat}}` and `$from`
-are authoring conveniences: `orion-server compile` expands them into the
+are authoring conveniences: `orion-cli compile` expands them into the
 four ordinary steps the admin API accepts.
 
 ## Deploy it
 
 ```bash
-orion-server compile examples/packages/unrolled-seats -o dist/unrolled-seats
+orion-cli compile examples/packages/unrolled-seats -o dist/unrolled-seats
 orion-cli deployments apply -d dist/unrolled-seats
 ```
 
@@ -48,5 +48,5 @@ The answer carries `data.scores`:
 To see the expanded workflow without a server:
 
 ```bash
-orion-server compile examples/packages/unrolled-seats -o /tmp/unrolled
+orion-cli compile examples/packages/unrolled-seats -o /tmp/unrolled
 ```

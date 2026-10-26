@@ -1,18 +1,18 @@
-<!-- description: orion-server clippy runs the advisory rules beyond lint, only where certain, with --fix, --list, --explain, JSON output and the -c config. -->
+<!-- description: orion-cli clippy runs the advisory rules beyond lint, only where certain, with --fix, --list, --explain, JSON output and the -c config. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-19 -->
 
-# `orion-server clippy`
+# `orion-cli clippy`
 
 Advisory checks beyond `lint`, said only when certain: the `cargo clippy` to `lint`'s `cargo check`. The rules, each with the proof it rests on and when it stays silent, are on [Advisory checks](../../clippy/index.md). No configuration, no suppression.
 
 ## Synopsis
 
 ```bash
-orion-server clippy <dir | file> [--deny-warnings] [--format text|json] [--fix [--check]]
+orion-cli clippy <dir | file> [--deny-warnings] [--format text|json] [--fix [--check]]
                     [--definitions DIR] [--requires-channel NAME]... [--requires-connector NAME]...
-orion-server clippy --list
-orion-server clippy --explain <rule>
+orion-cli clippy --list
+orion-cli clippy --explain <rule>
 ```
 
 ## Description
@@ -37,7 +37,7 @@ Needs no database or server. It takes the serving config with `-c` for the two r
 | `--list` | Every rule with its level, scope and summary. |
 | `--explain RULE` | One rule's rationale, its proof and when it is silent. |
 | `--definitions`, `--requires-*`, `--plugin-dir` | As `lint` takes them. A plugin function's `template_at` fields are analysed as the server evaluates them once its manifest is in the set. |
-| `-c FILE` (global) | The serving instance's config. Only a config you name counts: the defaults say nothing about `[vars]` or `[secrets]`. |
+| `-c, --server-config FILE` | The serving instance's config, the file `orion-server -c` reads. Only a config you name counts: the defaults say nothing about `[vars]` or `[secrets]`. |
 
 ## Returns
 
@@ -49,7 +49,7 @@ Needs no database or server. It takes the serving config with `-c` for the two r
 
 ## Fixes
 
-`--fix` applies a rewrite only where a rule proved it exact, which today is [`perf.redundant_step_condition`](../../clippy/perf-redundant-step-condition.md#fix). Each edit is checked before it is written. The edited file is compiled again and must produce exactly the folded workflow. The set is then linted with the edit in place. A file that fails either check is left alone. A written file takes the house style, as `orion-server fmt` writes it. Each edit is reported on stderr:
+`--fix` applies a rewrite only where a rule proved it exact, which today is [`perf.redundant_step_condition`](../../clippy/perf-redundant-step-condition.md#fix). Each edit is checked before it is written. The edited file is compiled again and must produce exactly the folded workflow. The set is then linted with the edit in place. A file that fails either check is left alone. A written file takes the house style, as `orion-cli fmt` writes it. Each edit is reported on stderr:
 
 ```
 fixed definitions/claims.json: folded `claim`, `read` into group `when_claim`
@@ -61,7 +61,7 @@ Only steps written in the file are edited. A run a fragment or an `$each` produc
 ## Examples
 
 ```
-$ orion-server clippy ./definitions
+$ orion-cli clippy ./definitions
 definitions/workflows/auth-login.json: warning: [perf.redundant_step_condition] workflow 'Auth - login' at tasks[15].tasks[0].condition: 2 consecutive steps (`send_otp` and `when_unverified`) repeat this condition, and none of them writes what it reads; it is evaluated 2 times for one answer
         fix: wrap them in a task group carrying the condition once: { "id": …, "condition": …, "tasks": [ … ] }
 note: [correctness.metadata_var_undeclared] skipped — needs the serving config (-c <config.toml>)
@@ -69,12 +69,12 @@ note: [correctness.metadata_var_undeclared] skipped — needs the serving config
 ```
 
 ```bash
-orion-server -c config.toml clippy ./definitions --deny-warnings
+orion-cli clippy -c config.toml ./definitions --deny-warnings
 ```
 
 ## Related
 
 - [Advisory checks (`clippy`)](../../clippy/index.md): every rule, with its proof and when it stays silent.
-- [`orion-server lint`](./lint.md): the gate that runs first.
+- [`orion-cli lint`](./lint.md): the gate that runs first.
 - [Test a workflow offline](../../../guides/author/testing.md): where the advisory checks sit in a pipeline.
-- [`orion-server` commands](./index.md): every `orion-server` subcommand.
+- [`orion-cli` commands](./index.md): every `orion-cli` subcommand.

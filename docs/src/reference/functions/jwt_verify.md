@@ -31,7 +31,7 @@ Verifies a JWS mid-workflow (provider id_tokens for social login, refresh tokens
 
 ## Description
 
-`jwt_verify` is a utility function: self-contained, with no connector and no egress, so `dry-run` and `orion-server test` execute it for real.
+`jwt_verify` is a utility function: self-contained, with no connector and no egress, so `dry-run` and `orion-cli test` execute it for real.
 
 **Retry safety:** `read`. See [Retry safety](./retry-safety.md) for what the answer costs.
 

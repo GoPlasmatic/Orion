@@ -2,7 +2,7 @@
 # Suite: Deployments
 #
 # The v2 deployment path end to end: an example set compiled to a deployment
-# directory with `orion-server compile --format deployment`, deployed with
+# directory with `orion-cli compile --format deployment`, deployed with
 # `orion-cli deployments apply -d`, and the channel serving it. Then one
 # workflow changes, the set recompiles and re-applies, and only that member's
 # revision moves; an unchanged directory applies nothing; a member left out of
@@ -68,7 +68,7 @@ stop_deployment_server() {
 }
 
 compile_deployment() {
-    "$ORION_BIN" compile "$DEP_DIR/set" --format deployment -o "$DEP_DIR/dist" >/dev/null 2>&1
+    "$ORION_CLI" compile "$DEP_DIR/set" --format deployment -o "$DEP_DIR/dist" >/dev/null 2>&1
 }
 
 # member_revision <deployment revision> <kind> <id>

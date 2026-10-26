@@ -45,7 +45,7 @@ discount, premium from 100 to 500 with 5%, standard below 100 with none.
 **Deploy and call it:**
 
 ```bash
-orion-server compile examples/packages/order-classification -o /tmp/order-classification
+orion-cli compile examples/packages/order-classification -o /tmp/order-classification
 orion-cli deployments apply -d /tmp/order-classification --yes
 
 curl -s -X POST http://localhost:8080/api/v2/data/order-tiers \
@@ -77,7 +77,7 @@ warning.
 **Deploy and call it:**
 
 ```bash
-orion-server compile examples/packages/iot-sensor-alert -o /tmp/iot-sensor-alert
+orion-cli compile examples/packages/iot-sensor-alert -o /tmp/iot-sensor-alert
 orion-cli deployments apply -d /tmp/iot-sensor-alert --yes
 
 curl -s -X POST http://localhost:8080/api/v2/data/sensors \
@@ -108,7 +108,7 @@ fields.
 **Deploy and call it:**
 
 ```bash
-orion-server compile examples/packages/webhook-transform -o /tmp/webhook-transform
+orion-cli compile examples/packages/webhook-transform -o /tmp/webhook-transform
 orion-cli deployments apply -d /tmp/webhook-transform --yes
 
 curl -s -X POST http://localhost:8080/api/v2/data/webhooks \
@@ -144,7 +144,7 @@ sends SMS only for high and critical.
 **Deploy and call it:**
 
 ```bash
-orion-server compile examples/packages/notification-routing -o /tmp/notification-routing
+orion-cli compile examples/packages/notification-routing -o /tmp/notification-routing
 orion-cli deployments apply -d /tmp/notification-routing --yes
 
 curl -s -X POST http://localhost:8080/api/v2/data/notifications \

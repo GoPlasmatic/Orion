@@ -82,7 +82,7 @@ pub mod field_codes {
     /// when a definition set is compiled — a `$from` shared value, a `use`
     /// task fragment. The admin API takes one document and has no set to
     /// resolve it against, so the compiled form is what it accepts:
-    /// `orion-server compile <dir>` produces it.
+    /// `orion-cli compile <dir>` produces it.
     pub const UNCOMPILED_SOURCE: &str = "UNCOMPILED_SOURCE";
     /// A secret reference (`env://NAME`, `vault://…`) sits in a field that
     /// does not resolve one. Only five fields do — `crypto.key`,

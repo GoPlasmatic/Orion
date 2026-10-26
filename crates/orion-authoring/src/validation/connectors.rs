@@ -167,7 +167,7 @@ fn parse_problem(parse_error: &str, message: &str) -> FieldError {
 /// driver.
 ///
 /// The one judgement behind `POST /api/v2/admin/connections` and
-/// `orion-server compile`, so the two cannot disagree about a connection.
+/// `orion-cli compile`, so the two cannot disagree about a connection.
 pub fn builtin_connection_problems(
     provider_digest: &str,
     public_config: &serde_json::Value,

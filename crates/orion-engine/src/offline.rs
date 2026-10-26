@@ -1,4 +1,4 @@
-//! One workflow, run where nothing serves it: `orion-server dry-run`, the
+//! One workflow, run where nothing serves it: `orion-cli dry-run`, the
 //! `test` runner, and `POST /definitions/test`.
 //!
 //! All three compile the workflow on a dataflow-rs 4 registry and run it on

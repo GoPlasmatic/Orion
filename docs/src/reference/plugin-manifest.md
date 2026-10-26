@@ -160,12 +160,12 @@ is a `signature` load issue that quarantines the workflows naming its
 functions. A node with no keys configured checks nothing and stores whatever
 the upload sent.
 
-[`orion-server plugin`](./cli/orion-server/plugin.md) produces both halves
+[`orion-cli plugin`](./cli/orion-cli/plugin.md) produces both halves
 with the server's own digest and signing code:
 
 ```bash
-orion-server plugin keygen -o signer.pem          # prints the value for public_keys
-orion-server plugin sign plugin.toml --key signer.pem   # writes plugin.wasm.sig
+orion-cli plugin keygen -o signer.pem          # prints the value for public_keys
+orion-cli plugin sign plugin.toml --key signer.pem   # writes plugin.wasm.sig
 ```
 
 The equivalent OpenSSL pipeline signs the same message with the same
@@ -183,18 +183,18 @@ Over the API, `signature` is a field of the plugin definition, beside
 ## Deployments and offline tooling
 
 A plugin is a member of a deployment, like a workflow or a channel.
-[`compile`](./cli/orion-server/compile.md) writes a `plugin.toml` in a
+[`compile`](./cli/orion-cli/compile.md) writes a `plugin.toml` in a
 definition set as a plugin definition, with the component beside it inlined.
 `compile` writes no signature, so a target with `[plugins.trust]` keys needs
 the definition uploaded with its `signature` over the API.
 
-Offline, [`lint`](./cli/orion-server/lint.md), `clippy` and `compile` read the manifests in
+Offline, [`lint`](./cli/orion-cli/lint.md), `clippy` and `compile` read the manifests in
 the set and in every `--plugin-dir`. They validate a plugin task's input
 against the manifest's field table exactly as the server validates it
 against the deployed plugin. A function of a plugin no manifest accounts for is
 reported as unverifiable: a note, never an error. Only the serving instance
-can answer for it. [`dry-run`](./cli/orion-server/dry-run.md) and
-[`test`](./cli/orion-server/test.md) go further. Given `--plugin-dir` with the components
+can answer for it. [`dry-run`](./cli/orion-cli/dry-run.md) and
+[`test`](./cli/orion-cli/test.md) go further. Given `--plugin-dir` with the components
 beside the manifests, plugin functions **run for real** in the same sandbox
 the server uses, under the host's default ceilings. They are never stubbed,
 because a plugin is capability-free and the real answer is always available. A

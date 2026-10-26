@@ -19,7 +19,7 @@ instead of Postgres and the same workflow JSON runs unchanged.
 
 ```bash
 docker compose up -d          # Postgres (seeded) + Orion
-cd ../.. && orion-server compile examples/packages/postgres-orders -o dist/postgres-orders
+cd ../.. && orion-cli compile examples/packages/postgres-orders -o dist/postgres-orders
 orion-cli deployments apply -d dist/postgres-orders
 ```
 
@@ -29,7 +29,7 @@ Or run a locally installed `orion-server` against just the database:
 docker compose up -d postgres
 ORDERS_DB_URL=postgres://orion:orion@localhost:5432/orion_orders orion-server
 # in another terminal:
-cd ../.. && orion-server compile examples/packages/postgres-orders -o dist/postgres-orders
+cd ../.. && orion-cli compile examples/packages/postgres-orders -o dist/postgres-orders
 orion-cli deployments apply -d dist/postgres-orders
 ```
 
@@ -77,7 +77,7 @@ new order, so the history grows.
   (`localhost`).
 - `"driver": "postgresql"` names the backend the reference hides. A
   definition set must name it on every `db` connector: it is how
-  `orion-server compile` picks the connection's
+  `orion-cli compile` picks the connection's
   provider.
 - `"operations": { "delete": false }` makes the connector **delete-proof**:
   any workflow that tries a `data_write` delete through it is rejected at

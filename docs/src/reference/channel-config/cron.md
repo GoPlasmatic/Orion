@@ -107,7 +107,7 @@ The key defaults to the channel's `channel_id`, so `forbid` on its own means "on
 "concurrency": { "policy": "forbid", "key": "invoice-worker", "slots": 4 }
 ```
 
-An occurrence may only take a slot below its own channel's `slots`. Channels sharing a key normally agree. When they do not, a `slots: 1` channel waits for slot `0` however many higher slots are free, and the key's bound is the largest declared. `orion-server lint` warns about the mismatch as `cron.slots_mismatch`.
+An occurrence may only take a slot below its own channel's `slots`. Channels sharing a key normally agree. When they do not, a `slots: 1` channel waits for slot `0` however many higher slots are free, and the key's bound is the largest declared. `orion-cli lint` warns about the mismatch as `cron.slots_mismatch`.
 
 Lowering `slots` affects new runs only. A run already holding a higher slot finishes normally, so the status view can briefly show more held than the new bound.
 

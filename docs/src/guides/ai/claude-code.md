@@ -36,10 +36,10 @@ Paste this into Claude Code:
 Watch the commands as Claude works. The sequence is the same safe path you would follow by hand:
 
 ```bash
-orion-server lint definitions                        # 1. offline, no server, no writes
-orion-server clippy definitions                      #    advisory checks, only where certain
-orion-server dry-run -w definitions/order-triage.json -i sample.json   # 2. run it offline
-orion-server compile definitions -o dist/deployment  # 3. the deployment directory
+orion-cli lint definitions                        # 1. offline, no server, no writes
+orion-cli clippy definitions                      #    advisory checks, only where certain
+orion-cli dry-run -w definitions/order-triage.json -i sample.json   # 2. run it offline
+orion-cli compile definitions -o dist/deployment  # 3. the deployment directory
 orion-cli deployments plan -d dist/deployment        # 4. what would change; commits nothing
 orion-cli deployments apply -d dist/deployment       #    the node swaps the new revision in
 orion-cli send orders -f big-order.json              # 5. the test order comes back flagged

@@ -27,11 +27,11 @@ a full inventory.
 Run local checks before anything touches an instance:
 
 ```bash
-orion-server fmt --check ./definitions
-orion-server lint ./definitions
-orion-server clippy ./definitions
-orion-server dry-run -w definitions/workflow.json -i sample.json --stubs stubs.json
-orion-server test ./definitions/tests
+orion-cli fmt --check ./definitions
+orion-cli lint ./definitions
+orion-cli clippy ./definitions
+orion-cli dry-run -w definitions/workflow.json -i sample.json --stubs stubs.json
+orion-cli test ./definitions/tests
 ```
 
 - `fmt` applies the one house style. Use `--check` in CI.
@@ -45,9 +45,9 @@ orion-server test ./definitions/tests
   It refuses a directory that holds no case files.
 - `sql check` prepares every `db_read`/`db_write` statement against a real
   database. It executes nothing, but it does connect.
-- `validate-config` and `test-connectivity` are operator commands. They read
+- `orion-server validate-config` and `orion-server test-connectivity` are operator commands. They read
   config, and `test-connectivity` contacts the state database.
-- `dump-openapi` prints the built server's API contract.
+- `orion-server dump-openapi` prints the built server's API contract.
 - `lint`, `clippy`, `compile`, `dry-run` and `test` take `--plugin-dir <dir>`,
   and find a `plugin.toml` in the tree without it. With a manifest in hand,
   plugin task inputs are validated, and `dry-run` and `test` run the component
@@ -64,7 +64,7 @@ A set holds workflows, channels, connectors, shared values, fragments and
 plugins. Compile it into a deployment directory:
 
 ```bash
-orion-server compile ./definitions -o dist/deployment
+orion-cli compile ./definitions -o dist/deployment
 ```
 
 `compile` runs every `lint` check first and writes nothing if one fails. It

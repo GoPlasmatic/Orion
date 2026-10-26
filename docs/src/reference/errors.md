@@ -286,7 +286,7 @@ The complete vocabulary. It is closed: a code outside this table is a bug. A dri
 | `DUPLICATE_FIELD` | The same key appeared twice in one object. |
 | `DUPLICATE_TASK_ID` | Two steps in one workflow declare the same `id`. Tasks and task groups share one id namespace. |
 | `UNKNOWN_FUNCTION` | A task names a function the engine does not register — the workflow would be accepted and then fail at its first request. When the name is a plausible typo, the message appends the closest registered name (`did you mean …?`). |
-| `UNCOMPILED_SOURCE` | The document still carries an authoring convenience a definition set resolves at compile time — a `$from` shared value, a `use` task fragment, a `$use` value fragment, an `$each` repetition, a `$sql` file reference. This endpoint takes one document and has no set to resolve names against; send what `orion-server compile <dir>` writes. See [Shared definitions](./cli/shared-definitions.md). |
+| `UNCOMPILED_SOURCE` | The document still carries an authoring convenience a definition set resolves at compile time — a `$from` shared value, a `use` task fragment, a `$use` value fragment, an `$each` repetition, a `$sql` file reference. This endpoint takes one document and has no set to resolve names against; send what `orion-cli compile <dir>` writes. See [Shared definitions](./cli/shared-definitions.md). |
 | `UNRESOLVED_SECRET_REF` | A secret reference (`env://NAME`, `vault://…`) sits in a workflow field that does not resolve one, so it would be sent on as that literal text — a URL spelled `env://API_BASE` is requested verbatim. Five fields resolve a reference: `crypto.key`, `jwt_sign.key`, and `jwt_verify`'s `keys`, `issuer` and `audience`. See [Environment Variables](./environment-variables.md#where-a-reference-resolves). |
 
 ### How `path` is rooted
@@ -298,11 +298,11 @@ The complete vocabulary. It is closed: a code outside this table is a bug. A dri
 
 The same mistake can surface as `body.protocol` or `channel.protocol` depending on whether it was a parse failure or a validation failure. Match on the last segment to treat both alike.
 
-The same envelope is returned by `POST /api/v2/admin/definitions`, `POST /api/v2/admin/definitions/test`, and the `orion-server lint` / `dry-run` CLI subcommands.
+The same envelope is returned by `POST /api/v2/admin/definitions`, `POST /api/v2/admin/definitions/test`, and the `orion-cli lint` / `dry-run` CLI subcommands.
 
 ## Validation warnings
 
-`orion-server lint` reports warnings beside its errors. Only errors refuse a workflow, so a workflow can be valid and still carry warnings. These are reported:
+`orion-cli lint` reports warnings beside its errors. Only errors refuse a workflow, so a workflow can be valid and still carry warnings. These are reported:
 
 | Warning | Meaning |
 |---|---|
@@ -311,7 +311,7 @@ The same envelope is returned by `POST /api/v2/admin/definitions`, `POST /api/v2
 | `… emits '…' with one '$' stripped` | A `$`-prefixed key in a template position. The engine strips one `$` from every such key, so a `{"$set": …}` update document composed in a `map` goes out as `{"set": …}`. Double the prefix (`$$set`) to emit the `$`. |
 | `a failing rule here records status 400 and task '…' still runs` | A [`validation`](./functions/validation.md) whose failure stops nothing: `4xx` warns and carries on, and `on_failure` governs `5xx` only. Add [`"on_rejection": "halt"`](./workflows.md#halting-on-a-rejection), or gate what follows. |
 
-The last three are the engine's own findings, reported wherever a workflow is checked: `orion-server lint`, `orion-server clippy` and the definition-set check. Each carries a stable id there ([`lint`](./cli/orion-server/lint.md)); here they arrive as warnings like any other.
+The last three are the engine's own findings, reported wherever a workflow is checked: `orion-cli lint`, `orion-cli clippy` and the definition-set check. Each carries a stable id there ([`lint`](./cli/orion-cli/lint.md)); here they arrive as warnings like any other.
 
 The `reads '…'` warning exists because the failure it predicts is invisible at runtime. JSONLogic resolves an unknown `var` to null. A mistyped path therefore leaves the task running, the workflow succeeding, and the caller receiving a `200` with the field quietly missing.
 

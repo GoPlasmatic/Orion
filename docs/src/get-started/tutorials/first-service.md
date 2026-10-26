@@ -68,7 +68,7 @@ The channel is the endpoint. It names the route, the methods it answers, and the
 `compile` checks the directory the way the server would and writes it as a deployment directory. `deployments apply -d` uploads it and commits it as the server's next revision:
 
 ```bash
-orion-server compile order-summary -o dist/deployment
+orion-cli compile order-summary -o dist/deployment
 orion-cli deployments apply -d dist/deployment
 ```
 

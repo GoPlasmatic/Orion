@@ -11,7 +11,7 @@ A workflow is a JSON-defined pipeline of tasks. A [channel](../concepts/channels
 
 ## Synopsis
 
-Write this shape as a file in a definition set. [`orion-server compile`](./cli/orion-server/compile.md) turns it into a workflow definition, and a deployment serves it ([Deployment endpoints](./admin-api/deployments.md#definitions)).
+Write this shape as a file in a definition set. [`orion-cli compile`](./cli/orion-cli/compile.md) turns it into a workflow definition, and a deployment serves it ([Deployment endpoints](./admin-api/deployments.md#definitions)).
 
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
@@ -136,7 +136,7 @@ default keeps it. When you meant a gate, say so:
 | Stop, and answer with a chosen status and body | a later task with a `condition` on the failure and `terminal: true` |
 | Stop, with no body | a [`filter`](./functions/filter.md) task (records `299`) |
 
-`orion-server lint` reports a `validation` that is not acting as a gate and has
+`orion-cli lint` reports a `validation` that is not acting as a gate and has
 nothing guarded after it (`engine.unguarded_validation`). The silent version
 does not have to be found in production.
 

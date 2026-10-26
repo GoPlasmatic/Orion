@@ -139,7 +139,7 @@ By default a sync channel returns the standard envelope with the final `data` co
 Ask whether the deployment would succeed, without committing it:
 
 ```bash
-orion-server compile ./definitions -o dist/deployment
+orion-cli compile ./definitions -o dist/deployment
 orion-cli deployments plan -d dist/deployment
 ```
 

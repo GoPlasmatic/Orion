@@ -69,7 +69,7 @@ Two older spellings still work and are better when you need something else. [`fi
 
 `terminal: true` on the `validation` itself does not help — it is about
 [position, not outcome](../workflows.md#terminal-steps), so it halts whether
-the rules passed or failed. `orion-server lint` reports the unguarded shape
+the rules passed or failed. `orion-cli lint` reports the unguarded shape
 as `engine.unguarded_validation`.
 
 ## Related

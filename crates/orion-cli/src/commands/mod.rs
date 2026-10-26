@@ -1,16 +1,23 @@
 pub mod audit_logs;
+pub mod authoring;
 pub mod backups;
 pub mod cache;
 pub mod completions;
 pub mod config;
+pub mod connections;
 pub mod cron;
 pub mod data;
 pub mod deployment_dir;
+pub mod deployments;
 pub mod dlq;
+pub mod dry_run;
 pub mod engine;
 pub mod functions;
 pub mod health;
 pub mod metrics;
+pub mod plugin;
+pub mod providers;
+pub mod sql;
 pub mod traces;
 pub mod v2;
 
@@ -63,11 +70,22 @@ pub enum Commands {
 
     /// Manage immutable v2 deployments, convergence, rollback, and edition preflight
     #[command(alias = "deploy")]
-    Deployments(v2::DeploymentsCmd),
+    Deployments(deployments::DeploymentsCmd),
 
     /// Author, lint, pack, upload, admit, and revoke v2 connector provider packages
-    Provider(v2::ProviderCmd),
+    Provider(providers::ProviderCmd),
 
     /// Manage immutable v2 connection revisions and execute audited health probes
-    Connections(v2::ConnectionsCmd),
+    Connections(connections::ConnectionsCmd),
+
+    // The offline authoring tools: they read a definition set on disk and
+    // never contact a server. Each struct's doc comment is its help.
+    Lint(authoring::LintCmd),
+    Compile(authoring::CompileCmd),
+    DryRun(dry_run::DryRunCmd),
+    Test(dry_run::TestCmd),
+    Fmt(authoring::FmtCmd),
+    Clippy(authoring::ClippyCmd),
+    Sql(sql::SqlCmd),
+    Plugin(plugin::PluginCmd),
 }

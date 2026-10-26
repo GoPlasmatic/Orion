@@ -9,7 +9,7 @@ A `warn` rule, scope workflow. A response cookie attribute is a literal of the w
 ## Synopsis
 
 ```console
-$ orion-server clippy ./definitions
+$ orion-cli clippy ./definitions
 warn[correctness.response_cookie_type] a response cookie attribute is a literal of the wrong type, so the cookie is always dropped
 ```
 
@@ -24,6 +24,6 @@ Silent when the value is an expression, which can be either type per request. Th
 ## Related
 
 - [Advisory checks](./index.md): every rule, the levels, and where certainty comes from.
-- [`orion-server clippy`](../cli/orion-server/clippy.md): the command, its flags and exit codes.
+- [`orion-cli clippy`](../cli/orion-cli/clippy.md): the command, its flags and exit codes.
 - [Test workflows offline](../../guides/author/testing.md): running the rules against a set.
 - [Workflows](../workflows.md): the step grammar the rule reads.

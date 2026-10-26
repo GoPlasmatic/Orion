@@ -9,7 +9,7 @@ A `deny` rule, scope workflow. The workflow-level condition is false for every r
 ## Synopsis
 
 ```console
-$ orion-server clippy ./definitions
+$ orion-cli clippy ./definitions
 deny[correctness.workflow_never_matches] the workflow-level condition is false for every request, so the workflow never runs
 ```
 
@@ -24,6 +24,6 @@ Silent on any `metadata` read, any computed `val`, or any read inside an element
 ## Related
 
 - [Advisory checks](./index.md): every rule, the levels, and where certainty comes from.
-- [`orion-server clippy`](../cli/orion-server/clippy.md): the command, its flags and exit codes.
+- [`orion-cli clippy`](../cli/orion-cli/clippy.md): the command, its flags and exit codes.
 - [Test workflows offline](../../guides/author/testing.md): running the rules against a set.
 - [Workflows](../workflows.md): the step grammar the rule reads.

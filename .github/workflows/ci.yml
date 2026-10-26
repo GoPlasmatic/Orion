@@ -224,9 +224,8 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
 
-      # Both binaries: deploy.sh and quickstart.sh compile with orion-server
-      # and deploy with orion-cli, and a bare `cargo build` builds only the
-      # server (default-members).
+      # Both binaries: orion-cli compiles and deploys to the orion-server
+      # started below. A bare `cargo build` builds only the server.
       - name: Build
         run: cargo build -p orion-server -p orion-cli
 
@@ -239,13 +238,13 @@ jobs:
           # `$from`, `$use` and `$each` against the package's own shared
           # document, which a per-file lint does not otherwise load.
           for f in examples/packages/*/workflow*.json; do
-            ./target/debug/orion-server lint "$f" --definitions "$(dirname "$f")"
+            ./target/debug/orion-cli lint "$f" --definitions "$(dirname "$f")"
           done
 
       # `--plugin-dir`: the fixed-width-statement cases run the example's
       # codec for real, so its manifest and component are handed to the run.
       - name: Run example workflow tests (offline, stubbed connectors, real plugin)
-        run: ./target/debug/orion-server test examples/workflow-tests --plugin-dir examples/packages/fixed-width-statement --plugin-dir examples/packages/c4-referee
+        run: ./target/debug/orion-cli test examples/workflow-tests --plugin-dir examples/packages/fixed-width-statement --plugin-dir examples/packages/c4-referee
 
       - name: Start Postgres (postgres-orders package)
         run: docker compose -f examples/packages/postgres-orders/docker-compose.yml up --wait postgres
@@ -342,7 +341,7 @@ jobs:
         run: cargo test -p orion-server --test integration -- plugin_abi_cases_test plugin_runtime_test plugin_sdk_test
 
       - name: Run the examples' offline cases against the fresh components
-        run: cargo run -p orion-server -- test examples/workflow-tests --plugin-dir examples/packages/fixed-width-statement --plugin-dir examples/packages/c4-referee
+        run: cargo run -p orion-cli -- test examples/workflow-tests --plugin-dir examples/packages/fixed-width-statement --plugin-dir examples/packages/c4-referee
 
       - name: The SDK's own tests
         run: cargo test -p orion-plugin-sdk
@@ -877,7 +876,10 @@ jobs:
           # spent on — Postgres/MySQL on one, Vault on the other. Every test brings up its own container, so the
           # grouping is free to change; keep the two legs balanced.
           - name: data-sql
-            run: cargo test --test integration -- --ignored postgres_test mysql_test db_column_types_test data_roundtrip_test data_parity_test integrity_errors_test sql_check_test
+            run: cargo test --test integration -- --ignored postgres_test mysql_test db_column_types_test data_roundtrip_test data_parity_test integrity_errors_test
+
+          - name: cli-sql
+            run: cargo test -p orion-cli --test authoring -- --ignored sql_check_test
 
           - name: data-nosql
             run: cargo test --test integration -- --ignored vault_test

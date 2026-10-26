@@ -1,15 +1,15 @@
-<!-- description: orion-server compile resolves $from, use, $each and $sql in a definition set and writes it as a revision-free v2 deployment directory. -->
+<!-- description: orion-cli compile resolves $from, use, $each and $sql in a definition set and writes it as a revision-free v2 deployment directory. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-10-25 -->
 
-# `orion-server compile`
+# `orion-cli compile`
 
 Compiles a definition set into a deployment directory, resolving its authoring conveniences: `$from`, `use`, `$use`, `$each` and `$sql`. Needs no config, database, or server.
 
 ## Synopsis
 
 ```bash
-orion-server compile <dir> -o <DIR> [--format deployment] [--deny-warnings] [--plugin-dir <DIR>]...
+orion-cli compile <dir> -o <DIR> [--format deployment] [--deny-warnings] [--plugin-dir <DIR>]...
 ```
 
 ## Description
@@ -20,13 +20,13 @@ orion-server compile <dir> -o <DIR> [--format deployment] [--deny-warnings] [--p
 
 **A `plugin.toml` in the set compiles into the deployment.** Its component is the file the manifest's `component` names beside it. It is inlined as base64, so the deployment installs the plugin on a target that has never seen it.
 
-Every entity must carry an explicit id. A member of a deployment is its kind and its id, and the target matches a recompiled member to what it already deploys by them.
+Every entity must carry an explicit id. A deployment member is identified by its kind and id. The target uses that identity to match a recompiled member to an existing deployment.
 
 ## Options
 
 | Flag | Description |
 |------|-------------|
-| `-o, --output` | The directory to write. Required. |
+| `-o, --out` | The directory to write. Required. (`--output` is `orion-cli`'s global output format.) |
 | `--format` | `deployment`, the default and only format. |
 | `--deny-warnings` | Exit non-zero on advisory findings too, not only errors. |
 | `--plugin-dir` | Directory of plugin manifests beyond the set's own tree. Repeatable. |
@@ -35,7 +35,7 @@ Every entity must carry an explicit id. A member of a deployment is its kind and
 
 `compile` writes the set as a v2 deployment with no revisions in it. Only the target knows which revision a changed definition gets, so the deployer assigns them. [`orion-cli deployments apply -d`](../../admin-api/deployments.md#deploy-a-compiled-directory) does.
 
-A plugin's component is inlined into its definition. A detached signature beside the component, `<plugin id>.sig` or `<component>.sig` as [`orion-server plugin sign`](./plugin.md) writes it, goes into the definition too, so a node with `[plugins.trust]` can verify it. The signature is part of the definition's digest: signing a component again gives it a new digest.
+A plugin's component is inlined into its definition. A detached signature beside it, `<plugin id>.sig` or `<component>.sig` as [`orion-cli plugin sign`](./plugin.md) writes it, travels too. A node with `[plugins.trust]` can then verify it. The signature is part of the definition's digest: signing a component again gives it a new digest.
 
 ```text
 dist/
@@ -88,13 +88,13 @@ The same set compiles to the same bytes. A recompile into the same directory rem
 ## Examples
 
 ```bash
-orion-server compile ./definitions -o dist/deployment
+orion-cli compile ./definitions -o dist/deployment
 orion-cli deployments plan -d dist/deployment
 orion-cli deployments apply -d dist/deployment
 ```
 
 ```bash
-orion-server compile ./definitions -o dist/deployment && orion-cli --server https://prod.orion.internal deployments apply -d dist/deployment
+orion-cli compile ./definitions -o dist/deployment && orion-cli --server https://prod.orion.internal deployments apply -d dist/deployment
 ```
 
 ## Related
@@ -102,4 +102,4 @@ orion-server compile ./definitions -o dist/deployment && orion-cli --server http
 - [Shared definitions](../shared-definitions.md): the conveniences this command resolves.
 - [Deployment endpoints](../../admin-api/deployments.md#deploy-a-compiled-directory): how `orion-cli deployments apply -d` deploys the directory.
 - [CI/CD with deployments](../../../guides/patterns/ci-cd.md): compile in a pipeline, from a repository to an instance.
-- [`orion-server` commands](./index.md): every `orion-server` subcommand.
+- [`orion-cli` commands](./index.md): every `orion-cli` subcommand.

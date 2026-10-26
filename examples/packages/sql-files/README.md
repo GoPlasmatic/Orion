@@ -14,7 +14,7 @@ workflow here names the file instead:
 relative to the workflow's own file, and may not leave the set.
 
 **The server never sees the reference.** `$sql` is an authoring convenience,
-like `$from`: `orion-server compile` reads the file, puts the statement in
+like `$from`: `orion-cli compile` reads the file, puts the statement in
 normal form, and writes the string the admin API accepts. Normal form means
 comments and runs of whitespace become one space, while strings and quoted
 identifiers stay byte for byte. Rewording a comment therefore changes neither
@@ -30,7 +30,7 @@ The example deploy script posts each file as it is, and the admin API refuses
 an uncompiled `$sql`. Compile the package and apply the artifact instead:
 
 ```bash
-orion-server compile examples/packages/sql-files -o dist/sql-files
+orion-cli compile examples/packages/sql-files -o dist/sql-files
 orion-cli deployments apply -d dist/sql-files
 ```
 
@@ -48,5 +48,5 @@ tables. `examples/workflow-tests/sql-files-describe.case.json` runs the same
 workflow offline and checks the statement the task sends:
 
 ```bash
-orion-server test examples/workflow-tests/sql-files-describe.case.json
+orion-cli test examples/workflow-tests/sql-files-describe.case.json
 ```

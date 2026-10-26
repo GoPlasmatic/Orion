@@ -31,8 +31,8 @@ the fresh bytes, so the committed component and the source cannot drift.
 ## Try it without a server
 
 ```bash
-orion-server test examples/workflow-tests --plugin-dir examples/packages/fixed-width-statement
-orion-server dry-run -w examples/packages/fixed-width-statement/workflow.json \
+orion-cli test examples/workflow-tests --plugin-dir examples/packages/fixed-width-statement
+orion-cli dry-run -w examples/packages/fixed-width-statement/workflow.json \
   -i examples/packages/fixed-width-statement/request.json \
   --plugin-dir examples/packages/fixed-width-statement
 ```

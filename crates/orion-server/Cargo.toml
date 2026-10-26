@@ -214,9 +214,10 @@ bcrypt = "0.19.3"
 # aws_lc_rs: the same crypto backend the in-tree rustls stack uses — one
 # provider, not two.
 jsonwebtoken = { version = "11.1.0", features = ["aws_lc_rs"] }
-similar = "3"
 
 [dev-dependencies]
+# fmt_examples_test prints the diff an unformatted example needs.
+similar = "3"
 # The test helpers orion-common keeps for this crate's unit tests.
 orion-common = { workspace = true, features = ["test-support"] }
 orion-storage = { workspace = true, features = ["test-support"] }

@@ -38,9 +38,9 @@ placeholders bound from `params` — `?` for SQLite/MySQL, `$1`, `$2`,
 
 **Reads only.** The statement must open with `SELECT`, `WITH`, `VALUES` or `TABLE`. A `WITH` carrying a data-modifying CTE (`WITH gone AS (DELETE … RETURNING …) …`) is refused. `EXPLAIN` is not admitted either, because `EXPLAIN ANALYZE DELETE …` executes the delete. A statement that writes belongs in [`db_write`](./db_write.md), which has its own `raw_write` [operation gate](../data-dialect.md#connector-operation-gates). That gate is what makes a connector delete-proof, and it only holds because `db_read` cannot write.
 
-**The statement can live in a file.** A long statement is easier to review as SQL than as one JSON string: write `"query": {"$sql": "sql/settle.sql"}` and keep comments and indentation in the file. [`orion-server compile`](../cli/orion-server/compile.md) inlines it in normal form, so the server only ever sees the string. See [Statements in `.sql` files](../cli/shared-definitions.md#statements-in-sql-files).
+**The statement can live in a file.** A long statement is easier to review as SQL than as one JSON string: write `"query": {"$sql": "sql/settle.sql"}` and keep comments and indentation in the file. [`orion-cli compile`](../cli/orion-cli/compile.md) inlines it in normal form, so the server only ever sees the string. See [Statements in `.sql` files](../cli/shared-definitions.md#statements-in-sql-files).
 
-**Check it before deploy.** [`orion-server sql check`](../cli/orion-server/sql-check.md) prepares every statement against a real database as the connector's role, and on PostgreSQL 16 proves its grants.
+**Check it before deploy.** [`orion-cli sql check`](../cli/orion-cli/sql-check.md) prepares every statement against a real database as the connector's role, and on PostgreSQL 16 proves its grants.
 
 ## Fields
 

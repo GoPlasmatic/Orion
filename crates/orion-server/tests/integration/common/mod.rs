@@ -757,6 +757,24 @@ pub fn orion_bin() -> String {
     env!("CARGO_BIN_EXE_orion-server").to_string()
 }
 
+/// The `orion-cli` binary beside this crate's — the offline authoring tools
+/// live there. A bin-only crate cannot be a dependency, so only a workspace
+/// build (`cargo test --workspace`, what CI and `just check` run) puts one
+/// here; without it, a test that needs one says so and skips.
+pub fn orion_cli_bin() -> Option<std::path::PathBuf> {
+    let beside = std::path::Path::new(env!("CARGO_BIN_EXE_orion-server"))
+        .with_file_name(format!("orion-cli{}", std::env::consts::EXE_SUFFIX));
+    if beside.is_file() {
+        Some(beside)
+    } else {
+        eprintln!(
+            "skipped: no orion-cli beside {} — `cargo test --workspace` builds one",
+            beside.display()
+        );
+        None
+    }
+}
+
 /// Self-cleaning scratch directory; `tempfile` is not in the dependency tree.
 /// One implementation for every module that needs a disk-backed fixture, so
 /// the naming scheme and the cleanup-on-drop behaviour live here rather than

@@ -35,7 +35,7 @@ A cron channel declares its schedule in `transport_config`. Nothing else about i
 Save it beside its workflow in your definition set, and deploy both like any other channel:
 
 ```bash
-orion-server compile ./definitions -o dist/deployment
+orion-cli compile ./definitions -o dist/deployment
 orion-cli deployments apply -d dist/deployment
 ```
 

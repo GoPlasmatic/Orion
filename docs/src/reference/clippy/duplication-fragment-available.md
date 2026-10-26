@@ -9,7 +9,7 @@ A `warn` rule, scope set. A run of steps is exactly what an existing fragment ex
 ## Synopsis
 
 ```console
-$ orion-server clippy ./definitions
+$ orion-cli clippy ./definitions
 warn[duplication.fragment_available] a run of steps is exactly what an existing fragment expands to; a `use` would say it once
 ```
 
@@ -22,6 +22,6 @@ Silent for a value fragment. Silent for a task fragment whose steps use a fragme
 ## Related
 
 - [Advisory checks](./index.md): every rule, the levels, and where certainty comes from.
-- [`orion-server clippy`](../cli/orion-server/clippy.md): the command, its flags and exit codes.
+- [`orion-cli clippy`](../cli/orion-cli/clippy.md): the command, its flags and exit codes.
 - [Test workflows offline](../../guides/author/testing.md): running the rules against a set.
 - [Shared definitions](../cli/shared-definitions.md): the set the rule reads, and its fragments.

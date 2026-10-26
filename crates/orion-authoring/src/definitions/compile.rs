@@ -10,7 +10,7 @@
 //!
 //! So the two forms are separated by a compiler, and this module is its
 //! pipeline. Each simplification is one [`Pass`]; [`compile`] runs them in a
-//! declared order; `orion-server compile` writes the result out as something
+//! declared order; `orion-cli compile` writes the result out as something
 //! the admin API accepts.
 //!
 //! ## Why a pass declares its residue

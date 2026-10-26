@@ -7,7 +7,7 @@ with no connectors or database.
 From the repository root, with a server on `http://localhost:8080`:
 
 ```bash
-orion-server compile examples/packages/webhook-transform -o dist/webhook-transform
+orion-cli compile examples/packages/webhook-transform -o dist/webhook-transform
 orion-cli deployments apply -d dist/webhook-transform
 ```
 

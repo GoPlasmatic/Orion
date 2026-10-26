@@ -14,7 +14,7 @@ A connection revision stores no secret value. Its `secret_locators` map a dotted
 - an `Authorization` value;
 - credentials in a URL.
 
-`orion-server compile` applies the same check to a definition set, so a literal credential fails at compile rather than at deploy. Author connectors with `env://` or `vault://` references.
+`orion-cli compile` applies the same check to a definition set, so a literal credential fails at compile rather than at deploy. Author connectors with `env://` or `vault://` references.
 
 ## Related
 

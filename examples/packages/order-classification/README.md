@@ -7,7 +7,7 @@ a fresh `orion-server` with no connectors or database.
 From the repository root, with a server on `http://localhost:8080`:
 
 ```bash
-orion-server compile examples/packages/order-classification -o dist/order-classification
+orion-cli compile examples/packages/order-classification -o dist/order-classification
 orion-cli deployments apply -d dist/order-classification
 ```
 

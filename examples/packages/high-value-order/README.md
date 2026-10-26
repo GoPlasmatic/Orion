@@ -7,7 +7,7 @@ connectors or database.
 From the repository root, with a server on `http://localhost:8080`:
 
 ```bash
-orion-server compile examples/packages/high-value-order -o dist/high-value-order
+orion-cli compile examples/packages/high-value-order -o dist/high-value-order
 orion-cli deployments apply -d dist/high-value-order
 ```
 

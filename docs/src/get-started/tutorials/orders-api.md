@@ -56,13 +56,13 @@ The workflow's `validation` task has `on_rejection: "halt"`, so an invalid order
 Validate the whole definition set, including the references between its files:
 
 ```bash
-orion-server lint examples/packages/postgres-orders
+orion-cli lint examples/packages/postgres-orders
 ```
 
 It exits `0` with no findings. Then run the regression case. Its stubs replace both database calls, so this step never connects to PostgreSQL:
 
 ```bash
-orion-server test examples/packages/postgres-orders/tests
+orion-cli test examples/packages/postgres-orders/tests
 ```
 
 Output:
@@ -76,7 +76,7 @@ Output:
 Confirm that invalid input stops before either connector call:
 
 ```bash
-orion-server dry-run \
+orion-cli dry-run \
   -w examples/packages/postgres-orders/workflow.json \
   -i <(printf '%s' '{"customer_id":1,"item":"Invalid","total":-1}') \
   | jq '{errors, calls, steps: [.trace.steps[].task_id]}'
@@ -113,7 +113,7 @@ The `postgres` service reports `running`, and the health check prints `{"status"
 Compile the package into a deployment directory, apply it, and send the sample request:
 
 ```bash
-orion-server compile examples/packages/postgres-orders -o /tmp/postgres-orders
+orion-cli compile examples/packages/postgres-orders -o /tmp/postgres-orders
 orion-cli deployments apply -d /tmp/postgres-orders
 curl -sS -X POST http://localhost:8080/api/v2/data/record-order \
   -H 'Content-Type: application/json' \
@@ -156,9 +156,9 @@ The response carries a validation error stating `total must be positive`, and no
 A deployed definition is never edited. A change is a new deployment revision: edit the files, rerun the offline checks, compile, plan, then apply:
 
 ```bash
-orion-server lint examples/packages/postgres-orders
-orion-server test examples/packages/postgres-orders/tests
-orion-server compile examples/packages/postgres-orders -o /tmp/postgres-orders
+orion-cli lint examples/packages/postgres-orders
+orion-cli test examples/packages/postgres-orders/tests
+orion-cli compile examples/packages/postgres-orders -o /tmp/postgres-orders
 orion-cli deployments plan -d /tmp/postgres-orders
 orion-cli deployments apply -d /tmp/postgres-orders
 ```

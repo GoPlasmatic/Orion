@@ -697,7 +697,7 @@ fn refuse_unknown_migrations(
             "the state database at storage.url holds {} migration(s) this binary does not \
              ship (versions {unknown:?}). An Orion 1.x database cannot be upgraded in \
              place: Orion 2 starts from a fresh state database. Point storage.url at a \
-             new database and deploy your definitions with `orion-server compile` and \
+             new database and deploy your definitions with `orion-cli compile` and \
              `orion-cli deployments apply -d`.",
             unknown.len()
         ),

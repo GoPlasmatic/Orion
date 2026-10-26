@@ -106,7 +106,7 @@ Registered by Orion itself rather than gated by a cargo feature, so available on
 
 ### Randomness (Orion operators)
 
-CSPRNG-backed value generation, never constant-folded, so every evaluation draws fresh. There is deliberately no seed parameter, and range and alphabet sampling is uniform, with no modulo bias. The first argument selects the generator kind; a new kind is a table row, never a new operator. Bad arguments (an unknown kind, inverted bounds, an out-of-range length, an alphabet with duplicate characters) are evaluation-time errors naming what is allowed. Values are drawn live in dry-run and `orion-server test` too. Like `now`, avoid asserting exact outputs in regression cases.
+CSPRNG-backed value generation, never constant-folded, so every evaluation draws fresh. There is deliberately no seed parameter, and range and alphabet sampling is uniform, with no modulo bias. The first argument selects the generator kind; a new kind is a table row, never a new operator. Bad arguments (an unknown kind, inverted bounds, an out-of-range length, an alphabet with duplicate characters) are evaluation-time errors naming what is allowed. Values are drawn live in dry-run and `orion-cli test` too. Like `now`, avoid asserting exact outputs in regression cases.
 
 | Operator | Example | Meaning |
 |----------|---------|---------|
@@ -222,7 +222,7 @@ Compute the value in a `map` task first and reference the result:
 { "expiresAt": { "var": "temp_data.expires_at" } }
 ```
 
-`orion-server lint` warns when it finds one of these, and `orion-server test` can assert on the resolved payload with `expect_calls`; see [Assert on what a workflow writes](../guides/author/testing.md#assert-on-what-a-workflow-writes).
+`orion-cli lint` warns when it finds one of these, and `orion-cli test` can assert on the resolved payload with `expect_calls`; see [Assert on what a workflow writes](../guides/author/testing.md#assert-on-what-a-workflow-writes).
 
 ## Compatibility
 

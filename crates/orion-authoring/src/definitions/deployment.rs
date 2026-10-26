@@ -1,5 +1,5 @@
 //! A definition set as a revision-free v2 deployment directory — what
-//! `orion-server compile --format deployment` writes.
+//! `orion-cli compile --format deployment` writes.
 //!
 //! ```text
 //! deployment.json            members by kind and id, no revisions
@@ -483,7 +483,7 @@ pub fn used_connections(
 }
 
 /// The detached signature beside a plugin's component, when there is one:
-/// `<id>.sig` or `<component file>.sig`, as `orion-server plugin sign`
+/// `<id>.sig` or `<component file>.sig`, as `orion-cli plugin sign`
 /// writes it. A node with `[plugins.trust]` refuses an unsigned plugin, so a
 /// signed component must reach the deployment with its signature.
 fn beside_signature(id: &str, component: &Path, bytes: &[u8]) -> Result<Option<String>, String> {

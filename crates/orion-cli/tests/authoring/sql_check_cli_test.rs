@@ -1,4 +1,4 @@
-//! `orion-server sql check` against SQLite, which needs no container: every
+//! `orion-cli sql check` against SQLite, which needs no container: every
 //! statement is prepared, every failure is reported rather than the first,
 //! and the database file is never written.
 

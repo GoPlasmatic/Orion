@@ -7,7 +7,7 @@ summary; the channel exposes it at `POST /order-summary`.
 From the repository root with Orion running on port 8080:
 
 ```bash
-orion-server compile examples/packages/order-summary -o dist/order-summary
+orion-cli compile examples/packages/order-summary -o dist/order-summary
 orion-cli deployments apply -d dist/order-summary
 ```
 

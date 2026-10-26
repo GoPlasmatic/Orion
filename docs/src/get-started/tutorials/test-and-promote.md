@@ -34,7 +34,7 @@ cd Orion
 `lint` reads a workflow file and applies the checks the server runs on an upload. Those cover task shapes, function names, and each function's `input` schema:
 
 ```bash
-orion-server lint examples/packages/high-value-order/workflow.json
+orion-cli lint examples/packages/high-value-order/workflow.json
 ```
 
 Output:
@@ -45,9 +45,9 @@ Output:
 
 Point it at a directory instead and it validates the whole definition set plus the references between its files, which a per-file run cannot check. That is the form to use in CI. It needs no server, no database and no network, and it exits non-zero on any finding.
 
-`lint` has two neighbours. `orion-server fmt` writes every definition file in the one house style (`--check` in CI). `orion-server clippy` reports what `lint` accepts but an author would want to know, such as a condition that can never match. It reports only when it is certain. See [Definition style](../../reference/fmt.md) and [Advisory checks](../../reference/clippy/index.md).
+`lint` has two neighbours. `orion-cli fmt` writes every definition file in the one house style (`--check` in CI). `orion-cli clippy` reports what `lint` accepts but an author would want to know, such as a condition that can never match. It reports only when it is certain. See [Definition style](../../reference/fmt.md) and [Advisory checks](../../reference/clippy/index.md).
 
-Every `orion-server` subcommand run without `-c` prints `Note: no config file specified…` on stderr. It is not about your workflow; `-c config.toml` or `2>/dev/null` silences it.
+The offline commands need no server configuration or connection. `clippy -c config.toml` also checks references against the serving instance's `[vars]` and `[secrets]` declarations.
 
 ## 2. Dry-run it offline
 
@@ -56,14 +56,14 @@ Every `orion-server` subcommand run without `-c` prints `Note: no config file sp
 ```bash
 echo '{ "order_id": "ORD-9182", "total": 25000 }' > /tmp/order.json
 
-orion-server dry-run -w examples/packages/high-value-order/workflow.json \
+orion-cli dry-run -w examples/packages/high-value-order/workflow.json \
   -i /tmp/order.json
 ```
 
 It prints one JSON document: `matched`, the per-task `trace`, the final `output` context, and any `errors`. Read the part that matters with `jq`:
 
 ```bash
-orion-server dry-run -w examples/packages/high-value-order/workflow.json \
+orion-cli dry-run -w examples/packages/high-value-order/workflow.json \
   -i /tmp/order.json | jq '.output.order'
 ```
 
@@ -100,7 +100,7 @@ jq '.data' examples/packages/postgres-orders/request.json > /tmp/order-with-cust
 The second command unwraps the `data` key, because `request.json` is an HTTP body and `-i` takes the bare payload. Then run the workflow against both files:
 
 ```bash
-orion-server dry-run -w examples/packages/postgres-orders/workflow.json \
+orion-cli dry-run -w examples/packages/postgres-orders/workflow.json \
   -i /tmp/order-with-customer.json --stubs /tmp/stubs.json
 ```
 
@@ -122,10 +122,10 @@ A dry run you have to read is a demo. A *case file* is the same run with the ans
 }
 ```
 
-`orion-server test` runs a directory of them and exits non-zero on any failure. Two example packages call plugin functions, so hand the runner their directories too:
+`orion-cli test` runs a directory of them and exits non-zero on any failure. Two example packages call plugin functions, so hand the runner their directories too:
 
 ```bash
-orion-server test examples/workflow-tests \
+orion-cli test examples/workflow-tests \
   --plugin-dir examples/packages/fixed-width-statement \
   --plugin-dir examples/packages/c4-referee
 ```
@@ -149,7 +149,7 @@ Output, for a suite with one failing case:
 A node serves exactly what its committed deployment names. `compile` turns a definition set into the directory a deployment is made from. It runs every `lint` check first and writes nothing if one fails:
 
 ```bash
-orion-server compile examples/packages/high-value-order -o dist/high-value-order
+orion-cli compile examples/packages/high-value-order -o dist/high-value-order
 ```
 
 Output:
@@ -160,7 +160,7 @@ examples/packages/high-value-order: 0 connector(s), 1 workflow(s), 1 channel(s) 
 wrote a deployment of 1 workflow(s), 1 channel(s), 0 plugin(s) and 0 connection(s) to dist/high-value-order
 ```
 
-The directory holds `deployment.json`, which lists the members, and one file per definition under `definitions/`, named by its digest. It carries no revision numbers. The target assigns those when you apply it. The layout is in [Deployment directories](../../reference/cli/orion-server/compile.md#deployment-directories).
+The directory holds `deployment.json`, which lists the members, and one file per definition under `definitions/`, named by its digest. It carries no revision numbers. The target assigns those when you apply it. The layout is in [Deployment directories](../../reference/cli/orion-cli/compile.md#deployment-directories).
 
 ## 6. Plan and apply it
 

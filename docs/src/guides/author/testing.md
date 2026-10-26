@@ -4,11 +4,11 @@
 
 # Test a workflow offline
 
-`orion-server` runs workflows without a server, a database or a network, so a workflow can be developed and regression-tested the way any other code is. This guide is the CI author's reference for those commands: format, advisory checks, lint, dry run, and a case-file suite.
+`orion-cli` runs workflows without a server, a database or a network, so a workflow can be developed and regression-tested the way any other code is. This guide is the CI author's reference for those commands: format, advisory checks, lint, dry run, and a case-file suite.
 
 ## Before you start
 
-You need `orion-server` on your `PATH` and a directory of definition files. Nothing here needs a server, a database or a secret, which is what makes it runnable on a pull request from a fork.
+You need `orion-cli` on your `PATH` and a directory of definition files. The offline commands need no server, database or secret, so they can run on a pull request from a fork. The final operator checks use `orion-server` and its deployment configuration.
 
 Four gates, cheapest first: `lint`, `dry-run`, `test` and `test-connectivity`. The first three need nothing but the binary and your JSON files. Before any of them, `fmt`. It is not a gate on correctness, but it is the reason a review diff shows what changed rather than how it was laid out.
 
@@ -17,8 +17,8 @@ Four gates, cheapest first: `lint`, `dry-run`, `test` and `test-connectivity`. T
 Rewrite in place, or check in CI:
 
 ```bash
-orion-server fmt ./definitions          # rewrite in place
-orion-server fmt --check ./definitions  # CI: diff and exit 1 if anything would change
+orion-cli fmt ./definitions          # rewrite in place
+orion-cli fmt --check ./definitions  # CI: diff and exit 1 if anything would change
 ```
 
 One style, no configuration; [Definition style](../../reference/fmt.md) is the whole of it. `fmt` never changes a value. The output is parsed again and compared with the input before a file is written.
@@ -28,8 +28,8 @@ One style, no configuration; [Definition style](../../reference/fmt.md) is the w
 Run the advisory rules after lint's gate:
 
 ```bash
-orion-server clippy ./definitions               # lint's gate, then the advisory rules
-orion-server -c config.toml clippy ./definitions # + the rules that read [vars] and [secrets]
+orion-cli clippy ./definitions               # lint's gate, then the advisory rules
+orion-cli clippy -c config.toml ./definitions # + the rules that read [vars] and [secrets]
 ```
 
 `clippy` says only what it is certain of. Its rules cover a workflow whose condition can never match, steps after an unconditional terminal step, and a call cycle that always fails. They also cover a parse whose result is always overwritten, and a run of steps an existing fragment already expresses. Every rule states its proof and when it stays silent, in [Advisory checks](../../reference/clippy/index.md). There is no configuration and no suppression, which is why the rules are few.
@@ -39,8 +39,8 @@ orion-server -c config.toml clippy ./definitions # + the rules that read [vars] 
 Point it at one file, or at the whole set:
 
 ```bash
-orion-server lint workflow.json      # one file
-orion-server lint ./definitions      # the whole set, and the references between files
+orion-cli lint workflow.json      # one file
+orion-cli lint ./definitions      # the whole set, and the references between files
 ```
 
 Output:
@@ -49,26 +49,26 @@ Output:
 'workflow.json' is valid.
 ```
 
-Pointing it at a directory validates every channel, workflow and connector under it *and* resolves the references between them. That catches a `channel_call` target that exists nowhere, a task naming a connector of the wrong type, and two channels claiming one route. Those cannot be caught one file at a time, because the file that would disprove them is one the command never opens. See [`lint`](../../reference/cli/orion-server/lint.md) for the flags.
+Pointing it at a directory validates every channel, workflow and connector under it *and* resolves the references between them. That catches a `channel_call` target that exists nowhere, a task naming a connector of the wrong type, and two channels claiming one route. Those cannot be caught one file at a time, because the file that would disprove them is one the command never opens. See [`lint`](../../reference/cli/orion-cli/lint.md) for the flags.
 
 `lint` applies the same validators the server applies when a definition is uploaded: task shapes, function names, and each connector function's `input` schema. It exits non-zero on any error, which is all a pull-request gate needs.
 
 It also prints advisory warnings on stderr without failing. Today there is one: JSONLogic in a connector field that folds `{"var": …}` and nothing else, so the expression is stored or sent verbatim. `--deny-warnings` turns those into a failure for a gate that wants them to block:
 
 ```bash
-orion-server lint workflow.json --deny-warnings
+orion-cli lint workflow.json --deny-warnings
 ```
 
 It stays advisory by default because operator names such as `length`, `type`, `keys` and `in` are ordinary field names. A document that legitimately holds a stored rule is a real payload.
 
-Every `orion-server` subcommand run without `-c` prints `Note: no config file specified…` on stderr. It is not a finding; redirect it or pass a config file.
+The offline commands need no CLI connection configuration. Pass `-c, --server-config <path>` to `clippy` when its checks should use the serving instance's `[vars]` and `[secrets]` declarations.
 
 ## Dry-run against sample input
 
 Run the workflow in an in-process engine:
 
 ```bash
-orion-server dry-run -w workflow.json -i payload.json
+orion-cli dry-run -w workflow.json -i payload.json
 ```
 
 `-i` takes the bare payload, not the `{"data": …}` envelope the HTTP API uses. `--metadata` takes a second file holding the request metadata the HTTP ingress would have built; see [Supply request metadata](#supply-request-metadata). The command prints one JSON document on stdout, so `jq` can read it:
@@ -91,7 +91,7 @@ The five documents after `trace` are the same set, in the same shape, that a cas
 Read the part you care about:
 
 ```bash
-orion-server dry-run -w workflow.json -i payload.json | jq '.output.order'
+orion-cli dry-run -w workflow.json -i payload.json | jq '.output.order'
 ```
 
 It exits non-zero when the run fails, and prints the trace either way. A run that dies at task three still tells you what the first two did.
@@ -114,7 +114,7 @@ Connector-backed tasks (`http_call`, `db_read`, `data_query`, `channel_call` and
 The outer key is the function name. The inner key is the task's `connector`, or its `channel` for `channel_call`, and `"*"` matches any target. The value is what the task writes to its `output` path:
 
 ```bash
-orion-server dry-run -w workflow.json -i payload.json --stubs stubs.json
+orion-cli dry-run -w workflow.json -i payload.json --stubs stubs.json
 ```
 
 Stubbing is all-or-nothing. A task with no matching stub fails, and the error names the stub that would satisfy it. A half-stubbed run reporting success would be worse than no stubs at all, because it looks like a pass. Two mistakes are caught when the file is parsed rather than at the failing task. One is naming a function that is not connector-backed; the other is putting the response where the target map belongs.
@@ -240,7 +240,7 @@ A stub answers a connector call, so nothing downstream sees what the task *tried
 ```
 
 > [!TIP]
-> This is what catches JSONLogic in a write payload. A connector field folds `{"var": …}` nodes and nothing else, so `{"if": […]}` in a `cache_write` `value` is stored as a literal object. The recorded call shows the object, so `expect_calls` fails where a stubbed run used to pass. `orion-server lint` warns about the same thing statically.
+> This is what catches JSONLogic in a write payload. A connector field folds `{"var": …}` nodes and nothing else, so `{"if": […]}` in a `cache_write` `value` is stored as a literal object. The recorded call shows the object, so `expect_calls` fails where a stubbed run used to pass. `orion-cli lint` warns about the same thing statically.
 
 ## Supply request metadata
 
@@ -276,7 +276,7 @@ Any key is accepted, since the HTTP envelope merges caller-supplied metadata. Th
 Run the suite and read the summary line:
 
 ```bash
-orion-server test ./workflow-tests
+orion-cli test ./workflow-tests
 ```
 
 Output, for a suite with one failing case:
@@ -304,10 +304,10 @@ orion-server test-connectivity -c config.toml  # the database
 
 ## Check the SQL against a real schema
 
-`lint` never sees the schema a `db_read` or `db_write` statement runs on. [`orion-server sql check`](../../reference/cli/orion-server/sql-check.md) prepares every statement as its connector's role and executes nothing. In CI, build the schema from the migrations in a transaction that is rolled back:
+`lint` never sees the schema a `db_read` or `db_write` statement runs on. [`orion-cli sql check`](../../reference/cli/orion-cli/sql-check.md) prepares every statement as its connector's role and executes nothing. In CI, build the schema from the migrations in a transaction that is rolled back:
 
 ```bash
-orion-server sql check ./definitions --schema ./migrations --database "$ADMIN_DATABASE_URL"
+orion-cli sql check ./definitions --schema ./migrations --database "$ADMIN_DATABASE_URL"
 ```
 
 On PostgreSQL 16 or later it also proves each connector's role holds the grants its statements need.
@@ -319,10 +319,10 @@ One job, no server, no database, no secrets:
 ```yaml
 - name: Validate workflows
   run: |
-    orion-server fmt --check workflows
-    for f in workflows/*.json; do orion-server lint "$f" --deny-warnings; done
-    orion-server clippy workflows
-    orion-server test ./workflow-tests
+    orion-cli fmt --check workflows
+    for f in workflows/*.json; do orion-cli lint "$f" --deny-warnings; done
+    orion-cli clippy workflows
+    orion-cli test ./workflow-tests
 ```
 
 The deploy half of the pipeline is [CI/CD with deployments](../patterns/ci-cd.md).

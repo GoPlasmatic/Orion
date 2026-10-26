@@ -95,7 +95,7 @@ pub fn resolve_var_references(
 /// Type a definition whose `var://` references cannot be resolved here.
 ///
 /// Authoring-time validation runs where the deployment's values are not:
-/// `POST /channels`, `orion-server lint` and `package lint` all have to pass on
+/// `POST /channels`, `orion-cli lint` and `package lint` all have to pass on
 /// a CI runner that declares no vars and holds no secrets. A secret reference
 /// survives that because it is a string sitting in a string field. A var can
 /// stand in for anything — a `u64` TTL, a bool, a list — and the field it

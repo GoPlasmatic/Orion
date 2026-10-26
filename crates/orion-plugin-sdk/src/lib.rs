@@ -40,7 +40,7 @@
 //! ```
 //!
 //! The manifest (`plugin.toml`) beside the component names the functions the
-//! component exports and the fields each accepts; `orion-server compile`
+//! component exports and the fields each accepts; `orion-cli compile`
 //! carries both into a deployment. The manifest's `abi` must equal [`ABI`].
 
 #![forbid(unsafe_code)]

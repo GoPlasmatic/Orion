@@ -31,7 +31,7 @@ Setting `environment = "production"` makes exactly five things fatal at startup 
 | **Retention** | Bound `trace_queue.retention_hours` and `audit.retention_days`. Nothing else trims those tables. | [Keep the table bounded](./run/traces.md#keep-the-table-bounded) · [Bound retention](./run/audit-logs.md#bound-retention) |
 | **Observability** | `metrics.enabled = true` with a dedicated `bind_addr`, `logging.format = "json"`, `tracing.enabled = true` pointed at a collector. | [Monitor and alert](./run/monitoring.md) |
 | **Alerts** | The six silent signals, not only error rate and latency. | [What to alert on](./run/monitoring.md#what-to-alert-on) |
-| **Plugins** | Leave `plugins.enabled = false` unless you run one. If you do, name signing keys in `[plugins.trust]` (`orion-server plugin keygen` creates one) and size the ceilings. The pooling allocator reserves `max_live_instances × max_memory_bytes` of virtual address space at startup, 16 GiB by default; count it where a container limits virtual memory. | [Bound what a plugin can do](./run/security.md#bound-what-a-plugin-can-do) · [Configuration › Plugins](../reference/configuration/plugins.md) |
+| **Plugins** | Leave `plugins.enabled = false` unless you run one. If you do, name signing keys in `[plugins.trust]` (`orion-cli plugin keygen` creates one) and size the ceilings. The pooling allocator reserves `max_live_instances × max_memory_bytes` of virtual address space at startup, 16 GiB by default; count it where a container limits virtual memory. | [Bound what a plugin can do](./run/security.md#bound-what-a-plugin-can-do) · [Configuration › Plugins](../reference/configuration/plugins.md) |
 | **Expression budget** | `engine.ops_budget` whenever expressions come from someone other than the operator: tenant rules, partner-written conditions. Size it from the heaviest legitimate expression; a condition that crosses it fails closed to `false`, silently. | [Configuration › Engine](../reference/configuration/engine.md) |
 | **Shutdown** | Keep `shutdown_drain_secs + shutdown_force_timeout_secs` under your orchestrator's termination grace period. | [Shut down without dropping requests](./run/failure-handling.md#shut-down-without-dropping-requests) |
 | **Backups** | A backup that leaves the host, and a restore you have run once. | [Back up and restore](./maintain/backup-restore.md) |
@@ -43,7 +43,7 @@ Three commands answer most of the list above against a real instance:
 ```bash
 orion-server validate-config -c config.toml   # config file + ORION_* environment
 orion-server test-connectivity -c config.toml # the database
-orion-server lint ./definitions               # the definition set you deploy
+orion-cli lint ./definitions               # the definition set you deploy
 ```
 
 Then confirm the running instance agrees:

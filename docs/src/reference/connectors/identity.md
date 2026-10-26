@@ -26,7 +26,7 @@ You write a connector as a file in a definition set:
 - **`enabled`**: optional, and only `true` is accepted. Every connection of a deployment loads, so leave a connector out of the set to turn it off.
 - **`tags`**: accepted, and not carried. A connection has no tags, and `compile` prints a note.
 
-[`orion-server compile`](../cli/orion-server/compile.md#deployment-directories) turns the connector into a connection revision. Every secret reference in `config` moves to `secret_locators` at its dotted path, and the rest becomes `public_config`. A literal credential is refused. The revision is immutable: a changed config is a new revision ([Connections](../admin-api/deployments.md#connections)).
+[`orion-cli compile`](../cli/orion-cli/compile.md#deployment-directories) turns the connector into a connection revision. Every secret reference in `config` moves to `secret_locators` at its dotted path, and the rest becomes `public_config`. A literal credential is refused. The revision is immutable: a changed config is a new revision ([Connections](../admin-api/deployments.md#connections)).
 
 > [!NOTE]
 > Connector configs ignore unknown top-level fields. The `operations`, `retry`, and `dialect` blocks are the exception: each refuses unknown keys, as its section states. A misspelled control would otherwise read as protection while providing none.

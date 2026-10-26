@@ -1,4 +1,4 @@
-//! `orion-server sql check` — every SQL statement a definition set ships,
+//! `orion-cli sql check` — every SQL statement a definition set ships,
 //! prepared against a real database as the connector's own role (#335).
 //!
 //! `lint` sees a statement's shape and never the schema, so a migration that
@@ -17,12 +17,108 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use orion::definitions::clippy::Diagnostic;
-use orion::definitions::statements::{SqlStatement, sql_statements};
-use orion::storage::DbBackend;
+use orion_authoring::definitions::clippy::Diagnostic;
+use orion_authoring::definitions::statements::{SqlStatement, sql_statements};
+use orion_storage::DbBackend;
 use sqlx::{Connection, Executor, Statement};
 
-use crate::cli::ClippyFormat;
+use super::authoring::ClippyFormat;
+
+/// SQL tooling over a definition set.
+#[derive(clap::Args)]
+pub struct SqlCmd {
+    #[command(subcommand)]
+    pub command: SqlCommand,
+}
+
+#[derive(clap::Subcommand)]
+pub enum SqlCommand {
+    /// Prepare every db_read/db_write statement of a definition set against
+    /// a real database, as the connector's own role. PostgreSQL 16+ also
+    /// proves the role's grants (EXPLAIN (GENERIC_PLAN)); older PostgreSQL,
+    /// MySQL and SQLite prove the schema. Nothing is executed: sessions are
+    /// read-only and rolled back.
+    Check {
+        /// A directory of definitions.
+        path: String,
+        /// Override a connector's connection string: `name=<url>`.
+        /// Repeatable.
+        #[arg(long = "connector", value_name = "NAME=URL")]
+        connectors: Vec<String>,
+        /// Do not check this connector's statements; list them as unchecked.
+        /// Repeatable.
+        #[arg(long = "skip-connector", value_name = "NAME")]
+        skip: Vec<String>,
+        /// Build a scratch schema from this directory of migrations (`*.sql`,
+        /// applied in filename order) and check against it. With no
+        /// --database, a SQLite schema in memory.
+        #[arg(long, value_name = "DIR")]
+        schema: Option<String>,
+        /// The PostgreSQL server the scratch schema is built on, in one
+        /// transaction that is always rolled back.
+        #[arg(long, value_name = "URL", requires = "schema")]
+        database: Option<String>,
+        /// With --schema: the role a connector's statements run as,
+        /// `name=<role>`. Defaults to the user of the connector's URL.
+        /// Repeatable.
+        #[arg(long = "role", value_name = "NAME=ROLE")]
+        roles: Vec<String>,
+        /// `text` (default) or `json` — one object per finding, then a summary.
+        #[arg(long, value_enum, default_value = "text")]
+        format: ClippyFormat,
+        /// Channel name that may be referenced without being in the set.
+        #[arg(long = "requires-channel", value_name = "NAME")]
+        requires_channels: Vec<String>,
+        /// Connector name that may be referenced without being in the set.
+        #[arg(long = "requires-connector", value_name = "NAME")]
+        requires_connectors: Vec<String>,
+        /// Directory of plugin manifests beyond the set's own tree.
+        #[arg(long = "plugin-dir", value_name = "DIR")]
+        plugin_dirs: Vec<String>,
+        /// The server config (`orion-server -c`) whose `[vars]` a
+        /// connector's connection string may name. Without one, the defaults
+        /// plus `ORION_*` overrides.
+        #[arg(short = 'c', long = "server-config", value_name = "FILE")]
+        server_config: Option<String>,
+    },
+}
+
+impl SqlCmd {
+    pub async fn run(&self) -> anyhow::Result<i32> {
+        let SqlCommand::Check {
+            path,
+            connectors,
+            skip,
+            schema,
+            database,
+            roles,
+            format,
+            requires_channels,
+            requires_connectors,
+            plugin_dirs,
+            server_config,
+        } = &self.command;
+        let config = orion_common::config::load_config(server_config.as_deref())
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        run_sql_check(SqlCheckRequest {
+            path,
+            connectors,
+            skip,
+            schema: schema.as_deref(),
+            database: database.as_deref(),
+            roles,
+            format: *format,
+            boundary: orion_authoring::definitions::Boundary {
+                channels: requires_channels.clone(),
+                connectors: requires_connectors.clone(),
+            },
+            plugin_dirs,
+            config: &config,
+        })
+        .await
+        .map_err(super::authoring::boxed)
+    }
+}
 
 type CliError = Box<dyn std::error::Error>;
 
@@ -44,9 +140,9 @@ pub(crate) struct SqlCheckRequest<'a> {
     /// `name=role`: the role a connector's statements run as, with `--schema`.
     pub(crate) roles: &'a [String],
     pub(crate) format: ClippyFormat,
-    pub(crate) boundary: orion::definitions::Boundary,
+    pub(crate) boundary: orion_authoring::definitions::Boundary,
     pub(crate) plugin_dirs: &'a [String],
-    pub(crate) config: &'a orion::config::AppConfig,
+    pub(crate) config: &'a orion_common::config::AppConfig,
 }
 
 /// Whether a connector's grants were proven, or only its schema.
@@ -99,10 +195,10 @@ pub(crate) async fn run_sql_check(req: SqlCheckRequest<'_>) -> Result<i32, CliEr
     if !path.is_dir() {
         return usage(&format!("'{}' is not a directory of definitions", req.path));
     }
-    let report = orion::definitions::gate_directory(
+    let report = orion_authoring::definitions::gate_directory(
         path,
         &req.boundary,
-        orion::definitions::GateOpts::default(),
+        orion_authoring::definitions::GateOpts::default(),
         req.plugin_dirs,
     )?;
     for notice in report.notices() {
@@ -133,9 +229,9 @@ pub(crate) async fn run_sql_check(req: SqlCheckRequest<'_>) -> Result<i32, CliEr
             .or_default()
             .push(statement);
     }
-    let connector_docs: BTreeMap<&str, &orion::definitions::Definition> = report
+    let connector_docs: BTreeMap<&str, &orion_authoring::definitions::Definition> = report
         .set
-        .iter(orion::definitions::Entity::Connector)
+        .iter(orion_authoring::definitions::Entity::Connector)
         .filter_map(|def| Some((def.doc.get("name")?.as_str()?, def)))
         .collect();
 
@@ -275,8 +371,8 @@ fn name_values<'a>(
 /// — a connector the server would refuse to dial is a finding here.
 async fn connector_url(
     name: &str,
-    doc: Option<&orion::definitions::Definition>,
-    config: &orion::config::AppConfig,
+    doc: Option<&orion_authoring::definitions::Definition>,
+    config: &orion_common::config::AppConfig,
 ) -> Result<String, String> {
     let Some(doc) = doc else {
         return Err(format!(
@@ -295,13 +391,13 @@ async fn connector_url(
         .map(ToString::to_string)
         .unwrap_or_else(|| "{}".to_string());
     let vars = config.vars.to_json();
-    let resolved = orion::connector::resolve_connector_config(
+    let resolved = orion_engine::connector::resolve_connector_config(
         name,
         name,
         connector_type,
         &config_json,
         vars.as_ref(),
-        orion::connector::secrets::default_resolvers(),
+        orion_engine::connector::secrets::default_resolvers(),
     )
     .await
     .map_err(|e| {
@@ -310,10 +406,10 @@ async fn connector_url(
             e.stage, e.reason
         )
     })?;
-    let orion::connector::ConnectorConfig::Db(db) = resolved else {
+    let orion_engine::connector::ConnectorConfig::Db(db) = resolved else {
         return Err(format!("connector '{name}' is not a db connector"));
     };
-    orion::validation::endpoints::check_db_endpoint(name, &db)
+    orion_authoring::validation::endpoints::check_db_endpoint(name, &db)
         .await
         .map_err(|e| format!("connector '{name}': {}", e.client_message()))?;
     Ok(db.connection_string)
@@ -334,7 +430,7 @@ fn url_user(url: &str) -> Option<String> {
 /// read-only transaction and the role mean something. A SQLite file is
 /// opened read-only and never created.
 async fn open(url: &str, name: &str) -> Result<Session, String> {
-    let backend = orion::storage::detect_backend(url)
+    let backend = orion_storage::detect_backend(url)
         .map_err(|_| format!("connector '{name}' is not a PostgreSQL, MySQL or SQLite URL"))?;
     let connect = async {
         match backend {
@@ -370,7 +466,7 @@ async fn open(url: &str, name: &str) -> Result<Session, String> {
 
 /// A driver error without a connection string in it.
 fn redact_error(e: &sqlx::Error) -> String {
-    orion::connector::redact_url_secrets_or_raw(&e.to_string())
+    orion_engine::connector::redact_url_secrets_or_raw(&e.to_string())
 }
 
 /// Check every statement of one connector on its own session.
@@ -378,7 +474,7 @@ async fn check_group(
     session: &mut Session,
     name: &str,
     group: &[&SqlStatement<'_>],
-    set: &orion::definitions::DefinitionSet,
+    set: &orion_authoring::definitions::DefinitionSet,
     report: &mut ConnectorReport,
     findings: &mut Vec<Diagnostic>,
 ) -> Result<(), CliError> {
@@ -650,7 +746,7 @@ fn sqlstate(context: &str, message: &str, code: Option<String>) -> String {
 fn record(
     outcome: Outcome,
     statement: &SqlStatement<'_>,
-    set: &orion::definitions::DefinitionSet,
+    set: &orion_authoring::definitions::DefinitionSet,
     report: &mut ConnectorReport,
     findings: &mut Vec<Diagnostic>,
 ) {
@@ -724,7 +820,7 @@ impl Scratch {
     ) -> Result<Option<Self>, CliError> {
         let files = migration_files(dir)?;
         let backend = match database {
-            Some(url) => orion::storage::detect_backend(url).map_err(|e| e.to_string())?,
+            Some(url) => orion_storage::detect_backend(url).map_err(|e| e.to_string())?,
             None => DbBackend::Sqlite,
         };
         match backend {
@@ -824,7 +920,7 @@ impl Scratch {
         name: &str,
         role: Option<&str>,
         group: &[&SqlStatement<'_>],
-        set: &orion::definitions::DefinitionSet,
+        set: &orion_authoring::definitions::DefinitionSet,
         report: &mut ConnectorReport,
         findings: &mut Vec<Diagnostic>,
     ) -> Result<(), CliError> {
@@ -949,16 +1045,16 @@ fn migration_files(dir: &str) -> Result<Vec<(String, String)>, CliError> {
 /// The first statement of a migration a scratch transaction cannot hold,
 /// described, or `None`.
 fn refused_statement(text: &str) -> Option<String> {
-    let statements = match orion::sql_lex::statements(text) {
+    let statements = match orion_definitions::sql_lex::statements(text) {
         Ok(statements) => statements,
         Err(e) => return Some(format!("cannot be pre-flighted: {e}")),
     };
     for statement in statements {
-        let Some(keyword) = orion::sql_lex::leading_keyword(statement) else {
+        let Some(keyword) = orion_definitions::sql_lex::leading_keyword(statement) else {
             continue;
         };
         let upper = keyword.to_ascii_uppercase();
-        let normalized = orion::sql_lex::normalize(statement)
+        let normalized = orion_definitions::sql_lex::normalize(statement)
             .map(|n| n.text.to_ascii_uppercase())
             .unwrap_or_else(|_| statement.to_ascii_uppercase());
         if REFUSED_IN_SCRATCH.contains(&upper.as_str()) && !normalized.starts_with("BEGIN ATOMIC") {

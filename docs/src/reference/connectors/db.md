@@ -42,7 +42,7 @@ There is no `retry` field: a statement that timed out may already have been appl
 
 `driver` names the backend the connection string selects. It does not select it: the scheme still does. Where the scheme is visible, the two must agree. `"driver": "mysql"` with a `postgres://` URL is refused at upload and by `lint`. A connection string that is a secret reference (`env://…`) or a `${VAR}` placeholder shows no scheme until the serving node resolves it, so there is nothing to compare, and the field is the only statement of the backend. Any value other than the three names is refused.
 
-A [definition set](../cli/orion-server/lint.md) requires it: `lint <dir>` and `compile` refuse a `db` connector without one with `[connector.db_driver]`, whether its connection string is a reference or not. A set is what `orion-server compile` reads, and a deployed connection's provider is its driver (`org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite`), which a hidden scheme cannot name. The field becomes the provider and is not carried in the connection's `public_config`.
+A [definition set](../cli/orion-cli/lint.md) requires it: `lint <dir>` and `compile` refuse a `db` connector without one with `[connector.db_driver]`, whether its connection string is a reference or not. A set is what `orion-cli compile` reads, and a deployed connection's provider is its driver (`org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite`), which a hidden scheme cannot name. The field becomes the provider and is not carried in the connection's `public_config`.
 
 ## Dialect guards
 

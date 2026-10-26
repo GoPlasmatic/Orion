@@ -88,7 +88,7 @@ jq -n --arg wf "$WF" --arg ch "$CH" '{
 
 Each upload answers the definition's digest. The deployment names both digests
 and commits them as the node's first revision. With a definition set on disk,
-`orion-server compile` and `orion-cli deployments apply -d` do these steps for
+`orion-cli compile` and `orion-cli deployments apply -d` do these steps for
 you.
 
 ### 3. Call your service
@@ -238,12 +238,12 @@ Useful local commands:
 
 ```bash
 orion-server validate-config -c config.toml
-orion-server fmt ./definitions
-orion-server lint workflow.json
-orion-server clippy ./definitions
-orion-server dry-run -w workflow.json -i input.json
-orion-server test examples/workflow-tests
-orion-server compile ./definitions -o dist/deployment
+orion-cli fmt ./definitions
+orion-cli lint workflow.json
+orion-cli clippy ./definitions
+orion-cli dry-run -w workflow.json -i input.json
+orion-cli test examples/workflow-tests
+orion-cli compile ./definitions -o dist/deployment
 orion-cli deployments apply -d dist/deployment
 ```
 
@@ -259,7 +259,7 @@ Orion v2 moves all HTTP endpoints from `/api/v1/*` to `/api/v2/*` and introduces
 - **Route prefixes:** Update callers from `/api/v1/data/*`, `/api/v1/admin/*`, and `/api/v1/openapi.json` to `/api/v2/data/*`, `/api/v2/admin/*`, and `/api/v2/openapi.json`. The `/api/v1/*` prefix is no longer mounted.
 - **Provider packages & `connector_call`:** External integrations are packaged as verified provider bundles (`/api/v2/admin/connector-packages`), bound to versioned connections (`/api/v2/admin/connections/{id}/revisions`), and invoked via `connector_call`.
 - **Immutable deployments:** Candidate manifests are planned via `POST /api/v2/admin/deployment-plans`, applied atomically under compare-and-swap via `POST /api/v2/admin/deployments` with the reviewed digest (a rollback is the same call with `rollback_to`), and tracked to convergence via `GET /api/v2/admin/deployments/{revision}/convergence`.
-- **A fresh state database:** Orion 2 refuses a 1.x state database at startup, and nothing migrates one. Point `storage.url` at a new database, recompile your definition set with `orion-server compile ./definitions -o dist/deployment`, and deploy it with `orion-cli deployments apply -d dist/deployment`. `orion-cli deployments edition-preflight` checks a revision against the Community edition. See the [Upgrade Guide](docs/src/operate/maintain/upgrades.md).
+- **A fresh state database:** Orion 2 refuses a 1.x state database at startup, and nothing migrates one. Point `storage.url` at a new database, recompile your definition set with `orion-cli compile ./definitions -o dist/deployment`, and deploy it with `orion-cli deployments apply -d dist/deployment`. `orion-cli deployments edition-preflight` checks a revision against the Community edition. See the [Upgrade Guide](docs/src/operate/maintain/upgrades.md).
 
 ## Performance
 

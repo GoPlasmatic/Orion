@@ -3,8 +3,6 @@ use clap::Parser;
 use orion::config;
 
 mod cli;
-mod signing_cli;
-mod sql_cli;
 
 #[derive(Parser)]
 #[command(
@@ -29,14 +27,11 @@ EXAMPLES:\n    \
     orion-server -c config.toml migrate       Run pending database migrations\n    \
     orion-server migrate --dry-run            Preview pending migrations\n    \
     orion-server migrate --wait 60s           Wait up to 60s for the database, then migrate\n    \
-    orion-server lint workflow.json           Validate a workflow JSON file\n    \
-    orion-server dry-run -w wf.json -i x.json Dry-run a workflow against an input\n    \
-    orion-server dry-run -w wf.json -i x.json --stubs s.json   ... with canned connector replies\n    \
-    orion-server test examples/workflow-tests Run a directory of workflow test cases\n    \
     orion-server test-connectivity            Probe the database\n    \
-    orion-server dump-openapi > spec.json     Write the OpenAPI 3.1 spec to a file\n    \
-    orion-server compile ./definitions -o dist/deployment  Compile a definition set into a deployment directory\n    \
-    orion-server plugin sign plugins/ --key signer.pem  Sign every plugin component for [plugins.trust]\n\n\
+    orion-server dump-openapi > spec.json     Write the OpenAPI 3.1 spec to a file\n\n\
+AUTHORING:\n    \
+    The offline tools (lint, compile, dry-run, test, fmt, clippy, sql check,\n    \
+    plugin digest|sign|verify) are orion-cli subcommands.\n\n\
 ENVIRONMENT VARIABLES:\n    \
     All settings can be overridden via ORION_SECTION__KEY env vars:\n\n    \
     ORION_SERVER__PORT=9090            Override server port\n    \
@@ -77,164 +72,7 @@ enum Command {
         #[arg(long, value_name = "DURATION", value_parser = cli::parse_wait)]
         wait: Option<std::time::Duration>,
     },
-    /// Statically validate a workflow JSON file (A6).
-    ///
-    /// Runs the same checks a workflow in a definition set is held to:
-    /// name/id/description, task uniqueness, and the A1 function-input
-    /// schema registry. Exits non-zero with field-pathed errors on
-    /// failure — wire into CI to catch broken workflows before deploy.
-    Lint {
-        /// Path to a workflow JSON file, or a directory of definitions.
-        ///
-        /// A directory is linted as a **set**: every channel, workflow and
-        /// connector under it, plus the references between them — the checks
-        /// a per-file lint cannot make.
-        workflow: String,
-        /// Channel name that may be referenced without being in the set.
-        /// Repeatable. Directory mode only; a package declares this in
-        /// `requires`.
-        #[arg(long = "requires-channel", value_name = "NAME")]
-        requires_channels: Vec<String>,
-        /// Connector name that may be referenced without being in the set.
-        /// Repeatable.
-        #[arg(long = "requires-connector", value_name = "NAME")]
-        requires_connectors: Vec<String>,
-        /// Exit non-zero on advisory findings too, not just errors.
-        ///
-        /// Named for `cargo clippy -- -D warnings` rather than `--strict`,
-        /// which would read as a no-op on a command whose whole job is strict
-        /// validation.
-        #[arg(long)]
-        deny_warnings: bool,
-        /// Directory holding the set's shared definitions — the `constants`,
-        /// `errors` and `fragments` documents a `$from` or a `use` resolves
-        /// against. Expansion happens before validation, so what is checked
-        /// is the expanded form. Implicit when linting a directory.
-        #[arg(long, value_name = "DIR")]
-        definitions: Option<String>,
-        /// Directory of plugin manifests (`plugin.toml`) beyond the set's
-        /// own tree, so a workflow naming a plugin function is checked
-        /// against the manifest. Repeatable. Without one such a function is
-        /// reported as unverifiable, never as an error.
-        #[arg(long = "plugin-dir", value_name = "DIR")]
-        plugin_dirs: Vec<String>,
-    },
-    /// Compile a definition set into a deployment directory.
-    ///
-    /// The authoring conveniences a set may use — `$from` for a shared value,
-    /// `use` for a task fragment — resolve when the set is loaded, and the
-    /// admin API loads no set. This is the step between the two: it runs
-    /// every gate `lint <dir>` runs, then writes `deployment.json`,
-    /// `definitions/<hex>.json` and `connections/<id>.json`, which
-    /// `orion-cli deployments apply -d` deploys.
-    Compile {
-        /// Directory of definitions to compile.
-        dir: String,
-        /// The directory to write.
-        #[arg(short, long)]
-        output: Option<String>,
-        /// What to write.
-        #[arg(long, value_enum, default_value = "deployment")]
-        format: cli::CompileFormat,
-        /// Exit non-zero on advisory findings too, not just errors.
-        #[arg(long)]
-        deny_warnings: bool,
-        /// Directory of plugin manifests (`plugin.toml`) beyond the set's
-        /// own tree. A manifest in the set compiles into the deployment with
-        /// its component inlined. Repeatable.
-        #[arg(long = "plugin-dir", value_name = "DIR")]
-        plugin_dirs: Vec<String>,
-    },
-    /// Dry-run a workflow against a JSON input file (A6).
-    ///
-    /// Boots an in-process engine with just the supplied workflow, then prints
-    /// the per-task execution trace from dataflow_rs.
-    ///
-    /// Connector-backed tasks (`http_call`, `db_read`, `data_query`,
-    /// `channel_call`, …) are answered from `--stubs`; nothing reaches a real
-    /// backend. Without a stub file such a task fails naming the stub that
-    /// would satisfy it, so a workflow is never silently half-run.
-    DryRun {
-        /// Path to a workflow JSON file.
-        #[arg(short, long)]
-        workflow: String,
-        /// Path to a JSON file used as the message payload.
-        #[arg(short, long)]
-        input: String,
-        /// Path to a JSON file used as the message metadata — `headers`,
-        /// `params`, `query`, `cookies`, `auth.claims`, `channel`, as the HTTP
-        /// ingress would have built them. Header keys are lowercased and
-        /// credential headers masked, so an offline run sees what production
-        /// would.
-        #[arg(short, long)]
-        metadata: Option<String>,
-        /// Path to a JSON file of canned connector responses:
-        /// `{"http_call": {"crm": {...}}, "db_read": {"*": [...]}}`.
-        /// The inner key is the task's `connector` (or `channel` for
-        /// `channel_call`); `"*"` matches any.
-        #[arg(short, long)]
-        stubs: Option<String>,
-        /// Path to a JSON file of stand-in values for the
-        /// `{"secret": "name"}` references the workflow reads:
-        /// `{"partner_hmac": "test-key"}`. An offline run has no `[secrets]`
-        /// config to resolve, and an engine with no store refuses a workflow
-        /// that names a secret. Values are used verbatim — use throwaway ones.
-        #[arg(long)]
-        secrets: Option<String>,
-        /// Directory holding the set's shared definitions — the `constants`,
-        /// `errors` and `fragments` documents a `$from` or a `use` resolves
-        /// against. Expansion happens before validation, so what is checked
-        /// and run is the expanded form.
-        #[arg(long, value_name = "DIR")]
-        definitions: Option<String>,
-        /// Directory of plugin manifests and their components. A plugin
-        /// function runs for real in the sandbox, never stubbed; a workflow
-        /// naming one whose component is absent fails as
-        /// PLUGIN_ARTIFACT_UNAVAILABLE. Repeatable.
-        #[arg(long = "plugin-dir", value_name = "DIR")]
-        plugin_dirs: Vec<String>,
-        /// How much of the run to record: `full` (every step with a message
-        /// snapshot and its changes), `steps` (ids, timing and changes, no
-        /// snapshots) or `none` (no trace and no per-write capture, as a node
-        /// runs an untraced message). `tasks` lists what ran in every mode.
-        #[arg(long, value_enum, default_value = "full")]
-        trace: cli::DryRunTrace,
-    },
-    /// Run a directory of workflow test cases (A6).
-    ///
-    /// Each `*.case.json` case names a workflow, an input, optional connector stubs
-    /// and the values expected in the output:
-    ///
-    ///     {"name": "flags high-value orders", "workflow": "wf.json",
-    ///      "input": {...}, "stubs": {...},
-    ///      "expect": {"data.order.flagged": true}}
-    ///
-    /// Paths inside a case are resolved relative to the case file. Prints a
-    /// per-case diff and exits non-zero on any failure, so it gates CI the way
-    /// `lint` and `validate-config` already do.
-    Test {
-        /// Directory of case files, or a single case file.
-        path: String,
-        /// Directory holding the set's shared definitions — the `constants`,
-        /// `errors` and `fragments` documents a `$from` or a `use` resolves
-        /// against. Expansion happens before validation, so what is checked
-        /// and run is the expanded form.
-        #[arg(long, value_name = "DIR")]
-        definitions: Option<String>,
-        /// Directory of plugin manifests and their components, loaded once
-        /// for the whole suite. A plugin function runs for real; a case
-        /// naming one whose component is absent fails as
-        /// PLUGIN_ARTIFACT_UNAVAILABLE. Repeatable.
-        #[arg(long = "plugin-dir", value_name = "DIR")]
-        plugin_dirs: Vec<String>,
-    },
-    /// Digest, sign and verify plugin components — what `[plugins.trust]`
-    /// checks. PATH is a `plugin.toml`, a directory of them, or any file.
-    Plugin {
-        #[command(subcommand)]
-        command: signing_cli::SigningCommand,
-    },
-    /// Probe configured backends for reachability (A6).
+    /// Probe the state database for reachability.
     ///
     /// Opens the configured database pool (using the same `storage.url`)
     /// and runs a no-op query. Catches "DB credentials wrong / file
@@ -246,138 +84,11 @@ enum Command {
         #[arg(long, value_name = "DURATION", value_parser = cli::parse_wait)]
         wait: Option<std::time::Duration>,
     },
-    /// Format definition files to the house style (like `cargo fmt`).
-    ///
-    /// Every `.json` under each PATH is rewritten in place — entities, shared
-    /// documents, `*.case.json` files and fixtures alike. There is one style
-    /// and nothing to configure: known keys of known shapes in canonical
-    /// order, unary JSONLogic nodes always on one line, leaf nodes on one
-    /// line when they fit in 100 columns, everything deeper broken one
-    /// argument per line. Values, number spellings and the order of unknown
-    /// keys are never changed, and the output is re-parsed and compared with
-    /// the input before anything is written.
-    Fmt {
-        /// Files or directories. Default: the current directory.
-        #[arg(default_value = ".")]
-        paths: Vec<String>,
-        /// Write nothing; print a diff for each file that is not formatted
-        /// and exit 1 if there is one.
-        #[arg(long)]
-        check: bool,
-        /// Format one document from stdin to stdout. PATH is ignored.
-        #[arg(long, conflicts_with = "check")]
-        stdin: bool,
-    },
-    /// Advisory checks beyond `lint`, said only when certain (like `cargo clippy`).
-    ///
-    /// Runs `lint`'s gate over the set, then every rule: a workflow condition
-    /// that can never match, steps after an unconditional terminal step, an
-    /// unconditional channel_call cycle, a read of `payload`, a mapping
-    /// overwritten before it is read, runs of steps an existing fragment
-    /// already expresses, objects repeated across the set, and more —
-    /// `--list` names them, `--explain <rule>` states each one's proof and
-    /// when it stays silent. There is no configuration and no suppression:
-    /// a rule fires only when its finding is certain.
-    Clippy {
-        /// A directory of definitions (set mode: every rule), or one file.
-        path: Option<String>,
-        /// Exit non-zero on warnings too, not just errors.
-        #[arg(long)]
-        deny_warnings: bool,
-        /// `text` (default) or `json` — one object per diagnostic on stdout.
-        #[arg(long, value_enum, default_value = "text")]
-        format: cli::ClippyFormat,
-        /// Print every rule with its level, scope and summary, and exit.
-        #[arg(long, conflicts_with_all = ["explain", "path"])]
-        list: bool,
-        /// Print one rule's rationale, proof and exclusions, and exit.
-        #[arg(long, value_name = "RULE", conflicts_with = "path")]
-        explain: Option<String>,
-        /// Directory holding the set's shared definitions, for a single-file
-        /// run. Implicit in set mode.
-        #[arg(long, value_name = "DIR")]
-        definitions: Option<String>,
-        /// Channel name that may be referenced without being in the set.
-        /// Repeatable.
-        #[arg(long = "requires-channel", value_name = "NAME")]
-        requires_channels: Vec<String>,
-        /// Connector name that may be referenced without being in the set.
-        /// Repeatable.
-        #[arg(long = "requires-connector", value_name = "NAME")]
-        requires_connectors: Vec<String>,
-        /// Directory of plugin manifests beyond the set's own tree, so a
-        /// plugin function's template fields are analysed as the server
-        /// evaluates them. Repeatable.
-        #[arg(long = "plugin-dir", value_name = "DIR")]
-        plugin_dirs: Vec<String>,
-        /// Apply the fixes the rules can prove — today, folding a run of
-        /// steps that repeat one condition into a task group — to the source
-        /// files, each verified by recompiling the edited file, then report
-        /// what remains.
-        #[arg(long, conflicts_with_all = ["list", "explain"])]
-        fix: bool,
-        /// With --fix: print the diff of each file that would change, write
-        /// nothing, and exit 1 when anything would.
-        #[arg(long, requires = "fix")]
-        check: bool,
-    },
-    /// SQL tooling over a definition set.
-    Sql {
-        #[command(subcommand)]
-        command: SqlCommand,
-    },
     /// Print the public HTTP API's OpenAPI 3.1 spec as JSON to stdout.
     ///
     /// Needs no config, database, or running server. Redirect it to refresh
     /// the checked-in copy: `orion-server dump-openapi > docs/openapi.json`.
     DumpOpenapi,
-}
-
-#[derive(clap::Subcommand)]
-enum SqlCommand {
-    /// Prepare every db_read/db_write statement of a definition set against
-    /// a real database, as the connector's own role. PostgreSQL 16+ also
-    /// proves the role's grants (EXPLAIN (GENERIC_PLAN)); older PostgreSQL,
-    /// MySQL and SQLite prove the schema. Nothing is executed: sessions are
-    /// read-only and rolled back.
-    Check {
-        /// A directory of definitions.
-        path: String,
-        /// Override a connector's connection string: `name=<url>`.
-        /// Repeatable.
-        #[arg(long = "connector", value_name = "NAME=URL")]
-        connectors: Vec<String>,
-        /// Do not check this connector's statements; list them as unchecked.
-        /// Repeatable.
-        #[arg(long = "skip-connector", value_name = "NAME")]
-        skip: Vec<String>,
-        /// Build a scratch schema from this directory of migrations (`*.sql`,
-        /// applied in filename order) and check against it. With no
-        /// --database, a SQLite schema in memory.
-        #[arg(long, value_name = "DIR")]
-        schema: Option<String>,
-        /// The PostgreSQL server the scratch schema is built on, in one
-        /// transaction that is always rolled back.
-        #[arg(long, value_name = "URL", requires = "schema")]
-        database: Option<String>,
-        /// With --schema: the role a connector's statements run as,
-        /// `name=<role>`. Defaults to the user of the connector's URL.
-        /// Repeatable.
-        #[arg(long = "role", value_name = "NAME=ROLE")]
-        roles: Vec<String>,
-        /// `text` (default) or `json` — one object per finding, then a summary.
-        #[arg(long, value_enum, default_value = "text")]
-        format: cli::ClippyFormat,
-        /// Channel name that may be referenced without being in the set.
-        #[arg(long = "requires-channel", value_name = "NAME")]
-        requires_channels: Vec<String>,
-        /// Connector name that may be referenced without being in the set.
-        #[arg(long = "requires-connector", value_name = "NAME")]
-        requires_connectors: Vec<String>,
-        /// Directory of plugin manifests beyond the set's own tree.
-        #[arg(long = "plugin-dir", value_name = "DIR")]
-        plugin_dirs: Vec<String>,
-    },
 }
 
 #[tokio::main]
@@ -394,38 +105,7 @@ async fn main() {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cli = Cli::parse();
-
-    // `fmt` reads files, not a server: no config, no "no config file" note.
-    if let Some(Command::Fmt {
-        paths,
-        check,
-        stdin,
-    }) = &cli.command
-    {
-        let code = cli::run_fmt(paths, *check, *stdin)?;
-        if code != 0 {
-            std::process::exit(code);
-        }
-        return Ok(());
-    }
-
-    // The signing verbs read artifacts and keys, not a server: `-c` is only
-    // consulted by `verify`, for the trust keys, and nothing else is loaded.
-    let signing = match cli.command.take() {
-        Some(Command::Plugin { command }) => Some((orion::signatures::Kind::Plugin, command)),
-        other => {
-            cli.command = other;
-            None
-        }
-    };
-    if let Some((kind, command)) = signing {
-        let code = signing_cli::run(kind, command, cli.config.as_deref())?;
-        if code != 0 {
-            std::process::exit(code);
-        }
-        return Ok(());
-    }
+    let cli = Cli::parse();
 
     // Load configuration
     let mut config = config::load_config(cli.config.as_deref())?;
@@ -448,158 +128,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::Migrate { dry_run, wait }) => {
             return cli::handle_migrate(&config, dry_run, wait).await;
         }
-        Some(Command::Lint {
-            workflow,
-            deny_warnings,
-            requires_channels,
-            requires_connectors,
-            definitions,
-            plugin_dirs,
-        }) => {
-            let boundary = orion::definitions::Boundary {
-                channels: requires_channels,
-                connectors: requires_connectors,
-            };
-            return cli::run_lint(
-                &workflow,
-                deny_warnings,
-                boundary,
-                definitions.as_deref(),
-                &plugin_dirs,
-            );
-        }
-        Some(Command::Compile {
-            dir,
-            output,
-            format,
-            deny_warnings,
-            plugin_dirs,
-        }) => {
-            return cli::run_compile(cli::CompileRequest {
-                dir: &dir,
-                output: output.as_deref(),
-                format,
-                deny_warnings,
-                plugin_dirs: &plugin_dirs,
-            });
-        }
-        Some(Command::DryRun {
-            workflow,
-            input,
-            stubs,
-            metadata,
-            secrets,
-            definitions,
-            plugin_dirs,
-            trace,
-        }) => {
-            return cli::run_dry_run(cli::DryRunRequest {
-                workflow: &workflow,
-                input: &input,
-                stubs: stubs.as_deref(),
-                metadata: metadata.as_deref(),
-                secrets: secrets.as_deref(),
-                definitions: definitions.as_deref(),
-                plugin_dirs: &plugin_dirs,
-                trace,
-            })
-            .await;
-        }
-        Some(Command::Test {
-            path,
-            definitions,
-            plugin_dirs,
-        }) => {
-            return cli::run_test(&path, definitions.as_deref(), &plugin_dirs).await;
-        }
         Some(Command::TestConnectivity { wait }) => {
             return cli::run_test_connectivity(&config, wait).await;
         }
-        Some(Command::Clippy {
-            path,
-            deny_warnings,
-            format,
-            list,
-            explain,
-            definitions,
-            requires_channels,
-            requires_connectors,
-            plugin_dirs,
-            fix,
-            check,
-        }) => {
-            let code = if list {
-                cli::run_clippy_list()?
-            } else if let Some(rule) = explain {
-                cli::run_clippy_explain(&rule)?
-            } else {
-                let Some(path) = path else {
-                    return Err(
-                        "clippy needs a directory or file to check (or --list / --explain)".into(),
-                    );
-                };
-                cli::run_clippy(cli::ClippyRequest {
-                    path: &path,
-                    deny_warnings,
-                    format,
-                    definitions: definitions.as_deref(),
-                    plugin_dirs: &plugin_dirs,
-                    boundary: orion::definitions::Boundary {
-                        channels: requires_channels,
-                        connectors: requires_connectors,
-                    },
-                    // Only a config the operator named counts as "the serving
-                    // config": the defaults say nothing about [vars]/[secrets].
-                    config: cli.config.is_some().then_some(&config),
-                    fix,
-                    fix_check: check,
-                })?
-            };
-            if code != 0 {
-                std::process::exit(code);
-            }
-            return Ok(());
-        }
         Some(Command::DumpOpenapi) => return cli::run_dump_openapi(),
-        // Dispatched above, before the config load.
-        Some(Command::Fmt { .. }) => unreachable!("fmt returns before config is loaded"),
-        Some(Command::Plugin { .. }) => {
-            unreachable!("the signing verbs return before config is loaded")
-        }
-        Some(Command::Sql { command }) => {
-            let SqlCommand::Check {
-                path,
-                connectors,
-                skip,
-                schema,
-                database,
-                roles,
-                format,
-                requires_channels,
-                requires_connectors,
-                plugin_dirs,
-            } = command;
-            let code = sql_cli::run_sql_check(sql_cli::SqlCheckRequest {
-                path: &path,
-                connectors: &connectors,
-                skip: &skip,
-                schema: schema.as_deref(),
-                database: database.as_deref(),
-                roles: &roles,
-                format,
-                boundary: orion::definitions::Boundary {
-                    channels: requires_channels,
-                    connectors: requires_connectors,
-                },
-                plugin_dirs: &plugin_dirs,
-                config: &config,
-            })
-            .await?;
-            if code != 0 {
-                std::process::exit(code);
-            }
-            return Ok(());
-        }
         None => {} // Continue to start the server
     }
 

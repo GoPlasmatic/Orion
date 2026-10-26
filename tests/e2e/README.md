@@ -37,7 +37,7 @@ start or clean up manually.
 A node serves exactly its committed deployment head, so every test deploys
 what it needs the way an operator does: it writes a definition set into its
 temp directory (`new_set`, `set_workflow`, `set_channel`, `set_plugin` in
-`helpers.sh`), compiles it with `orion-server compile` and applies it with
+`helpers.sh`), compiles it with `orion-cli compile` and applies it with
 `orion-cli deployments apply -d` (`deploy_set`, or `deploy_one` for one
 workflow behind one channel). An apply **replaces** the head's members with
 the directory's, so a test needing several services deploys them as one set,

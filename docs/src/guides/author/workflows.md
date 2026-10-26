@@ -112,16 +112,16 @@ A shared document is any JSON in the definition set carrying `constants`, `error
 
 All of them resolve before validation, so `lint`, `dry-run` and `test` all check the expanded form. [`unrolled-seats`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/unrolled-seats) is a runnable package using them. The full rules are in [Shared definitions](../../reference/cli/shared-definitions.md).
 
-`orion-server lint ./definitions` resolves the catalogue automatically and reports an unresolved reference as an error. The single-file commands take `--definitions <dir>`.
+`orion-cli lint ./definitions` resolves the catalogue automatically and reports an unresolved reference as an error. The single-file commands take `--definitions <dir>`.
 
 To deploy a set that uses either, compile it first. The admin API takes one document and has no set to resolve names against, so it refuses a reference rather than guessing:
 
 ```bash
-orion-server compile ./definitions -o dist/deployment
+orion-cli compile ./definitions -o dist/deployment
 orion-cli --server https://prod.orion.internal deployments apply -d dist/deployment
 ```
 
-See [`compile`](../../reference/cli/orion-server/compile.md) for what the directory holds.
+See [`compile`](../../reference/cli/orion-cli/compile.md) for what the directory holds.
 
 ## Reach outside the process
 
@@ -165,7 +165,7 @@ By default a task that errors stops the workflow, and the caller gets an error e
 
 Note the envelope this produces: `"status": "ok"` with a non-empty `errors` array. A client that only checks the HTTP code reads that as success, so anything relying on a continued failure must inspect `errors`. `continue_on_error: true` on the workflow is coarser: a failure ends that workflow without failing the request, and its later tasks do not run.
 
-"Errors" here means a handler error or a `5xx`. A task that records a `4xx`, which is what a failing [`validation`](../../reference/functions/validation.md) rule does, is a warning to the engine. It is written to the `errors` array and the next task runs anyway, whatever `on_failure` says. To stop on that, put [`"on_rejection": "halt"`](../../reference/workflows.md#halting-on-a-rejection) on the task. Without it a check reads correct and gates nothing, which `orion-server lint` reports as `engine.unguarded_validation`.
+"Errors" here means a handler error or a `5xx`. A task that records a `4xx`, which is what a failing [`validation`](../../reference/functions/validation.md) rule does, is a warning to the engine. It is written to the `errors` array and the next task runs anyway, whatever `on_failure` says. To stop on that, put [`"on_rejection": "halt"`](../../reference/workflows.md#halting-on-a-rejection) on the task. Without it a check reads correct and gates nothing, which `orion-cli lint` reports as `engine.unguarded_validation`.
 
 For finer control, `filter` takes `on_reject: "halt"` to stop the whole workflow, or `on_reject: "skip"` to skip only that task.
 
@@ -174,10 +174,10 @@ For finer control, `filter` takes `on_reject: "halt"` to stop the whole workflow
 Check the workflow offline, before it can touch traffic:
 
 ```bash
-orion-server fmt workflow.json
-orion-server lint workflow.json
-orion-server clippy workflow.json
-orion-server dry-run -w workflow.json -i payload.json
+orion-cli fmt workflow.json
+orion-cli lint workflow.json
+orion-cli clippy workflow.json
+orion-cli dry-run -w workflow.json -i payload.json
 ```
 
 `fmt` writes it in the house style and `lint` checks it against the schema. `clippy` reports what `lint` accepts but you would want to know, only when certain. `dry-run` executes it against a sample payload and prints the context each task produced. [Test a workflow offline](./testing.md) covers all four.

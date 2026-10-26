@@ -9,7 +9,7 @@ A `warn` rule, scope workflow. A parse/publish target is overwritten by a later 
 ## Synopsis
 
 ```console
-$ orion-server clippy ./definitions
+$ orion-cli clippy ./definitions
 warn[perf.parse_result_overwritten] a parse/publish target is overwritten by a later unconditional task before anything reads it
 ```
 
@@ -24,6 +24,6 @@ Silent when any step between has a computed or scoped read, reads the target, or
 ## Related
 
 - [Advisory checks](./index.md): every rule, the levels, and where certainty comes from.
-- [`orion-server clippy`](../cli/orion-server/clippy.md): the command, its flags and exit codes.
+- [`orion-cli clippy`](../cli/orion-cli/clippy.md): the command, its flags and exit codes.
 - [Test workflows offline](../../guides/author/testing.md): running the rules against a set.
 - [Workflows](../workflows.md): the step grammar the rule reads.

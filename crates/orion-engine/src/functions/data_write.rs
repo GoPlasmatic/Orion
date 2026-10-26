@@ -418,7 +418,7 @@ pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
         // W7: required. The pre-1.0 flat form (envelope keys at the top level)
         // is gone, so there is exactly one shape and the generic
         // missing-required-field rule reports it — at create, update, import,
-        // `POST /admin/workflows/validate` and `orion-server lint`, rather than
+        // `POST /admin/workflows/validate` and `orion-cli lint`, rather than
         // at the task's first request.
         required: true,
         ..FieldSchema::DEFAULT

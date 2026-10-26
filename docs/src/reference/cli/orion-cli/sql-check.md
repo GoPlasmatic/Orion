@@ -1,15 +1,15 @@
-<!-- description: orion-server sql check prepares every db_read and db_write statement of a set against a real database, as the connector's role, executing nothing. -->
+<!-- description: orion-cli sql check prepares every db_read and db_write statement of a set against a real database, as the connector's role, executing nothing. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-20 -->
 
-# `orion-server sql check`
+# `orion-cli sql check`
 
 Prepares every `db_read` and `db_write` statement of a definition set against a real database, as the role each connector connects as. It catches a schema change that broke a statement, or a missing grant, before the next request does.
 
 ## Synopsis
 
 ```bash
-orion-server [-c config.toml] sql check <dir>
+orion-cli sql check <dir> [-c config.toml]
     [--connector NAME=URL]... [--skip-connector NAME]...
     [--schema DIR [--database URL] [--role NAME=ROLE]...]
     [--format text|json]
@@ -46,7 +46,7 @@ A statement whose `params` binds a different number of values than it takes is a
 | `--role NAME=ROLE` | With `--schema`: the role a connector's statements run as. It defaults to the user of the connector's URL. |
 | `--format json` | One JSON object per finding on stdout, then one `summary` object. |
 | `--requires-*`, `--plugin-dir` | As `lint` takes them. |
-| `-c FILE` (global) | The serving config, for `[vars]` a connector references. |
+| `-c, --server-config FILE` | The serving config, for `[vars]` a connector references. Without one, the defaults plus `ORION_*` overrides. |
 
 ## A scratch schema
 
@@ -55,7 +55,7 @@ With `--schema DIR --database URL`, the migrations are applied to the PostgreSQL
 A migration that would leave the transaction is refused, naming the file, before anything is sent. That covers `COMMIT`, `BEGIN`, `VACUUM`, `CREATE INDEX CONCURRENTLY`, `CREATE DATABASE` and `ALTER SYSTEM`. MySQL commits DDL implicitly, so `--schema` is refused there; point `--connector` at a prepared database instead.
 
 ```bash
-orion-server sql check ./definitions --schema ./migrations \
+orion-cli sql check ./definitions --schema ./migrations \
   --database "$ADMIN_DATABASE_URL" --role orders-gate=gate
 ```
 
@@ -70,7 +70,7 @@ orion-server sql check ./definitions --schema ./migrations \
 ## Examples
 
 ```
-$ orion-server sql check ./definitions
+$ orion-cli sql check ./definitions
 checking 135 statement(s) on 2 connector(s)
   orders-db    postgres 16.4  role orders  103 ok  grants proven
   orders-gate  postgres 16.4  role gate    30 ok, 2 failed  grants proven
@@ -80,7 +80,7 @@ definitions/settle.json:14:22: error: [sql.check] workflow 'settle' task 'claim'
 
 ## Related
 
-- [`orion-server lint`](./lint.md): the offline gate that runs first.
+- [`orion-cli lint`](./lint.md): the offline gate that runs first.
 - [`db_read`](../../functions/db_read.md) and [`db_write`](../../functions/db_write.md): the statements this checks.
 - [`correctness.sql_bind_count`](../../clippy/correctness-sql-bind-count.md): the offline half of the parameter-count check.
-- [`orion-server` commands](./index.md): every `orion-server` subcommand.
+- [`orion-cli` commands](./index.md): every `orion-cli` subcommand.

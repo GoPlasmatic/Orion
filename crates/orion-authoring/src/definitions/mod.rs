@@ -1,7 +1,7 @@
 //! A **definition set**: the channels, workflows and connectors that are
 //! authored together and must be consistent with each other.
 //!
-//! Orion validated one file at a time offline. `orion-server lint wf.json`
+//! Orion validated one file at a time offline. `orion-cli lint wf.json`
 //! parses a workflow, checks its shapes, and says "valid" — while the channel
 //! that names it, the connector its tasks reach for, and the `channel_call`
 //! target it invokes all sit in files the command never opened. A set can be

@@ -3,7 +3,7 @@
 #
 # `POST /api/v2/admin/definitions/test` runs a bare workflow definition once
 # on this node's engine without deploying it — the server-side dry run. The
-# definition is the one `orion-server compile` wrote for the fixture, so the
+# definition is the one `orion-cli compile` wrote for the fixture, so the
 # run sees exactly what a deployment of it would serve.
 
 begin_suite "Definition test runs"

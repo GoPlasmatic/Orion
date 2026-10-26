@@ -61,10 +61,10 @@ cannot drift.
 ## Try it without a server
 
 ```bash
-orion-server test examples/workflow-tests \
+orion-cli test examples/workflow-tests \
   --plugin-dir examples/packages/fixed-width-statement --plugin-dir examples/packages/c4-referee
 jq .data examples/packages/c4-referee/request.json > /tmp/move.json   # dry-run takes the bare payload
-orion-server dry-run -w examples/packages/c4-referee/workflow.json -i /tmp/move.json \
+orion-cli dry-run -w examples/packages/c4-referee/workflow.json -i /tmp/move.json \
   --plugin-dir examples/packages/c4-referee
 ```
 

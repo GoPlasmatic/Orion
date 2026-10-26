@@ -1,5 +1,5 @@
 //! Deploying a compiled deployment directory — what
-//! `orion-server compile --format deployment` writes — to a target.
+//! `orion-cli compile --format deployment` writes — to a target.
 //!
 //! The directory carries no revisions, because only the target knows them.
 //! This module reads the target's history and assigns each member one:
@@ -41,7 +41,7 @@ impl DeploymentDir {
         let manifest_path = root.join("deployment.json");
         let text = std::fs::read_to_string(&manifest_path).with_context(|| {
             format!(
-                "reading '{}' — is this a directory `orion-server compile --format deployment` \
+                "reading '{}' — is this a directory `orion-cli compile --format deployment` \
                  wrote?",
                 manifest_path.display()
             )
@@ -308,7 +308,7 @@ pub async fn prepare(
         if &stored.digest != digest {
             bail!(
                 "the target stored '{}' as {}, not {digest}: it canonicalises definitions \
-                 differently from the orion-server that compiled this directory — compile with \
+                 differently from the orion-cli that compiled this directory — compile with \
                  the target's version",
                 path.display(),
                 stored.digest

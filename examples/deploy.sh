@@ -6,7 +6,7 @@
 #
 # A package is a definition set: its channels, their workflows, and the
 # connector or plugin it needs. The script compiles the packages with
-# `orion-server compile` into one deployment directory, deploys it with
+# `orion-cli compile` into one deployment directory, deploys it with
 # `orion-cli deployments apply -d`, then POSTs each package's request.json to
 # its primary channel's route and prints the response.
 #
@@ -17,10 +17,9 @@
 # with the same packages applies nothing ("Up to date") and sends the
 # requests again.
 #
-# Needs `orion-server` (to compile) and `orion-cli` (to deploy): set
-# ORION_BIN / ORION_CLI, or build the workspace (`cargo build -p orion-server
-# -p orion-cli`) so they are found under target/, or put them on PATH. Also
-# needs curl and python3.
+# Needs `orion-cli` to compile and deploy: set ORION_CLI, build it with
+# `cargo build -p orion-cli` so it is found under target/, or put it on PATH.
+# Also needs curl, python3 and a running Orion server.
 #
 # File conventions inside a package directory:
 #   workflow.json          the primary workflow          (required)
@@ -92,7 +91,6 @@ find_bin() {
   echo "$name not found: build it (cargo build -p $name) or set $var=<path>" >&2
   exit 1
 }
-ORION_BIN="$(find_bin ORION_BIN orion-server)"
 ORION_CLI="$(find_bin ORION_CLI orion-cli)"
 
 WORK="$(mktemp -d)"
@@ -112,7 +110,7 @@ fi
 
 NAMES="$(for pkg in "${PACKAGES[@]}"; do basename "$pkg"; done | paste -sd ' ' -)"
 echo "==> Compile $NAMES"
-if ! "$ORION_BIN" compile "$SET" -o "$WORK/deployment" > "$WORK/compile.log" 2>&1; then
+if ! "$ORION_CLI" compile "$SET" -o "$WORK/deployment" > "$WORK/compile.log" 2>&1; then
   cat "$WORK/compile.log" >&2
   exit 1
 fi

@@ -104,7 +104,7 @@ orion-cli plugins activate acme.codec
 The [Plugins reference](https://docs.goplasmatic.io/reference/plugins.html)
 covers the manifest, the ABI, the host's limits and how a failure is
 reported; [Build a plugin](https://docs.goplasmatic.io/build/plugins.html) is
-the author's walkthrough, including offline testing with `orion-server test
+the author's walkthrough, including offline testing with `orion-cli test
 --plugin-dir`.
 
 ## Versioning

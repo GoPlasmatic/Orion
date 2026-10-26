@@ -9,7 +9,7 @@ A `deny` rule, scope set. A {"secret": name} that the config given with -c does 
 ## Synopsis
 
 ```console
-$ orion-server clippy ./definitions
+$ orion-cli clippy ./definitions
 deny[correctness.secret_undeclared] a {"secret": name} that the config given with -c does not declare
 ```
 
@@ -24,6 +24,6 @@ Skipped, with a note, without `-c`.
 ## Related
 
 - [Advisory checks](./index.md): every rule, the levels, and where certainty comes from.
-- [`orion-server clippy`](../cli/orion-server/clippy.md): the command, its flags and exit codes.
+- [`orion-cli clippy`](../cli/orion-cli/clippy.md): the command, its flags and exit codes.
 - [Test workflows offline](../../guides/author/testing.md): running the rules against a set.
 - [Shared definitions](../cli/shared-definitions.md): the set the rule reads, and its fragments.

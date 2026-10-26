@@ -9,7 +9,7 @@ A `warn` rule, scope workflow. Two mappings in one map write the same path with 
 ## Synopsis
 
 ```console
-$ orion-server clippy ./definitions
+$ orion-cli clippy ./definitions
 warn[correctness.mapping_overwritten] two mappings in one map write the same path with nothing reading it in between
 ```
 
@@ -20,6 +20,6 @@ Two mappings of one `map` write the same `path`. Neither the mappings between th
 ## Related
 
 - [Advisory checks](./index.md): every rule, the levels, and where certainty comes from.
-- [`orion-server clippy`](../cli/orion-server/clippy.md): the command, its flags and exit codes.
+- [`orion-cli clippy`](../cli/orion-cli/clippy.md): the command, its flags and exit codes.
 - [Test workflows offline](../../guides/author/testing.md): running the rules against a set.
 - [Workflows](../workflows.md): the step grammar the rule reads.

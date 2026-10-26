@@ -28,7 +28,7 @@ impl Entity {
     /// bodies its entities are exercised with — Orion's own
     /// `examples/packages/` holds `request.json` beside `workflow.json` — so a
     /// loader that treats every `*.json` as an entity reports the fixtures as
-    /// broken entities. `orion-server test` hit the same problem and answered
+    /// broken entities. `orion-cli test` hit the same problem and answered
     /// it with the `*.case.json` suffix; a suffix is the wrong answer here,
     /// because the layout belongs to whoever authored the directory and Orion
     /// should not impose one on a set that already exists.

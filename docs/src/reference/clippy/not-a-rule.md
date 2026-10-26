@@ -12,7 +12,7 @@ Recorded so a future addition has to argue against the reason rather than redisc
 
 | Candidate | Why it is not certain |
 |---|---|
-| A read of a `data.*` path nothing earlier writes | an `on_failure: "continue"` predecessor, a connector response shape, or a value that arrives another way are all legitimate — `orion-server lint` still offers this as an advisory, with that caveat |
+| A read of a `data.*` path nothing earlier writes | an `on_failure: "continue"` predecessor, a connector response shape, or a value that arrives another way are all legitimate — `orion-cli lint` still offers this as an advisory, with that caveat |
 | A misspelled operator in a mapping (`{"uppr": […]}`) | an object literal in a mapping is a legitimate way to write an object; distance to an operator name is a guess |
 | A URL, a `dev-`/`staging-` prefix, an e-mail address in a definition | patterns over strings |
 | A string that looks like a key, or a literal in a key-material field | heuristic; and the registry-exact form fires on every test fixture with a throwaway HS256 key, which the docs allow |
@@ -34,6 +34,6 @@ Recorded so a future addition has to argue against the reason rather than redisc
 ## Related
 
 - [Advisory checks](./index.md): every rule, with its level and scope.
-- [`orion-server clippy`](../cli/orion-server/clippy.md): the command, its flags and exit codes.
-- [`orion-server lint`](../cli/orion-server/lint.md): the gate that runs first, and must pass.
+- [`orion-cli clippy`](../cli/orion-cli/clippy.md): the command, its flags and exit codes.
+- [`orion-cli lint`](../cli/orion-cli/lint.md): the gate that runs first, and must pass.
 - [Test workflows offline](../../guides/author/testing.md): running the rules against a set.

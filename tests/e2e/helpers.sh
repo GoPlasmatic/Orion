@@ -485,7 +485,7 @@ show_server_log() {
 #
 # A node serves exactly its committed deployment head. A test writes a
 # definition set (a directory of workflow/channel/connector JSON, plus any
-# plugin.toml with its component), compiles it with `orion-server compile`
+# plugin.toml with its component), compiles it with `orion-cli compile`
 # and deploys it with `orion-cli deployments apply -d`. An apply *replaces*
 # the head's members with the directory's: whatever the previous test
 # deployed and this set does not carry stops serving. So a test that needs
@@ -538,13 +538,13 @@ set_plugin() {
 COMPILE_OUTPUT=""
 COMPILE_EXIT=0
 
-# compile_set <set_dir> — `orion-server compile` into <set_dir>.dist.
+# compile_set <set_dir> — `orion-cli compile` into <set_dir>.dist.
 # COMPILE_OUTPUT holds everything it printed; returns its exit code.
 compile_set() {
     local dir="$1"
     rm -rf "$dir.dist"
     set +e
-    COMPILE_OUTPUT=$("$ORION_BIN" compile "$dir" -o "$dir.dist" 2>&1)
+    COMPILE_OUTPUT=$("$ORION_CLI" compile "$dir" -o "$dir.dist" 2>&1)
     COMPILE_EXIT=$?
     set -e
     log_debug "compile $dir => exit=$COMPILE_EXIT"

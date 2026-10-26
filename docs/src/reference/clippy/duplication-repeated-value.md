@@ -9,7 +9,7 @@ A `warn` rule, scope set. The same object literal appears three or more times ac
 ## Synopsis
 
 ```console
-$ orion-server clippy ./definitions
+$ orion-cli clippy ./definitions
 warn[duplication.repeated_value] the same object literal appears three or more times across the set
 ```
 
@@ -24,6 +24,6 @@ Silent for structure: steps, `function` headers, mapping and rule entries, opera
 ## Related
 
 - [Advisory checks](./index.md): every rule, the levels, and where certainty comes from.
-- [`orion-server clippy`](../cli/orion-server/clippy.md): the command, its flags and exit codes.
+- [`orion-cli clippy`](../cli/orion-cli/clippy.md): the command, its flags and exit codes.
 - [Test workflows offline](../../guides/author/testing.md): running the rules against a set.
 - [Shared definitions](../cli/shared-definitions.md): the set the rule reads, and its fragments.

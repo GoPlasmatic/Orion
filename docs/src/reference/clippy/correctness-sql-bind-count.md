@@ -9,7 +9,7 @@ A `deny` rule, scope workflow. A PostgreSQL statement's `$n` placeholders and it
 ## Synopsis
 
 ```console
-$ orion-server clippy ./definitions
+$ orion-cli clippy ./definitions
 deny[correctness.sql_bind_count] a PostgreSQL statement's `$n` placeholders and its literal `params` differ in number
 ```
 
@@ -25,9 +25,9 @@ Silent when `params` is computed, and when the statement has no `$n`. Silent whe
 
 ## Related
 
-- [`orion-server sql check`](../cli/orion-server/sql-check.md): the same count, and the schema and grants, against a real database.
+- [`orion-cli sql check`](../cli/orion-cli/sql-check.md): the same count, and the schema and grants, against a real database.
 
 - [Advisory checks](./index.md): every rule, the levels, and where certainty comes from.
-- [`orion-server clippy`](../cli/orion-server/clippy.md): the command, its flags and exit codes.
+- [`orion-cli clippy`](../cli/orion-cli/clippy.md): the command, its flags and exit codes.
 - [Test workflows offline](../../guides/author/testing.md): running the rules against a set.
 - [Workflows](../workflows.md): the step grammar the rule reads.

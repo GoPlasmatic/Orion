@@ -4,7 +4,7 @@
 
 # `crypto`
 
-Digests, HMACs (compute **and** verify), and password hashing as one operation envelope. It is self-contained: no connector and no egress, so dry-run and `orion-server test` execute it for real.
+Digests, HMACs (compute **and** verify), and password hashing as one operation envelope. It is self-contained: no connector and no egress, so dry-run and `orion-cli test` execute it for real.
 
 ## Synopsis
 
@@ -32,7 +32,7 @@ Digests, HMACs (compute **and** verify), and password hashing as one operation e
 
 ## Description
 
-`crypto` is a utility function: self-contained, with no connector and no egress, so `dry-run` and `orion-server test` execute it for real.
+`crypto` is a utility function: self-contained, with no connector and no egress, so `dry-run` and `orion-cli test` execute it for real.
 
 **Retry safety:** `pure`. See [Retry safety](./retry-safety.md) for what the answer costs.
 

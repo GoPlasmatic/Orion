@@ -303,7 +303,7 @@ pub mod ed25519 {
         Ok(b64().encode(bytes))
     }
 
-    /// A signing key, for tests and for the `orion-server plugin|model
+    /// A signing key, for tests and for the `orion-cli plugin
     /// keygen|sign` verbs that produce the signature an upload carries. The
     /// server never holds one: it verifies, it does not sign.
     pub struct SigningKey(Ed25519KeyPair);

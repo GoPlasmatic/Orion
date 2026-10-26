@@ -9,7 +9,7 @@ A `deny` rule, scope workflow. A `map` mapping whose `logic` is always null, so 
 ## Synopsis
 
 ```console
-$ orion-server clippy ./definitions
+$ orion-cli clippy ./definitions
 deny[correctness.mapping_always_null] a `map` mapping whose `logic` is always null, so it never writes
 ```
 
@@ -26,6 +26,6 @@ Silent when the `logic` is not a compile-time constant. `{"var": "temp_data.mayb
 ## Related
 
 - [Advisory checks](./index.md): every rule, the levels, and where certainty comes from.
-- [`orion-server clippy`](../cli/orion-server/clippy.md): the command, its flags and exit codes.
+- [`orion-cli clippy`](../cli/orion-cli/clippy.md): the command, its flags and exit codes.
 - [Test workflows offline](../../guides/author/testing.md): running the rules against a set.
 - [Workflows](../workflows.md): the step grammar the rule reads.

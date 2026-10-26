@@ -8,7 +8,7 @@
 //! before `"workflow_id"` whatever the author wrote; it carries no offsets, so
 //! a finding can name `tasks[1].condition` but not line 41; and `1.0` becomes
 //! the float `1.0`, which prints as `1.0` today and as whatever a future
-//! serializer prefers tomorrow. `orion-server fmt` needs all three, and a
+//! serializer prefers tomorrow. `orion-cli fmt` needs all three, and a
 //! `file:line:col` prefix on `lint` findings needs the second.
 //!
 //! So this module parses to its own tree. Nothing else changes: every

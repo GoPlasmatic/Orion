@@ -175,7 +175,7 @@ steps have an idempotent destination or an idempotency key.
 
 ## Offline egress behavior
 
-`orion-server dry-run` and `test` do not contact external systems by default.
+`orion-cli dry-run` and `test` do not contact external systems by default.
 Provide deterministic stubs for connector functions and `channel_call`.
 Use the exact stub syntax reported by the command's `--help` and assert both
 the trace and final context. Never turn a workflow test into an accidental live

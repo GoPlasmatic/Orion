@@ -581,22 +581,24 @@ async fn trusting_app(keys: Vec<String>) -> (AppState, axum::Router) {
     (state, router)
 }
 
-/// The contract between `orion-server plugin sign` and the upload check: a
+/// The contract between `orion-cli plugin sign` and the upload check: a
 /// `.sig` file the verb wrote is accepted, as-is, by a node that trusts the
 /// key `plugin keygen` printed.
 #[tokio::test]
 async fn a_signature_from_plugin_sign_is_accepted_at_upload() {
+    let Some(bin) = common::orion_cli_bin() else {
+        return;
+    };
     let dir = std::env::temp_dir().join(format!("orion-plugin-sign-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
-    let bin = env!("CARGO_BIN_EXE_orion-server");
     let key = dir.join("signer.pem");
     let component = dir.join("fixture.wasm");
     std::fs::write(&component, COMPONENT).expect("component");
     let run = |args: &[&std::ffi::OsStr]| {
-        let out = std::process::Command::new(bin)
+        let out = std::process::Command::new(&bin)
             .args(args)
             .output()
-            .expect("invoke orion-server");
+            .expect("invoke orion-cli");
         assert!(
             out.status.success(),
             "{}",

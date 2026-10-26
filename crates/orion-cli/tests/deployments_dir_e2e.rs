@@ -1,4 +1,4 @@
-//! `orion-server compile --format deployment` → `orion-cli deployments
+//! `orion-cli compile --format deployment` → `orion-cli deployments
 //! apply -d`, end to end: both binaries, a real server, the wire between.
 //!
 //! An example set compiles to a deployment directory and deploys; the
@@ -123,8 +123,8 @@ impl Drop for Server {
     }
 }
 
-fn compile(server: &Path, set: &Path, out: &Path) {
-    let result = Command::new(server)
+fn compile(set: &Path, out: &Path) {
+    let result = Command::new(orion_cli())
         .args([
             "compile",
             set.to_str().unwrap(),
@@ -187,7 +187,7 @@ async fn a_compiled_deployment_deploys_and_redeploys_only_what_changed() {
     )
     .unwrap();
     let dist = scratch.path().join("dist");
-    compile(&server_bin, &set, &dist);
+    compile(&set, &dist);
 
     let server = Server::start(&server_bin, scratch.path());
     server.wait_ready().await;
@@ -217,7 +217,7 @@ async fn a_compiled_deployment_deploys_and_redeploys_only_what_changed() {
         );
     assert!(workflow.contains("\"logic\": 20"), "the edit applies");
     std::fs::write(set.join("workflow.json"), workflow).unwrap();
-    compile(&server_bin, &set, &dist);
+    compile(&set, &dist);
 
     let applied = server.cli_json(&["deployments", "apply", "-d", dir]);
     assert_eq!(applied["committed_revision"], 2, "{applied}");

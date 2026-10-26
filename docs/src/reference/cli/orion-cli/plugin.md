@@ -1,19 +1,19 @@
-<!-- description: orion-server plugin digests, signs and verifies plugin components with the Ed25519 keys [plugins.trust] checks, with no OpenSSL pipeline. -->
+<!-- description: orion-cli plugin digests, signs and verifies plugin components with the Ed25519 keys [plugins.trust] checks, with no OpenSSL pipeline. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-19 -->
 
-# `orion-server plugin`
+# `orion-cli plugin`
 
 Digests, signs and verifies plugin components: what a node with [`[plugins.trust]`](../../configuration/plugins.md) checks at upload and at load. The digest, the signature and the check are the server's own, so what these verbs produce is exactly what a trusting node verifies.
 
 ## Synopsis
 
 ```bash
-orion-server plugin digest <path>
-orion-server plugin keygen -o <file> [--force]
-orion-server plugin pubkey --key <file>
-orion-server plugin sign <path> [--key <file>] [-o <file|dir>] [--by-id]
-orion-server [-c <config.toml>] plugin verify <path> [--public-key <base64>]... [--signature <file> | --signatures <dir>]
+orion-cli plugin digest <path>
+orion-cli plugin keygen -o <file> [--force]
+orion-cli plugin pubkey --key <file>
+orion-cli plugin sign <path> [--key <file>] [-o <file|dir>] [--by-id]
+orion-cli plugin verify <path> [-c <config.toml>] [--public-key <base64>]... [--signature <file> | --signatures <dir>]
 ```
 
 ## Description
@@ -30,7 +30,7 @@ A manifest whose component is not on disk is an error, and so is a directory wit
 
 | Verb | What it does |
 |---|---|
-| `digest` | Prints the digest a signature is made over. For one target it prints the bare digest, so `$(orion-server plugin digest plugins/scoring)` works. For several it prints `digest  id  file` per line. |
+| `digest` | Prints the digest a signature is made over. For one target it prints the bare digest, so `$(orion-cli plugin digest plugins/scoring)` works. For several it prints `digest  id  file` per line. |
 | `keygen` | Writes a new private key as an unencrypted PKCS#8 PEM, readable only by its owner, and prints its `public_keys` value. The key is the form `openssl genpkey -algorithm ed25519` writes, so either tool reads the other's. An existing file is kept unless `--force` is given. |
 | `pubkey` | Prints the `public_keys` value for an existing private key, including one OpenSSL generated. |
 | `sign` | Signs each target and writes `<component>.sig` beside the component. The signature is checked against the key's own public half before it is written. |
@@ -44,10 +44,10 @@ A manifest whose component is not on disk is an error, and so is a directory wit
 
 | Flag | Used by | Description |
 |------|---------|-------------|
-| `-o, --output <file>` | `keygen` | Where to write the private key. `-` writes it to stdout and the public key to stderr. |
+| `-o, --out <file>` | `keygen` | Where to write the private key. `-` writes it to stdout and the public key to stderr. |
 | `--force` | `keygen` | Replace an existing key file. |
 | `--key <file>` | `pubkey`, `sign` | A PEM private key. |
-| `-o, --output <file\|dir>` | `sign` | A file, for one target, or a directory. A directory is created if needed and receives flat `<component>.sig` names, the layout a directory of signatures is read in. Several targets always write into a directory. |
+| `-o, --out <file\|dir>` | `sign` | A file, for one target, or a directory. A directory is created if needed and receives flat `<component>.sig` names, the layout a directory of signatures is read in. Several targets always write into a directory. |
 | `--by-id` | `sign` | Name each file `<plugin id>.sig` rather than after the component. Needed when two plugins' components share a file name. |
 | `--public-key <base64>` | `verify` | A trusted public key. Repeatable. |
 | `--signature <file>` | `verify` | The signature file, for a single target. |
@@ -65,7 +65,7 @@ A manifest whose component is not on disk is an error, and so is a directory wit
 Create a key, then configure every node that should trust it with the printed value:
 
 ```console
-$ orion-server plugin keygen -o signer.pem
+$ orion-cli plugin keygen -o signer.pem
 wrote signer.pem
 public_keys value: YpbiNmxkTrZbCBochFhVIDEKlXbVrHwdtUcw93+slbM=
 ```
@@ -73,8 +73,8 @@ public_keys value: YpbiNmxkTrZbCBochFhVIDEKlXbVrHwdtUcw93+slbM=
 Sign every plugin in a tree, and check the result against a node's own config:
 
 ```bash
-orion-server plugin sign plugins/ --key signer.pem
-orion-server -c config.toml plugin verify plugins/
+orion-cli plugin sign plugins/ --key signer.pem
+orion-cli plugin verify -c config.toml plugins/
 ```
 
 A plugin definition sent to [`POST /api/v2/admin/definitions`](../../admin-api/deployments.md#definitions) carries its detached signature beside the manifest and the component.
@@ -82,7 +82,7 @@ A plugin definition sent to [`POST /api/v2/admin/definitions`](../../admin-api/d
 Write the signatures into one directory instead of beside each component:
 
 ```bash
-orion-server plugin sign plugins/ --key signer.pem -o sigs/
+orion-cli plugin sign plugins/ --key signer.pem -o sigs/
 ```
 
 The same message and encodings are what the OpenSSL pipeline on the [manifest page](../../plugin-manifest.md#trust) produces, so keys and `.sig` files move freely between the two.

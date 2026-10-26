@@ -33,7 +33,7 @@ claim.
 
 ## Description
 
-`jwt_sign` is a utility function: self-contained, with no connector and no egress, so `dry-run` and `orion-server test` execute it for real.
+`jwt_sign` is a utility function: self-contained, with no connector and no egress, so `dry-run` and `orion-cli test` execute it for real.
 
 **Retry safety:** `pure`. See [Retry safety](./retry-safety.md) for what the answer costs.
 

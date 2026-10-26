@@ -55,7 +55,7 @@ async fn a_from_in_a_task_input_is_named_not_its_missing_fields() {
         "the message must show the reference as authored: {message}"
     );
     assert!(
-        message.contains("orion-server compile"),
+        message.contains("orion-cli compile"),
         "and name the command that resolves it: {message}"
     );
     // The symptom must not be reported alongside the cause: errors about

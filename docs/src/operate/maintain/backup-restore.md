@@ -87,7 +87,7 @@ The second check matters more than it looks. `/readyz` says the process is servi
 A database backup restores an instance. The definition set restores a *service*, into any instance:
 
 ```bash
-orion-server compile ./definitions -o dist/deployment
+orion-cli compile ./definitions -o dist/deployment
 orion-cli deployments apply -d dist/deployment
 ```
 

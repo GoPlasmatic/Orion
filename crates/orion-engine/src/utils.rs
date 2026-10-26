@@ -145,7 +145,7 @@ pub fn is_credential_header(name: &str) -> bool {
 /// key — the same gap this whole surface exists to close.
 const STRING_MAP_KEYS: [&str; 4] = ["headers", "params", "query", "cookies"];
 
-/// Build the message metadata for an offline run (`orion-server test` cases and
+/// Build the message metadata for an offline run (`orion-cli test` cases and
 /// `dry-run --metadata`) from a case-supplied object.
 ///
 /// The point of the normalization is that an offline pass must mean the same

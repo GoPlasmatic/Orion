@@ -21,8 +21,9 @@ connection it runs, committed as a numbered revision. The newest committed
 revision is the **head**. There is no other write path: no endpoint edits one
 entity, and no endpoint reloads the engine.
 
-Use `orion-server` for offline authoring and compilation. Use `orion-cli` for a
-running instance. Treat `--help`, the instance's function catalog, and
+Use `orion-cli` for offline authoring, compilation and remote administration.
+Use `orion-server` to run the node and check its configuration and state database.
+Treat `--help`, the instance's function catalog, and
 validation responses as authoritative over examples in this skill.
 
 ## Choose the operating path
@@ -50,13 +51,13 @@ For authoring or changing a service:
 7. Exercise the channel and inspect live traces.
 
 ```bash
-orion-server fmt --check ./definitions
-orion-server lint ./definitions
-orion-server clippy ./definitions
-orion-server dry-run -w definitions/workflow.json -i sample.json
-orion-server test ./definitions/tests      # the set's *.case.json files
+orion-cli fmt --check ./definitions
+orion-cli lint ./definitions
+orion-cli clippy ./definitions
+orion-cli dry-run -w definitions/workflow.json -i sample.json
+orion-cli test ./definitions/tests      # the set's *.case.json files
 
-orion-server compile ./definitions -o dist/deployment
+orion-cli compile ./definitions -o dist/deployment
 orion-cli deployments plan -d dist/deployment
 orion-cli deployments apply -d dist/deployment
 
@@ -185,7 +186,7 @@ here.
 To run one workflow on a live node without deploying it, send it to
 `POST /api/v2/admin/definitions/test` with `{"definition": …, "data": …}`.
 Nothing is stubbed there: an `http_call` sends and a `db_write` writes. Prefer
-`orion-server dry-run` with stubs unless live behaviour is the point.
+`orion-cli dry-run` with stubs unless live behaviour is the point.
 
 ## Release and rollback invariants
 
@@ -292,7 +293,7 @@ stays `http_call` or a connector), or for a field rewrite a `map` expresses.
   The target needs `plugins.enabled = true`.
 - Once deployed, its functions appear in `orion-cli functions list` with
   `source: "plugin"`. Read their schemas there.
-- Offline: `orion-server lint|clippy|compile|dry-run|test --plugin-dir <dir>`.
+- Offline: `orion-cli lint|clippy|compile|dry-run|test --plugin-dir <dir>`.
   `dry-run` and `test` run the component for real. A function with no
   component fails as `PLUGIN_ARTIFACT_UNAVAILABLE`, and one with no manifest is
   reported unverifiable, not invalid.

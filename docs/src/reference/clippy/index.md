@@ -1,16 +1,16 @@
-<!-- description: The advisory rules `orion-server clippy` runs beyond `lint`: the twenty-one rules, their levels and scopes, and where each one's certainty comes from. -->
+<!-- description: The advisory rules `orion-cli clippy` runs beyond `lint`: the twenty-one rules, their levels and scopes, and where each one's certainty comes from. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-19 -->
 
 # Advisory checks (`clippy`)
 
-The rules `orion-server clippy` runs beyond `lint`. Each has its own page with the proof it rests on and where it stays silent.
+The rules `orion-cli clippy` runs beyond `lint`. Each has its own page with the proof it rests on and where it stays silent.
 
-`orion-server clippy` runs `lint`'s gate over a definition set, then a fixed set of rules. They cover things `lint` accepts but an author would want to know. A workflow whose condition can never match, steps that can never run, a call cycle that always fails. Work the engine does for nothing, and things the set says three times that it could say once.
+`orion-cli clippy` runs `lint`'s gate over a definition set, then a fixed set of rules. They cover things `lint` accepts but an author would want to know. A workflow whose condition can never match, steps that can never run, a call cycle that always fails. Work the engine does for nothing, and things the set says three times that it could say once.
 
-It has **no configuration and no suppression**. That is what sets the bar. An author cannot silence a wrong rule, so every rule here fires only when its finding is certain. Each one states the proof it rests on and the shapes on which it stays silent. `orion-server clippy --explain <rule>` prints both. Silence is never wrong; a wrong warning is.
+It has **no configuration and no suppression**. That is what sets the bar. An author cannot silence a wrong rule, so every rule here fires only when its finding is certain. Each one states the proof it rests on and the shapes on which it stays silent. `orion-cli clippy --explain <rule>` prints both. Silence is never wrong; a wrong warning is.
 
-The command, its flags and exit codes are on the [CLI reference](../cli/orion-server/clippy.md).
+The command, its flags and exit codes are on the [CLI reference](../cli/orion-cli/clippy.md).
 
 | Rule | Level | Scope | Summary |
 |---|---|---|---|
@@ -35,7 +35,7 @@ The command, its flags and exit codes are on the [CLI reference](../cli/orion-se
 | [`duplication.repeated_value`](./duplication-repeated-value.md) | warn | set | the same object literal appears three or more times across the set |
 | [`style.terminal_on_last_step`](./style-terminal-on-last-step.md) | warn | workflow | terminal: true on the last top-level step is a no-op |
 
-`perf.redundant_step_condition` carries an exact fix, which [`clippy --fix`](../cli/orion-server/clippy.md#fixes) applies to the source files after proving each edit.
+`perf.redundant_step_condition` carries an exact fix, which [`clippy --fix`](../cli/orion-cli/clippy.md#fixes) applies to the source files after proving each edit.
 
 | Page | Holds |
 |---|---|
@@ -46,7 +46,7 @@ The command, its flags and exit codes are on the [CLI reference](../cli/orion-se
 
 ## Related
 
-- [`orion-server clippy`](../cli/orion-server/clippy.md): the command, its flags and exit codes.
+- [`orion-cli clippy`](../cli/orion-cli/clippy.md): the command, its flags and exit codes.
 - [Definition style (`fmt`)](../fmt.md): the formatter the same set passes through.
 - [Test workflows offline](../../guides/author/testing.md): running the rules against a set.
 - [Reference](../index.md): every reference page, by what you are looking up.

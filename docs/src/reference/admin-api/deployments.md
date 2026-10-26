@@ -62,7 +62,7 @@ curl -s http://localhost:8080/api/v2/admin/definitions/sha256:3f9c… | jq '.def
 
 A definition that would not serve is refused with a `400`, each problem at its field under `definition`.
 
-A workflow the engine accepts but has something to say about is stored, and the answer lists it under `advisories`, each with a `check` id, the `path` the engine names and a `message`: a `$`-prefixed key the engine emits with one `$` stripped (`logic.escaped_template_key`), a `validation` whose failure stops nothing (`engine.unguarded_validation`), or an advisory this version has no id for (`engine.advisory`). These are the warnings `orion-server lint` reports. They never refuse the upload, and `deployments apply -d` prints them. A channel or plugin answers an empty list.
+A workflow the engine accepts but has something to say about is stored, and the answer lists it under `advisories`, each with a `check` id, the `path` the engine names and a `message`: a `$`-prefixed key the engine emits with one `$` stripped (`logic.escaped_template_key`), a `validation` whose failure stops nothing (`engine.unguarded_validation`), or an advisory this version has no id for (`engine.advisory`). These are the warnings `orion-cli lint` reports. They never refuse the upload, and `deployments apply -d` prints them. A channel or plugin answers an empty list.
 
 A channel reads back with its credentials masked as `******`: `auth.keys[*]`, `auth.secret`, `auth.secrets[*]`, `auth.jwt_keys[*].key`, and `oauth2_login`'s `client_secret`, `state_secret` and each `providers.<slug>.client_secret`. A secret reference such as `env://API_KEY` is shown as written. Only the read is masked: the stored bytes, and so the digest, are the definition as uploaded. A workflow may call a plugin function this node does not serve yet, by a qualified name such as `acme.iso8583.parse`. Its plugin can arrive in the same deployment, so the plan checks that name, not the upload.
 
@@ -99,7 +99,7 @@ A connection revision is the configuration a provider runs with. It is created u
 
 The configuration is judged as the node will read it, `public_config` with each locator's reference at its path, before anything is stored. The references are not resolved, so a reference standing in a boolean or a number is read as the kind of value that field takes.
 
-- Over a **built-in driver**, it is typed as the connector the driver serves (`http`, `db` or `cache`) and checked the way that connector is: field types, endpoint schemes, `retry`, `operations` and `query_params` keys, OAuth2 shape, the cache backend. `orion-server compile` makes the same check on a definition set's connectors, so a set that compiles is one this endpoint accepts.
+- Over a **built-in driver**, it is typed as the connector the driver serves (`http`, `db` or `cache`) and checked the way that connector is: field types, endpoint schemes, `retry`, `operations` and `query_params` keys, OAuth2 shape, the cache backend. `orion-cli compile` makes the same check on a definition set's connectors, so a set that compiles is one this endpoint accepts.
 - Over an **uploaded provider package**, it must satisfy the package's `configuration_schema`.
 
 A configuration that would not load is refused with a `400` `VALIDATION_ERROR`, each problem at its field: under `public_config.`, or `secret_locators.` when a locator supplies the field. A failure only a resolved value can cause, such as a reference that resolves to an `ftp://` URL, surfaces when the node loads the deployment, in `/health` under `connectors.failed_to_load`.
@@ -234,17 +234,17 @@ curl -s "http://localhost:8080/api/v2/admin/deployments/2/convergence?target=obs
 
 ## Deploy a compiled directory
 
-`orion-server compile` writes a definition set as a deployment directory with no revisions in it ([Deployment directories](../cli/orion-server/compile.md#deployment-directories)). `orion-cli deployments apply -d` deploys it:
+`orion-cli compile` writes a definition set as a deployment directory with no revisions in it ([Deployment directories](../cli/orion-cli/compile.md#deployment-directories)). `orion-cli deployments apply -d` deploys it:
 
 ```bash
-orion-server compile ./definitions -o dist/deployment
+orion-cli compile ./definitions -o dist/deployment
 orion-cli deployments plan -d dist/deployment     # what would change
 orion-cli deployments apply -d dist/deployment
 ```
 
 The CLI reads the target's history and does the rest:
 
-1. It uploads every definition and checks that each answered digest is its file's name. A mismatch means the target canonicalises definitions differently from the `orion-server` that compiled the directory.
+1. It uploads every definition and checks that each answered digest is its file's name. A mismatch means the target canonicalises definitions differently from the `orion-cli` that compiled the directory.
 2. It assigns each member a revision. A member the head deploys with the same definition keeps its revision. A member an earlier revision deployed with the same definition takes that revision back. Anything else takes one past the highest revision that entity ever had, or 1.
 3. It reuses a stored connection revision with the same provider, public settings and locators, and otherwise creates the next one. It checks each connection's provider digest against the target's built-in driver first.
 4. It plans the manifest against the head and prints what moves, then applies it with the plan's reviewed digest.
@@ -253,6 +253,6 @@ The idempotency key defaults to one derived from the head and the manifest diges
 
 ## Related
 
-- [`orion-server compile`](../cli/orion-server/compile.md): the command that writes a deployment directory.
+- [`orion-cli compile`](../cli/orion-cli/compile.md): the command that writes a deployment directory.
 - [Admin API](./index.md): every admin resource, and the contracts they share.
 - [`connector_call`](../functions/connector_call.md): calling a deployed connection's provider.

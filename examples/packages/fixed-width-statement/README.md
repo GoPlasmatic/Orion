@@ -13,7 +13,7 @@ The one example that is **not** zero-configuration: the server must run with
 repository root, with such a server on `http://localhost:8080`:
 
 ```bash
-orion-server compile examples/packages/fixed-width-statement -o dist/fixed-width-statement
+orion-cli compile examples/packages/fixed-width-statement -o dist/fixed-width-statement
 orion-cli deployments apply -d dist/fixed-width-statement
 ```
 
@@ -28,7 +28,7 @@ curl -s -X POST http://localhost:8080/api/v2/data/statements \
 ```
 
 Offline,
-`orion-server test examples/workflow-tests --plugin-dir
+`orion-cli test examples/workflow-tests --plugin-dir
 examples/packages/fixed-width-statement` runs the codec for real. See
 [`examples/README.md`](../../README.md) for the file layout and the full example
 list, [Run the Examples](https://docs.goplasmatic.io/get-started/tutorials/examples.html)

@@ -1,18 +1,21 @@
-//! `orion-server clippy` as a process: exit codes, the two streams, the
+//! `orion-cli clippy` as a process: exit codes, the two streams, the
 //! flags that are not rules.
 
 use std::process::{Command, Output};
 
 use crate::common::{ScratchDir, orion_bin};
 
-const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/clippy");
+const FIXTURES: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../orion-server/tests/fixtures/clippy"
+);
 
 fn clippy(args: &[&str]) -> Output {
     Command::new(orion_bin())
         .arg("clippy")
         .args(args)
         .output()
-        .expect("invoke orion-server clippy")
+        .expect("invoke orion-cli clippy")
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -28,7 +31,7 @@ fn list_names_every_rule_with_its_level_and_scope() {
     let out = clippy(&["--list"]);
     assert_eq!(out.status.code(), Some(0));
     let stdout = text(&out.stdout);
-    for rule in orion::definitions::clippy::registry() {
+    for rule in orion_authoring::definitions::clippy::registry() {
         let line = stdout
             .lines()
             .find(|l| l.starts_with(rule.id()))
@@ -104,7 +107,7 @@ fn config_rules_are_skipped_with_a_note_without_c_and_run_with_it() {
     assert!(text(&without.stderr).contains("[correctness.metadata_var_undeclared] skipped"));
 
     let with = Command::new(orion_bin())
-        .args(["-c", &format!("{dir}/config.toml"), "clippy", &dir])
+        .args(["clippy", "-c", &format!("{dir}/config.toml"), &dir])
         .output()
         .unwrap();
     assert_eq!(with.status.code(), Some(1), "{}", text(&with.stderr));

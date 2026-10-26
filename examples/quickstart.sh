@@ -9,14 +9,14 @@
 # Deploys the "quickstart-orders" service against a running Orion instance
 # (default http://localhost:8080): a workflow that flags orders over $10,000,
 # and a POST /orders channel that exposes it. The script writes the two
-# definitions to a scratch directory, compiles them with `orion-server
+# definitions to a scratch directory, compiles them with `orion-cli
 # compile` and deploys the result with `orion-cli deployments apply -d` —
 # the same path every Orion deployment takes.
 #
 # A deployment is the whole of what a node serves, so this replaces whatever
 # the instance served before. Safe to re-run: an unchanged deployment applies
-# nothing. Needs `orion-server` and `orion-cli` (on PATH, through
-# ORION_BIN / ORION_CLI, or built in this clone's target/) and curl.
+# nothing. Needs `orion-cli` (on PATH, through ORION_CLI, or built in this
+# clone's target/), curl and a running Orion server.
 #
 # The workflow id is quickstart-orders, not high-value-order, deliberately:
 # examples/packages/high-value-order ships the same logic as a package of its
@@ -42,7 +42,6 @@ find_bin() {
   echo "error: $name not found — install it, or set $var=<path to $name>" >&2
   exit 1
 }
-ORION_BIN="$(find_bin ORION_BIN orion-server)"
 ORION_CLI="$(find_bin ORION_CLI orion-cli)"
 
 # Wait for the server (a fresh `orion-server` needs a moment to come up).
@@ -107,7 +106,7 @@ cat > "$WORK/quickstart/channel.json" <<'JSON'
 JSON
 
 say "Compile the definitions"
-"$ORION_BIN" compile "$WORK/quickstart" -o "$WORK/deployment" > "$WORK/compile.log" 2>&1 || {
+"$ORION_CLI" compile "$WORK/quickstart" -o "$WORK/deployment" > "$WORK/compile.log" 2>&1 || {
   cat "$WORK/compile.log" >&2
   exit 1
 }

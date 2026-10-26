@@ -98,7 +98,7 @@ A constant may reference another constant, use a value fragment or hold an `$eac
 A finding inside an expansion names the trail that produced it, such as `(fragment 'guard' › $each p = 3)`.
 
 > [!NOTE]
-> Expansion is an **authoring and deploy** mechanism. The admin API takes one JSON body with no set to resolve against, so `POST /api/v2/admin/definitions` does not accept `$from`, `use`, `$use` or `$each`; it refuses them with [`UNCOMPILED_SOURCE`](../errors.md#field-error-codes), naming the reference and its coordinate. [`orion-server compile`](./orion-server/compile.md) is the step that produces what it does accept.
+> Expansion is an **authoring and deploy** mechanism. The admin API takes one JSON body with no set to resolve against, so `POST /api/v2/admin/definitions` does not accept `$from`, `use`, `$use` or `$each`; it refuses them with [`UNCOMPILED_SOURCE`](../errors.md#field-error-codes), naming the reference and its coordinate. [`orion-cli compile`](./orion-cli/compile.md) is the step that produces what it does accept.
 
 ## Statements in `.sql` files
 
@@ -148,7 +148,7 @@ These mechanisms are passes in one pipeline, and the pipeline is the place a fut
 
 ## Related
 
-- [`orion-server compile`](./orion-server/compile.md): the step that resolves both forms into what the admin API accepts.
-- [`orion-server lint`](./orion-server/lint.md): set mode, where every reference must resolve.
+- [`orion-cli compile`](./orion-cli/compile.md): the step that resolves both forms into what the admin API accepts.
+- [`orion-cli lint`](./orion-cli/lint.md): set mode, where every reference must resolve.
 - [Author a workflow](../../guides/author/workflows.md): `$from` and `use` in a real set.
 - [Errors and response envelopes](../errors.md): `UNCOMPILED_SOURCE`, the refusal a source form meets at the API.

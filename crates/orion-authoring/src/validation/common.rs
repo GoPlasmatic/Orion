@@ -126,7 +126,7 @@ pub(crate) fn validate_description(desc: &str, path: &'static str) -> Result<(),
 /// `{"$from": ...}` object into its response at runtime.
 ///
 /// The residue comes from the compiler's own passes rather than a walk written
-/// here, so "what `orion-server compile` consumes" and "what this refuses"
+/// here, so "what `orion-cli compile` consumes" and "what this refuses"
 /// cannot drift apart, and an authoring feature added later is named here
 /// without this function being taught about it.
 pub(crate) fn uncompiled_source_errors(
@@ -142,7 +142,7 @@ pub(crate) fn uncompiled_source_errors(
                 format!(
                     "{} is {}, resolved when a definition set is compiled. This endpoint \
                      takes one document and has no set to resolve '{}' against — send the \
-                     compiled form, which `orion-server compile <dir>` writes.",
+                     compiled form, which `orion-cli compile <dir>` writes.",
                     r.syntax(),
                     r.noun,
                     r.target,

@@ -3,7 +3,7 @@
 Offline regression tests for the workflows in this directory's siblings, run by:
 
 ```bash
-orion-server test examples/workflow-tests \
+orion-cli test examples/workflow-tests \
   --plugin-dir examples/packages/fixed-width-statement --plugin-dir examples/packages/c4-referee
 ```
 
@@ -45,4 +45,4 @@ case rather than a workflow or a fixture, so all three can live side by side.
 | `expect_tasks` | The ids of the tasks that ran, in order, matched exactly. A task that ran and failed is one of them; the tasks after it are not, because the workflow halted there. Unchecked when omitted. |
 
 The runner exits non-zero on any failure, so it gates CI alongside
-`orion-server lint`.
+`orion-cli lint`.

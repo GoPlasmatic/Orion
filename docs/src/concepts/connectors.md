@@ -48,7 +48,7 @@ This is a connector file. It is the one [Add your first connector](../get-starte
 {{#include ../../../examples/packages/postgres-orders/connector.json}}
 ```
 
-`orion-server compile` turns it into `connections/orders-db.json`. The connector's `name` becomes the connection id. Its `driver` picks a built-in driver. Every secret reference moves to `secret_locators`, and the rest becomes `public_config`:
+`orion-cli compile` turns it into `connections/orders-db.json`. The connector's `name` becomes the connection id. Its `driver` picks a built-in driver. Every secret reference moves to `secret_locators`, and the rest becomes `public_config`:
 
 ```json
 {

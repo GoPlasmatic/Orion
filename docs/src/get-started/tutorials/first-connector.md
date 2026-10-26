@@ -85,7 +85,7 @@ The channel binds `POST /record-order` to the workflow:
 Compile the directory and deploy it:
 
 ```bash
-orion-server compile . -o /tmp/postgres-orders
+orion-cli compile . -o /tmp/postgres-orders
 orion-cli deployments apply -d /tmp/postgres-orders
 ```
 

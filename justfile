@@ -24,7 +24,8 @@ openapi:
 
 # Container-gated suites (need Docker; each starts its own testcontainers).
 test-containers:
-    cargo test --test integration -- --ignored postgres_test mysql_test db_column_types_test data_roundtrip_test data_parity_test integrity_errors_test sql_check_test
+    cargo test --test integration -- --ignored postgres_test mysql_test db_column_types_test data_roundtrip_test data_parity_test integrity_errors_test
+    cargo test -p orion-cli --test authoring -- --ignored sql_check_test
     cargo test --test integration -- --ignored vault_test
     cargo test --test storage_postgres -- --ignored
     cargo test --test storage_mysql -- --ignored
@@ -53,8 +54,8 @@ docs-preview:
 # the repo ships (fmt_examples_test fails while one is out of style).
 fmt:
     cargo fmt
-    cargo run -q -- fmt examples tests/e2e/cases tests/e2e/fixtures
+    cargo run -q -p orion-cli -- fmt examples tests/e2e/cases tests/e2e/fixtures
 
 # Offline workflow regression tests (the examples' *.case.json suite).
 workflow-tests:
-    cargo run -- test examples/workflow-tests --plugin-dir examples/packages/fixed-width-statement --plugin-dir examples/packages/c4-referee
+    cargo run -p orion-cli -- test examples/workflow-tests --plugin-dir examples/packages/fixed-width-statement --plugin-dir examples/packages/c4-referee

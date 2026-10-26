@@ -9,7 +9,7 @@ A `warn` rule, scope workflow. A step's condition folds to a constant false, so 
 ## Synopsis
 
 ```console
-$ orion-server clippy ./definitions
+$ orion-cli clippy ./definitions
 warn[correctness.task_never_runs] a step's condition folds to a constant false, so the step never runs
 ```
 
@@ -24,6 +24,6 @@ A warning: `"condition": false` is a way to switch a step off.
 ## Related
 
 - [Advisory checks](./index.md): every rule, the levels, and where certainty comes from.
-- [`orion-server clippy`](../cli/orion-server/clippy.md): the command, its flags and exit codes.
+- [`orion-cli clippy`](../cli/orion-cli/clippy.md): the command, its flags and exit codes.
 - [Test workflows offline](../../guides/author/testing.md): running the rules against a set.
 - [Workflows](../workflows.md): the step grammar the rule reads.

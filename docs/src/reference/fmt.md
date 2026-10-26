@@ -1,12 +1,12 @@
-<!-- description: The one layout `orion-server fmt` writes: the numbers, the key order of every recognised shape, and the JSONLogic inlining rules — with nothing to configure. -->
+<!-- description: The one layout `orion-cli fmt` writes: the numbers, the key order of every recognised shape, and the JSONLogic inlining rules — with nothing to configure. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-25 -->
 
 # Definition style (`fmt`)
 
-`orion-server fmt` rewrites definition files to one layout, the way `gofmt` and `cargo fmt` do. There is no configuration: every file in every tree reads the same way. A style change is a change to Orion rather than to a project's settings.
+`orion-cli fmt` rewrites definition files to one layout, the way `gofmt` and `cargo fmt` do. There is no configuration: every file in every tree reads the same way. A style change is a change to Orion rather than to a project's settings.
 
-This page is that style, stated as rules. The command itself is under [`fmt`](./cli/orion-server/fmt.md), and [Test a workflow offline](../guides/author/testing.md) is where `fmt --check` sits in a CI gate.
+This page is that style, stated as rules. The command itself is under [`fmt`](./cli/orion-cli/fmt.md), and [Test a workflow offline](../guides/author/testing.md) is where `fmt --check` sits in a CI gate.
 
 ## What the formatter changes, and what it never touches
 
@@ -93,6 +93,6 @@ By shape, never by file name. An object with `tasks` is a workflow, with `connec
 
 ## Related
 
-- [CLI › `fmt`](./cli/orion-server/fmt.md): the command, its flags and exit codes.
+- [CLI › `fmt`](./cli/orion-cli/fmt.md): the command, its flags and exit codes.
 - [Test a workflow offline](../guides/author/testing.md): where `fmt --check` sits in a CI gate.
 - [Advisory checks (`clippy`)](./clippy/index.md): the rules that run after `lint`, which `fmt` never applies.

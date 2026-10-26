@@ -1,15 +1,15 @@
-<!-- description: orion-server fmt rewrites definition files to the one house style, with --check for CI and --stdin for editors; the exit codes and what it refuses. -->
+<!-- description: orion-cli fmt rewrites definition files to the one house style, with --check for CI and --stdin for editors; the exit codes and what it refuses. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-19 -->
 
-# `orion-server fmt`
+# `orion-cli fmt`
 
 Formats definition files to the house style, the way `cargo fmt` formats Rust. One style, nothing to configure; the style itself is documented on [Definition Style](../../fmt.md). Needs no config, database, or server.
 
 ## Synopsis
 
 ```bash
-orion-server fmt [PATH]... [--check] [--stdin]
+orion-cli fmt [PATH]... [--check] [--stdin]
 ```
 
 ## Description
@@ -35,7 +35,7 @@ Files are rewritten atomically: a sibling temp file is renamed over the original
 ## Examples
 
 ```
-$ orion-server fmt --check ./definitions
+$ orion-cli fmt --check ./definitions
 --- a/definitions/orders/channel.json
 +++ b/definitions/orders/channel.json
 @@ -3,9 +3,7 @@
@@ -51,12 +51,12 @@ $ orion-server fmt --check ./definitions
 ```
 
 ```bash
-orion-server fmt ./definitions && orion-server lint ./definitions
+orion-cli fmt ./definitions && orion-cli lint ./definitions
 ```
 
 ## Related
 
 - [Definition style (`fmt`)](../../fmt.md): the one layout this command writes.
 - [Test a workflow offline](../../../guides/author/testing.md): `fmt --check` beside `lint` in a CI gate.
-- [`orion-server lint`](./lint.md): the check that usually follows a format.
-- [`orion-server` commands](./index.md): every `orion-server` subcommand.
+- [`orion-cli lint`](./lint.md): the check that usually follows a format.
+- [`orion-cli` commands](./index.md): every `orion-cli` subcommand.

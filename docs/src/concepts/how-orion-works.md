@@ -42,7 +42,7 @@ The three primitives are files in a *definition set*: one directory per estate, 
   "direction": "LR",
   "nodes": [
     { "id": "files", "label": "Definition set", "sublabel": "workflow · channel · connector", "type": "service" },
-    { "id": "compile", "label": "orion-server compile", "sublabel": "checks, resolves, writes", "type": "ci" },
+    { "id": "compile", "label": "orion-cli compile", "sublabel": "checks, resolves, writes", "type": "ci" },
     { "id": "apply", "label": "deployments apply", "sublabel": "plan, then commit", "type": "gateway" },
     { "id": "node", "label": "Node", "sublabel": "builds the head", "type": "channel" }
   ],
@@ -55,7 +55,7 @@ The three primitives are files in a *definition set*: one directory per estate, 
 The diagram shows the path every change takes to a node:
 
 1. **You write the files.** A workflow file holds the logic, a channel file the endpoint, a connector file a connection's settings and secret references.
-2. **`orion-server compile` checks the set offline.** It runs every `lint` check, resolves shared fragments, and writes a deployment directory. A set that would not serve writes nothing.
+2. **`orion-cli compile` checks the set offline.** It runs every `lint` check, resolves shared fragments, and writes a deployment directory. A set that would not serve writes nothing.
 3. **`orion-cli deployments apply -d` commits it.** It uploads each definition, plans the manifest against the node's head, and commits it as the next revision. A deployment replaces the head whole.
 4. **The node builds the revision.** It compiles a new engine from the manifest and swaps it in. Requests in flight finish on the engine they started with.
 

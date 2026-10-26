@@ -47,7 +47,7 @@ Orion Server v1.0.0
 
 ```bash
 # Compile a directory of workflow, channel and connector files
-orion-server compile ./definitions -o dist/deployment
+orion-cli compile ./definitions -o dist/deployment
 
 # See what would change, then deploy it as the next revision
 orion-cli deployments plan -d dist/deployment
@@ -98,7 +98,7 @@ what the previous revision deployed.
 
 ## Deployments
 
-`orion-server compile` writes a definition set as a deployment directory with
+`orion-cli compile` writes a definition set as a deployment directory with
 no revisions in it. `deployments apply -d` uploads its definitions, reuses or
 creates connection revisions, assigns member revisions against the target's
 history, plans against the head and applies with the reviewed digest:

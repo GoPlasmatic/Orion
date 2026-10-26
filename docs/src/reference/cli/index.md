@@ -1,15 +1,15 @@
-<!-- description: The two Orion binaries: orion-server, the runtime with its diagnostic and authoring subcommands, and orion-cli, the admin client. -->
+<!-- description: The two Orion binaries: orion-server runs and diagnoses the node; orion-cli authors definitions offline and administers a running server. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-14 -->
 
 # CLI
 
-Orion ships two binaries. `orion-server` is the runtime, with diagnostic and authoring subcommands that need no running server. `orion-cli` is the admin client, driving a running server over HTTP. 
+Orion ships two binaries. `orion-server` runs the node and diagnoses its configuration and state database. `orion-cli` authors definitions offline and administers a running server over HTTP.
 
 | Page | Holds |
 |---|---|
-| [orion-server](./orion-server/index.md) | Start the server; `validate-config`, `migrate`, `lint`, `compile`, `fmt`, `clippy`, `dry-run`, `test`, `test-connectivity`, `sql check`, `dump-openapi` and `plugin` |
-| [orion-cli](./orion-cli/index.md) | The global flags, and `config`, `health`, `send`, `traces`, `engine`, `functions`, `metrics`, `audit-logs`, `backups`, `cache`, `dlq`, `cron`, `deployments`, `provider`, `connections` and `completions` |
+| [orion-server](./orion-server/index.md) | Start the server; `validate-config`, `migrate`, `test-connectivity` and `dump-openapi` |
+| [orion-cli](./orion-cli/index.md) | Offline authoring: `lint`, `compile`, `fmt`, `clippy`, `dry-run`, `test`, `sql check` and `plugin`. Remote administration: `health`, `send`, `traces`, `engine`, `functions`, `metrics`, `audit-logs`, `backups`, `cache`, `dlq`, `cron`, `deployments`, `provider` and `connections`. CLI setup: `config` and `completions` |
 | [Shared definitions](./shared-definitions.md) | `$from` and `use`, the two forms a definition set may use and `compile` resolves |
 
 ## Related

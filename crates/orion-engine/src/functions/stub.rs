@@ -1,7 +1,7 @@
 //! Canned responses for connector-backed tasks, so a workflow can be run
 //! offline.
 //!
-//! `orion-server dry-run` used to build its engine with an empty custom-function
+//! `orion-cli dry-run` used to build its engine with an empty custom-function
 //! map, which meant every connector-backed function — `http_call`,
 //! `channel_call`, `db_read`, `db_write`, `data_query`, `data_write`,
 //! `cache_read`, `cache_write`, `mongo_read`, `publish_kafka` — failed with

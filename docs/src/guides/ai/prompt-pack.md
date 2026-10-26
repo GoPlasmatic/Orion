@@ -86,8 +86,8 @@ always async.
 0. If you can run a shell, do not hand-build manifests. Write a definition
    set: one directory of workflow, channel and connector JSON files, each with
    its id (workflow_id, channel_id, a connector's name). Then run
-     orion-server lint <dir>
-     orion-server compile <dir> -o dist
+     orion-cli lint <dir>
+     orion-cli compile <dir> -o dist
      orion-cli deployments plan -d dist
      orion-cli deployments apply -d dist
    compile resolves shared fragments and turns connectors into connections;
@@ -150,7 +150,7 @@ GET   /api/v2/admin/traces/{trace_id}               poll async result
   as env://VAR under secret_locators. Never embed real credentials in JSON.
 - Post plain, self-contained JSON. The authoring shorthands a definition
   directory may use ("$from" for a shared value, "use" for a task fragment)
-  are resolved by `orion-server compile` before a deploy; the API takes one
+  are resolved by `orion-cli compile` before a deploy; the API takes one
   document with no set to resolve names against and refuses either with
   UNCOMPILED_SOURCE, at any depth.
 ````

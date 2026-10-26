@@ -1,4 +1,4 @@
-//! `orion-server fmt` as a process: exit codes, what reaches which stream,
+//! `orion-cli fmt` as a process: exit codes, what reaches which stream,
 //! and what happens to the files.
 //!
 //! Against the compiled binary, like `cli_subcommands_test`, because the
@@ -16,7 +16,7 @@ fn fmt(args: &[&str]) -> Output {
         .arg("fmt")
         .args(args)
         .output()
-        .expect("invoke orion-server fmt")
+        .expect("invoke orion-cli fmt")
 }
 
 fn text(bytes: &[u8]) -> String {

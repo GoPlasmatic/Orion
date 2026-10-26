@@ -94,7 +94,7 @@ impl std::fmt::Display for Refusal {
             Refusal::NoSpans => write!(
                 f,
                 "the file cannot be read by the order-preserving parser (a duplicate key?) — \
-                 `orion-server fmt` reports why"
+                 `orion-cli fmt` reports why"
             ),
             Refusal::Verification => write!(
                 f,

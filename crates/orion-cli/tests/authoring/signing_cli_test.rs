@@ -1,18 +1,23 @@
-//! `orion-server plugin digest|keygen|pubkey|sign|verify`, through the
+//! `orion-cli plugin digest|keygen|pubkey|sign|verify`, through the
 //! binary: what a release pipeline runs to produce what `[plugins.trust]`
 //! checks.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+use crate::common::orion_bin;
+
+const FIXTURES: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../orion-server/tests/fixtures"
+);
 
 fn orion(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orion-server"))
+    Command::new(orion_bin())
         .args(args)
         .env_remove("ORION_SIGNING_KEY")
         .output()
-        .expect("invoke orion-server")
+        .expect("invoke orion-cli")
 }
 
 #[track_caller]
@@ -85,7 +90,7 @@ fn keygen(scratch: &Scratch, name: &str) -> (String, String) {
 fn digest_of_a_dir_a_manifest_and_a_bare_file_agree() {
     let scratch = Scratch::new();
     let dir = scratch.plugin("p");
-    let expected = orion::plugin::WasmRuntime::digest(
+    let expected = orion_plugin_host::WasmRuntime::digest(
         &std::fs::read(Path::new(&dir).join("fixture.wasm")).expect("component"),
     );
     for path in [
@@ -134,7 +139,7 @@ fn keygen_sign_verify_round_trip() {
     // deterministic.
     std::fs::remove_file(Path::new(&dir).join("fixture.wasm.sig")).expect("rm");
     let pem = std::fs::read_to_string(&key).expect("pem");
-    let out = Command::new(env!("CARGO_BIN_EXE_orion-server"))
+    let out = Command::new(orion_bin())
         .args(["plugin", "sign", &dir])
         .env("ORION_SIGNING_KEY", pem)
         .output()
@@ -185,7 +190,7 @@ fn verify_without_a_key_is_an_error_not_ok() {
     // nothing, so "ok" would be a lie.
     let config = scratch.path("config.toml");
     std::fs::write(&config, "[plugins]\nenabled = true\n").expect("config");
-    let stderr = fails(&orion(&["-c", &config, "plugin", "verify", &dir]));
+    let stderr = fails(&orion(&["plugin", "verify", "-c", &config, &dir]));
     assert!(stderr.contains("declares no public_keys"), "{stderr}");
 }
 
@@ -201,7 +206,7 @@ fn verify_reads_the_nodes_own_trust_keys_with_dash_c() {
         format!("[plugins]\nenabled = true\n\n[plugins.trust]\npublic_keys = [\"{public}\"]\n"),
     )
     .expect("config");
-    let stdout = ok(&orion(&["-c", &config, "plugin", "verify", &dir]));
+    let stdout = ok(&orion(&["plugin", "verify", "-c", &config, &dir]));
     assert!(stdout.contains("ok  test.fixture"), "{stdout}");
 }
 
@@ -261,9 +266,9 @@ fn sign_into_a_dir_writes_the_layout_a_signatures_dir_reads() {
     assert!(stdout.contains("ok  test.fixture"), "{stdout}");
 
     // The library's lookup finds the same file the verb wrote.
-    let dir = orion::signatures::SignatureDir::open(Path::new(&sigs)).expect("open");
-    let subject = orion::signatures::Subject {
-        kind: orion::signatures::Kind::Plugin,
+    let dir = orion_common::signatures::SignatureDir::open(Path::new(&sigs)).expect("open");
+    let subject = orion_common::signatures::Subject {
+        kind: orion_common::signatures::Kind::Plugin,
         id: "test.fixture".to_string(),
         file_names: vec!["fixture.wasm".to_string()],
         digest: String::new(),

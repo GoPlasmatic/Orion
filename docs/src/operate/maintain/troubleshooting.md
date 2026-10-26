@@ -43,7 +43,7 @@ And from the workflow behind it, since a channel whose workflow cannot be built 
    ```
 
 2. If the cause is the node, such as an unset `env://` variable, fix the node and restart it. Its next build serves the channel.
-3. If the cause is the definition, fix the file and deploy a new revision: `orion-server compile ./definitions -o dist/deployment`, then `orion-cli deployments apply -d dist/deployment`. A committed revision is never edited. See [Deploy a compiled directory](../../reference/admin-api/deployments.md#deploy-a-compiled-directory).
+3. If the cause is the definition, fix the file and deploy a new revision: `orion-cli compile ./definitions -o dist/deployment`, then `orion-cli deployments apply -d dist/deployment`. A committed revision is never edited. See [Deploy a compiled directory](../../reference/admin-api/deployments.md#deploy-a-compiled-directory).
 
 **How to verify.** `/health` no longer lists the channel under `channels.quarantined`, and `components.channels` reads `ok`. There is no metric for quarantine on the synchronous path. `/health` and the build log are the signals, which is why the `channels` component going `degraded` deserves an alert of its own.
 
@@ -102,7 +102,7 @@ If the channel is missing from the members, deploy a directory that carries it. 
 
 **Why.** Plan and apply build the candidate manifest the way a node would, and refuse one that would not build. Nothing was committed. The message names the cause. Common ones are a member naming a definition of another kind, a workflow calling a function no member serves, and two channels claiming one route.
 
-**What to do.** A directory from `orion-server compile` rarely reaches this, because `compile` runs the same checks offline. Recompile with the binary the target runs, and fix what it reports. A hand-written manifest (`deployments apply -f`) is checked only here, so fix the member the message names.
+**What to do.** A directory from `orion-cli compile` rarely reaches this, because `compile` runs the same checks offline. Recompile with the binary the target runs, and fix what it reports. A hand-written manifest (`deployments apply -f`) is checked only here, so fix the member the message names.
 
 **How to verify.** `orion-cli deployments plan -d dist/deployment` prints the plan instead of the error.
 
@@ -139,7 +139,7 @@ With `orion-cli deployments apply -d --base-revision`, the CLI says `the target'
 
 **Why.** The document still holds a source-form convenience, such as `$from` or `use`. Those resolve when a definition set is compiled. `POST /api/v2/admin/definitions` takes one document and has no set to resolve the name against.
 
-**What to do.** Deploy the set through `orion-server compile ./definitions -o dist/deployment`, then `orion-cli deployments apply -d dist/deployment`. Do not expand the references by hand.
+**What to do.** Deploy the set through `orion-cli compile ./definitions -o dist/deployment`, then `orion-cli deployments apply -d dist/deployment`. Do not expand the references by hand.
 
 **How to verify.** The apply uploads every definition without a field error.
 
@@ -252,7 +252,7 @@ The function catalogue is the authority. A plugin function only appears there on
   "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } } }
 ```
 
-**How to verify.** `orion-server dry-run -w workflow.json -i payload.json` prints the context each task produced, starting from the payload's fields under `data`.
+**How to verify.** `orion-cli dry-run -w workflow.json -i payload.json` prints the context each task produced, starting from the payload's fields under `data`.
 
 ## A mapping wrote an object where a value belongs
 

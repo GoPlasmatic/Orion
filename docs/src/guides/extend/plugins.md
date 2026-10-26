@@ -10,7 +10,7 @@ The sandbox imports nothing: no filesystem, clock, randomness, sockets, connecto
 
 ## Before you start
 
-You need a Rust toolchain, `wasm-tools`, `orion-server` and `orion-cli`, and a server running with `plugins.enabled = true`. A node whose `[plugins.trust]` names keys also needs a signing key, which [`orion-server plugin keygen`](../../reference/cli/orion-server/plugin.md) creates; see [Trust](../../reference/plugin-manifest.md#trust).
+You need a Rust toolchain, `wasm-tools`, `orion-server` and `orion-cli`, and a server running with `plugins.enabled = true`. A node whose `[plugins.trust]` names keys also needs a signing key, which [`orion-cli plugin keygen`](../../reference/cli/orion-cli/plugin.md) creates; see [Trust](../../reference/plugin-manifest.md#trust).
 
 ## 1. Decide it is a plugin
 
@@ -124,8 +124,8 @@ required = true         # a literal
 A plugin function runs for real in an offline run. It is capability-free, so there is nothing to stub. Point `dry-run` and `test` at the directory holding the manifest and component:
 
 ```bash
-orion-server dry-run -w workflow.json -i input.json --plugin-dir ./plugin
-orion-server test ./cases --plugin-dir ./plugin
+orion-cli dry-run -w workflow.json -i input.json --plugin-dir ./plugin
+orion-cli test ./cases --plugin-dir ./plugin
 ```
 
 `lint` needs only the manifest. It checks a task's input against it exactly as the admin API does: a missing required field, a wrong kind, an undeclared field. A case that names a function whose component is not beside its manifest fails as `PLUGIN_ARTIFACT_UNAVAILABLE`, never as a silently passing stub. [Test a workflow offline](../author/testing.md) covers the case format.
@@ -135,7 +135,7 @@ orion-server test ./cases --plugin-dir ./plugin
 A plugin deploys with the workflows that call it. Put `plugin.toml` and the component it names in the definition set, and compile it:
 
 ```bash
-orion-server compile ./definitions -o dist/deployment
+orion-cli compile ./definitions -o dist/deployment
 orion-cli deployments apply -d dist/deployment
 ```
 

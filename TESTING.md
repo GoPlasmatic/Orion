@@ -155,7 +155,7 @@ The workspace-level suite at the repo root: 11 shell suites drive a real
 the same tree — the one place the full contract chain (server ⇄ `orion-api`
 ⇄ `orion-client` ⇄ CLI rendering) is exercised end to end at one commit.
 Every test deploys what it needs the way an operator does: a definition set
-compiled with `orion-server compile` and applied with `orion-cli deployments
+compiled with `orion-cli compile` and applied with `orion-cli deployments
 apply -d`, replacing the node's head. Suite 06 is data-driven, from two case
 directories with distinct roles: [`examples/use-cases/`](examples/use-cases/)
 deploys the shipped example packages whole (never copied) and asserts their
@@ -176,7 +176,7 @@ just e2e                  # build both binaries + full suite
 
 The examples are executable and CI treats them as a gate (`examples` job):
 
-- **Offline:** every package workflow passes `orion-server lint`, and the
+- **Offline:** every package workflow passes `orion-cli lint`, and the
   [`examples/workflow-tests/`](examples/workflow-tests/) cases run each
   workflow through the real engine with stubbed connectors and the
   `fixed-width-statement` and `c4-referee` plugins running for real
@@ -184,7 +184,7 @@ The examples are executable and CI treats them as a gate (`examples` job):
 - **Live:** CI boots a real server with plugins enabled (plus Postgres for
   `postgres-orders`), runs `quickstart.sh` twice and `deploy.sh` for
   **every** package twice — deployability and idempotency are both asserted.
-  Both scripts compile with `orion-server compile` and deploy with
+  Both scripts compile with `orion-cli compile` and deploy with
   `orion-cli deployments apply -d`; each deploy replaces the node's head, so
   every package is proven on its own, and the second run applies nothing.
 - **From source:** the `plugin-sdk` CI job rebuilds the test fixture and the

@@ -7,7 +7,7 @@ database.
 From the repository root, with a server on `http://localhost:8080`:
 
 ```bash
-orion-server compile examples/packages/iot-sensor-alert -o dist/iot-sensor-alert
+orion-cli compile examples/packages/iot-sensor-alert -o dist/iot-sensor-alert
 orion-cli deployments apply -d dist/iot-sensor-alert
 ```
 

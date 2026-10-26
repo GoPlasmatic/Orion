@@ -1,15 +1,15 @@
-<!-- description: orion-server dry-run executes a workflow offline against a JSON input with canned connector stubs, real plugin execution, and prints the trace. -->
+<!-- description: orion-cli dry-run executes a workflow offline against a JSON input with canned connector stubs, real plugin execution, and prints the trace. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-25 -->
 
-# `orion-server dry-run`
+# `orion-cli dry-run`
 
 Executes a workflow against a JSON input in an in-process engine, then prints the per-task execution trace. Connector-backed tasks are answered from `--stubs`. Without a matching stub the task fails and names the stub it needs.
 
 ## Synopsis
 
 ```bash
-orion-server dry-run -w <workflow.json> -i <input.json> [--stubs <stubs.json>] [--metadata <metadata.json>] [--secrets <secrets.json>] [--trace full|steps|none]
+orion-cli dry-run -w <workflow.json> -i <input.json> [--stubs <stubs.json>] [--metadata <metadata.json>] [--secrets <secrets.json>] [--trace full|steps|none]
 ```
 
 ## Description
@@ -36,12 +36,12 @@ Each step in the trace snapshots the message after it, carrying only the audit e
 ## Examples
 
 ```bash
-orion-server dry-run -w wf.json -i input.json --stubs stubs.json
+orion-cli dry-run -w wf.json -i input.json --stubs stubs.json
 ```
 
 ## Related
 
 - [Test a workflow offline](../../../guides/author/testing.md): stubs, metadata and secrets files in practice.
-- [`orion-server test`](./test.md): the same execution, as a regression suite.
+- [`orion-cli test`](./test.md): the same execution, as a regression suite.
 - [Workflow definition](../../workflows.md): the document this command executes.
-- [`orion-server` commands](./index.md): every `orion-server` subcommand.
+- [`orion-cli` commands](./index.md): every `orion-cli` subcommand.

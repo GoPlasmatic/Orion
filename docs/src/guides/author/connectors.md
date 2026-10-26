@@ -29,7 +29,7 @@ Save the connector as a file in your definition set, beside the workflows that u
 }
 ```
 
-[`orion-server compile`](../../reference/cli/orion-server/compile.md#deployment-directories) turns it into a connection revision, and `orion-cli deployments apply -d` deploys it with the workflows. A `db` connector must name its `driver`: `postgresql`, `mysql` or `sqlite`. A changed connector becomes a new connection revision, never an edit of the old one. [Connectors](../../concepts/connectors.md) explains the two forms.
+[`orion-cli compile`](../../reference/cli/orion-cli/compile.md#deployment-directories) turns it into a connection revision, and `orion-cli deployments apply -d` deploys it with the workflows. A `db` connector must name its `driver`: `postgresql`, `mysql` or `sqlite`. A changed connector becomes a new connection revision, never an edit of the old one. [Connectors](../../concepts/connectors.md) explains the two forms.
 
 ## Never write a credential into one
 

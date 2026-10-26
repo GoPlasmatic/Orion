@@ -4,7 +4,7 @@
 //! One registry name whose capabilities grow by table, not by API surface —
 //! the same trade `data_write`'s envelope made. Self-contained: no connector,
 //! no egress, deterministic given its inputs, which is why dry-run and
-//! `orion-server test` run it for real instead of stubbing it.
+//! `orion-cli test` run it for real instead of stubbing it.
 //!
 //! The op × algorithm capability tables below are shared with
 //! `schema::validate_input` (via `validate_static_input`), so execution and

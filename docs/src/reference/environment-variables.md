@@ -51,7 +51,7 @@ Rewriting is mechanical: `"${DB_URL}"` becomes `"env://DB_URL"`. One caveat: `${
 
 ² A workflow reads a declared value *by name* instead: `{"var": "metadata.vars.name"}` for a var, `{"secret": "name"}` for a secret. A stored config has no message to read from, which is why it needs a reference form and a workflow does not.
 
-A workflow carrying one anywhere else is **refused**. `POST /api/v2/admin/definitions`, `orion-server lint` and `compile` all report `UNRESOLVED_SECRET_REF` naming the field. `env://` at the head of a string has no reading in which it is data. Before that check existed the reference was a plain string. A task with `"path": "env://API_BASE"` requested a URL spelled `env://API_BASE` and failed with whatever the backend made of it.
+A workflow carrying one anywhere else is **refused**. `POST /api/v2/admin/definitions`, `orion-cli lint` and `compile` all report `UNRESOLVED_SECRET_REF` naming the field. `env://` at the head of a string has no reading in which it is data. Before that check existed the reference was a plain string. A task with `"path": "env://API_BASE"` requested a URL spelled `env://API_BASE` and failed with whatever the backend made of it.
 
 > [!WARNING]
 > `${VAR}` has no such guard, because `${…}` is ordinary text in a query or a template. A workflow embedding `${TENANT}` sends those nine characters to the backend. Nothing substitutes them.
@@ -132,7 +132,7 @@ Each section refuses the other's value shape, because either mistake is silent. 
 >
 > A stored *config value* is the one place a secret does not reach: `var://` resolves there and `{"secret": …}` does not. That is deliberate. A config value is not evaluated, so there is nothing to hold the result, and a credential a backend needs belongs on the connector that dials it.
 
-Offline, there is no config file to read either section from. `orion-server dry-run --secrets` and a `*.case.json` `secrets` block supply stand-in values; `metadata.vars` is written directly into the case's `metadata`. See [Test a workflow offline](../guides/author/testing.md).
+Offline, there is no config file to read either section from. `orion-cli dry-run --secrets` and a `*.case.json` `secrets` block supply stand-in values; `metadata.vars` is written directly into the case's `metadata`. See [Test a workflow offline](../guides/author/testing.md).
 
 ## Author every credential as a reference
 
@@ -188,7 +188,7 @@ Creating a connection revision does **not** resolve its references. `POST /api/v
 
 ## Inventory what a set needs
 
-`orion-server lint ./definitions` ends with one `note:` per secret the set references, naming each one and the files that mention it. `[env.reference]` covers each variable an `env://` reference needs in the environment. `[secrets.reference]` covers each name a `{"secret": …}` needs in the serving instance's `[secrets]` section. Both are exit-neutral: neither the exit code nor `--deny-warnings` counts a note. The machine running `lint` is not the machine that serves the set. Its environment and its config say nothing about whether the value is present where it matters.
+`orion-cli lint ./definitions` ends with one `note:` per secret the set references, naming each one and the files that mention it. `[env.reference]` covers each variable an `env://` reference needs in the environment. `[secrets.reference]` covers each name a `{"secret": …}` needs in the serving instance's `[secrets]` section. Both are exit-neutral: neither the exit code nor `--deny-warnings` counts a note. The machine running `lint` is not the machine that serves the set. Its environment and its config say nothing about whether the value is present where it matters.
 
 The scan is textual: it walks every string in every definition, so it reports what a set *mentions*. A reference in a workflow field that resolves nothing no longer hides among them. `lint` fails the set with `[env.unresolved]` before the inventory is worth reading. A connector or channel field is still inventoried without any claim that the variable is set where it matters.
 

@@ -1,4 +1,4 @@
-//! `orion-server compile`: a definition set in, a deployment directory out.
+//! `orion-cli compile`: a definition set in, a deployment directory out.
 //!
 //! The command exists because nothing else performs the expansion a deploy
 //! needs: the admin API stores only compiled documents, so the only path from
@@ -18,7 +18,7 @@ fn run(args: &[&str]) -> (bool, String) {
     let out = Command::new(orion_bin())
         .args(args)
         .output()
-        .expect("run orion-server");
+        .expect("run orion-cli");
     let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
     combined.push_str(&String::from_utf8_lossy(&out.stderr));
     (out.status.success(), combined)
@@ -243,8 +243,10 @@ fn the_output_flag_is_required() {
 
 /// The fixture plugin's upload manifest and component, as a set carries them:
 /// `plugin.toml` beside the component it names.
-const PLUGIN_MANIFEST: &str = include_str!("../fixtures/plugins/fixture-upload.toml");
-const PLUGIN_COMPONENT: &[u8] = include_bytes!("../fixtures/plugins/fixture.wasm");
+const PLUGIN_MANIFEST: &str =
+    include_str!("../../../orion-server/tests/fixtures/plugins/fixture-upload.toml");
+const PLUGIN_COMPONENT: &[u8] =
+    include_bytes!("../../../orion-server/tests/fixtures/plugins/fixture.wasm");
 
 /// A set whose workflow calls a plugin function, with the plugin's manifest
 /// in the tree. `with_component` leaves the bytes out to model a manifest
@@ -389,7 +391,7 @@ fn a_plugin_in_the_set_compiles_into_the_deployment_with_its_component() {
     definition_of(&out, "workflow", "wrap");
 }
 
-/// A detached signature beside the component — the file `orion-server plugin
+/// A detached signature beside the component — the file `orion-cli plugin
 /// sign` writes — travels with the plugin, so a node with `[plugins.trust]`
 /// can verify it. Without one the definition carries none.
 #[test]
@@ -472,7 +474,7 @@ fn the_unrolled_example_compiles_to_one_step_per_seat_and_runs() {
         .collect();
     assert_eq!(ids, ["parse", "score0", "score1", "score2", "score3"]);
     assert!(
-        orion::definitions::compile::residue(&workflow, "").is_empty(),
+        orion_authoring::definitions::compile::residue(&workflow, "").is_empty(),
         "{workflow}"
     );
 
@@ -546,11 +548,13 @@ fn deployment_set(label: &str) -> ScratchDir {
 
 fn compile_deployment(dir: &std::path::Path, out: &std::path::Path) -> (bool, String) {
     run(&[
+        "--output",
+        "json",
         "compile",
         dir.to_str().unwrap(),
         "--format",
         "deployment",
-        "-o",
+        "--out",
         out.to_str().unwrap(),
     ])
 }
@@ -628,7 +632,7 @@ fn a_deployment_is_written_without_revisions() {
         let digest = member["definition"].as_str().unwrap();
         let hex = digest.strip_prefix("sha256:").unwrap();
         let bytes = std::fs::read(out.join("definitions").join(format!("{hex}.json"))).unwrap();
-        assert_eq!(orion::crypto::sha256_digest(&bytes), digest);
+        assert_eq!(orion_common::crypto::sha256_digest(&bytes), digest);
         let definition: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(definition["kind"], member["kind"]);
     }
@@ -667,7 +671,7 @@ fn a_connections_secret_references_become_its_locators() {
     assert_eq!(api["driver"], "org.orion.http");
     assert_eq!(
         api["provider_digest"].as_str(),
-        orion::test_support::builtin_provider_digest("org.orion.http").as_deref()
+        orion_runtime::extensions::foundation::builtin_provider_digest("org.orion.http").as_deref()
     );
     assert_eq!(
         api["secret_locators"],
@@ -835,61 +839,6 @@ fn a_set_db_connector_names_a_driver_its_scheme_agrees_with() {
     assert!(ok, "{report}");
 }
 
-/// An OAuth2 http connector compiles and deploys: its `token_url` is an
-/// endpoint, public, while the client credentials and the refresh-token
-/// seed are secret references that become locators.
-#[tokio::test]
-async fn an_oauth2_connection_compiles_and_creates() {
-    use tower::ServiceExt as _;
-    let scratch = deployment_set("compile-deployment-oauth2");
-    let dir = scratch.path();
-    std::fs::write(
-        dir.join("conn-crm.json"),
-        r#"{ "name": "crm", "connector_type": "http",
-             "config": { "type": "http", "url": "https://api.example.com",
-               "auth": { "type": "oauth2", "grant": "refresh_token",
-                 "token_url": "https://idp.example.com/oauth2/token",
-                 "client_id": "env://CRM_CLIENT_ID",
-                 "client_secret": "env://CRM_CLIENT_SECRET",
-                 "refresh_token": "env://CRM_REFRESH_TOKEN_SEED",
-                 "scopes": ["api.read"] } } }"#,
-    )
-    .unwrap();
-    let out = dir.join("dist");
-    let (ok, report) = compile_deployment(dir, &out);
-    assert!(ok, "{report}");
-    let mut crm = read_json(&out.join("connections/crm.json"));
-    assert_eq!(
-        crm["secret_locators"],
-        serde_json::json!({
-            "auth.client_id": "env://CRM_CLIENT_ID",
-            "auth.client_secret": "env://CRM_CLIENT_SECRET",
-            "auth.refresh_token": "env://CRM_REFRESH_TOKEN_SEED",
-        })
-    );
-    assert_eq!(
-        crm["public_config"]["auth"]["token_url"],
-        "https://idp.example.com/oauth2/token"
-    );
-
-    let app = crate::common::test_app().await;
-    let obj = crm.as_object_mut().unwrap();
-    obj.remove("driver");
-    obj.remove("connection_id");
-    obj.insert("revision".into(), serde_json::json!(1));
-    let resp = app
-        .oneshot(crate::common::json_request(
-            "POST",
-            "/api/v2/admin/connections/crm/revisions",
-            Some(crm),
-        ))
-        .await
-        .unwrap();
-    let status = resp.status();
-    let body = crate::common::body_json(resp).await;
-    assert_eq!(status, 201, "{body}");
-}
-
 /// A key no definition defines names the entity and the key.
 #[test]
 fn a_key_a_definition_does_not_define_is_named() {
@@ -908,87 +857,4 @@ fn a_key_a_definition_does_not_define_is_named() {
         report.contains("channel 'remember-api'") && report.contains("`activate`"),
         "{report}"
     );
-}
-
-/// What compile writes is what a server stores: every definition uploads to
-/// the digest its file is named by, every connection creates as written,
-/// and a manifest over them, revisions assigned, plans.
-#[tokio::test]
-async fn a_compiled_deployment_uploads_to_its_own_digests_and_plans() {
-    use tower::ServiceExt as _;
-    let scratch = deployment_set("compile-deployment-upload");
-    let out = scratch.path().join("dist");
-    let (ok, report) = compile_deployment(scratch.path(), &out);
-    assert!(ok, "{report}");
-
-    let app = crate::common::test_app().await;
-    let send = |method: &'static str, uri: String, body: serde_json::Value| {
-        let app = app.clone();
-        async move {
-            let resp = app
-                .oneshot(crate::common::json_request(method, &uri, Some(body)))
-                .await
-                .unwrap();
-            let status = resp.status();
-            (status, crate::common::body_json(resp).await)
-        }
-    };
-
-    let deployment = read_json(&out.join("deployment.json"));
-    let mut members = Vec::new();
-    for member in deployment["members"].as_array().unwrap() {
-        let id = member["id"].as_str().unwrap();
-        let requires: Vec<serde_json::Value> = member["requires"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|r| serde_json::json!({"kind": r["kind"], "id": r["id"], "revision": 1}))
-            .collect();
-        let digest = if member["kind"] == "connection" {
-            let mut connection = read_json(&out.join(format!("connections/{id}.json")));
-            let obj = connection.as_object_mut().unwrap();
-            obj.remove("driver");
-            obj.remove("connection_id");
-            obj.insert("revision".into(), serde_json::json!(1));
-            let (status, body) = send(
-                "POST",
-                format!("/api/v2/admin/connections/{id}/revisions"),
-                connection,
-            )
-            .await;
-            assert_eq!(status, 201, "{id}: {body}");
-            body["connection"]["configuration_digest"]
-                .as_str()
-                .unwrap()
-                .to_string()
-        } else {
-            let named = member["definition"].as_str().unwrap();
-            let file = out.join(format!(
-                "definitions/{}.json",
-                named.trim_start_matches("sha256:")
-            ));
-            let (status, body) =
-                send("POST", "/api/v2/admin/definitions".into(), read_json(&file)).await;
-            assert_eq!(status, 201, "{id}: {body}");
-            assert_eq!(
-                body["digest"], named,
-                "{id}: the server's digest is the file's"
-            );
-            named.to_string()
-        };
-        members.push(serde_json::json!({
-            "entity": {"kind": member["kind"], "id": id, "revision": 1},
-            "definition_digest": digest,
-            "requires": requires,
-        }));
-    }
-    let (status, plan) = send(
-        "POST",
-        "/api/v2/admin/deployment-plans".into(),
-        serde_json::json!({"base_revision": 0, "manifest": {
-            "schema_version": 2, "providers": [], "members": members}}),
-    )
-    .await;
-    assert_eq!(status, 200, "{plan}");
-    assert_eq!(plan["added_entities"].as_array().map(Vec::len), Some(4));
 }

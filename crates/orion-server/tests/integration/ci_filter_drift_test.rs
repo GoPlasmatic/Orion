@@ -12,7 +12,9 @@
 //! `config_docs_drift_test`: parse the workflow, parse the test tree, and
 //! refuse to let the two disagree.
 //!
-//! Only the `integration` binary needs this. The `cluster`, `storage_postgres`,
+//! Two binaries are selected by name this way: this crate's `integration` and
+//! `orion-cli`'s `authoring` (the offline tools, whose `sql check` suite
+//! needs databases). The `cluster`, `storage_postgres`,
 //! `storage_mysql` and `schema_parity` binaries get their own steps that run
 //! `--ignored` with no name filter, so every ignored test in them is selected
 //! wholesale.
@@ -25,14 +27,26 @@ const WORKFLOW: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../.github/workflows/ci.yml"
 );
-const INTEGRATION_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/integration");
 const JUSTFILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../justfile");
 
-/// Module names (file stems) under `tests/integration/` that declare at least
-/// one `#[ignore]` test, and so depend on a CI filter to ever run.
-fn modules_with_ignored_tests() -> BTreeSet<String> {
+/// Each test binary whose container-gated modules are selected by name: the
+/// `--test` selector ci.yml uses for it, and the directory of its modules.
+const NAMED_BINARIES: &[(&str, &str)] = &[
+    (
+        "--test integration",
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/integration"),
+    ),
+    (
+        "--test authoring",
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-cli/tests/authoring"),
+    ),
+];
+
+/// Module names (file stems) under `dir` that declare at least one
+/// `#[ignore]` test, and so depend on a CI filter to ever run.
+fn modules_with_ignored_tests(dir: &str) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
-    let dir = std::fs::read_dir(Path::new(INTEGRATION_DIR)).expect("read tests/integration");
+    let dir = std::fs::read_dir(Path::new(dir)).expect("read a test binary's directory");
     for entry in dir {
         let path = entry.expect("dir entry").path();
         if path.extension().and_then(|e| e.to_str()) != Some("rs") {
@@ -57,14 +71,14 @@ fn modules_with_ignored_tests() -> BTreeSet<String> {
     out
 }
 
-/// The union of the name filters on every `cargo test --test integration --
+/// The union of the name filters on every `cargo test <selector> --
 /// --ignored …` line in the workflow.
-fn ci_integration_filters() -> BTreeSet<String> {
+fn ci_filters(selector: &str) -> BTreeSet<String> {
     let workflow = std::fs::read_to_string(Path::new(WORKFLOW)).expect("read ci.yml");
     let mut out = BTreeSet::new();
     for line in workflow.lines() {
         let line = line.trim();
-        if !line.contains("--test integration") || !line.contains("--ignored") {
+        if !line.contains(selector) || !line.contains("--ignored") {
             continue;
         }
         let (_, filters) = line.split_once("--ignored").expect("checked above");
@@ -78,7 +92,7 @@ fn ci_integration_filters() -> BTreeSet<String> {
     }
     assert!(
         !out.is_empty(),
-        "found no `cargo test --test integration -- --ignored …` line in ci.yml; if the \
+        "found no `cargo test {selector} -- --ignored …` line in ci.yml; if the \
          container job was restructured, this drift guard needs to be taught the new shape"
     );
     out
@@ -88,24 +102,26 @@ fn ci_integration_filters() -> BTreeSet<String> {
 /// weight: it compiles, it is skipped locally, and CI never selects it.
 #[test]
 fn every_container_gated_module_is_named_by_a_ci_filter() {
-    let modules = modules_with_ignored_tests();
-    let filters = ci_integration_filters();
+    for (selector, dir) in NAMED_BINARIES {
+        let modules = modules_with_ignored_tests(dir);
+        let filters = ci_filters(selector);
 
-    // Filters are substring matches on `module::test`, so a filter selects a
-    // module when it is a substring of the module name (an exact name is the
-    // normal case; a shared prefix would select several).
-    let unreachable: Vec<&String> = modules
-        .iter()
-        .filter(|m| !filters.iter().any(|f| m.contains(f.as_str())))
-        .collect();
+        // Filters are substring matches on `module::test`, so a filter selects
+        // a module when it is a substring of the module name (an exact name is
+        // the normal case; a shared prefix would select several).
+        let unreachable: Vec<&String> = modules
+            .iter()
+            .filter(|m| !filters.iter().any(|f| m.contains(f.as_str())))
+            .collect();
 
-    assert!(
-        unreachable.is_empty(),
-        "these modules declare #[ignore] tests that no CI filter selects, so they run \
-         nowhere — not locally (ignored) and not in CI (unmatched): {unreachable:?}\n\
-         Add each module name to a `cargo test --test integration -- --ignored …` line in \
-         .github/workflows/ci.yml."
-    );
+        assert!(
+            unreachable.is_empty(),
+            "these modules declare #[ignore] tests that no CI filter selects, so they run \
+             nowhere — not locally (ignored) and not in CI (unmatched): {unreachable:?}\n\
+             Add each module name to a `cargo test {selector} -- --ignored …` line in \
+             .github/workflows/ci.yml."
+        );
+    }
 }
 
 /// The mirror image: a filter naming a module that no longer exists selects
@@ -113,21 +129,23 @@ fn every_container_gated_module_is_named_by_a_ci_filter() {
 /// complaining. Left alone, the CI line reads as coverage it is not providing.
 #[test]
 fn every_ci_filter_still_matches_a_module() {
-    let modules = modules_with_ignored_tests();
-    let filters = ci_integration_filters();
+    for (selector, dir) in NAMED_BINARIES {
+        let modules = modules_with_ignored_tests(dir);
+        let filters = ci_filters(selector);
 
-    let stale: Vec<&String> = filters
-        .iter()
-        .filter(|f| !modules.iter().any(|m| m.contains(f.as_str())))
-        .collect();
+        let stale: Vec<&String> = filters
+            .iter()
+            .filter(|f| !modules.iter().any(|m| m.contains(f.as_str())))
+            .collect();
 
-    assert!(
-        stale.is_empty(),
-        "these CI filters match no module with #[ignore] tests, so the step silently runs \
-         nothing for them: {stale:?}\n\
-         Either the module was renamed or deleted, or its #[ignore] tests were removed — \
-         update .github/workflows/ci.yml."
-    );
+        assert!(
+            stale.is_empty(),
+            "these `{selector}` CI filters match no module with #[ignore] tests, so the \
+             step silently runs nothing for them: {stale:?}\n\
+             Either the module was renamed or deleted, or its #[ignore] tests were removed \
+             — update .github/workflows/ci.yml."
+        );
+    }
 }
 
 /// T40: the two guards above cover only the `integration` binary — the four
@@ -201,12 +219,12 @@ fn every_test_binary_with_ignored_tests_has_a_ci_step() {
 /// have a red PR from a suite they had no way to reach.
 #[test]
 fn just_test_containers_matches_the_ci_invocation() {
-    fn container_line(source: &str, what: &str) -> String {
+    fn container_line(source: &str, selector: &str, what: &str) -> String {
         source
             .lines()
             .map(str::trim)
-            .find(|l| l.contains("--test integration") && l.contains("--ignored"))
-            .unwrap_or_else(|| panic!("no container invocation found in {what}"))
+            .find(|l| l.contains(selector) && l.contains("--ignored"))
+            .unwrap_or_else(|| panic!("no `{selector}` container invocation found in {what}"))
             .trim_start_matches("run:")
             .trim()
             .to_string()
@@ -215,10 +233,12 @@ fn just_test_containers_matches_the_ci_invocation() {
     let ci = std::fs::read_to_string(Path::new(WORKFLOW)).expect("read ci.yml");
     let just = std::fs::read_to_string(Path::new(JUSTFILE)).expect("read justfile");
 
-    assert_eq!(
-        container_line(&just, "the justfile"),
-        container_line(&ci, "ci.yml"),
-        "`just test-containers` and ci.yml's container step have drifted — a filter \
-         that runs in one and not the other is a suite someone cannot reproduce locally"
-    );
+    for (selector, _) in NAMED_BINARIES {
+        assert_eq!(
+            container_line(&just, selector, "the justfile"),
+            container_line(&ci, selector, "ci.yml"),
+            "`just test-containers` and ci.yml's container step have drifted — a filter \
+             that runs in one and not the other is a suite someone cannot reproduce locally"
+        );
+    }
 }

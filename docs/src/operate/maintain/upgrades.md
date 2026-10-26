@@ -15,7 +15,7 @@ You need the new binary, admin access to the instance and its database, and the 
 This order is for an upgrade within Orion 2. The committed deployment lives in the state database, not in the binary. A new binary builds the same head it found, so nothing is redeployed.
 
 1. **Back up the database.** Every later step is reversible if this one happened. See [Back up and restore](./backup-restore.md).
-2. **Run `orion-server lint` with the new binary** over your definition set. It names every channel and workflow the new version would refuse, before any node tries to build it.
+2. **Run `orion-cli lint` with the new binary** over your definition set. It names every channel and workflow the new version would refuse, before any node tries to build it.
 3. **Run `orion-server validate-config`** against the config you will deploy. Lint reads the definitions. This reads the config file and the `ORION_*` environment, which fail differently (see [How a rename fails, by surface](#how-a-rename-fails-by-surface)).
 4. **Migrate.** On a single node, migrations run at boot. In a cluster, run `orion-server migrate` as a deploy step and keep `storage.auto_migrate = false`. `migrate --wait 60s` waits for a database that is still starting.
 5. **Roll the fleet.** `/readyz` answers `503` on `SIGTERM` while the node keeps serving through its drain window, so a rolling deploy sheds no requests.
@@ -27,14 +27,14 @@ If step 2 found a definition the new binary refuses, fix it first. Compile and a
 Orion 2 starts its schema over, with one baseline migration per backend. It cannot read a 1.x state database, and no tool converts one. A 1.x database is refused at startup with this message:
 
 ```text
-Error: Configuration error: the state database at storage.url holds 1 migration(s) this binary does not ship (versions [2]). An Orion 1.x database cannot be upgraded in place: Orion 2 starts from a fresh state database. Point storage.url at a new database and deploy your definitions with `orion-server compile` and `orion-cli deployments apply -d`.
+Error: Configuration error: the state database at storage.url holds 1 migration(s) this binary does not ship (versions [2]). An Orion 1.x database cannot be upgraded in place: Orion 2 starts from a fresh state database. Point storage.url at a new database and deploy your definitions with `orion-cli compile` and `orion-cli deployments apply -d`.
 ```
 
 The count and the version list depend on how far the 1.x database was migrated. To move:
 
 1. **Keep the 1.x database.** Leave the old instance serving until the new one is proven. Nothing in Orion 2 writes to it.
 2. **Get the definitions as files.** Orion 2 reads workflows, channels and connectors only from a definition set. If yours exist only in the 1.x database, export them with the 1.x tooling while it still runs.
-3. **Lint and compile them with the Orion 2 binary.** `orion-server lint ./definitions`, then `orion-server compile ./definitions -o dist/deployment`. Every `db` connector must name its [`driver`](../../reference/connectors/db.md#the-driver-field), and a literal credential is refused. Replace it with an `env://` or `vault://` reference.
+3. **Lint and compile them with the Orion 2 binary.** `orion-cli lint ./definitions`, then `orion-cli compile ./definitions -o dist/deployment`. Every `db` connector must name its [`driver`](../../reference/connectors/db.md#the-driver-field), and a literal credential is refused. Replace it with an `env://` or `vault://` reference.
 4. **Point `storage.url` at a new, empty database.** Start Orion 2 against it. The baseline migration creates the schema.
 5. **Deploy.** `orion-cli deployments apply -d dist/deployment` commits revision 1. The node builds it and serves it.
 6. **Move the clients.** Every path moved from `/api/v1/` to `/api/v2/`, as the next section lists.

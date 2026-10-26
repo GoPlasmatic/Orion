@@ -513,7 +513,7 @@ def prose(text: str) -> list[str]:
 def sentences(paragraphs: list[str] | str) -> list[str]:
     """Split each paragraph on sentence-final punctuation, keeping abbreviations.
 
-    `1.8.0`, `e.g.` and `orion-server fmt.` all end in a period that is not a
+    `1.8.0`, `e.g.` and `orion-cli fmt.` all end in a period that is not a
     sentence boundary, so a split is only taken when the period is followed by
     whitespace and a capital letter, an opening bracket, a code span or an
     emphasis marker. The last three matter because a sentence opening on

@@ -19,7 +19,7 @@ From the repository root, with a server on `http://localhost:8080` started
 with `ORION_PLUGINS__ENABLED=true`:
 
 ```bash
-orion-server compile examples/packages/c4-referee -o dist/c4-referee
+orion-cli compile examples/packages/c4-referee -o dist/c4-referee
 orion-cli deployments apply -d dist/c4-referee
 ```
 
@@ -38,7 +38,7 @@ Without a server:
 
 ```bash
 jq .data examples/packages/c4-referee/request.json > /tmp/move.json   # dry-run takes the bare payload
-orion-server dry-run -w examples/packages/c4-referee/workflow.json -i /tmp/move.json \
+orion-cli dry-run -w examples/packages/c4-referee/workflow.json -i /tmp/move.json \
   --plugin-dir examples/packages/c4-referee
 ```
 

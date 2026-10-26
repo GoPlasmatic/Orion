@@ -9,7 +9,6 @@
 // lints against both are for production code.
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-mod clippy_fix_test;
 mod common;
 
 mod admin_channels_test;
@@ -34,13 +33,11 @@ mod channel_oauth2_login_test;
 mod channel_response_cache_test;
 mod ci_filter_drift_test;
 mod circuit_breaker_test;
-mod cli_subcommands_test;
 mod clippy_cases_test;
-mod clippy_cli_test;
 mod clippy_docs_drift_test;
 mod clippy_examples_test;
 mod cluster_epoch_test;
-mod compile_test;
+mod compiled_deployment_test;
 mod concurrency_test;
 mod config_docs_drift_test;
 mod config_references_test;
@@ -69,7 +66,6 @@ mod error_paths_test;
 mod extension_api_test;
 mod field_codes_drift_test;
 mod fmt_cases_test;
-mod fmt_cli_test;
 mod fmt_examples_test;
 mod fmt_invariants_test;
 mod fmt_style_drift_test;
@@ -113,11 +109,9 @@ mod scenario_webhook_test;
 mod secret_references_test;
 mod secrets_and_vars_test;
 mod security_test;
+mod server_subcommands_test;
 mod shutdown_test;
-mod signing_cli_test;
 mod source_form_refusal_test;
-mod sql_check_cli_test;
-mod sql_check_test;
 mod task_trace_test;
 mod tls_test;
 mod trace_dlq_admin_test;

@@ -9,7 +9,7 @@ A `deny` rule, scope workflow. A read of `payload` — which is not in the data 
 ## Synopsis
 
 ```console
-$ orion-server clippy ./definitions
+$ orion-cli clippy ./definitions
 deny[correctness.payload_var] a read of `payload` — which is not in the data context — is always null
 ```
 
@@ -24,6 +24,6 @@ Silent inside the element-scoped arguments of `map`, `filter`, `reduce`, `all`, 
 ## Related
 
 - [Advisory checks](./index.md): every rule, the levels, and where certainty comes from.
-- [`orion-server clippy`](../cli/orion-server/clippy.md): the command, its flags and exit codes.
+- [`orion-cli clippy`](../cli/orion-cli/clippy.md): the command, its flags and exit codes.
 - [Test workflows offline](../../guides/author/testing.md): running the rules against a set.
 - [Workflows](../workflows.md): the step grammar the rule reads.

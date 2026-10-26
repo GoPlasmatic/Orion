@@ -9,7 +9,7 @@ A `deny` rule, scope workflow. A task input key the function does not declare, w
 ## Synopsis
 
 ```console
-$ orion-server clippy ./definitions
+$ orion-cli clippy ./definitions
 deny[correctness.unknown_input_key] a task input key the function does not declare, which is silently ignored
 ```
 
@@ -24,6 +24,6 @@ Silent when the function declares no field table, which is an engine built-in. S
 ## Related
 
 - [Advisory checks](./index.md): every rule, the levels, and where certainty comes from.
-- [`orion-server clippy`](../cli/orion-server/clippy.md): the command, its flags and exit codes.
+- [`orion-cli clippy`](../cli/orion-cli/clippy.md): the command, its flags and exit codes.
 - [Test workflows offline](../../guides/author/testing.md): running the rules against a set.
 - [Workflows](../workflows.md): the step grammar the rule reads.

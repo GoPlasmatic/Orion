@@ -1,4 +1,4 @@
-//! `orion-server sql check` against real PostgreSQL and MySQL servers.
+//! `orion-cli sql check` against real PostgreSQL and MySQL servers.
 //! Container-gated (`#[ignore]`): run with `just test-containers`.
 //!
 //! What only a server can show: a statement the owner could prepare that

@@ -4,7 +4,7 @@
 //! A signature for `[plugins.trust]` belongs to whoever
 //! holds the key — the deployment — not to the definition set, so it travels
 //! beside the artifact as a file rather than inside it. One rule, read by
-//! every surface that writes or looks for one: `orion-server plugin
+//! every surface that writes or looks for one: `orion-cli plugin
 //! sign|verify`, and the package verbs that attach signatures at deploy time.
 //!
 //! - **Contents.** Text: the standard-base64 Ed25519 signature over the

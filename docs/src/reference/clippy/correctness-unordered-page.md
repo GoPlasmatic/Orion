@@ -9,7 +9,7 @@ A `deny` rule, scope workflow. A read that skips rows without ordering them, so 
 ## Synopsis
 
 ```console
-$ orion-server clippy ./definitions
+$ orion-cli clippy ./definitions
 deny[correctness.unordered_page] a read that skips rows without ordering them, so the page it skips is undefined
 ```
 
@@ -24,6 +24,6 @@ Silent when `skip` is the literal `0`, which skips nothing. Silent when a `sort`
 ## Related
 
 - [Advisory checks](./index.md): every rule, the levels, and where certainty comes from.
-- [`orion-server clippy`](../cli/orion-server/clippy.md): the command, its flags and exit codes.
+- [`orion-cli clippy`](../cli/orion-cli/clippy.md): the command, its flags and exit codes.
 - [Test workflows offline](../../guides/author/testing.md): running the rules against a set.
 - [Workflows](../workflows.md): the step grammar the rule reads.

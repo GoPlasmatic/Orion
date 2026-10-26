@@ -1,4 +1,4 @@
-//! `orion-server fmt`: one canonical layout for every definition file.
+//! `orion-cli fmt`: one canonical layout for every definition file.
 //!
 //! The formatter has one style and no configuration — see [`style`] for the
 //! numbers and the key tables, [`roles`] for how a node is recognised, and

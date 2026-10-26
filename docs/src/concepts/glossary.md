@@ -34,7 +34,7 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Definition**: one deployable workflow, channel or plugin document, stored by the digest of its canonical bytes. See [Deployments](./deployments.md#definitions).
 
-**Definition set**: a directory of workflow, channel, connector and plugin files that `orion-server compile` turns into one deployment. See [How Orion works](./how-orion-works.md#from-files-to-a-serving-node).
+**Definition set**: a directory of workflow, channel, connector and plugin files that `orion-cli compile` turns into one deployment. See [How Orion works](./how-orion-works.md#from-files-to-a-serving-node).
 
 **Deployment**: a manifest naming every definition and connection a node serves, committed as an immutable, numbered revision. See [Deployments](./deployments.md).
 
