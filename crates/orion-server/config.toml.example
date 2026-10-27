@@ -57,9 +57,9 @@
 # port = 8080
 # shutdown_drain_secs = 30           # Grace period for in-flight requests on SIGTERM/SIGINT
 # shutdown_force_timeout_secs = 30   # Hard cap on waiting after the drain window; 0 = wait forever
-# max_admin_body_size = 8388608      # Max request body for /api/v1/admin/* in bytes (8 MB).
+# max_admin_body_size = 8388608      # Max request body for /api/v2/admin/* in bytes (8 MB).
 # data_mounts = []              # Extra path prefixes the data plane answers on, on top of
-                                # /api/v1/data (which is always mounted). For fronting
+                                # /api/v2/data (which is always mounted). For fronting
                                 # deployed clients that call legacy paths, instead of a
                                 # reverse proxy whose only job is to prepend the prefix.
                                 # Channels keep their route_pattern as-is:
@@ -96,7 +96,7 @@
 # enabled = false
 
 # [server.docs]
-# Swagger UI (/docs) and the OpenAPI spec (/api/v1/openapi.json). Both are
+# Swagger UI (/docs) and the OpenAPI spec (/api/v2/openapi.json). Both are
 # unauthenticated and the spec publishes the complete admin API surface, so
 # when `enabled` is unset (the default) they are served only when
 # `environment` is NOT a production variant. An explicit true/false always
@@ -346,7 +346,7 @@
 # exclude = []                  # e.g. ["internal-*"]
 
 [admin_auth]
-# Authentication for /api/v1/admin/* and the trace-read endpoints. Disabled by
+# Authentication for /api/v2/admin/* and the trace-read endpoints. Disabled by
 # default so a fresh install is usable; REQUIRED (startup fails without it)
 # once environment starts with "prod".
 # enabled = false
@@ -452,7 +452,7 @@
 
 [trace_storage]
 # Persistence policy for Orion's own per-request traces (rows in the `traces`
-# table, read via /api/v1/admin/traces). Unrelated to the OTLP export in
+# table, read via /api/v2/admin/traces). Unrelated to the OTLP export in
 # [tracing] above — the two were one section before 1.0, which is exactly the
 # confusion this split removes.
 # A channel can override this with its `config.tracing` field; unset per-channel

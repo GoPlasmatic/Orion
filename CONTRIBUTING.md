@@ -190,29 +190,33 @@ Integration tests use an in-memory SQLite database and the full Axum router — 
 
 ```rust
 #[tokio::test]
-async fn test_my_feature() {
+async fn an_order_over_the_limit_is_flagged() {
     let app = common::test_app().await;
 
-    let req = json_request("POST", "/api/v1/admin/workflows", Some(json!({
-        "workflow_id": "test-workflow",
-        "name": "Test Workflow",
-        "condition": true,
-        "tasks": []
-    })));
+    // Deploys the workflow behind a sync HTTP channel named after it, through
+    // the v2 path an operator uses (definitions + an applied deployment).
+    common::create_and_activate_channel(
+        &app,
+        "orders",
+        common::workflow_with_tasks("orders", json!([{
+            "id": "flag", "name": "flag",
+            "function": {"name": "map", "input": {"mappings": [
+                {"path": "data.flagged", "logic": {">": [{"var": "data.total"}, 100]}}
+            ]}}
+        }])),
+    )
+    .await;
 
+    let req = json_request("POST", "/api/v2/data/orders", Some(json!({"data": {"total": 250}})));
     let response = app.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::CREATED);
-
-    // Responses are wrapped in a `data` envelope; new workflows start as drafts.
-    let body = body_json(response).await;
-    assert_eq!(body["data"]["name"], "Test Workflow");
-    assert_eq!(body["data"]["status"], "draft");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["data"]["flagged"], true);
 }
 ```
 
 ### Unit tests
 
-Add unit tests inline in the relevant module using `#[cfg(test)]` blocks. See `src/config/mod.rs` or `src/errors.rs` for examples.
+Add unit tests beside the code in the crate that owns it: an inline `#[cfg(test)] mod tests` for a few cases, a sibling `tests.rs` (beside a `mod.rs`) or `foo_tests.rs` (beside `foo.rs`, via `#[path]`) when the module grows. `crates/orion-common/src/config/mod.rs` and `crates/orion-common/src/errors_tests.rs` are examples.
 
 ### Container-gated tests
 

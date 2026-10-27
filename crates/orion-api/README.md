@@ -49,12 +49,11 @@ side, where an unrecognised value is a caller error worth a `400`.
 
 ## Versioning
 
-**This crate's version is independent of the Orion server's.** It is published
-as a rider alongside server and CLI releases, so `orion-api 1.2.0` does not
-imply and is not implied by any particular `orion-server` version. Its *Rust*
-API is semver'd on its own version; the *wire format* it describes is covered
-by the server's `/api/v1/` contract, which holds for the life of the server's
-1.x line.
+**This crate shares the workspace version.** Every crate in the Orion repository
+is released together at one version, so `orion-api X.Y.Z` describes the wire
+format of `orion-server X.Y.Z`. The operational DTOs are tolerant (every field
+defaults, unknown fields are ignored); the v2 admin contract (`v2`) is strict,
+and skew is negotiated through `v2::API_VERSION`.
 
 The `utoipa` feature adds `ToSchema` derives so the server can publish these
 exact types in its OpenAPI document. Clients leave it off.

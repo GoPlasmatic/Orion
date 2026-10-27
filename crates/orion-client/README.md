@@ -45,11 +45,11 @@ to say it.
 
 ## Versioning
 
-**This crate's version is independent of the Orion server's.** It ships as a
-rider alongside server and CLI releases, so `orion-client 1.2.0` does not imply
-and is not implied by any particular `orion-server` version. Its *Rust* API is
-semver'd on its own version; the *wire protocol* it speaks is covered by the
-server's `/api/v1/` contract, which holds for the life of the server's 1.x line.
+**This crate shares the workspace version.** Every crate in the Orion repository
+is released together at one version, so `orion-client X.Y.Z` is the client for
+`orion-server X.Y.Z`. The v2 admin contract is strict, and skew is negotiated
+rather than tolerated: the server reports `orion_api::v2::API_VERSION`, and
+`check_api_version` refuses a server speaking another.
 
 ## Licence
 
