@@ -137,6 +137,8 @@ A connection over a built-in driver is also a connector to the built-in function
 
 A `connector_call` to an uploaded package's operation sends an input the package's `operations.<name>.input_schema` must accept. One it refuses fails the task with `CONNECTOR_INVALID_INPUT`, naming the field, before the provider is called.
 
+The provider's answer is held to the operation's `output_schema` the same way. An answer the schema refuses fails the task with `PROVIDER_CONTRACT_VIOLATION`, naming the field, and never reaches the workflow. The call has already run by then, so the failure is not retried. On the data plane it is an internal error: the caller sees `ENGINE_ERROR`, and the server log has the detail.
+
 ### Probe a connection
 
 `POST /api/v2/admin/connections/{id}/revisions/{revision}/probes` connects to the revision's backend and answers whether it responds. It takes no body: the probe runs through the provider the stored revision names, and nothing in the request can choose another. A revision that is not stored answers `404 CONNECTION_REVISION_NOT_FOUND`. The probe is recorded in the audit log (`v2_connection_probe`) before it runs, because it reaches a real backend with the connection's credentials.

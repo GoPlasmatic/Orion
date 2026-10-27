@@ -422,9 +422,10 @@ async fn a_built_in_connection_probe_connects() {
 }
 
 /// A provider that answers what it was sent, so a test can tell whether a
-/// call reached it.
+/// call reached it, under the `display_name` it was built with.
 struct EchoProvider {
     digest: String,
+    display_name: Value,
 }
 
 #[async_trait::async_trait]
@@ -449,16 +450,15 @@ impl ProviderBackend for EchoProvider {
     ) -> Result<ConnectorOutput, ConnectorError> {
         Ok(ConnectorOutput::new(json!({
             "contact_id": input["contact_id"],
-            "display_name": "Ada",
+            "display_name": self.display_name,
         })))
     }
 }
 
-/// `connector_call` checks its input against the operation's declared
-/// `input_schema` before the provider is called, and refuses with
-/// `CONNECTOR_INVALID_INPUT` naming the field.
-#[tokio::test]
-async fn connector_call_input_must_satisfy_the_declared_input_schema() {
+/// Deploy `lookup`: a REST channel whose workflow calls the fixture
+/// package's `contacts.get` through a connection over it, answered by an
+/// [`EchoProvider`] that names every contact `display_name`.
+async fn deploy_lookup(display_name: Value) -> Router {
     let state = test_state_with_config(orion::config::AppConfig::default()).await;
     let app = orion::server::build_router(state.clone());
     let (digest, package) = helper_package(&app).await;
@@ -467,6 +467,7 @@ async fn connector_call_input_must_satisfy_the_declared_input_schema() {
         .providers()
         .admit(Arc::new(EchoProvider {
             digest: digest.clone(),
+            display_name,
         }))
         .expect("the package's backend is admitted");
 
@@ -547,7 +548,15 @@ async fn connector_call_input_must_satisfy_the_declared_input_schema() {
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{applied}");
     assert_eq!(applied["evaluation"]["converged"], true, "{applied}");
+    app
+}
 
+/// `connector_call` checks its input against the operation's declared
+/// `input_schema` before the provider is called, and refuses with
+/// `CONNECTOR_INVALID_INPUT` naming the field.
+#[tokio::test]
+async fn connector_call_input_must_satisfy_the_declared_input_schema() {
+    let app = deploy_lookup(json!("Ada")).await;
     let (status, body) = send(
         &app,
         "POST",
@@ -571,4 +580,25 @@ async fn connector_call_input_must_satisfy_the_declared_input_schema() {
     let text = body.to_string();
     assert!(text.contains("CONNECTOR_INVALID_INPUT"), "{body}");
     assert!(text.contains("input.contact_id"), "{body}");
+}
+
+/// The provider's answer is held to the operation's declared
+/// `output_schema` (`display_name` must be a non-empty string): the same
+/// call that serves "Ada" fails when the provider answers "". A provider
+/// breaking its contract is an internal fault, so the caller sees only
+/// `ENGINE_ERROR` and never the answer; the refusal's own words are pinned
+/// by the deployment store's `an_answer_is_held_to_the_operation_output_schema`.
+#[tokio::test]
+async fn connector_call_output_must_satisfy_the_declared_output_schema() {
+    let app = deploy_lookup(json!("")).await;
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/api/v2/data/lookup",
+        Some(json!({"data": {"id": "c-1"}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["error"]["code"], "ENGINE_ERROR", "{body}");
+    assert!(body["data"].is_null(), "{body}");
 }

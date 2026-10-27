@@ -53,6 +53,20 @@ fn package_files(tasks: Value, extra_files: &[(&str, Value)]) -> serde_json::Map
     }
     manifest["implementation"]["workflows"] = Value::Array(workflows);
     files.insert("connector.json".into(), Value::String(manifest.to_string()));
+    // The answer is held to the operation's `output_schema`, and these entry
+    // workflows answer more than the scaffold's bare `{id}`.
+    files.insert(
+        "schemas/item.get.output.json".into(),
+        Value::String(
+            json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "required": ["id"],
+                "properties": {"id": {"type": "string", "minLength": 1}}
+            })
+            .to_string(),
+        ),
+    );
     files.insert(
         "workflows/entry.json".into(),
         Value::String(json!({"id": "entry", "name": "entry", "tasks": tasks}).to_string()),

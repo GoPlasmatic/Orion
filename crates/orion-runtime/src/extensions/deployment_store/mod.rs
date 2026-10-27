@@ -30,8 +30,8 @@ use super::ImplementationKind;
 use super::package_identity::{canonical_bytes, sha256_digest};
 use super::schema_profile::{CompiledSchemaBundle, SchemaProfileFinding};
 use super::{
-    ConnectionId, ConnectionReference, Digest, EffectiveConnectionIdentity, ProviderId,
-    ProviderRef, Revision,
+    ConnectionId, ConnectionReference, ConnectorError, Digest, EffectStatus,
+    EffectiveConnectionIdentity, ProviderId, ProviderRef, Revision,
 };
 use error::DeploymentErrorKind as Kind;
 
@@ -43,6 +43,8 @@ pub enum PackageSchema<'a> {
     Configuration,
     /// `operations.<name>.input_schema`: what `connector_call` sends.
     OperationInput(&'a str),
+    /// `operations.<name>.output_schema`: what the provider answers.
+    OperationOutput(&'a str),
 }
 
 /// Whether `key` names a secret, so its value belongs in `secret_locators`.
@@ -714,7 +716,8 @@ impl ImmutableDeploymentStore {
 
     /// Check `instance` against the schema `package_digest`'s manifest
     /// declares for `slot`: its `configuration_schema`, or an operation's
-    /// `input_schema`. `None` when no package is stored under that digest;
+    /// `input_schema` or `output_schema`. `None` when no package is stored
+    /// under that digest;
     /// `Ok` when the manifest declares no schema there.
     pub fn check_package_instance(
         &self,
@@ -730,6 +733,11 @@ impl ImmutableDeploymentStore {
                 .get("operations")
                 .and_then(|ops| ops.get(operation))
                 .and_then(|op| op.get("input_schema")),
+            PackageSchema::OperationOutput(operation) => package
+                .manifest_json
+                .get("operations")
+                .and_then(|ops| ops.get(operation))
+                .and_then(|op| op.get("output_schema")),
         };
         let Some(path) = declared.and_then(Value::as_str) else {
             return Some(Ok(()));
@@ -738,6 +746,52 @@ impl ImmutableDeploymentStore {
             Ok(bundle) => bundle.validate_instance(path, instance),
             Err(e) => Err(SchemaProfileFinding::new(e.code(), e.message)),
         })
+    }
+
+    /// Hold a provider's answer to `operation` on `connection` to the
+    /// `output_schema` the package under `package_digest` declares. An answer
+    /// it refuses is the provider breaking its contract and never reaches the
+    /// workflow; the effect already happened, so the error carries
+    /// `effect_status` and is never retried.
+    pub fn check_operation_output(
+        &self,
+        package_digest: &str,
+        operation: &str,
+        connection: &str,
+        output: &Value,
+        effect_status: EffectStatus,
+    ) -> Result<(), ConnectorError> {
+        let Some(Err(finding)) = self.check_package_instance(
+            package_digest,
+            PackageSchema::OperationOutput(operation),
+            output,
+        ) else {
+            return Ok(());
+        };
+        let provider = self.get_package(package_digest).map_or_else(
+            || package_digest.to_string(),
+            |p| p.provider_id.as_str().to_string(),
+        );
+        let field = finding.instance_field();
+        let at = if field.is_empty() {
+            "an answer".to_string()
+        } else {
+            format!("`{field}` in its answer")
+        };
+        let mut error = ConnectorError::contract_violation(
+            "output",
+            format!(
+                "'{operation}' on '{connection}': provider '{provider}' answered with {at} that \
+                 its output_schema refuses ({} refused it)",
+                finding.location
+            ),
+            effect_status,
+        );
+        error.details = Some(Box::new(json!({
+            "pointer": finding.instance_path,
+            "keyword": finding.location,
+        })));
+        Err(error)
     }
 
     /// Record the revisions currently held (applied + retained in-flight) by a node.

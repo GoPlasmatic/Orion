@@ -1012,18 +1012,29 @@ async fn dispatch_dependency(
             effect,
         ));
     };
-    providers
+    let output = providers
         .dispatch_attempt(&child, backend.as_ref(), input)
-        .await
-        .map(|output| output.data)
+        .await?;
+    if let Some(package_digest) = &target.package_digest {
+        providers.deployment_store().check_operation_output(
+            package_digest,
+            &cfg.operation,
+            &bound.connection_id,
+            &output.data,
+            child.effect_status(),
+        )?;
+    }
+    Ok(output.data)
 }
 
 /// Where a dependency call dispatches: the backend and the identity it runs
-/// under.
+/// under, and the uploaded package whose `output_schema` the answer is held
+/// to (none for a built-in driver).
 struct DependencyTarget {
     kind: ImplementationKind,
     backend_id: String,
     identity: super::EffectiveConnectionIdentity,
+    package_digest: Option<String>,
 }
 
 fn dependency_target(
@@ -1051,6 +1062,7 @@ fn dependency_target(
             kind: ImplementationKind::Rust,
             backend_id: driver.to_string(),
             identity,
+            package_digest: None,
         });
     }
     let Some(package) = store.get_package(digest) else {
@@ -1088,6 +1100,7 @@ fn dependency_target(
         kind: package.implementation,
         backend_id: package.backend_id().to_string(),
         identity,
+        package_digest: Some(digest.to_string()),
     })
 }
 

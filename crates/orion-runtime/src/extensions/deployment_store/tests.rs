@@ -1203,3 +1203,69 @@ async fn a_peer_revision_is_read_through_and_then_loaded_incrementally() {
         HashSet::from([1, 2, 3])
     );
 }
+
+/// A provider's answer is held to its operation's `output_schema`: the
+/// fixture's `contacts.get` answers a contact whose `display_name` is a
+/// non-empty string. A refused answer is a contract violation carrying the
+/// effect status it is given (never retried), naming the field; an
+/// operation or package with no declared schema checks nothing.
+#[tokio::test]
+async fn an_answer_is_held_to_the_operation_output_schema() {
+    let pool = pool().await;
+    let store = ImmutableDeploymentStore::new("node-test-1");
+    let pkg = store
+        .ingest_verified_archive_in_db(&pool, &sample_archive_entries())
+        .await
+        .expect("ingested");
+    let digest = pkg.package_digest.to_string();
+    let check = |output: Value| {
+        store.check_operation_output(
+            &digest,
+            "contacts.get",
+            "crm",
+            &output,
+            EffectStatus::Completed,
+        )
+    };
+
+    check(json!({"contact_id": "c-1", "display_name": "Ada"})).expect("a conforming answer");
+
+    let refused = check(json!({"contact_id": "c-1", "display_name": ""})).unwrap_err();
+    assert_eq!(refused.code, crate::extensions::codes::CONTRACT_VIOLATION);
+    assert_eq!(refused.effect_status, EffectStatus::Completed);
+    assert!(
+        refused.message.contains("`display_name` in its answer"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(
+        refused
+            .details
+            .as_deref()
+            .and_then(|d| d["pointer"].as_str()),
+        Some("/display_name")
+    );
+
+    let unknown = check(json!({"contact_id": "c-1", "display_name": "Ada", "extra": 1}));
+    assert!(unknown.is_err(), "additionalProperties is false");
+
+    check(json!("anything")).expect_err("not an object");
+    store
+        .check_operation_output(
+            &digest,
+            "no.such.op",
+            "crm",
+            &json!(1),
+            EffectStatus::Completed,
+        )
+        .expect("an undeclared operation declares no schema");
+    store
+        .check_operation_output(
+            "sha256:none",
+            "contacts.get",
+            "crm",
+            &json!(1),
+            EffectStatus::Completed,
+        )
+        .expect("no stored package, nothing to check");
+}

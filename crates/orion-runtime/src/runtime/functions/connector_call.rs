@@ -133,6 +133,9 @@ async fn execute_connector_call(
              deployed manifest"
         )));
     };
+    // The uploaded package whose `output_schema` the answer is held to; a
+    // built-in driver declares none.
+    let mut declared_by = None;
     let provider = match store.get_package(&conn_row.provider_digest) {
         Some(pkg) => {
             let revoked = store
@@ -194,6 +197,7 @@ async fn execute_connector_call(
                     ),
                 ));
             }
+            declared_by = Some(pkg.package_digest.clone());
             pkg.provider_ref()
         }
         // A provider built into this binary has no uploaded package: the
@@ -240,13 +244,22 @@ async fn execute_connector_call(
             .get(impl_kind, &target_id)
             .ok_or_else(|| not_registered(impl_kind, &target_id))?,
     };
-    match providers
+    let output = providers
         .dispatch_attempt(&invocation, backend.as_ref(), input_val)
         .await
-    {
-        Ok(output) => Ok(output.data),
-        Err(error) => Err(connector_error(error)),
+        .map_err(connector_error)?;
+    if let Some(package_digest) = declared_by {
+        store
+            .check_operation_output(
+                &package_digest,
+                operation,
+                connection,
+                &output.data,
+                invocation.effect_status(),
+            )
+            .map_err(connector_error)?;
     }
+    Ok(output.data)
 }
 
 /// Register `connector_call` on a `dataflow-rs` 4 [`dataflow_rs::Registry`].
