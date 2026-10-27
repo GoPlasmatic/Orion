@@ -148,14 +148,14 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      # docs.rs renders this crate whether or not the library is a supported
-      # embedding API, and a broken intra-doc link ships as broken there. The
-      # lints are warn-by-default and nothing was reading them, so 18 had
-      # accumulated by 1.0.
+      # docs.rs renders every published crate whether or not its library is a
+      # supported embedding API, and a broken intra-doc link ships as broken
+      # there. The lints are warn-by-default, so only -D warnings keeps them
+      # from accumulating.
       - name: Rustdoc
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --no-deps --lib
+        run: cargo doc --workspace --no-deps --lib
 
   # rust-version in Cargo.toml is a public stability promise; this job is
   # the only thing that keeps it honest (proposal T9).

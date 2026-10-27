@@ -75,7 +75,7 @@ cargo fmt --all                    # Format
 just e2e                           # End-to-end suite (tests/e2e): the CLI against a real orion-server
 ```
 
-**`just check` is the pre-PR gate** — exactly what the CI PR jobs run: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo test --doc`, and `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --lib`. Bare `cargo test`/`cargo clippy` skip `orion-cli` and the library crates' own suites — CI does not. Other recipes: `just openapi` (regenerate the committed spec), `just test-containers` (the Docker-gated suites), `just workflow-tests`, `just docs` / `just docs-preview`, `just fmt`.
+**`just check` is the pre-PR gate** — exactly what the CI PR jobs run: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo test --doc`, and `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --lib`. Bare `cargo test`/`cargo clippy` skip `orion-cli` and the library crates' own suites — CI does not. Other recipes: `just openapi` (regenerate the committed spec), `just test-containers` (the Docker-gated suites), `just workflow-tests`, `just docs` / `just docs-preview`, `just fmt`.
 
 **After changing routes or request/response schemas, regenerate the committed spec** — `cargo run -- dump-openapi > docs/openapi.json` (or `just openapi`); `openapi_test` fails while it is stale.
 

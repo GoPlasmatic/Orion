@@ -10,7 +10,7 @@ check:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
     cargo test --doc
-    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --lib
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --lib
 
 # End-to-end suite: builds both binaries from this tree, then drives a
 # real orion-server over HTTP with the orion-cli binary.

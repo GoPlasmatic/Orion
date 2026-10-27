@@ -249,7 +249,7 @@ just e2e                    # or: ./tests/e2e/run.sh
 ### Doc tests
 
 CI also runs `cargo test --doc` and `RUSTDOCFLAGS="-D warnings" cargo doc
---no-deps --lib` — a documented example that stops compiling, or a broken
+--workspace --no-deps --lib` — a documented example that stops compiling, or a broken
 intra-doc link, fails a PR even though a plain `cargo test --all-targets`
 never executes either.
 
