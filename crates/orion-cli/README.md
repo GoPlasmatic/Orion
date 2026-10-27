@@ -115,6 +115,13 @@ orion-cli deployments rollback --target-revision 1 --expected-head-revision 3 \
 A directory the head already deploys is not applied again. A rollback commits
 an earlier revision's manifest as a new revision.
 
+Add `--wait-ms 10000 --wait-target observed` to apply to wait for cluster
+convergence. It prints one result containing the apply receipt and the final
+`convergence` report. The original `evaluation` describes the receiving node
+immediately after commit. A wait timeout retains the result, writes a diagnostic
+to stderr and exits 3; `--quiet` prints only the revision. Standalone
+`deployments wait` prints the convergence report on success and timeout.
+
 ---
 
 ## Sending Data

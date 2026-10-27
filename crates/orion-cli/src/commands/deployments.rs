@@ -9,8 +9,9 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 use colored::Colorize;
 use orion_api::v2::{
-    ApplyDeploymentRequest, CreateDeploymentPlanRequest, CreateDeploymentRequest,
-    DeploymentPlanResponse, EditionTransitionPreflightRequest, RollbackDeploymentRequest,
+    ApplyDeploymentRequest, ConvergenceStatusResponse, CreateDeploymentPlanRequest,
+    CreateDeploymentRequest, DeploymentPlanResponse, EditionTransitionPreflightRequest,
+    RollbackDeploymentRequest,
 };
 use orion_client::V2Admin;
 use tabled::Tabled;
@@ -251,25 +252,26 @@ impl DeploymentsCmd {
                     .create_deployment(&CreateDeploymentRequest::Apply(body))
                     .await?;
                 let committed_rev = resp.committed_revision;
-                if quiet && *wait_ms == 0 {
+                let wait = if *wait_ms > 0 && committed_rev > 0 {
+                    Some(poll_convergence(client, committed_rev, wait_target, *wait_ms).await)
+                } else {
+                    None
+                };
+                // Even if polling fails, the apply committed: emit its receipt
+                // before propagating the error through the normal stderr path.
+                if quiet {
                     println!("{committed_rev}");
-                    return Ok(0);
+                } else {
+                    let mut value = serde_json::to_value(&resp)?;
+                    if let Some(Ok(report)) = &wait {
+                        value["convergence"] = serde_json::to_value(report)?;
+                    }
+                    output::print_value(format, &value)?;
                 }
-                if !quiet {
-                    output::print_value(format, &serde_json::to_value(&resp)?)?;
+                match wait {
+                    Some(result) => Ok(convergence_exit_code(committed_rev, &result?)),
+                    None => Ok(0),
                 }
-                if *wait_ms > 0 && committed_rev > 0 {
-                    return wait_for_convergence(
-                        client,
-                        format,
-                        quiet,
-                        committed_rev,
-                        wait_target,
-                        *wait_ms,
-                    )
-                    .await;
-                }
-                Ok(0)
             }
             DeploymentsSubcommand::List { limit, cursor } => {
                 let page = client
@@ -454,29 +456,43 @@ async fn wait_for_convergence(
     target: &str,
     timeout_ms: u64,
 ) -> Result<i32> {
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(50));
+    let report = poll_convergence(client, revision, target, timeout_ms).await?;
+    if quiet {
+        println!("{revision}");
+    } else {
+        output::print_value(format, &serde_json::to_value(&report)?)?;
+    }
+    Ok(convergence_exit_code(revision, &report))
+}
+
+fn convergence_exit_code(revision: u64, report: &ConvergenceStatusResponse) -> i32 {
+    if report.converged {
+        0
+    } else {
+        eprintln!(
+            "{} Convergence wait timed out for committed revision {revision}",
+            "Timeout:".yellow().bold()
+        );
+        3
+    }
+}
+
+async fn poll_convergence(
+    client: &OrionClient,
+    revision: u64,
+    target: &str,
+    timeout_ms: u64,
+) -> Result<ConvergenceStatusResponse> {
+    let started = Instant::now();
+    let timeout = Duration::from_millis(timeout_ms.max(50));
     loop {
         let resp = client
             .deployment_convergence(revision, Some(target))
             .await?;
-        if resp.converged {
-            if quiet {
-                println!("{revision}");
-            } else {
-                output::print_value(format, &serde_json::to_value(&resp)?)?;
-            }
-            return Ok(0);
+        let elapsed = started.elapsed();
+        if resp.converged || elapsed >= timeout {
+            return Ok(resp);
         }
-        if Instant::now() >= deadline {
-            // A wait that times out exits nonzero, still printing the
-            // committed revision.
-            eprintln!(
-                "{} Convergence wait timed out for committed revision {revision}",
-                "Timeout:".yellow().bold()
-            );
-            println!("{revision}");
-            return Ok(3);
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(200).min(timeout.saturating_sub(elapsed))).await;
     }
 }

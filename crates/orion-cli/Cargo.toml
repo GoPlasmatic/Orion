@@ -64,6 +64,7 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio",
 similar = "3"
 
 [dev-dependencies]
+serde-saphyr = { version = "2", default-features = false, features = ["deserialize"] }
 tempfile = "3"
 uuid = { version = "1", features = ["v4"] }
 # `sql check` against real databases (the #[ignore]d half of sql_check_test,

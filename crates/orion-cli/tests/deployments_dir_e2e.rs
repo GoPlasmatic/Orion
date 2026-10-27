@@ -193,8 +193,9 @@ async fn a_compiled_deployment_deploys_and_redeploys_only_what_changed() {
     server.wait_ready().await;
 
     let dir = dist.to_str().unwrap();
-    let applied = server.cli_json(&["deployments", "apply", "-d", dir]);
+    let applied = server.cli_json(&["deployments", "apply", "-d", dir, "--wait-ms", "1000"]);
     assert_eq!(applied["committed_revision"], 1, "{applied}");
+    assert_eq!(applied["convergence"]["converged"], true, "{applied}");
     assert_eq!(
         member_revisions(&server, 1),
         [
