@@ -578,7 +578,7 @@ async fn test_db_read_row_cap_enforced() {
 /// workflow would not serve: its definition is refused at upload, the key's
 /// path named, and nothing is deployed or written.
 #[tokio::test]
-async fn db_write_with_a_numeric_as_it_cannot_act_on_quarantines_its_channel() {
+async fn db_write_with_numeric_as_is_refused_at_upload() {
     let app = common::test_app().await;
     let workflow = common::workflow_with_tasks(
         "WriteNumericAs",
