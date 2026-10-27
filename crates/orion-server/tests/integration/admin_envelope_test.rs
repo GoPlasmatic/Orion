@@ -2,11 +2,11 @@
 //! top-level `data` key, and nothing else at the top level except the three
 //! pagination counters on list endpoints.
 //!
-//! Before 1.0 three envelopes coexisted — `{"data": …}`, the paginated
-//! `{data, total, limit, offset}`, and bare objects from ten handlers — so a
-//! client could not write one unwrapping function. These tests pin the single
-//! shape endpoint by endpoint; `admin_2xx_bodies_all_carry_the_data_envelope`
-//! is the one that would catch a *new* handler regressing to a bare object.
+//! One shape is what lets a client write one unwrapping function; a mix of
+//! `{"data": …}`, the paginated `{data, total, limit, offset}` and bare objects
+//! would not. These tests pin the single shape endpoint by endpoint;
+//! `admin_2xx_bodies_all_carry_the_data_envelope` is the one that would catch
+//! a *new* handler regressing to a bare object.
 //!
 //! The deployment surface (`/definitions`, `/deployments`, `/connections`, …)
 //! answers bare bodies by design and is not held to this shape.

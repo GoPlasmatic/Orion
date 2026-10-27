@@ -1,11 +1,11 @@
 //! Platform-level rate limiting middleware.
 //!
-//! S15/N16: the **per-channel** limiter used to live here too, which is why
-//! it applied to HTTP ingress and nothing else — this middleware pulls
-//! `AppState` and resolves the target channel from the URI, neither of which
-//! an in-process `channel_call` or a cron occurrence has. It moved to
+//! S15/N16: the **per-channel** limiter does not belong here — this middleware
+//! pulls `AppState` and resolves the target channel from the URI, neither of
+//! which an in-process `channel_call` or a cron occurrence has, so a limit
+//! applied here would cover HTTP ingress and nothing else. It lives in
 //! `channel::guards`, where [`crate::channel::guards::apply_guards`] runs it
-//! on every transport. What is left here is the platform budget
+//! on every transport. What this module holds is the platform budget
 //! (`[rate_limit]`), keyed by client IP and applied per route group: each
 //! group's router carries its own [`GroupLimit`], chosen when the router is
 //! built, so no request is classified by its path at runtime.
@@ -458,8 +458,8 @@ mod tests {
             ..Default::default()
         };
         let state = RateLimitState::from_config(&config);
-        // The admin plane gets its own, tighter limiter by default (S12) —
-        // it used to share the anonymous data plane's 100/s budget.
+        // The admin plane gets its own, tighter limiter by default (S12)
+        // rather than the anonymous data plane's 100/s budget.
         assert!(
             state.admin_limiter.is_some(),
             "admin_rps must default to a real limit"

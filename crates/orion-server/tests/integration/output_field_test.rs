@@ -1,10 +1,9 @@
 //! One output-field name across every handler (proposal F43).
 //!
-//! Before 1.0 the destination path was called `output` in eight handlers and
-//! `response_path` in `http_call` and `channel_call`. `output` is the one
-//! name now: the pre-1.0 spelling is an unknown key, refused when the
-//! workflow definition is uploaded rather than at engine load, where it
-//! would quarantine the channel.
+//! `output` names the destination path in every handler. The pre-1.0
+//! `response_path` of `http_call` and `channel_call` is an unknown key, refused
+//! when the workflow definition is uploaded rather than at engine load, where
+//! it would quarantine the channel.
 
 use crate::common;
 

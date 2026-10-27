@@ -108,24 +108,22 @@ pub struct ChannelConfig {
 impl ChannelConfig {
     /// The channel's server-side origin allow-list.
     ///
-    /// N24: the pre-1.0 key was `cors: { allowed_origins: [...] }`, which
-    /// promised CORS and delivered a rejection check. It set no
-    /// `Access-Control-Allow-Origin` and answered no preflight — the router's
+    /// N24: this is a rejection check, not CORS, and is named so. It sets no
+    /// `Access-Control-Allow-Origin` and answers no preflight — the router's
     /// platform CORS layer short-circuits every `OPTIONS` (tower-http tests
     /// the method alone, not the presence of `Access-Control-Request-Method`)
-    /// before a channel is even resolved. The control is real and worth keeping: it is the only
-    /// *server-side* origin check, and it runs on every request that reaches
-    /// the handler, since `[cors]` leaves a non-preflighted cross-origin
-    /// request to run and merely omits the response header, and does nothing
-    /// at all for a non-browser caller. Only the name was a lie, so the name
-    /// is what changed.
+    /// before a channel is even resolved. The control is real and worth
+    /// keeping: it is the only *server-side* origin check, and it runs on
+    /// every request that reaches the handler, since `[cors]` leaves a
+    /// non-preflighted cross-origin request to run and merely omits the
+    /// response header, and does nothing at all for a non-browser caller.
     ///
-    /// The old spelling is not accepted. Silently ignoring it would drop the
-    /// check on every stored channel that used it — a security regression
-    /// dressed as a rename — so `deny_unknown_fields` on this struct refuses
-    /// the whole config instead, and the channel is quarantined rather than
-    /// served without its allow-list. `orion-server preflight` names every
-    /// stored channel still carrying it.
+    /// The pre-1.0 spelling, `cors: { allowed_origins: [...] }`, is not
+    /// accepted. Silently ignoring it would drop the check on every channel
+    /// that used it — a security regression dressed as a rename — so
+    /// `deny_unknown_fields` on this struct refuses the whole config instead,
+    /// and the channel is quarantined rather than served without its
+    /// allow-list.
     pub fn allowed_origins(&self) -> Option<&[String]> {
         self.origin_allow_list.as_deref()
     }
@@ -678,11 +676,10 @@ pub struct BackpressureConfig {
     /// replicas admit up to N× this value in total. The pre-1.0 name
     /// `max_concurrent` read as an absolute cluster-wide cap while sitting
     /// next to dedup/rate-limit controls that *are* shared in cluster mode.
-    /// It is not accepted: the field has no `serde(default)`, so a stored
-    /// config using the old spelling fails with `missing field
-    /// max_concurrent_per_node` and the channel is quarantined — a channel
-    /// admitted N× its intended concurrency is not a quiet outcome worth
-    /// having.
+    /// It is not accepted: the struct denies unknown fields and this one has
+    /// no `serde(default)`, so a config using the old spelling fails to parse
+    /// and the channel is quarantined — a channel admitted N× its intended
+    /// concurrency is not a quiet outcome worth having.
     pub max_concurrent_per_node: usize,
 }
 
@@ -1345,10 +1342,10 @@ mod tests {
     }
 
     /// N25: the same posture one level down. A typo *inside* a guard's own
-    /// body previously fell back to a default silently — a misspelled
-    /// `key_logic` meant per-IP rate keying, a misspelled `window_secs` meant
-    /// the default dedup window — which is the quiet-outcome failure the
-    /// top-level refusal exists to prevent.
+    /// body is refused too: falling back to a default would make a misspelled
+    /// `key_logic` mean per-IP rate keying and a misspelled `window_secs` the
+    /// default dedup window — the quiet-outcome failure the top-level refusal
+    /// exists to prevent.
     #[test]
     fn test_unknown_key_inside_a_guard_is_refused() {
         for (config, typo) in [

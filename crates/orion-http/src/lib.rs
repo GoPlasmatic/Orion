@@ -226,10 +226,10 @@ pub fn build_router(state: AppState) -> Router {
 
     // Outermost band — these must wrap *every* response, including the 401 from
     // admin auth, the 429 from the rate limiter, and the 500 from panic
-    // recovery. Previously they sat innermost, so exactly those three responses
-    // escaped without security headers and without a request id.
+    // recovery. Placed any further in, exactly those three responses would
+    // escape without security headers and without a request id.
     let router = router
-        // Single middleware replaces 5 separate SetResponseHeaderLayer wrappers.
+        // One middleware sets all five security headers.
         .layer(axum::middleware::from_fn(security_headers_middleware))
         // Scope the per-request task-local REQUEST_CONTEXT so OrionError
         // responses can embed the request id in the JSON body (clients then
@@ -392,9 +392,8 @@ mod tests {
     }
 
     /// Drive a real preflight through the layer and hand back the response
-    /// headers. These tests used to assert only "does not panic", which is why
-    /// the `Authorization` defect below went unnoticed for the life of the
-    /// layer.
+    /// headers. Asserting only "does not panic" would miss the `Authorization`
+    /// defect below, which is a header the layer answers wrongly, not a crash.
     async fn preflight(
         config: &CorsConfig,
         origin: &str,

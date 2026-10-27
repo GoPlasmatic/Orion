@@ -29,7 +29,7 @@ fn validate_config_layering_env_beats_file_beats_default() {
 
     // Built-in default: no file, no env → 8080. The default output is the
     // full effective config as TOML (O15), so the port appears as a setting
-    // line, not the old hand-formatted "host:port" summary.
+    // line.
     let out = Command::new(orion_bin())
         .args(["validate-config"])
         .env_remove("ORION_SERVER__PORT")

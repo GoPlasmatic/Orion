@@ -96,10 +96,8 @@ use serde_json::json;
 
 /// A minimal valid pipeline, for the tests that are about *other* fields.
 ///
-/// These used to pass `json!([])`, which the engine refuses — a workflow
-/// with no tasks fails `Workflow::validate()` and so fails the whole
-/// engine build. Create rejects it now, so a fixture standing in for
-/// "valid tasks" has to actually be some.
+/// Not `json!([])`: the engine refuses a workflow with no tasks, and so does
+/// create, so a fixture standing in for "valid tasks" has to actually be some.
 fn one_task() -> serde_json::Value {
     json!([{
         "id": "t1", "name": "t1",

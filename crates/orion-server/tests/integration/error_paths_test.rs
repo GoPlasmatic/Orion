@@ -64,21 +64,17 @@ async fn test_empty_body_accepted() {
     assert!(resp.status().is_success());
 }
 
-/// R13: this endpoint had three behaviours for three body shapes, and only
-/// one was documented. `{"data": …}` was the envelope, an empty body became
-/// `{"data":{}}`, and a **bare object** — the obvious thing to send, and what
-/// every other JSON API accepts — failed with *missing field `data`*. On the
-/// most-hit endpoint in the product.
-///
-/// One rule now: an object carrying `data` or `metadata` is the envelope;
-/// anything else is the payload.
+/// R13: one rule for the body on the most-hit endpoint in the product: an
+/// object carrying `data` or `metadata` is the envelope; anything else is the
+/// payload. A **bare object** — the obvious thing to send, and what every other
+/// JSON API accepts — must not fail with *missing field `data`*.
 #[tokio::test]
 async fn a_bare_object_body_is_the_payload() {
     let app = common::test_app().await;
     let wf_id = common::create_and_activate_workflow(&app, common::echo_workflow("Echo")).await;
     common::create_rest_channel(&app, "bare", "/bare", vec!["POST"], &wf_id).await;
 
-    // Bare object: previously a 400.
+    // Bare object: the payload, not a 400.
     let resp = app
         .clone()
         .oneshot(json_request(
@@ -167,8 +163,8 @@ async fn test_nonexistent_trace_returns_404() {
 
 #[tokio::test]
 async fn unmatched_path_returns_the_error_envelope() {
-    // Previously a zero-length body, which broke any client that parses the
-    // body on error and contradicted the documented contract.
+    // Not a zero-length body: a client that parses the body on error relies on
+    // the envelope, and the documented contract promises it.
     let app = common::test_app().await;
 
     let resp = app
@@ -240,9 +236,8 @@ async fn the_admin_body_limit_is_independent_of_the_data_plane_one() {
         StatusCode::PAYLOAD_TOO_LARGE,
         "the data plane must still honour ingest.max_payload_size"
     );
-    // ...and say so in the envelope. This used to be the one non-2xx in the
-    // whole surface that answered with axum's plain-text rejection instead,
-    // so a client's error path could not parse the only field it branches on.
+    // ...and say so in the envelope, not axum's plain-text rejection, so a
+    // client's error path can parse the only field it branches on.
     let body = common::body_json(resp).await;
     assert_eq!(
         body["error"]["code"], "PAYLOAD_TOO_LARGE",

@@ -65,10 +65,11 @@ fn test_glob_match_middle_wildcard() {
     assert!(!glob_match("pre*suf", "pre-middle"));
 }
 
-/// F32: cases the old successive-`find` matcher got wrong.
+/// F32: cases a matcher that binds each literal to its first occurrence
+/// gets wrong.
 #[test]
 fn test_glob_match_backtracking() {
-    // The old matcher bound `b` to the first occurrence and failed.
+    // Binding `b` to its first occurrence would fail here.
     assert!(glob_match("a*bc", "abxbc"));
     assert!(glob_match("a*bc", "abcbc"));
     assert!(!glob_match("a*bc", "abxbd"));
@@ -275,11 +276,10 @@ fn test_filter_channels_include_and_exclude() {
 
 #[test]
 fn unregistered_custom_function_quarantines_only_its_channel() {
-    // A task naming a function that is neither a dataflow-rs builtin nor a
-    // registered Orion handler lands in FunctionConfig::Custom, where
-    // precompile_custom_inputs fails with FunctionNotFound — aborting the
-    // *entire* engine build. Before F41 that meant boot aborted, or a reload
-    // took down every channel on every node, because of one stored row.
+    // F41: a task naming a function that is neither a dataflow-rs built-in
+    // nor a registered Orion handler is refused by the engine for its row.
+    // Failing the *entire* engine build on it would abort boot, or take down
+    // every channel on every node on a reload, because of one stored row.
     let mut good = make_channel("good");
     good.workflow_id = Some("wf-good".to_string());
     let mut bad = make_channel("bad");
@@ -318,7 +318,7 @@ fn unregistered_custom_function_quarantines_only_its_channel() {
 
 // ---- dataflow-rs 4 decides which rows load (I182) ---------------------
 
-/// A v3 spelling is no longer read: a task's `continue_on_error` and
+/// A v3 spelling is not read: a task's `continue_on_error` and
 /// `halt_on` are refused at the key, `validate` as an unknown function,
 /// and each refusal names the v4 spelling to write. A function input's
 /// 1.12 alias is an unknown key of the function's config.

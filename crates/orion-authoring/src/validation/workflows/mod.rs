@@ -271,30 +271,23 @@ pub fn validate_workflow_loop_schema(
 /// then its `function.input` against the schema registered for `function.name`.
 ///
 /// R5: an unknown `function.name` is a hard error — the function set is closed,
-/// so such a workflow can only fail at its first request.
+/// so such a workflow could only fail at its first request.
 ///
-/// R20: `POST /admin/workflows/validate` reaches this through
-/// `validate_create_workflow`, which is the point. This function was already
-/// documented as *"public so the `/validate` endpoint can reuse it"* and had
-/// zero external callers; the endpoint re-implemented the walk and reported an
-/// unknown function as a **warning**, so it green-lit payloads create rejects.
+/// R20: every caller — a definition upload, `lint`, `dry-run` — reaches this
+/// through `validate_create_workflow`, so no path green-lights a payload
+/// another refuses.
 ///
-/// The identity checks exist for the same reason as the function-name one, and
-/// they were among the last ways to author a workflow that create accepts and
-/// the engine then refuses. All three were verified end to end:
+/// The identity checks exist for the same reason as the function-name one:
+/// without each, create would accept a workflow the engine then refuses.
 ///
-/// | Authored | Create | What actually happened |
-/// |---|---|---|
-/// | task without `id` | `201` | `503` on every request; channel quarantined at load |
-/// | two tasks sharing an `id` | `201` | `500` on activate; **the whole engine reload fails**, and at boot `Engine::new` aborts the process |
-/// | `"tasks": []` | `201` | same as the duplicate case — `Workflow::validate()` refuses a workflow with no tasks, and it is the engine *build* that runs it |
+/// | Authored | Without the check |
+/// |---|---|
+/// | task without `id` | `503` on every request; channel quarantined at load |
+/// | two tasks sharing an `id` | `Workflow::validate()` refuses it in the engine *build* |
+/// | `"tasks": []` | same as the duplicate case — `Workflow::validate()` refuses a workflow with no tasks |
 ///
-/// The duplicate case was the worst of the three because the per-channel
-/// quarantine did not contain it: `LogicCompiler::compile_workflows` calls
-/// `Workflow::validate()`, so one repeated id took down every channel on every
-/// node rather than its own. The load screen now runs `validate()` as well, so
-/// a stored row carrying one is quarantined; refusing it here is still the
-/// better answer.
+/// The load screen runs `validate()` as well, so a stored row carrying one is
+/// quarantined; refusing it here is still the better answer.
 ///
 /// `loop_config` is checked with the body, as `build` checks it: its `setup`
 /// steps share the body's step-id namespace, and its own fields carry rules

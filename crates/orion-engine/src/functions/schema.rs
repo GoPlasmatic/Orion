@@ -157,15 +157,14 @@ pub type StaticValidator =
 
 /// Where a task's output lands in the message context.
 ///
-/// `definitions::analysis::dataflow::task_writes` used to answer this with a
-/// hand-written `match` over function names — a mirror of every handler's
-/// output semantics, kept in a different file from the handlers, pinned by no
-/// test. That is the exact drift class the rest of this repo turns into build
-/// failures, so the answer moves next to the function that owns it and the
-/// analysis reads it from here.
+/// Declared next to the function that owns it, and read from here by
+/// `definitions::analysis::dataflow::task_writes`: a hand-written `match` over
+/// function names in the analysis would mirror every handler's output
+/// semantics in a different file, pinned by no test — the exact drift class
+/// the rest of this repo turns into build failures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum WriteShape {
-    /// The dotted path in `output` (or its pre-1.0 spelling `response_path`).
+    /// The dotted path in `output`.
     /// `default_root` comes from the primary output's config default. `None`
     /// means an omitted optional output writes nothing. A function with no
     /// output field is [`Self::Nothing`].
@@ -234,12 +233,11 @@ impl RetrySafety {
 
 /// What a connector-bearing function requires of the connector it names.
 ///
-/// Two questions used to be answered by two tables in `handlers.rs` —
-/// `CONNECTOR_FUNCTIONS` (does it take one?) and `required_connector_types`
-/// (of which types?) — each keyed by function name in a file away from the
-/// schema that declares the `connector` field. A function in one table and not
-/// another was a check that silently skipped it (F52). One value on the
-/// function's own row cannot be half-filled.
+/// One value on the function's own row answers both questions — does it take
+/// a connector, and of which types? Two tables keyed by function name, away
+/// from the schema that declares the `connector` field, could list a function
+/// in one and not the other: a check that silently skipped it (F52). One value
+/// cannot be half-filled.
 ///
 /// `types` is non-empty and ordered as it should read in an error message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

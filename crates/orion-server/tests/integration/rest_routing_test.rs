@@ -102,13 +102,10 @@ async fn test_rest_route_no_match_returns_404() {
 
 /// A *single-segment* name that is not an active channel is a 404 too.
 ///
-/// This is the harder case, and the one the OpenAPI description got wrong: the
-/// single-segment fallback used to accept any name and run the engine against
-/// an empty workflow set, answering `200` with the input echoed back. The
-/// registry check in `dynamic_handler` closed that, but the published
-/// description still promised the old behaviour long afterwards — a reader's
-/// first encounter with the data plane contradicting the data plane. Pinned
-/// here so the code cannot drift back without the doc noticing.
+/// This is the harder case: a single-segment fallback that accepted any name
+/// would run the engine against an empty workflow set and answer `200` with
+/// the input echoed back. The registry check in `dynamic_handler` answers 404
+/// instead.
 #[tokio::test]
 async fn test_unknown_single_segment_channel_returns_404() {
     let app = common::test_app().await;
@@ -178,15 +175,14 @@ async fn test_async_via_rest_route() {
     assert!(body["trace_id"].is_string());
 }
 
-/// R8: `traces` is an ordinary channel name again.
+/// R8: `traces` is an ordinary channel name.
 ///
-/// `/traces` and `/traces/{id}` used to be static routes on the data plane.
-/// Axum resolves static segments before `/{*path}`, so a channel called
-/// `traces` was permanently unreachable — `POST /api/v2/data/traces` hit the
-/// GET-only trace list and returned 405, with no reserved-name check anywhere
-/// to explain why. The endpoints moved to `/api/v2/admin/traces*` in 1.0,
-/// where the admin-guarded list always belonged, leaving the data plane a
-/// single catch-all.
+/// The trace endpoints live under `/api/v2/admin/traces*`, where the
+/// admin-guarded list belongs, leaving the data plane a single catch-all. A
+/// static `/traces` route there would make a channel called `traces`
+/// permanently unreachable — Axum resolves static segments before `/{*path}`,
+/// so `POST /api/v2/data/traces` would hit a GET-only route and answer 405,
+/// with no reserved-name check anywhere to explain why.
 #[tokio::test]
 async fn a_channel_named_traces_is_reachable() {
     let app = common::test_app().await;
@@ -314,8 +310,8 @@ async fn route_matching_is_case_sensitive() {
 }
 
 /// N10: captured params are percent-decoded exactly once at extraction, so
-/// `%2F` expresses a literal `/` inside a parameter — previously the
-/// workflow received the raw escape and no author decoded it.
+/// `%2F` expresses a literal `/` inside a parameter and the workflow never
+/// receives the raw escape.
 #[tokio::test]
 async fn route_params_arrive_percent_decoded() {
     let app = common::test_app().await;
@@ -414,10 +410,9 @@ async fn try_create_rest_channel(
     .await
 }
 
-/// R6: `methods: ["POTS"]` and `route_pattern: "orders/{id"` were once
-/// created, activated and reloaded — and then never matched a request, with
-/// nothing reporting it. The channel was simply dead. Its definition is now
-/// refused at upload.
+/// R6: a channel with `methods: ["POTS"]` or `route_pattern: "orders/{id"`
+/// could never match a request, so its definition is refused at upload rather
+/// than deployed as a channel that is simply dead, with nothing reporting it.
 #[tokio::test]
 async fn a_channel_that_could_never_match_is_rejected_at_upload() {
     let app = common::test_app().await;

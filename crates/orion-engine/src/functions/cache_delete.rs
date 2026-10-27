@@ -18,8 +18,7 @@ use crate::kit::{self, read};
 pub(crate) const NAME: &str = "cache_delete";
 
 /// The delete, against a resolved and gated cache connector: how many of
-/// `keys` existed. Shared by the dataflow-rs 3 handler and the dataflow-rs
-/// 4 function.
+/// `keys` existed.
 async fn delete(
     pool: &CachePool,
     connector: &str,

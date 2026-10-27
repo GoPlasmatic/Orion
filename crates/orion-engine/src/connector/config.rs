@@ -212,10 +212,9 @@ impl Default for CacheOperationGates {
 
 /// HTTP-connector method allow-list.
 ///
-/// The db/es gates are booleans because their operation set is fixed; an HTTP
+/// The db gates are booleans because their operation set is fixed; an HTTP
 /// connector's is its method, so the gate is a list. Empty — the default —
-/// means every method `http_call` can issue is allowed, which is what every
-/// connector authored before this existed keeps meaning. Naming even one
+/// means every method `http_call` can issue is allowed. Naming even one
 /// method makes the list exhaustive: a connector pointed at a read-only
 /// upstream can be `["GET"]` and no workflow can POST through it.
 ///
@@ -441,8 +440,8 @@ impl OAuth2ClientAuth {
     }
 }
 
-/// Retry policy for `http_call`. Lives on [`HttpConnectorConfig`] alone —
-/// F7 removed the copies on the db and es connectors, which nothing read.
+/// Retry policy for `http_call`. Lives on [`HttpConnectorConfig`] alone: no
+/// other connector type retries (F7).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RetryConfig {
     #[serde(default = "default_max_retries")]
@@ -854,12 +853,11 @@ mod tests {
         }
     }
 
-    /// F22 removed seven connector fields that were accepted, persisted, and
-    /// never read; F7 removed the last two (`retry` on db and es). Connector
-    /// configs deliberately do **not** use `deny_unknown_fields`, so a 0.3.x
-    /// row carrying them still loads and the keys are ignored — which is what
-    /// they always effectively were. Without this, every stored connector using
-    /// one would fail to deserialize on upgrade and drop out of the registry.
+    /// F22/F7: connector configs deliberately do **not** use
+    /// `deny_unknown_fields`, so a config carrying a key no connector reads
+    /// (a db `retry`, an `auth` block) loads and the key is ignored, rather
+    /// than the connector failing to deserialize and dropping out of the
+    /// registry.
     #[test]
     fn legacy_configs_with_removed_fields_still_load() {
         let db = r#"{"type":"db","connection_string":"postgres://localhost/mydb",

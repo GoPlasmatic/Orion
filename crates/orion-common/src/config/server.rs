@@ -39,23 +39,20 @@ pub struct ServerConfig {
     pub verbose_errors: Option<bool>,
     /// Maximum request body size for the admin API, in bytes.
     ///
-    /// R16: the body limit used to be one global layer set from
-    /// `ingest.max_payload_size` — a name that says *data plane* — so bulk
-    /// import, connector config PUTs and `POST /definitions/test` shared a
-    /// ceiling with anonymous channel traffic. Raising it for a big import
-    /// raised it for the unauthenticated plane too, which is the opposite of
-    /// what an operator wants. The admin API is authenticated and its payloads
-    /// are legitimately larger, so it gets its own bound.
+    /// R16: separate from `ingest.max_payload_size`, which bounds the data
+    /// plane. The admin API is authenticated and its payloads (definition
+    /// uploads, `POST /definitions/test`) are legitimately larger; one shared
+    /// ceiling would make raising it for an upload raise it for anonymous
+    /// channel traffic too.
     pub max_admin_body_size: usize,
 
     /// Additional path prefixes the data plane is served at, on top of the
     /// always-present `/api/v2/data`.
     ///
     /// For fronting deployed clients that call paths at the server root
-    /// (`/zoom/meetings/user`, `/Legacy-App/api/public/...`) — today every such
-    /// deployment needs a reverse proxy whose only job is to prepend the
-    /// prefix. `route_pattern`s are already multi-segment and unrestricted, so
-    /// only the mount point was missing.
+    /// (`/zoom/meetings/user`, `/Legacy-App/api/public/...`) without a reverse
+    /// proxy whose only job is to prepend the prefix. `route_pattern`s are
+    /// multi-segment and unrestricted, so a mount point is all it takes.
     ///
     /// **Additive, never a movable prefix.** `/api/v2/data` stays mounted, so
     /// every existing client, doc example, test and `orion-client` path keeps

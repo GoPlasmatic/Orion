@@ -14,23 +14,6 @@ pub struct PaginatedResult<T> {
     pub offset: i64,
 }
 
-/// Page bounds for a version-history listing, shared by the channel and
-/// workflow `list_versions` endpoints.
-///
-/// The trait methods took bare `(limit, offset)` positionals — the one
-/// pagination surface that did — with the route layer resolving defaults on
-/// one side and `versioned::list_versions` clamping inline on the other. It
-/// is a filter DTO like every other list, resolved once through
-/// [`clamp_pagination`].
-#[derive(Debug, Default, serde::Deserialize, Serialize, utoipa::IntoParams)]
-#[into_params(parameter_in = Query)]
-pub struct VersionFilter {
-    /// Page size, clamped to [1, 1000] (default 50).
-    pub limit: Option<i64>,
-    /// Pagination offset (default 0).
-    pub offset: Option<i64>,
-}
-
 /// Converts an `Option<&str>` to a `sea_query::Value::String`, mapping `None`
 /// to a SQL NULL string.  Replaces the repetitive
 /// `.as_ref().map(|s| s.as_str().into()).unwrap_or(sea_query::Value::String(None))`
@@ -55,11 +38,10 @@ pub fn sql_now(backend: crate::DbBackend) -> &'static str {
 
 /// What every UPDATE on a table with an `updated_at` column writes to it.
 ///
-/// The statement sets it itself; there is no trigger behind it. Per-table
-/// `updated_at` triggers did this until `003_drop_updated_at_triggers`, and on
-/// SQLite each one was a second UPDATE per UPDATE. `CURRENT_TIMESTAMP` is the
-/// value they wrote, and it renders the same on all three backends (SQLite's
-/// is the text `datetime('now')` produces). Any new UPDATE on `traces`,
+/// The statement sets it itself; there is no trigger behind it
+/// (`003_drop_updated_at_triggers`), because on SQLite a per-table trigger is
+/// a second UPDATE per UPDATE. `CURRENT_TIMESTAMP` renders the same on all
+/// three backends (SQLite's is the text `datetime('now')` produces). Any new UPDATE on `traces`,
 /// `trace_dlq` or a cron table must set it, or the row keeps its old time.
 pub fn updated_now() -> sea_query::SimpleExpr {
     sea_query::Expr::cust("CURRENT_TIMESTAMP")
@@ -151,11 +133,8 @@ pub struct Page {
 
 /// Count matching rows, then read one page of them.
 ///
-/// The single implementation of count-then-page. Seven call sites —
-/// workflows, channels, version history, traces, the trace DLQ, audit logs and
-/// connectors — each used to spell it out, so every pagination fix had to land
-/// six more times than it should have. It lives here and not in `versioned`
-/// because it never had anything to do with versioned entities.
+/// The single implementation of count-then-page — the trace DLQ, audit logs
+/// and cron occurrences list through it — so a pagination fix lands once.
 ///
 /// `total` counts the rows matching `cond` across the whole table, ignoring
 /// `limit` and `offset`, which is what the paginated envelope's `total` means.
@@ -364,9 +343,8 @@ impl WriteStatement<'_> {
 /// link) the write and the read are one
 /// statement; everywhere else the write and the `read_back` SELECT run inside
 /// one transaction, so the row returned is the row this statement produced
-/// and not a later writer's. The 16 mutation sites this replaces ran the
-/// read-back as a separate pool query after the write — and in the lifecycle
-/// paths, after `tx.commit()`.
+/// and not a later writer's — which a separate pool query after the write
+/// (let alone after `tx.commit()`) cannot promise.
 ///
 /// Error mapping stays per-site: driver errors from the write itself go
 /// through `map_write_err`, and a write that yields no row — an UPDATE
@@ -555,12 +533,11 @@ const DELETE_MAX_CHUNKS: usize = 5_000;
 
 /// Delete matching rows in bounded chunks rather than one unbounded statement.
 ///
-/// Retention deletes used to be a single `DELETE … WHERE created_at < cutoff`
-/// per tick. The first run after enabling retention is then one transaction
-/// over potentially millions of rows: SQLite holds the write lock for its
-/// whole duration, so every other writer hits the 5 s `busy_timeout` and
-/// fails; Postgres bloats WAL and blocks autovacuum; MySQL can exceed
-/// `innodb_lock_wait_timeout`.
+/// A single `DELETE … WHERE created_at < cutoff` per tick would make the first
+/// run after enabling retention one transaction over potentially millions of
+/// rows: SQLite holds the write lock for its whole duration, so every other
+/// writer hits the 5 s `busy_timeout` and fails; Postgres bloats WAL and blocks
+/// autovacuum; MySQL can exceed `innodb_lock_wait_timeout`.
 ///
 /// The statement is
 /// `DELETE FROM t WHERE id IN (SELECT id FROM (SELECT id FROM t WHERE … LIMIT n) AS d6_chunk)`.

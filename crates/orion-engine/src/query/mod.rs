@@ -223,9 +223,8 @@ pub fn plan_sql(
             });
         }
         // F27: the per-parent page is cut in SQL (`ROW_NUMBER() OVER (PARTITION
-        // BY …)`), so an unordered include is a request for an arbitrary subset.
-        // It used to fetch every child of every parent on the page and truncate
-        // in memory — unbounded, and a different subset run to run.
+        // BY …)`), so an unordered include is a request for an arbitrary
+        // subset — a different one run to run.
         if inc.sort.is_empty() {
             return Err(QueryError::InvalidEnvelope(format!(
                 "include.{} requires a 'sort' — the per-parent page needs a \
@@ -242,8 +241,8 @@ pub fn plan_sql(
         }
         // F27: the per-parent cap is the envelope's own page policy, applied per
         // parent — default when absent, rejected (never clamped) when over the
-        // maximum. Hydration used to be unbounded: every child of every parent
-        // on the page was materialised and then truncated in memory.
+        // maximum — so hydration never materialises every child of every
+        // parent on the page.
         let limit = backend::resolve_limit(inc.limit, limits)?;
         includes.push(IncludePlan {
             field: inc.relation.clone(),

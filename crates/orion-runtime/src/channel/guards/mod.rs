@@ -26,12 +26,11 @@
 //! deadline everywhere; it can only lengthen it where nothing else depends on
 //! it.
 //!
-//! N16: some of those cells used to be `❌` by omission rather than by
-//! decision. `channel_call` applied no rate limit, and a channel's
-//! `timeout_ms` was honoured on two paths of four, so the same channel timed
-//! out at its configured value over HTTP and at the global
-//! `trace_queue.processing_timeout_ms` over `/async`. Every `❌` cell that
-//! remains is deliberate, and each is justified on [`Transport::guards`].
+//! N16: every `❌` cell is a decision, not an omission, and each is justified
+//! on [`Transport::guards`]. An omission is how a guard goes missing on one
+//! path — `channel_call` with no rate limit, or a channel timing out at its
+//! `timeout_ms` over HTTP and at the global `trace_queue.processing_timeout_ms`
+//! over `/async`.
 //!
 //! A ✅ in the rate-limit row means *the same limiter is consulted*, not that
 //! the ingresses share one bucket. The bucket key defaults to whatever
@@ -247,12 +246,12 @@ pub type HeaderLookup<'r, 'v> = &'r (dyn Fn(&str) -> Option<&'v str> + Send + Sy
 /// transport's payload and metadata into it.
 ///
 /// `validation_logic` and the response cache's `key_logic` both evaluate
-/// against exactly this shape. Each used to build it afresh with
-/// `json!({"data": data, "metadata": metadata})`, a deep copy of the payload
-/// and of every request header per reader, and `apply_guards` deep-copied the
-/// metadata a third time to merge verified claims into it. Now the transport
-/// moves its two values in, the guards read and (for the claims) edit them in
-/// place, and [`Self::into_parts`] hands them back for the engine.
+/// against exactly this shape. Building it per reader with
+/// `json!({"data": data, "metadata": metadata})` would deep-copy the payload
+/// and every request header each time, plus once more to merge verified
+/// claims. Instead the transport moves its two values in, the guards read and
+/// (for the claims) edit them in place, and [`Self::into_parts`] hands them
+/// back for the engine.
 #[derive(Debug)]
 pub struct GuardContext(Value);
 
@@ -813,12 +812,11 @@ pub fn merge_auth_claims(
 /// `timeout_ms` when it has one, else the transport's default — clamped to
 /// `max_timeout_ms` where the transport has a ceiling.
 ///
-/// N16: a channel's `timeout_ms` used to be read only by the synchronous
-/// HTTP path and `channel_call`, so the same channel timed out at its
+/// N16: one resolution for every path, so a channel never times out at its
 /// configured value over HTTP and at the global
-/// `trace_queue.processing_timeout_ms` over `/async`. Both the
-/// guard chain and the async worker (which re-resolves at dequeue time, when
-/// the config may have moved on) call this.
+/// `trace_queue.processing_timeout_ms` over `/async`. Both the guard chain
+/// and the async worker (which re-resolves at dequeue time, when the config
+/// may have moved on) call this.
 ///
 /// The clamp is what keeps that unification from turning an operator's
 /// transport ceiling into a mere default. Channel `timeout_ms` is

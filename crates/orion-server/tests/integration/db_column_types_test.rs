@@ -1,17 +1,13 @@
-//! Column-type fidelity for `db_read` (proposal F9).
+//! Column-type fidelity for `db_read` (proposal F9, #309).
 //!
-//! Two defects, one after the other, and this file is the record of both.
+//! The decoder matches each value's own type info and errors on one it cannot
+//! decode rather than inventing a null, so an unrecognised value is never
+//! indistinguishable from a genuine SQL NULL (F9).
 //!
-//! First, the decoder probed `String` → `i64` → `f64` → `bool` and fell through
-//! to `Value::Null`, so any value it did not recognise came back as null and was
-//! indistinguishable from a genuine SQL NULL (F9). Matching the value's own type
-//! info fixed that — it errors rather than inventing a null.
-//!
-//! Then the *ceiling* on what could be matched turned out to be nine types
-//! (#309): connector queries ran on `sqlx::Any`, whose `AnyTypeInfoKind` cannot
-//! spell `uuid`, `jsonb`, `numeric`, an array or an enum, so a `SELECT *` over
-//! any ordinary schema failed — and only when a row existed. Decoding on the
-//! real driver removed it.
+//! It decodes on the real driver, not `sqlx::Any`, whose `AnyTypeInfoKind`
+//! cannot spell `uuid`, `jsonb`, `numeric`, an array or an enum: on `Any`, a
+//! `SELECT *` over any ordinary schema would fail — and only when a row
+//! existed (#309).
 //!
 //! `data_query` and `data_write`'s `returning` share the decoder, so these
 //! assertions cover all three read paths.
@@ -22,8 +18,8 @@ use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 
-/// SQLite exercises the BLOB path (previously null) alongside the scalar kinds,
-/// and pins down that a real NULL still reads back as null.
+/// SQLite exercises the BLOB path alongside the scalar kinds, and pins down
+/// that a real NULL still reads back as null.
 #[tokio::test]
 async fn sqlite_column_kinds_round_trip() {
     let app = common::test_app().await;
@@ -184,8 +180,7 @@ async fn utf8_blob_reads_back_as_text() {
     assert_eq!(body["data"]["rows"][0]["doc"], "{\"a\":1}", "got {body}");
 }
 
-/// PostgreSQL `real` (float4) maps to `AnyTypeInfoKind::Real`, which no probe in
-/// the old cascade accepted — the column read back as null. SQLite has no
+/// PostgreSQL `real` (float4) reads back as a number, not null. SQLite has no
 /// distinct 32-bit float, so this assertion needs a container.
 ///
 /// Requires Docker; run with
@@ -322,14 +317,13 @@ fn round_trip_workflow(
     common::workflow_with_tasks(name, json!(tasks))
 }
 
-/// The headline of #309: nine decodable Postgres types became the vocabulary an
-/// ordinary schema actually uses.
+/// #309: every Postgres type an ordinary schema actually uses decodes.
 ///
-/// Every column here failed the task with a `500` before native decoding — and
-/// only once a row existed, so the identical query returned `200 []` against an
-/// empty table. `uuid` and `timestamptz` are the ones that make this
-/// unavoidable: they are ordinary primary-key and audit-column types, so almost
-/// any real `SELECT *` hit it.
+/// A column that cannot decode fails the task with a `500` only once a row
+/// exists, so the identical query answers `200 []` against an empty table.
+/// `uuid` and `timestamptz` are the ones that make this unavoidable: they are
+/// ordinary primary-key and audit-column types, so almost any real `SELECT *`
+/// would hit it.
 ///
 /// Requires Docker; run with
 /// `cargo test --test integration -- --ignored db_column_types`.
@@ -490,17 +484,13 @@ async fn postgres_numeric_as_string_keeps_every_digit() {
     );
 }
 
-/// A cast parameter binds, which is how this was written before 1.7 and how it
-/// still works.
+/// A cast parameter binds — the spelling written before 1.7.
 ///
-/// The cast used to be the *only* way: parameters were bound by the JSON value's
-/// shape, so a string went out as `text` and `text = uuid` has no operator.
-/// Parameters are now bound to the type the server declares for the placeholder
-/// (N6), and `postgres_a_uuid_parameter_needs_no_cast` covers the uncast form —
-/// but a cast makes the server infer `text` for the placeholder, which is a
-/// type the binder carries, so this keeps passing unchanged. That is the point
-/// of keeping it: the older spelling is not something authors have to go and
-/// rewrite.
+/// Parameters are bound to the type the server declares for the placeholder
+/// (N6), and `postgres_a_uuid_parameter_needs_no_cast` covers the uncast form.
+/// A cast makes the server infer `text` for the placeholder, which is a type
+/// the binder carries, so the cast form binds too: it is not something authors
+/// have to go and rewrite.
 ///
 /// Requires Docker; run with
 /// `cargo test --test integration -- --ignored db_column_types`.
@@ -902,13 +892,13 @@ async fn postgres_char_and_citext_decode_scalar_and_array() {
 }
 
 /// Postgres' internal one-byte `"char"` is a *different* type from `char(n)`,
-/// and it now says so.
+/// and the error says so.
 ///
-/// The two display names differ only by a pair of quote characters, and the
-/// string arm used to list both — but sqlx's `str` compatibility accepts
-/// `bpchar` and not `"char"`, so this column failed inside the driver and
-/// surfaced a raw type-mismatch instead of the module's named, actionable
-/// error. It belongs in the catch-all, which is what this asserts.
+/// The two display names differ only by a pair of quote characters, but sqlx's
+/// `str` compatibility accepts `bpchar` and not `"char"`: decoded through the
+/// string arm, this column would fail inside the driver with a raw
+/// type-mismatch instead of the module's named, actionable error. It belongs
+/// in the catch-all, which is what this asserts.
 ///
 /// Requires Docker; run with
 /// `cargo test --test integration -- --ignored db_column_types`.
@@ -1162,10 +1152,9 @@ fn write_with_param_workflow(
 
 /// The defect itself: one SQL text, both JSON shapes, either order.
 ///
-/// Before the fix the second call in each pair failed — `insufficient data left
-/// in message` one way round, `invalid byte sequence for encoding "UTF8"` the
-/// other — because the statement the first call cached declared the first
-/// call's types.
+/// Reusing a statement cached with the first call's types would fail the
+/// second call in each pair — `insufficient data left in message` one way
+/// round, `invalid byte sequence for encoding "UTF8"` the other.
 ///
 /// Requires Docker; run with
 /// `cargo test --test integration -- --ignored db_column_types`.
@@ -1216,12 +1205,12 @@ async fn postgres_one_placeholder_takes_both_json_shapes() {
     }
 }
 
-/// The case that made this worth fixing at the root rather than papering over.
+/// A parameter is never read with the type an earlier call declared.
 ///
 /// `int8recv` validates length, not meaning. An eight-character string bound
-/// where `int8` was declared is exactly eight bytes, so it decoded — to
-/// 3544952156018063160 for `"12345678"` — and the query returned a wrong
-/// number with no error anywhere for anyone to notice.
+/// where `int8` is declared is exactly eight bytes, so it decodes — to
+/// 3544952156018063160 for `"12345678"` — and the query returns a wrong number
+/// with no error anywhere for anyone to notice.
 ///
 /// Requires Docker; run with
 /// `cargo test --test integration -- --ignored db_column_types`.
@@ -1241,7 +1230,8 @@ async fn postgres_a_parameter_is_not_read_with_an_earlier_calls_type() {
     )
     .await;
 
-    // The number first, so the old code would have cached an `int8` statement.
+    // The number first, so a statement cached with an `int8` parameter would
+    // be reused for the strings.
     for (p, want) in [
         (json!(42), "42"),
         (json!("12345678"), "12345678"),
@@ -1266,11 +1256,10 @@ async fn postgres_a_parameter_is_not_read_with_an_earlier_calls_type() {
     }
 }
 
-/// A `uuid` parameter no longer needs `($1)::uuid` around it.
+/// A `uuid` parameter needs no `($1)::uuid` around it.
 ///
-/// The cast still works and is still tested above; this is the capability the
-/// server-declared typing adds, and the reason the cast stops being the only
-/// way to write it.
+/// The cast works too and is tested above; server-declared typing is what lets
+/// the uncast form bind.
 ///
 /// Requires Docker; run with
 /// `cargo test --test integration -- --ignored db_column_types`.
@@ -1315,9 +1304,10 @@ async fn postgres_a_uuid_parameter_needs_no_cast() {
     assert_eq!(body["data"]["rows"][0]["label"], "found", "{body}");
 }
 
-/// `= ANY($1)` with a JSON array — an IN-list that could not be written before.
+/// `= ANY($1)` with a JSON array — an IN-list.
 ///
-/// A JSON array used to bind as its own JSON text, which matched nothing.
+/// A JSON array binds as an array, not as its own JSON text, which would match
+/// nothing.
 ///
 /// Requires Docker; run with
 /// `cargo test --test integration -- --ignored db_column_types`.

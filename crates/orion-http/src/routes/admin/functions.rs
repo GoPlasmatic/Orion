@@ -3,12 +3,11 @@
 //! tooling (CLI, IDEs, docs) that needs to know what exists and what it
 //! accepts.
 //!
-//! It used to serve the schema registry directly, which listed only the
-//! functions Orion input-validates — 18 of the 27 valid names, omitting `map`,
-//! `filter`, `parse_json` and the rest (#288). Those are the most-used ones, so
-//! a completion source built on this offered the connector functions and none
-//! of the ones people type. Engine built-ins now appear with `source: "engine"`
-//! and no `input_fields`.
+//! It lists every valid name, not only the functions Orion input-validates
+//! (#288): the engine built-ins — `map`, `filter`, `parse_json` and the rest —
+//! are the most-used ones, and a completion source without them would offer
+//! the connector functions and none of the ones people type. Engine built-ins
+//! appear with `source: "engine"` and no `input_fields`.
 
 use axum::Json;
 use axum::extract::State;

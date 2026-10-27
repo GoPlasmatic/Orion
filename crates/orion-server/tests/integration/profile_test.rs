@@ -336,9 +336,9 @@ async fn profile_falsy_header_ignored() {
 
 #[tokio::test]
 async fn profile_no_connector_handlers_has_no_negative_zero() {
-    // With a connector-free workflow the handler durations sum to ~0; rounding
-    // used to leak IEEE -0.0 into the JSON (e.g. "-0.000 ms"). All profile
-    // numbers are non-negative, so "-0.0" must never appear.
+    // With a connector-free workflow the handler durations sum to ~0, and
+    // rounding must not leak IEEE -0.0 into the JSON (e.g. "-0.000 ms"). All
+    // profile numbers are non-negative, so "-0.0" must never appear.
     let app = common::test_app_with_config(enabled_config()).await;
 
     common::create_and_activate_channel(

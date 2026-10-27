@@ -2,11 +2,9 @@
 //!
 //! Boots a Postgres testcontainer and runs Orion's own migrations against it.
 //!
-//! A separate test binary, but no longer a forced one: the backend used to be
-//! a process-global `OnceLock` that the integration binary pinned to SQLite,
-//! and it is now carried on `DbPool` itself, so these could be modules of that
-//! binary. Merging them is a test-topology change (see `tests/README.md`), not
-//! part of removing the global.
+//! A separate test binary by choice, not necessity: the backend is carried on
+//! `DbPool`, so these could be modules of the integration binary. Merging them
+//! is a test-topology change (see `tests/README.md`).
 //!
 //! Run with: `cargo test --test storage_postgres -- --ignored`
 

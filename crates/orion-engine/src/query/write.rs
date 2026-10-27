@@ -386,10 +386,8 @@ pub fn resolve_write(
     };
 
     // W15: the write-safety guards live in the resolution itself, so no caller
-    // can obtain a `ResolvedWrite` that violates them. They used to be
-    // enforced only by the `data_write` handler, making this function —
-    // documented as the whole backend-neutral transformation — unsafe to call
-    // alone.
+    // can obtain a `ResolvedWrite` that violates them: this function is the
+    // whole backend-neutral transformation, and safe to call alone.
     if let ResolvedWrite::Insert { rows, .. } | ResolvedWrite::Upsert { rows, .. } = &w
         && rows.len() as u64 > cfg.max_rows
     {
@@ -581,12 +579,10 @@ fn parse_returning(
             WriteError::invalid_envelope(format!("returning[{i}] must be a string"))
         })?;
         // W3: `returning` reads columns back, so it is subject to the read
-        // allowlist and to `unmapped: "reject"` exactly like `fields` is.
-        // It previously fell through to the raw name regardless of policy, so
-        // `"returning": ["secret"]` read any column the DB user could see —
-        // the doc comment justified skipping the *writable* check and silently
-        // skipped the allowlist too. `queryable` is the right gate here:
-        // reading back a non-writable column is legitimate.
+        // allowlist and to `unmapped: "reject"` exactly like `fields` is:
+        // falling through to the raw name, `"returning": ["secret"]` would read
+        // any column the DB user could see. `queryable` is the right gate here,
+        // not `writable`: reading back a non-writable column is legitimate.
         let field = reg.resolve_field(entity, name, &format!("returning[{i}]"))?;
         out.push(field.physical);
     }
@@ -697,8 +693,8 @@ mod tests {
 
     // -- unknown keys (W6) -------------------------------------------------
 
-    /// `"retuning"` used to mean no returning and a misspelled `filter` key
-    /// meant an unfiltered mutation — the intent was silently discarded.
+    /// Accepted, `"retuning"` would mean no returning and a misspelled `filter`
+    /// key an unfiltered mutation — the intent silently discarded.
     #[test]
     fn unknown_envelope_keys_are_rejected_naming_the_key() {
         for bad in ["retuning", "vaules", "flter"] {
@@ -849,8 +845,8 @@ mod tests {
 
     // -- write-safety guards (W15: enforced by resolve_write itself) -------
 
-    /// The guards used to live only in the `data_write` handler, so
-    /// `resolve_write` alone produced an unguarded unfiltered DELETE.
+    /// `resolve_write` alone refuses an unfiltered DELETE; the guard is not
+    /// the `data_write` handler's to apply.
     #[test]
     fn unfiltered_delete_without_all_is_rejected_by_resolve_write() {
         let err = resolve(json!({ "op": "delete", "target": "orders" }))

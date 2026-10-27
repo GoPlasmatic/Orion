@@ -487,7 +487,7 @@ async fn test_write_gated_connector_cannot_back_a_dedup_store() {
             Vec::new(),
         )
         .await;
-    // N21: the build no longer returns the issues it also records.
+    // N21: the issues are read from the registry, the one place they are kept.
     let issues = registry.quarantined();
     assert_eq!(issues.len(), 1, "issues = {issues:?}");
     assert!(
@@ -527,7 +527,7 @@ async fn test_ungated_connector_still_backs_a_dedup_store() {
             Vec::new(),
         )
         .await;
-    // N21: the build no longer returns the issues it also records.
+    // N21: the issues are read from the registry, the one place they are kept.
     let issues = registry.quarantined();
     assert!(issues.is_empty(), "issues = {issues:?}");
     let runtime = registry.get_by_name("open-dedup-ch").expect("loaded");
@@ -565,7 +565,7 @@ async fn test_single_node_write_gated_connector_falls_back() {
             Vec::new(),
         )
         .await;
-    // N21: the build no longer returns the issues it also records.
+    // N21: the issues are read from the registry, the one place they are kept.
     let issues = registry.quarantined();
     assert!(issues.is_empty(), "issues = {issues:?}");
     assert!(registry.get_by_name("gated-fallback-ch").is_some());
@@ -1076,9 +1076,9 @@ async fn test_reload_keeps_in_flight_backpressure_permits() {
 
 /// The whole point: an unchanged channel is *carried over*, not rebuilt.
 /// Pointer equality is the observable form of "no JSON parse, no datalogic
-/// compilation, no backend resolution, no `Channel` clone" — the work that
-/// used to run for every channel on every reload, on every node, on every
-/// epoch tick.
+/// compilation, no backend resolution, no `Channel` clone" — work a full
+/// rebuild would repeat for every channel on every reload, on every node, on
+/// every epoch tick.
 #[tokio::test]
 async fn test_reload_reuses_runtime_config_when_nothing_changed() {
     let registry = TestRegistry::new();
@@ -1243,13 +1243,12 @@ async fn test_reload_reuses_route_table_when_the_serviceable_set_is_unchanged() 
 
 /// N17, atomicity: a reader must never observe a reload half-applied.
 ///
-/// `by_name`, the route table and the quarantine map used to be swapped
-/// under three separate locks, in that order. Between the first swap and
-/// the last, a channel this reload was quarantining was absent from the
-/// serving map *and* absent from the quarantine map — so
-/// `require_serviceable` answered `Ok(None)`, which the data plane turns
-/// into 404 "unknown channel" instead of 503 "quarantined". One snapshot
-/// makes that state unrepresentable.
+/// Were `by_name`, the route table and the quarantine map swapped one at a
+/// time, then between the first swap and the last a channel this reload is
+/// quarantining would be absent from the serving map *and* absent from the
+/// quarantine map — so `require_serviceable` would answer `Ok(None)`, which
+/// the data plane turns into 404 "unknown channel" instead of 503
+/// "quarantined". One snapshot makes that state unrepresentable.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_reader_never_sees_a_half_applied_quarantine() {
     let registry = Arc::new(TestRegistry::new());
@@ -1299,7 +1298,7 @@ async fn test_reader_never_sees_a_half_applied_quarantine() {
     let before_flips = observations.load(std::sync::atomic::Ordering::Relaxed);
     // All 300 flips together take a few milliseconds — less than one
     // scheduler quantum — so nothing makes the reader run *during* them on
-    // its own, and this test used to assert that it had. The writer waits
+    // its own, and an assertion that it had would be flaky. The writer waits
     // for an answer against each generation instead, which is what turns
     // the assertion below into a statement about the registry rather than
     // about how the two happened to be scheduled.
@@ -1404,15 +1403,15 @@ async fn test_route_table_reuse_drops_a_newly_quarantined_channels_route() {
 /// is fine, and a channel broken in *both* stages reports the more
 /// specific config reason.
 ///
-/// The double-failure case is also what made the old
-/// `channels.len() - issues.len()` count underflow: one channel, two
-/// issue entries. The count is off the published maps now.
+/// The double-failure case is also what would underflow a
+/// `channels.len() - issues.len()` count: one channel, two issue entries.
+/// The count is taken off the published maps.
 ///
 /// The assertions are on the published snapshot, not on the log line —
-/// but the subscriber below still matters, because the old subtraction
-/// lived inside `tracing::error!` and was therefore only evaluated when
-/// that level was enabled. Without it, a revert would pass here and panic
-/// in production.
+/// but the subscriber below still matters, because the count is computed
+/// for a `tracing::error!`, and a subtraction inside the macro is only
+/// evaluated when that level is enabled. Without it, a regression would pass
+/// here and panic in production.
 #[tokio::test]
 async fn test_engine_quarantine_and_config_failure_on_one_channel() {
     // Thread-local, not global: the current-thread test runtime polls this
@@ -1482,9 +1481,9 @@ async fn test_engine_quarantined_channel_does_not_serve() {
     assert!(registry.require_serviceable("orphan-ch").is_err());
 }
 
-/// N21: the quarantine set has one representation. `reload` no longer
-/// hands back a `Vec` that says the same thing as the map every caller —
-/// `/health`, the boot log, every ingress — already reads.
+/// N21: the quarantine set has one representation. `reload` hands back no
+/// `Vec` restating the map every caller — `/health`, the boot log, every
+/// ingress — already reads.
 #[tokio::test]
 async fn test_quarantine_set_is_readable_from_the_registry_alone() {
     let registry = TestRegistry::new();

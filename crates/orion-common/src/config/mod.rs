@@ -181,9 +181,9 @@ pub struct ChannelFilterConfig {
     pub exclude: Vec<String>,
 }
 
-/// Admin audit-log retention. Split out of `[queue]` (C22): audit rows have
-/// nothing to do with the async trace queue, and their cleanup job used to
-/// borrow the trace job's cadence.
+/// Admin audit-log retention, its own section rather than part of `[queue]`
+/// (C22): audit rows have nothing to do with the async trace queue, so their
+/// cleanup job has its own cadence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AuditConfig {
@@ -471,8 +471,8 @@ format = "json"
         assert!(err.to_string().contains("serverr"));
     }
 
-    /// The case that motivated this: a typo in an auth setting used to leave
-    /// the guard at its default while the operator believed it was set.
+    /// The case that motivates this: a typo in an auth setting must not leave
+    /// the guard at its default while the operator believes it is set.
     #[test]
     fn misspelled_security_key_is_rejected() {
         let err = toml::from_str::<AppConfig>("[admin_auth]\nenable = true\n")

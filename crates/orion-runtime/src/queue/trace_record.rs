@@ -92,13 +92,13 @@ pub async fn route_store_completed(
 /// Whether this trace will be persisted, decided *before* the strings it would
 /// need are built.
 ///
-/// The filters (`off`, `errors_only`, sampling) used to be consulted inside
-/// [`route_store_completed`], at the end of the request — after the caller had
-/// already serialized the request payload to a `String` and capped the task
-/// trace to hand it over. Both were then dropped on the floor. That is a full
-/// copy of every request body on the hottest path in the product, paid in
-/// exactly the configurations chosen to *avoid* trace cost: `mode = "off"`,
-/// `errors_only` on a clean run, or any `sample_rate` below 1.
+/// Consulting the filters (`off`, `errors_only`, sampling) inside
+/// [`route_store_completed`], at the end of the request, would come after the
+/// caller had already serialized the request payload to a `String` and capped
+/// the task trace to hand it over — only to drop both. That is a full copy of
+/// every request body on the hottest path in the product, paid in exactly the
+/// configurations chosen to *avoid* trace cost: `mode = "off"`, `errors_only`
+/// on a clean run, or any `sample_rate` below 1.
 ///
 /// Deciding first makes the drop actually free.
 pub enum TracePlan {

@@ -1,11 +1,8 @@
 //! Storage models, split by the job each type does.
 //!
-//! Before this split one file held row structs, response DTOs, domain enums,
-//! wire constants and a handler helper, and two more row structs lived in the
-//! repositories that happened to read them. There was no answer to "where does
-//! a new type go?", and the cost of that showed up as [`rows::Trace`] doing
-//! three jobs at once — a table picture, a wire shape, and the carrier of a
-//! credential verifier.
+//! The split answers "where does a new type go?" — without it one type ends
+//! up doing several jobs at once, as [`rows::Trace`] would: a table picture, a
+//! wire shape, and the carrier of a credential verifier.
 //!
 //! The rule, by module:
 //!

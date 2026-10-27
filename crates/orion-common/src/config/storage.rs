@@ -92,12 +92,11 @@ impl Default for StorageConfig {
 impl StorageConfig {
     pub(crate) fn validate(&self) -> Result<(), OrionError> {
         require_nonempty(&self.url, "storage.url")?;
-        // #311: the scheme check used to run only inside the cluster-mode
-        // cross-check in `validation.rs`, where `&&` short-circuited it away
-        // for every single-node deployment. `validate-config` therefore
-        // blessed a URL the startup path refuses, which is the one thing that
-        // command exists to prevent. The check belongs to `[storage]`, not to
-        // cluster mode.
+        // #311: the scheme check belongs to `[storage]`, not to cluster mode.
+        // Run only inside the cluster-mode cross-check, it would be skipped for
+        // every single-node deployment, and `validate-config` would bless a
+        // URL the startup path refuses — the one thing that command exists to
+        // prevent.
         detect_backend(&self.url)?;
         require_nonzero(self.busy_timeout_ms, "storage.busy_timeout_ms")?;
         require_nonzero(self.acquire_timeout_secs, "storage.acquire_timeout_secs")?;

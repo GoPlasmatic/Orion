@@ -124,8 +124,9 @@ async fn malformed_config_json_refuses_channel_load_on_single_node() {
 
 #[tokio::test]
 async fn wrongly_typed_config_field_refuses_channel_load() {
-    // Valid JSON, wrong type — the proposal's example: one typo used to load
-    // the channel with no rate limit, validation, dedup, or backpressure.
+    // Valid JSON, wrong type — the proposal's example: loaded anyway, one typo
+    // would leave the channel with no rate limit, validation, dedup, or
+    // backpressure.
     assert_refused(
         json!({"rate_limit": {"requests_per_second": "100"}}),
         "typo-cfg-ch",
@@ -147,12 +148,12 @@ async fn uncompilable_validation_logic_refuses_channel_load() {
     .await;
 }
 
-/// N5: a `rate_limit.key_logic` that no longer compiles used to fall back to
-/// `client_ip`, silently re-dimensioning the limit — a per-API-key or
-/// per-tenant limit became per-IP, so tenants behind one NAT shared a bucket
-/// and one tenant could take N× its quota by rotating IPs. Same class as
-/// N3/N4: refuse the channel rather than serve it with a different control
-/// than the one configured.
+/// N5: a `rate_limit.key_logic` that does not compile must not fall back to
+/// `client_ip`, which would silently re-dimension the limit — a per-API-key or
+/// per-tenant limit becoming per-IP, so tenants behind one NAT share a bucket
+/// and one tenant can take N× its quota by rotating IPs. Same class as N3/N4:
+/// refuse the channel rather than serve it with a different control than the
+/// one configured.
 #[tokio::test]
 async fn uncompilable_rate_limit_key_logic_refuses_channel_load() {
     assert_refused(
@@ -202,14 +203,13 @@ async fn an_unreachable_key_logic_header_warns_but_still_loads() {
     );
 }
 
-/// F35: the defect this change fixes. One channel with an unparseable
-/// `config_json` used to fail *every* operation that triggers a reload —
-/// activate, archive, delete, rollout — with a 500 `CONFIG_ERROR`, because the
-/// registry reload was all-or-nothing and the admin handler turned a non-empty
-/// issue list into a hard error. The instance became unmanageable through the
-/// API until someone edited the row out of the database by hand.
+/// F35: one broken channel must not wedge the admin API. An all-or-nothing
+/// reload that turned a non-empty issue list into a hard error would fail
+/// *every* later change with a 500 `CONFIG_ERROR`, leaving the instance
+/// unmanageable through the API until someone edited the row out of the
+/// database by hand.
 ///
-/// A deployment that cannot build does not wedge the node either: the next
+/// A deployment that cannot build does not wedge the node: the next
 /// deployment, without the broken member, converges, and whatever it adds
 /// serves — and so does the one after it, which takes that away again.
 #[tokio::test]
@@ -262,8 +262,7 @@ async fn a_broken_channel_does_not_wedge_admin_mutations() {
     .await;
 
     // The refused members never entered the head, so the next deployment —
-    // a channel on the same workflow, the operation that used to 500 — goes
-    // through on its own.
+    // a channel on the same workflow — goes through on its own.
     common::deploy_channel(&app, common::sync_http_channel("new-ch", &keep_wf)).await;
     assert!(
         serves_ok(&app, "new-ch").await,
@@ -333,10 +332,9 @@ async fn a_quarantined_channel_is_absent_from_the_route_table() {
 // F33: engine-build failures quarantine the channel
 // ============================================================
 
-/// Archiving a workflow out from under an active channel used to leave the
-/// channel in the route table with no workflow behind it — requests got an
-/// opaque engine error. Engine-build failures now feed the same quarantine
-/// as config-load failures.
+/// A channel whose workflow is gone must not stay in the route table with no
+/// workflow behind it, answering an opaque engine error: engine-build failures
+/// feed the same quarantine as config-load failures.
 ///
 /// A deployment cannot take a workflow out from under its channel at all:
 /// the manifest that drops it leaves the channel's requirement unmet, so it
@@ -454,10 +452,10 @@ async fn assert_workflow_refused(
     );
 }
 
-/// `channel_logic`, 1.12's spelling of a computed `channel`, is no longer
-/// read: a definition carrying only it has no `channel`, so it is refused at
-/// upload naming the missing field, and stored past upload it fails its
-/// revision, rather than running with no target.
+/// `channel_logic`, 1.12's spelling of a computed `channel`, is not read: a
+/// definition carrying only it has no `channel`, so it is refused at upload
+/// naming the missing field, and stored past upload it fails its revision,
+/// rather than running with no target.
 #[tokio::test]
 async fn channel_call_with_only_channel_logic_is_quarantined() {
     assert_workflow_refused(

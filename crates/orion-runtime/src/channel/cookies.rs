@@ -92,8 +92,8 @@ pub fn collect<'a>(
 /// Build one `Set-Cookie` header value from a workflow's declaration.
 ///
 /// The counterpart to the parser above, and it exists for the same reason:
-/// a workflow used to hand-assemble the attribute string with `cat`, which is
-/// where a missing `Secure`, a `SameSite` that should have been `Lax`, or an
+/// a workflow hand-assembling the attribute string with `cat` is where a
+/// missing `Secure`, a `SameSite` that should have been `Lax`, or an
 /// unescaped value quietly comes from. Declaring the parts lets this module
 /// own the spelling.
 ///
@@ -225,7 +225,8 @@ mod tests {
         assert_eq!(one(jar, "missing"), None);
     }
 
-    /// The three defects the old inline parser had.
+    /// Quoted values and whitespace around `=` and `;` are tolerated; a
+    /// lone quote is data.
     #[test]
     fn quoted_values_and_loose_whitespace_are_handled() {
         assert_eq!(one(r#"sid="abc""#, "sid").as_deref(), Some("abc"));

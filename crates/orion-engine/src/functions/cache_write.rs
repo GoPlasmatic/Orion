@@ -37,8 +37,7 @@ fn encode<V: serde::Serialize + ?Sized>(value: &V) -> Result<String, HandlerErro
 }
 
 /// The write, against a resolved and gated cache connector: `encoded` at
-/// `key`, expiring after `ttl` seconds when it is set. Shared by the
-/// dataflow-rs 3 handler and the dataflow-rs 4 function.
+/// `key`, expiring after `ttl` seconds when it is set.
 async fn store(
     pool: &CachePool,
     connector: &str,

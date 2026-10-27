@@ -95,8 +95,8 @@ mod tests {
     fn the_status_label_is_one_derivation() {
         assert_eq!(RunOutcome::Ok.status_label(), "ok");
         assert_eq!(RunOutcome::Timeout(50).status_label(), "timeout");
-        // The unification: workflow errors are an `error` on every transport,
-        // where the sync route used to call them `ok`.
+        // Workflow errors are an `error` on every transport, the sync route
+        // included: one derivation, so no transport can label them `ok`.
         assert_eq!(
             RunOutcome::WorkflowErrors("boom".into()).status_label(),
             "error"

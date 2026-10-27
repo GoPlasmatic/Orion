@@ -167,9 +167,9 @@ async fn test_sync_processing_with_metadata() {
 
 // ---------------------------------------------------------------------------
 // S6: every connector variant's endpoint is scheme-checked when the node loads
-// it, and address-checked when it is first dialled. Before 1.0 only `http`
-// was gated, so a db connector holding `postgres://…@169.254.169.254/…` was
-// accepted and connected to.
+// it, and address-checked when it is first dialled. Gating only `http` would
+// leave a db connector holding `postgres://…@169.254.169.254/…` accepted and
+// connected to.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]

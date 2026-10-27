@@ -1,10 +1,8 @@
 //! The one HTTP client for Orion's admin and data APIs.
 //!
-//! Before this crate the workspace carried two hand-rolled clients for the
-//! same wire protocol: `orion-cli`'s `OrionClient` and a second reqwest
-//! wrapper embedded in the server's `package_cli`. Both parsed the same
-//! `{"error": …}` envelope and unwrapped the same `{"data": …}` envelope,
-//! independently. This crate is that transport, once:
+//! Every caller that speaks the wire protocol — parsing the `{"error": …}`
+//! envelope, unwrapping the `{"data": …}` one — goes through this transport,
+//! so there is one implementation of it rather than one per caller:
 //!
 //! - [`OrionClient`] — auth (API key / bearer, custom header), optional
 //!   `X-Orion-Change-Context`, configurable timeout, and the request verbs.

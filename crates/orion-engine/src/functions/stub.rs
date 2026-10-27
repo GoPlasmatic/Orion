@@ -1,23 +1,19 @@
 //! Canned responses for connector-backed tasks, so a workflow can be run
 //! offline.
 //!
-//! `orion-cli dry-run` used to build its engine with an empty custom-function
-//! map, which meant every connector-backed function — `http_call`,
-//! `channel_call`, `db_read`, `db_write`, `data_query`, `data_write`,
-//! `cache_read`, `cache_write`, `mongo_read`, `publish_kafka` — failed with
-//! `Connector '…' not found`. Only a pure mapping workflow could be dry-run,
-//! which is not many of them.
+//! An engine with an empty custom-function map fails every connector-backed
+//! function — `http_call`, `channel_call`, `db_read`, `db_write`,
+//! `data_query`, `data_write`, the cache functions — with `Connector '…' not
+//! found`, so only a pure mapping workflow could be run offline, which is not
+//! many of them. `POST /definitions/test` runs a realistic workflow, but
+//! against **live** connectors: it will POST to real webhooks and write to
+//! real databases.
 //!
-//! The alternative was `POST /definitions/test`, whose own documentation
-//! warns that it runs against **live** connectors: it will POST to real
-//! webhooks, write to real databases and publish to real topics. So the
-//! offline option could not run a realistic workflow and the realistic option
-//! had real side effects.
-//!
-//! [`StubLayer`] closes that. An offline run registers every real function
-//! over inert dependencies, so the workflow is compiled exactly as a node
-//! compiles it, and the layer answers each connector-backed call from a file
-//! before the function is reached: nothing is dialled, and no pool opens.
+//! [`StubLayer`] gives a run that is both realistic and inert. An offline run
+//! registers every real function over inert dependencies, so the workflow is
+//! compiled exactly as a node compiles it, and the layer answers each
+//! connector-backed call from a file before the function is reached: nothing
+//! is dialled, and no pool opens.
 //!
 //! ## Stub file format
 //!

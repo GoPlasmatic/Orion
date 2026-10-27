@@ -8,10 +8,9 @@ use crate::errors::OrionError;
 pub struct MetricsConfig {
     /// Collect and expose Prometheus metrics. When `false` nothing is
     /// recorded **and** `/metrics` is not registered at all — the path 404s
-    /// like any other unknown route (O12). It used to be registered
-    /// unconditionally and answer 200 with an empty body rendered from an
-    /// orphan recorder, so a deployment with metrics off looked like a
-    /// working scrape target that simply never had any series.
+    /// like any other unknown route (O12). An empty 200 would make a
+    /// deployment with metrics off look like a working scrape target that
+    /// simply never had any series.
     pub enabled: bool,
 
     /// Optional `host:port` for a dedicated, **unauthenticated** listener
@@ -70,8 +69,8 @@ impl MetricsConfig {
     /// either side therefore covers the other.
     ///
     /// `server.host` may also be a hostname (`localhost`, a service name), in
-    /// which case there is nothing to compare and the previous check silently
-    /// passed everything. Treat that as overlapping: sharing a port with a
+    /// which case there is nothing to compare, and passing it would wave
+    /// every hostname through. Treat that as overlapping: sharing a port with a
     /// host this process cannot resolve here is not something to guess at.
     fn hosts_overlap(server_host: &str, metrics_ip: std::net::IpAddr) -> bool {
         let Ok(server_ip) = server_host.parse::<std::net::IpAddr>() else {
@@ -614,8 +613,8 @@ mod tests {
     }
 
     /// A hostname cannot be compared here, so sharing a port with one is
-    /// refused rather than waved through — the old check degraded to a no-op
-    /// the moment `server.host` was not a literal address.
+    /// refused rather than waved through — a check that only compared literal
+    /// addresses would be a no-op the moment `server.host` was a name.
     #[test]
     fn an_unresolvable_server_host_on_the_same_port_is_refused() {
         let server = ServerConfig {

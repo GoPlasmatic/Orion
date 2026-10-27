@@ -76,14 +76,14 @@ pub struct JwksCache {
     /// Single-flight, **per URL**: concurrent misses for one issuer collapse
     /// into one fetch, and issuers do not queue behind each other.
     ///
-    /// This was a single `Mutex<()>` for every URL, on the argument that JWKS
-    /// fetches are rare. They are — until one issuer is slow, and then every
-    /// *other* issuer's cache miss and rotation waits behind it: the lock is
+    /// One `Mutex<()>` for every URL would do while JWKS fetches are rare —
+    /// until one issuer is slow, and then every *other* issuer's cache miss
+    /// and rotation would wait behind it: the lock is
     /// held across [`Self::fetch`], which is a DNS resolution
     /// (`validate_url_not_private`) plus a request bounded only by
-    /// [`FETCH_TIMEOUT`]. With several cold issuers the stalls add up, and
-    /// they land on the request path, because a key fetch is what a token
-    /// verification is waiting for.
+    /// [`FETCH_TIMEOUT`]. With several cold issuers the stalls would add up,
+    /// on the request path, because a key fetch is what a token verification
+    /// is waiting for.
     ///
     /// The map holds `Weak`, so an entry lives exactly as long as someone is
     /// fetching that URL: the last holder to drop its `Arc` leaves a dangling
@@ -464,11 +464,10 @@ mod tests {
 
     /// One slow issuer must not hold up another.
     ///
-    /// The single-flight lock used to be process-wide, and it is held across
-    /// the whole of `fetch` — a DNS resolution plus a request bounded only by
-    /// `FETCH_TIMEOUT`. So a cache miss for issuer B waited on issuer A's
+    /// The single-flight lock is held across the whole of `fetch` — a DNS
+    /// resolution plus a request bounded only by `FETCH_TIMEOUT`. Were it
+    /// process-wide, a cache miss for issuer B would wait on issuer A's
     /// timeout, on the request path, for a key set B had already published.
-    /// With several cold or unhealthy issuers the stalls add up.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_slow_issuer_does_not_block_a_healthy_one() {
         let (slow_url, _) = slow_mock_jwks(Duration::from_secs(2)).await;
@@ -558,10 +557,10 @@ mod tests {
     /// An issuer that streams without declaring a length cannot make this
     /// cache buffer more than `MAX_JWKS_BYTES`.
     ///
-    /// The cap used to be checked after `bytes()` had already read the body to
-    /// its end, so it bounded the *document this accepted* and not the memory
-    /// it took to refuse one — and a JWKS URL is reachable from a channel's
-    /// `auth` config, fetched on a cache miss, per issuer.
+    /// The cap is enforced while reading: checked after `bytes()` had read the
+    /// body to its end, it would bound the *document this accepted* and not
+    /// the memory it took to refuse one — and a JWKS URL is reachable from a
+    /// channel's `auth` config, fetched on a cache miss, per issuer.
     #[tokio::test]
     async fn a_flooding_issuer_is_cut_off_at_the_cap() {
         const CHUNK: usize = 64 * 1024;

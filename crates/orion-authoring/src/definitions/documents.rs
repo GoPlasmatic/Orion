@@ -1,7 +1,7 @@
 //! The documents a definition set is written in: one workflow, channel or
-//! connector per file, in the shape the v1 admin API used to take as a create
-//! body. `lint <dir>`, `compile` and the offline commands read them;
-//! `compile` turns them into v2 definitions and connections.
+//! connector per file, in the shape of a v1 admin API create body.
+//! `lint <dir>`, `compile` and the offline commands read them; `compile`
+//! turns them into v2 definitions and connections.
 
 use serde::Deserialize;
 use serde_json::Value;

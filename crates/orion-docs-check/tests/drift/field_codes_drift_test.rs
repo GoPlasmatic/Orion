@@ -1,13 +1,12 @@
 //! Drift guard for the `error.details[].code` vocabulary.
 //!
 //! `FieldError::new` takes its code as `&'static str` precisely because the
-//! vocabulary is meant to be closed — but "closed" was an intention with
-//! nothing enforcing it. There was no registry, so every call site invented
-//! its own literal, and the documentation named two codes (`ENUM_MISMATCH`,
-//! `INVALID_FORMAT`) that only ever appeared in tests. A client branching on
-//! either would have waited forever.
+//! vocabulary is meant to be closed — but a `&'static str` alone enforces
+//! nothing: without a registry every call site invents its own literal, and
+//! the documentation can name a code nothing emits, which a client branching
+//! on it would wait for forever.
 //!
-//! `orion_api::error::field_codes` is now the registry. This module asserts:
+//! `orion_api::error::field_codes` is the registry. This module asserts:
 //!
 //! 1. Every code literal passed to a field-error constructor in `src/` is one
 //!    the registry declares.

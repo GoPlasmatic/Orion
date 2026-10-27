@@ -55,26 +55,23 @@ pub enum TracePersistenceTask {
 /// no-op so call sites can stay shape-uniform.
 ///
 /// Q7: each worker owns its own receiver (one channel per worker) and
-/// `submit` fans out round-robin. The previous shared `Arc<Mutex<Receiver>>`
-/// serialized all workers behind one lock — which the batch worker held
+/// `submit` fans out round-robin. A shared `Arc<Mutex<Receiver>>` would
+/// serialize all workers behind one lock — which the batch worker holds
 /// across its flush-interval `timeout(recv)` — so `async_workers`/
-/// `batch_workers` > 1 delivered no parallelism at all.
+/// `batch_workers` > 1 would deliver no parallelism at all.
 #[derive(Clone)]
 pub struct TracePersistenceQueue {
     /// One shard per worker (Q7), with round-robin fan-out and the reservation
-    /// ordering that keeps the depth gauge sound. The previous shared
-    /// `Arc<Mutex<Receiver>>` serialized all workers behind one lock — which
-    /// the batch worker held across its flush-interval `timeout(recv)` — so
-    /// `async_workers`/`batch_workers` > 1 delivered no parallelism at all.
+    /// ordering that keeps the depth gauge sound.
     queue: BoundedWorker<TracePersistenceTask>,
     overflow_policy: AsyncOnOverflow,
     overflow_block_timeout: Duration,
-    /// Drops accumulated since the last warning. Q12: overflow used to be
-    /// reported *only* to `trace_dropped_total{reason="overflow"}`, and
-    /// `metrics.enabled` defaults to false — so the out-of-the-box signal for
-    /// "your traces are being discarded" was a counter nobody was collecting.
-    /// Losing observability data silently is the one failure mode
-    /// observability tooling must not have.
+    /// Drops accumulated since the last warning. Q12: overflow is logged as
+    /// well as counted in `trace_dropped_total{reason="overflow"}`, because
+    /// `metrics.enabled` defaults to false — a counter alone would leave the
+    /// out-of-the-box signal for "your traces are being discarded" a metric
+    /// nobody is collecting. Losing observability data silently is the one
+    /// failure mode observability tooling must not have.
     dropped_since_warn: Arc<AtomicUsize>,
 
     /// Milliseconds since [`Self::started`] at the last warning, or

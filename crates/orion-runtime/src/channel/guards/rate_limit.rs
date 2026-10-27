@@ -16,11 +16,10 @@ use crate::metrics;
 
 /// Check the channel's rate limit.
 ///
-/// S15: this used to live in `server::rate_limit`, which pulls `AppState`
-/// and resolves the target channel from the URI — so the limiter a channel
-/// declared applied to HTTP ingress and to nothing else. `channel_call`
-/// reached the workflow with the limit unenforced. Lifting it
-/// here is what lets [`apply_guards`] run it on every transport.
+/// S15: this lives with the guards, not in the HTTP layer, so
+/// [`apply_guards`] runs it on every transport. A limiter that resolves the
+/// target channel from the URI applies to HTTP ingress and nothing else, and
+/// `channel_call` would reach the workflow with the limit unenforced.
 ///
 /// `Err(RateLimited)` = over limit; `Err(ServiceUnavailable)` = the backend
 /// could not answer and the channel is configured to fail closed (N7 —
@@ -208,8 +207,9 @@ pub(super) fn rate_limit_context(
 /// Collect the `headers.<name>` paths a `key_logic` expression reads, when they
 /// are statically visible.
 ///
-/// Used at channel load to warn about a name no context will ever carry — the
-/// typo that used to collapse every caller into one bucket. Only literal `var`
+/// Used at channel load to warn about a name no context will ever carry — a
+/// typo that would otherwise only show as every caller being refused for an
+/// unavailable key. Only literal `var`
 /// paths are recognised; a dynamically-composed path (`{"var": {"cat": […]}}`)
 /// is skipped rather than guessed, so this never produces a false positive.
 pub(crate) fn key_logic_header_paths(logic: &Value) -> Vec<String> {

@@ -340,8 +340,8 @@ async fn test_audit_time_range_filter() {
     assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
 }
 
-/// The core of O8: before the fix an unknown parameter was dropped and the
-/// caller got a 200 with the *unfiltered* table.
+/// The core of O8: an unknown parameter is refused, not dropped — dropped, the
+/// caller would get a 200 with the *unfiltered* table.
 #[tokio::test]
 async fn test_audit_unknown_query_param_is_rejected() {
     let (app, _) = app_with_mixed_audit_entries().await;
@@ -360,9 +360,8 @@ async fn test_audit_unknown_query_param_is_rejected() {
 // Audit v2 (O7): actor identity, request context, drain, definition test
 // ============================================================
 
-/// Two admin keys sharing a long prefix — the case the old 8-character
-/// `key_prefix` actor could not tell apart, because it was literally the first
-/// eight characters of the presented token.
+/// Two admin keys sharing a long prefix — the case an actor recorded as the
+/// first eight characters of the presented token could not tell apart.
 const KEY_A: &str = "orion_sk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const KEY_B: &str = "orion_sk_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 

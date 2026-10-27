@@ -1,13 +1,13 @@
 //! A constraint violation is its own kind of failure (#297).
 //!
 //! A schema rule the author deliberately expressed as a unique index, a
-//! foreign key or a CHECK used to arrive at the workflow as `FUNCTION_ERROR`
+//! foreign key or a CHECK must not arrive at the workflow as `FUNCTION_ERROR`
 //! with status `500` — the same record a deadlock, a dropped column and a type
-//! mismatch produce. So an endpoint whose whole job is to answer `409` when a
-//! submission is already in flight had to answer `500` instead, and no
+//! mismatch produce. An endpoint whose whole job is to answer `409` when a
+//! submission is already in flight would have to answer `500` instead, and no
 //! spelling of a condition could tell the two apart.
 //!
-//! These tests pin both halves of the fix: the code a workflow can branch on,
+//! These tests pin both halves: the code a workflow can branch on,
 //! and the status the edge sends when nothing catches it. The driver's own
 //! text is asserted *absent* throughout — it names tables, columns, index
 //! names and often the conflicting value, and it must never leave `detail`.

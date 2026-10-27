@@ -66,25 +66,6 @@ pub(super) struct RuntimeDeps<'a> {
     pub(super) channel_drivers: &'a crate::extensions::ChannelDriverRegistry,
 }
 
-/// Refuse an object with more than one key anywhere inside a channel
-/// expression.
-///
-/// N3/N4 refuse a channel whose guard config stopped compiling rather than
-/// serve it with a weaker control than the one configured, and a multi-key
-/// object used to be caught by that: the datalogic engine Orion built directly
-/// rejected one outright.
-///
-/// The serving engine is now dataflow-rs's, so channel expressions speak the
-/// same dialect workflow expressions do — which is what lets them read
-/// `{"secret": …}`, and which also runs in **templating mode**, where a
-/// multi-key object is a legal template emitting a structured object. A typo'd
-/// `{"==": [1, 1], "!=": [1, 2]}` would compile to a truthy object and
-/// `validate_input` would then admit everything, silently — precisely the
-/// outcome N4 exists to prevent.
-///
-/// So the refusal is stated here rather than inherited from a compiler mode.
-/// Nothing is lost by it: every channel expression is a predicate or a key, and
-/// none has a reason to emit a structured object.
 /// Whether a channel-config key holds a JSONLogic expression.
 ///
 /// Deployment references resolve at *load*; an expression is evaluated per
@@ -100,6 +81,22 @@ pub fn is_expression_field(key: &str) -> bool {
     key.ends_with("_logic")
 }
 
+/// Refuse an object with more than one key anywhere inside a channel
+/// expression.
+///
+/// N3/N4 refuse a channel whose guard config does not compile rather than
+/// serve it with a weaker control than the one configured, but a multi-key
+/// object compiles. The serving engine is dataflow-rs's, so channel
+/// expressions speak the same dialect workflow expressions do — which is what
+/// lets them read `{"secret": …}` — and it runs in **templating mode**, where a
+/// multi-key object is a legal template emitting a structured object. A typo'd
+/// `{"==": [1, 1], "!=": [1, 2]}` would compile to a truthy object and
+/// `validate_input` would then admit everything, silently — precisely the
+/// outcome N4 exists to prevent.
+///
+/// So the refusal is stated here rather than inherited from a compiler mode.
+/// Nothing is lost by it: every channel expression is a predicate or a key, and
+/// none has a reason to emit a structured object.
 pub(super) fn refuse_multi_key_object(
     logic: &serde_json::Value,
     field: &str,
@@ -129,12 +126,11 @@ pub(super) fn refuse_multi_key_object(
 /// backends, the per-channel construction, and the reuse rules that make a
 /// reload cost what changed.
 ///
-/// It used to own an `ArcSwap` of the generation and a `reload_lock` of its
-/// own. Both are gone: publication belongs to the runtime handle, and
-/// serialising the read-modify-write belongs to `AppStateInner::reload_lock`,
-/// which already spans the wider sequence (read the rows, build both halves,
-/// publish). The registry's own lock only ever covered its half — which is
-/// exactly why the two halves could be published a moment apart.
+/// It owns neither an `ArcSwap` nor a lock: publication belongs to the runtime
+/// handle, and serialising the read-modify-write belongs to
+/// `AppStateInner::reload_lock`, which spans the whole sequence (read the rows,
+/// build both halves, publish). A lock of its own would cover only its half,
+/// and let the two halves be published a moment apart.
 pub struct ChannelLoader {
     /// `Some` = cluster mode (strict backend matrix in
     /// [`ChannelLoader::resolve_backend`]: shared-store defaults and load
@@ -276,10 +272,9 @@ impl ChannelLoader {
     /// Build one channel's runtime config, or the [`ChannelLoadIssue`] that
     /// keeps it out of the registry.
     ///
-    /// N17: `reload` used to carry this inline, which is how it reached 218
-    /// lines with six `continue`s threading a shared issue list through it.
-    /// Pulled out, the per-channel decision is one `Result` and the reload is a
-    /// fold over it.
+    /// N17: the per-channel decision is one `Result`, so the reload is a fold
+    /// over it rather than a loop threading a shared issue list through
+    /// `continue`s.
     ///
     /// `prior` is the outgoing generation's entry for this channel, present
     /// only when the channel was serving before. It is *not* a shortcut past
@@ -341,7 +336,7 @@ impl ChannelLoader {
             issue(e)
         })?;
 
-        // N3: `unwrap_or_default()` here used to turn one typo in the
+        // N3: `unwrap_or_default()` here would turn one typo in the
         // stored config into a channel with no rate limit, validation,
         // dedup, backpressure, timeout, or cache — and no log line.
         let parsed_config: ChannelConfig = serde_json::from_value(raw).map_err(|e| {
@@ -412,12 +407,12 @@ impl ChannelLoader {
                 )
             });
 
-        // N5: an uncompilable `key_logic` used to fall back to
-        // `client_ip`, silently re-dimensioning the limit — a per-API-key
-        // or per-tenant limit became per-IP, so every tenant behind one
-        // NAT shared a bucket and one tenant got N× its quota by rotating
-        // IPs. Quarantine the channel instead, like N3/N4 do for the
-        // other guard-bearing config.
+        // N5: an uncompilable `key_logic` quarantines the channel, like
+        // N3/N4 do for the other guard-bearing config. Falling back to
+        // `client_ip` would silently re-dimension the limit — a per-API-key
+        // or per-tenant limit would become per-IP, so every tenant behind one
+        // NAT shares a bucket and one tenant gets N× its quota by rotating
+        // IPs.
         let rate_limit_key_logic = parsed_config
             .rate_limit
             .as_ref()
@@ -747,14 +742,13 @@ impl ChannelLoader {
     /// [`ChannelSnapshot::quarantined`] — that map is the one
     /// representation of it (N21).
     ///
-    /// This used to be all-or-nothing — a non-empty issue list left the
-    /// estate untouched and callers hard-failed. That kept a broken channel
-    /// from being served unguarded, which is right, but it also meant one
-    /// channel with an unparseable `config_json` failed *every* operation that
-    /// triggers a reload (activate, archive, delete, rollout) with a 500, and
-    /// stopped the cluster reconciler resyncing every node (F35). Refusing
-    /// the broken channel individually keeps the guarantee and drops the
-    /// blast radius to the one row that is actually broken.
+    /// It is not all-or-nothing. Leaving the estate untouched on any issue
+    /// would keep a broken channel from being served unguarded, but one
+    /// channel with an unparseable `config_json` would then fail *every*
+    /// deployment that triggers a reload with a 500, and stop the cluster
+    /// reconciler resyncing every node (F35). Refusing the broken channel
+    /// individually keeps the guarantee and limits the blast radius to the one
+    /// row that is actually broken.
     ///
     /// # Cost (N17)
     ///
@@ -818,8 +812,8 @@ impl ChannelLoader {
 
         // F33: seed with the engine-build failures (workflow missing or
         // unconvertible). Those channels are quarantined exactly like ones
-        // whose own config fails to load — previously they stayed in the
-        // route table with no workflow behind them and served opaque engine
+        // whose own config fails to load, rather than staying in the route
+        // table with no workflow behind them and serving opaque engine
         // errors. The registry still runs its own checks on them below, so a
         // channel broken in both stages reports its more specific
         // config-load reason (the quarantine map is last-write-wins), and

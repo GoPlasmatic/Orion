@@ -40,7 +40,7 @@ const SCHEME_API_KEY: &str = "admin_api_key";
 ///
 /// While walking every operation it also attaches the shared error responses:
 /// a `401` on guarded operations and a `500` everywhere, both referencing
-/// [`ErrorResponse`], which was previously a registered-but-unreferenced schema.
+/// [`ErrorResponse`], so that schema is referenced rather than merely registered.
 /// Existing declarations are never overwritten.
 pub(crate) struct SecurityAddon;
 
@@ -524,9 +524,9 @@ mod tests {
     /// `condition_json` / `tasks_json` as opaque strings on a shape no client
     /// receives, and — the reason this is a security rule and not a tidiness
     /// one — it advertises columns like `Trace::access_token_hash` that exist
-    /// to be compared, never shown. There are no longer any exceptions:
-    /// `Connector`, `TraceDlqEntry` and `AuditLogEntry` each publish a
-    /// `*Response` DTO now, and none of the rows can derive `Serialize` at all.
+    /// to be compared, never shown. There are no exceptions: `Connector`,
+    /// `TraceDlqEntry` and `AuditLogEntry` each publish a `*Response` DTO, and
+    /// none of the rows can derive `Serialize` at all.
     ///
     /// The generic envelopes inline their type parameter into the component
     /// name (`Data_ConnectorResponse`), so a row leaking in through a
@@ -605,11 +605,10 @@ mod tests {
             .responses
             .get("202")
             .expect("202 accepted");
-        // R11: the 202 no longer has a conditional shape to document. It used
-        // to answer `{"trace_id": null}` plus a `Warning: 299` header when
-        // `trace.mode = off` — a receipt for a result that could never be
-        // fetched. The row is now written before the 202 is sent, so the id is
-        // always pollable and the header is gone.
+        // R11: the 202 has no conditional shape to document. The row is
+        // written before the 202 is sent, whatever `trace.mode` says, so the
+        // id is always pollable — a null `trace_id` with a `Warning: 299`
+        // header would be a receipt for a result that could never be fetched.
         let no_warning_header = match accepted {
             RefOr::T(response) => !response.headers.contains_key("warning"),
             RefOr::Ref(_) => false,

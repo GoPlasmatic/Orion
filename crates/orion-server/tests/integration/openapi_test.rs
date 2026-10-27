@@ -206,9 +206,10 @@ async fn openapi_documents_the_data_plane() {
         accepted["content"]["application/json"]["schema"]["$ref"],
         "#/components/schemas/AsyncSubmitResponse"
     );
-    // R11: the 202 has one shape. It used to answer `{"trace_id": null}` plus a
-    // `Warning: 299` header when `trace.mode = off` — a receipt for a result
-    // that could never be fetched, with the nullability baked into the spec.
+    // R11: the 202 has one shape, whatever `trace.mode` says: no `Warning`
+    // header and a required `trace_id`. A nullable one would be a receipt for a
+    // result that could never be fetched, with the nullability baked into the
+    // spec.
     assert!(
         accepted["headers"]["warning"].is_null(),
         "the 202 must not document a Warning header — trace_id is unconditional"
@@ -228,8 +229,9 @@ async fn openapi_documents_the_data_plane() {
     );
 }
 
-/// C9 (partial): `ErrorResponse` used to be a registered schema that no
-/// `responses(...)` entry referenced, making error shapes undiscoverable.
+/// C9 (partial): `ErrorResponse` is referenced from the operations'
+/// `responses(...)`, not merely registered — a schema nothing references leaves
+/// error shapes undiscoverable.
 #[tokio::test]
 async fn openapi_references_the_shared_error_envelope() {
     let app = common::test_app().await;

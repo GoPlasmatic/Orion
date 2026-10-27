@@ -3,10 +3,9 @@
 //!
 //! This crate is the single definition of what travels between `orion-server`
 //! and its clients (`orion-cli`, generated SDKs). The server
-//! serializes these types; clients deserialize them. Before this crate
-//! existed the CLI re-derived all of it as string literals — including three
-//! error codes the server never emits — which is exactly the drift a shared
-//! contract makes impossible.
+//! serializes these types; clients deserialize them, rather than re-deriving
+//! the shapes and codes as string literals that drift from what the server
+//! emits.
 //!
 //! What lives here, by module:
 //!

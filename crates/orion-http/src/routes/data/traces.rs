@@ -156,15 +156,15 @@ pub(crate) async fn get_trace(
     let trace = state.repos.traces.get_by_id(&id).await?;
 
     // R12 access rule. Lane 1: a valid admin credential (only meaningful when
-    // admin auth is enabled — the middleware no longer guards this route, so
-    // the check happens here). Lane 2: the per-submission capability token.
+    // admin auth is enabled — the admin middleware does not guard this route,
+    // so the check happens here). Lane 2: the per-submission capability token.
     // Tokenless traces stay on the admin trust model: open when auth is
     // disabled (the whole admin plane is), admin-only when enabled.
     //
     // A missing trace 404s before this check, so an unauthorized caller can
     // distinguish "exists" from "does not exist". Deliberate: trace ids are
     // v4 UUIDs, so there is nothing to enumerate (the id-listing endpoint is
-    // admin-guarded, and its rows carry no payloads since S14), and the
+    // admin-guarded, and its rows carry no payloads — S14), and the
     // distinction is what makes a wrong-id-vs-wrong-token mistake debuggable.
     let auth_cfg = &state.config.admin_auth;
     let is_admin =

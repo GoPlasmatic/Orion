@@ -58,8 +58,8 @@ pub(crate) fn parse_timestamp(raw: &str) -> Result<NaiveDateTime, String> {
 }
 
 /// [`parse_timestamp`] as a serde field deserializer, so the filter can be
-/// extracted straight from the query string (D22 — the route used to carry a
-/// parallel string-typed DTO purely to host this parse).
+/// extracted straight from the query string (D22) with no parallel
+/// string-typed DTO to host this parse.
 fn de_timestamp<'de, D>(deserializer: D) -> Result<Option<NaiveDateTime>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -263,10 +263,8 @@ impl AuditLogRepository for SqlAuditLogRepository {
                 cond = cond.add(Expr::col(AuditLogs::CreatedAt).lt(end));
             }
 
-            // D18: one shared count-then-page. A driver error on the data read
-            // used to be wrapped as `InternalSource` here while the count half
-            // of the same method returned `Storage`; both are now `Storage`,
-            // like every other list path.
+            // D18: one shared count-then-page, so a driver error on either the
+            // count or the data read is `Storage`, like every other list path.
             super::helpers::paginate(
                 &self.pool,
                 Page {
@@ -332,8 +330,8 @@ pub(crate) mod tests {
     }
 
     /// The filter deserializes directly at the extraction boundary,
-    /// timestamps and `deny_unknown_fields` included (D22 — the route used to
-    /// carry a parallel string-typed DTO for this).
+    /// timestamps and `deny_unknown_fields` included (D22 — no parallel
+    /// string-typed DTO in the route).
     #[test]
     fn filter_deserializes_with_timestamps_and_rejects_unknown_keys() {
         use serde_json::json;
@@ -390,8 +388,8 @@ pub(crate) mod tests {
         assert!(page.data[0].details.is_none());
     }
 
-    /// `columns()` replaces rather than appends, so the old two-call form
-    /// produced `INSERT INTO audit_logs ("details") VALUES (5 values), (1 value)`.
+    /// `columns()` replaces rather than appends, so calling it twice would
+    /// produce `INSERT INTO audit_logs ("details") VALUES (5 values), (1 value)`.
     #[tokio::test]
     async fn test_insert_with_details_persists_and_reads_back() {
         let repo = test_repo().await;

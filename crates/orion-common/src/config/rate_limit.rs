@@ -95,9 +95,9 @@ fn parse_proxy_entry(entry: &str) -> Result<ipnet::IpNet, &'static str> {
 
 /// Default requests-per-second for the admin plane when `rate_limit.enabled`.
 ///
-/// Previously `None`, which meant admin traffic fell back to `default_rps`
-/// (100) — the same budget as the anonymous data plane, on the surface that
-/// holds every mutating operation and the credentials to reach them. Admin use
+/// Not `None`, which would fall admin traffic back to `default_rps` (100) —
+/// the same budget as the anonymous data plane, on the surface that holds
+/// every mutating operation and the credentials to reach them. Admin use
 /// is interactive and low-volume; 20/s is generous for a human or a deploy
 /// pipeline and far below what online credential guessing needs (S12).
 fn default_admin_rps() -> Option<u32> {
@@ -163,8 +163,8 @@ mod tests {
     }
 
     /// F36: enabling rate limiting with no config file at all — the pure-env
-    /// deployment shape — used to fail validation, because the derived
-    /// `Default` gave `0`/`0` while the serde defaults gave `100`/`50`.
+    /// deployment shape — passes validation, which needs the derived `Default`
+    /// and the serde defaults to agree on `100`/`50` rather than `0`/`0`.
     #[test]
     fn test_enabled_on_derived_default_passes_validation() {
         let config = RateLimitConfig {

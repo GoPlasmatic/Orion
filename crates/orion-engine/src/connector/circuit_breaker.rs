@@ -21,17 +21,17 @@ pub struct CircuitBreaker {
     failure_count: AtomicU32,
     /// Probe permits available in the half-open state.
     ///
-    /// Without this the breaker admitted *every* in-flight request the moment
-    /// the cooldown elapsed, so the whole backlog stampeded a dependency that
-    /// was still broken — one cycle of protection, then effectively closed
+    /// Without it the breaker would admit *every* in-flight request the moment
+    /// the cooldown elapsed, and the whole backlog would stampede a dependency
+    /// that was still broken — one cycle of protection, then effectively closed
     /// until the first failure re-opened it (proposal F19). One permit is
     /// issued per half-open window; the probe's outcome decides the next state.
     probe_permits: AtomicU32,
     /// Milliseconds since `base` at which the breaker last opened.
     opened_at: AtomicI64,
     /// Monotonic reference captured at construction. Cooldowns are measured
-    /// against this instead of the wall clock, so an NTP step can no longer
-    /// shorten or extend them. `tokio::time::Instant` == `std::time::Instant`
+    /// against this instead of the wall clock, so an NTP step cannot shorten
+    /// or extend them. `tokio::time::Instant` == `std::time::Instant`
     /// in production builds (the mock clock is dev-only `test-util`), and
     /// `now()` falls back to std outside a runtime.
     base: tokio::time::Instant,

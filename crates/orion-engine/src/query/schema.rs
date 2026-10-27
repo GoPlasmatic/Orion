@@ -208,15 +208,15 @@ impl EntityRegistry {
         self.entities.is_empty()
     }
 
-    /// Physical table/collection/index for a **caller-named** entity — the
-    /// envelope's `source` / `target`.
+    /// Physical table for a **caller-named** entity — the envelope's
+    /// `source` / `target`.
     ///
-    /// F24: this used to fall back to the logical name unconditionally, so
-    /// `unmapped: "reject"` bounded only *columns*. A query naming no fields at
-    /// all (`{"source": "secrets"}` → `SELECT *`) resolved every table the
-    /// connector's database user could see even in allowlist mode, because no
-    /// field resolution ever ran. Under `reject` an undeclared entity is now
-    /// refused before any backend sees it.
+    /// F24: under `reject` an undeclared entity is refused here, before any
+    /// backend sees it. Falling back to the logical name unconditionally would
+    /// make `unmapped: "reject"` bound only *columns*: a query naming no fields
+    /// at all (`{"source": "secrets"}` → `SELECT *`) would resolve every table
+    /// the connector's database user could see, because no field resolution
+    /// ever runs.
     pub fn physical_table(&self, entity: &str) -> Result<String, QueryError> {
         if self.unmapped == UnmappedPolicy::Reject && !self.entities.contains_key(entity) {
             return Err(QueryError::UndeclaredEntity {
@@ -318,9 +318,9 @@ impl EntityRegistry {
     /// honouring renames, the unmapped policy, and whichever per-column flag
     /// (`queryable` / `writable`) `allowed` tests.
     ///
-    /// One body for both directions on purpose (W4): the read and write paths
-    /// used to validate differently, which is exactly how a name that is not a
-    /// plain identifier reached a backend on one of them.
+    /// One body for both directions on purpose (W4): read and write paths that
+    /// validate differently are exactly how a name that is not a plain
+    /// identifier reaches a backend on one of them.
     fn resolve_column(
         &self,
         entity: &str,
@@ -459,18 +459,17 @@ impl EntityRegistry {
 
 /// One rule for every logical name that becomes a physical one (W4).
 ///
-/// The read and write paths validated differently — `lower.rs` rejected empty
-/// and dotted names, `resolve_write_column` checked nothing — and **neither
-/// rejected a leading `$`**. Concrete consequences, all silent:
+/// Empty, dotted and `$`-led names are refused on every path. Checked on one
+/// path and not another, they fail silently:
 ///
-/// - `values: {"a.b": 1}` wrote a *literal column named `a.b`*, which reads
-///   as a qualified `table.column` name everywhere else.
-/// - `values: {"": 1}` emitted `INSERT INTO "users" ("")`.
+/// - `values: {"a.b": 1}` would write a *literal column named `a.b`*, which
+///   reads as a qualified `table.column` name everywhere else.
+/// - `values: {"": 1}` would emit `INSERT INTO "users" ("")`.
 ///
 /// Applied in `resolve_field`, `resolve_write_column` and `physical_table`, so
-/// no backend receives a name that has not been through it. This also closes
-/// the residual half of F25: quoting still happens in sea-query's
-/// `Iden::quoted`, but a name carrying a quote character no longer reaches it.
+/// no backend receives a name that has not been through it. That covers the
+/// residual half of F25 too: quoting happens in sea-query's `Iden::quoted`,
+/// but a name carrying a quote character never reaches it.
 pub(crate) fn validate_identifier(name: &str, at: &str) -> Result<(), QueryError> {
     let reject = || QueryError::InvalidField {
         field: name.to_string(),
@@ -611,8 +610,8 @@ mod tests {
     }
 
     /// F25: the junction's table and columns render as SQL identifiers via the
-    /// M:M join, and used to be the one identifier channel that skipped
-    /// `validate_identifier`.
+    /// M:M join, so they go through `validate_identifier` like every other
+    /// identifier channel.
     #[test]
     fn junction_identifiers_are_validated() {
         for (field, value) in [
@@ -790,10 +789,9 @@ mod tests {
         assert!(reg.resolve_write_column("users", "id", "values").is_err());
     }
 
-    /// The specific hole the policy flip alone would have left open: `reject`
-    /// used to bound only *columns*, and `{"source": "secrets"}` renders
-    /// `SELECT *` without ever resolving a field — so no field check ran and
-    /// the table resolved anyway.
+    /// The hole a `reject` that bounds only *columns* leaves open:
+    /// `{"source": "secrets"}` renders `SELECT *` without ever resolving a
+    /// field, so no field check runs and the table would resolve anyway.
     #[test]
     fn an_undeclared_entity_is_refused_even_when_no_field_is_named() {
         let reg = EntityRegistry::from_json(&json!({
@@ -923,9 +921,10 @@ mod tests {
     // F24: the column half — a field-less read is projected, not `SELECT *`
     // -----------------------------------------------------------------
 
-    /// `queryable: false` used to mean "you may not *name* this column": a
-    /// read that named no fields at all rendered `SELECT *` and returned it,
-    /// because `resolve_names` only walks the columns a caller listed.
+    /// `queryable: false` means more than "you may not *name* this column": a
+    /// read that names no fields at all must not render `SELECT *` and return
+    /// it, which `resolve_names` alone would allow, because it only walks the
+    /// columns a caller listed.
     #[test]
     fn a_field_less_read_projects_the_declared_queryable_columns() {
         let reg = EntityRegistry::from_json(&json!({ "entities": { "users": { "columns": {

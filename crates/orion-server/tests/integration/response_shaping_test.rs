@@ -1,6 +1,6 @@
 //! Workflow-shaped HTTP responses (`config.response.mode = "shaped"`).
 //!
-//! Every sync channel used to answer `200` with `{id, status, data, errors}`,
+//! By default a sync channel answers `200` with `{id, status, data, errors}`,
 //! whatever happened. That is a reasonable contract between workflows and an
 //! unreasonable one for a REST API: no `201` with a `Location`, no `404` for a
 //! record that is not there, no `Content-Type` but JSON. Every consumer then
@@ -10,7 +10,7 @@
 //!
 //! Shaping is **opt-in per channel** and the tests below hold both halves of
 //! that: a shaped channel gets what its workflow asked for, and a channel that
-//! did not opt in is byte-identical to what it always returned.
+//! did not opt in keeps the default envelope byte for byte.
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};

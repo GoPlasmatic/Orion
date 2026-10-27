@@ -3,16 +3,16 @@
 //! Lazily creates and caches [`SqlPool`] connections keyed by connector name.
 //! The backend is selected at runtime from the connection-string URL scheme.
 //!
-//! These were `sqlx::AnyPool` until #309. `Any` maps a driver's type info
-//! through a nine-variant whitelist, so a Postgres connector could decode nine
-//! types and failed the task on `uuid`, `numeric`, `timestamptz`, `json`,
-//! arrays and enums — per row, so a query passed against an empty table and
-//! failed the first time production had data. Holding the concrete pool is what
-//! lets [`crate::connector::sql_decode`] see a real type.
+//! The pool is the concrete driver's, not an `sqlx::AnyPool` (#309). `Any` maps
+//! a driver's type info through a nine-variant whitelist, so a Postgres
+//! connector could decode nine types and would fail the task on `uuid`,
+//! `numeric`, `timestamptz`, `json`, arrays and enums — per row, so a query
+//! would pass against an empty table and fail the first time production had
+//! data. Holding the concrete pool is what lets
+//! [`crate::connector::sql_decode`] see a real type.
 //!
-//! The enum is not a new idea here: [`crate::storage::DbPool`] has wrapped the
-//! same three pools behind a dispatch macro since 1.0, for Orion's own
-//! database. This is the half that never got it.
+//! [`crate::storage::DbPool`] wraps the same three pools behind a dispatch
+//! macro, for Orion's own database; this is the connector-side twin.
 
 use std::time::Duration;
 

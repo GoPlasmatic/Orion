@@ -1,10 +1,5 @@
 //! The cross-reference pass over a [`DefinitionSet`].
 //!
-//! Lifted out of `package_cli::run_lint`, which was the only consumer and so
-//! owned the walk. The checks are unchanged in substance — they are the ones
-//! that had been guarding promotion artifacts — with four added that a
-//! directory needs and an artifact happened not to have.
-//!
 //! Every check reports through [`Diagnostic`] rather than a formatted string, so
 //! the caller decides what fails the command. That distinction is the reason
 //! this is not a `Vec<String>`: a `channel_call` resolved by `channel_logic`
@@ -39,10 +34,9 @@ use crate::definitions::documents::CreateWorkflowRequest;
 ///
 /// The whole error is used only when it carries no field errors — a refusal
 /// that is not per-field. Otherwise each `FieldError` becomes its own
-/// diagnostic with its own path, because collapsing five field problems into
-/// one prose line was the defect: a set gate could say a workflow failed schema
-/// validation but not which field, and `--deny-warnings` was the only lever
-/// over the lot.
+/// diagnostic with its own path: collapsed into one prose line, five field
+/// problems would let a set gate say a workflow failed schema validation but
+/// not which field, leaving `--deny-warnings` the only lever over the lot.
 fn schema_diagnostics(
     check: &'static str,
     entity: &str,
@@ -451,8 +445,8 @@ fn check_channels(
     let mut names: Vec<String> = Vec::new();
     let mut channel_ids: Vec<String> = Vec::new();
     // (canonical route, methods, priority, the channel that claimed it first)
-    // — a list rather than a map because "same route" is now an overlap test,
-    // not a key lookup.
+    // — a list rather than a map because "same route" is an overlap test, not
+    // a key lookup.
     let mut routes: Vec<(String, Vec<String>, i64, String)> = Vec::new();
 
     // Offline, the drivers are the ones this binary's Community composition
@@ -837,12 +831,12 @@ mod tests {
 
     /// The defect this module's `schema_diagnostics` exists to close.
     ///
-    /// A workflow with several schema problems used to produce exactly one
-    /// finding, whose message was the whole `OrionError` flattened with
-    /// `to_string()` — so a set gate could say the workflow failed validation
-    /// but not which field, and a pipeline had nothing to grandfather but the
-    /// entire `schema.workflow` family. One diagnostic per field error, each
-    /// carrying its own path, is the fix.
+    /// A workflow with several schema problems must not collapse into one
+    /// finding whose message is the whole `OrionError` flattened with
+    /// `to_string()` — a set gate could then say the workflow failed
+    /// validation but not which field, and a pipeline would have nothing to
+    /// grandfather but the entire `schema.workflow` family. One diagnostic per
+    /// field error, each carrying its own path.
     #[test]
     fn a_schema_refusal_reports_one_diagnostic_per_field_with_its_path() {
         // Two independent problems: no name, and a task naming no function.
@@ -875,10 +869,9 @@ mod tests {
     /// The parse-once payoff: a set loaded from disk carries each document's
     /// spans, so a finding can say `file:line:col`.
     ///
-    /// Before this, `definitions/json.rs` existed to produce exactly this and
-    /// the set threw its output away — `lint`, `check` and `compile` findings
-    /// had no origin at all, and clippy got one only by re-reading and
-    /// re-parsing every file a third time.
+    /// `definitions/json.rs` exists to produce exactly this; a set that threw
+    /// its output away would leave `lint`, `check` and `compile` findings with
+    /// no origin at all.
     #[test]
     fn a_finding_from_a_loaded_directory_carries_its_file_and_line() {
         // `std::env::temp_dir` rather than a `tempfile` dependency — the same

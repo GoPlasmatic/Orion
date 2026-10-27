@@ -537,11 +537,10 @@ fn post_from_client(uri: &str) -> axum::http::Request<axum::body::Body> {
 }
 
 /// S15/N16: a channel's own rate limit is the channel's contract, not a
-/// feature of the HTTP middleware. It used to be enforced inside
-/// `rate_limit_middleware`, which is installed only when `[rate_limit]
-/// enabled = true` — so an operator who never turned the platform limiter on
-/// (the default) got a channel `rate_limit` block that parsed, validated,
-/// built a limiter, and throttled nothing.
+/// feature of the HTTP middleware. `rate_limit_middleware` is installed only
+/// when `[rate_limit] enabled = true`, so a channel limit enforced there would,
+/// for an operator who never turned the platform limiter on (the default),
+/// parse, validate, build a limiter, and throttle nothing.
 #[tokio::test]
 async fn test_channel_rate_limit_applies_without_the_platform_limiter() {
     // Default config: `rate_limit.enabled` is false.
@@ -615,12 +614,12 @@ fn post_claiming_client(uri: &str, forwarded_for: &str) -> axum::http::Request<a
 /// identity, and that trust list is parsed from `[rate_limit] trusted_proxies`
 /// **whether or not** `rate_limit.enabled` is set.
 ///
-/// It used to hang off `RateLimitState`, which is `None` with the platform
+/// It must not hang off `RateLimitState`, which is `None` with the platform
 /// limiter off — precisely the configuration this channel-level limit exists
-/// for. The list was therefore empty, forwarded headers were never honoured,
-/// and behind a load balancer or ingress every client keyed on the proxy's
-/// address: one bucket for the whole deployment, and a
-/// `requests_per_second: 1` that admitted one request per second in total.
+/// for. With an empty list, forwarded headers are never honoured, and behind
+/// a load balancer or ingress every client keys on the proxy's address: one
+/// bucket for the whole deployment, and a `requests_per_second: 1` that admits
+/// one request per second in total.
 #[tokio::test]
 async fn test_channel_rate_limit_keys_per_client_behind_a_trusted_proxy() {
     let mut config = orion::config::AppConfig::default();
@@ -739,10 +738,9 @@ async fn test_channel_rate_limit_applies_to_async_submissions() {
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
 }
 
-/// N16: `channel_call` reached the target with its rate limit unenforced, so
-/// a workflow fan-out could exceed a limit that the same channel enforced
-/// strictly over HTTP. The target's budget is now spent by in-process calls
-/// too.
+/// N16: `channel_call` spends the target's rate-limit budget like an HTTP
+/// caller does, so a workflow fan-out cannot exceed a limit the same channel
+/// enforces strictly over HTTP.
 #[tokio::test]
 async fn test_channel_call_consumes_the_target_rate_limit() {
     let app = common::test_app().await;
@@ -800,11 +798,12 @@ async fn test_channel_call_consumes_the_target_rate_limit() {
     assert_eq!(body["error"]["code"], "RATE_LIMITED", "{body}");
 }
 
-/// N16: the async worker used to apply `trace_queue.processing_timeout_ms`
-/// unconditionally, so a channel declaring `timeout_ms = 50` timed out at
-/// 50 ms over HTTP and ran for the global 60 s over `/async` — one channel,
-/// two contracts. The workflow here takes 200 ms against a deliberately slow
-/// upstream, so the channel's deadline is the only thing that can stop it.
+/// N16: the async worker honours the channel's own `timeout_ms`, not just the
+/// global `trace_queue.processing_timeout_ms` — otherwise a channel declaring
+/// `timeout_ms = 50` would time out at 50 ms over HTTP and run for the global
+/// 60 s over `/async`: one channel, two contracts. The workflow here takes
+/// 200 ms against a deliberately slow upstream, so the channel's deadline is
+/// the only thing that can stop it.
 #[tokio::test]
 async fn test_async_worker_honours_the_channel_timeout() {
     let mock_app = axum::Router::new().route(
@@ -891,10 +890,10 @@ async fn test_async_worker_honours_the_channel_timeout() {
 }
 
 // ============================================================
-// N24: the per-channel origin allow-list, renamed for what it is
+// N24: the per-channel origin allow-list
 // ============================================================
 
-/// The new key name enforces exactly what the old one did.
+/// `origin_allow_list` refuses an unlisted origin and admits a listed one.
 #[tokio::test]
 async fn test_origin_allow_list_refuses_an_unlisted_origin() {
     let app = common::test_app().await;

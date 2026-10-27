@@ -92,15 +92,14 @@ struct DlqCandidate<'a> {
 
 /// One trace's claim on the queue's capacity, released on drop.
 ///
-/// Q6: the dispatcher used to increment the two counters, spawn the task, and
-/// decrement them after `process_trace(...).await` returned. A panic in that
-/// future skipped both decrements — the permit came back (it was already RAII)
-/// but the accounting did not. `memory_bytes` is the admission authority in
-/// [`super::TraceQueue::enqueue`], so every panic permanently shrank the
-/// queue's capacity: enough of them and healthy submissions answer 503 with a
-/// counter describing work that finished long ago, until the process is
-/// restarted. `active` only fed a gauge, but the gauge is how an operator
-/// decides whether the pool is stuck.
+/// Q6: decrementing the two counters after `process_trace(...).await` returns
+/// would skip both on a panic in that future — the permit comes back (it is
+/// RAII) but the accounting does not. `memory_bytes` is the admission
+/// authority in [`super::TraceQueue::enqueue`], so every panic would
+/// permanently shrink the queue's capacity: enough of them and healthy
+/// submissions answer 503 with a counter describing work that finished long
+/// ago, until the process is restarted. `active` only feeds a gauge, but the
+/// gauge is how an operator decides whether the pool is stuck.
 ///
 /// A guard rather than tidier decrements: this is the same fix
 /// [`super::bounded::Leased`] already applies to the depth counter, for the
@@ -584,8 +583,8 @@ async fn mark_running(
             .update_status(trace_id, models::TRACE_STATUS_RUNNING, None)
             .await
         {
-            // Q5: a transient DB error here used to drop the message
-            // entirely — trace stuck `pending` forever, work silently
+            // Q5: dropping the message on a transient DB error here would
+            // leave the trace stuck `pending` forever, work silently
             // undone. Route it through the DLQ instead so the retry
             // worker re-runs it once the DB recovers. Best-effort: the
             // enqueue writes to the same DB, but it happens later and

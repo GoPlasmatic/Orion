@@ -344,8 +344,8 @@ impl<V: Clone> LruCache<V> {
 
     /// Evict every cached entry. Used by epoch-driven resyncs: a remote node
     /// cannot know which connector changed, and pools rebuild lazily. Every
-    /// removed value is handed to the evict handler (F17) — before this,
-    /// each resync leaked the old pools' connections.
+    /// removed value is handed to the evict handler (F17), so a resync does
+    /// not leak the old pools' connections.
     pub async fn evict_all(&self) {
         let drained: Vec<V> = {
             let mut entries = self.entries();

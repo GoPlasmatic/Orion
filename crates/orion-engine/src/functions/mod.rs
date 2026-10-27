@@ -85,11 +85,9 @@ use serde_json::Value;
 /// record carries after `"Task t error: "`, its retryability and its
 /// operator-only detail.
 ///
-/// The records under `tests/fixtures/function-records/` were the twin tests'
-/// oracle while each function had a dataflow-rs 3 handler beside it: they
-/// are the answers both gave, taken when the two last agreed on every case.
-/// A test asserts against them with [`pinned`]; `ORION_BLESS=1` rewrites the
-/// records it reaches, for a behaviour change made on purpose.
+/// The records under `tests/fixtures/function-records/` hold those answers,
+/// case by case. A test asserts against them with [`pinned`]; `ORION_BLESS=1`
+/// rewrites the records it reaches, for a behaviour change made on purpose.
 #[cfg(any(test, feature = "test-support"))]
 pub mod twin {
     use std::sync::Arc;
@@ -440,29 +438,22 @@ mod tests {
 
 #[cfg(test)]
 mod message_shape_pin {
-    //! The prefix contract, pinned before the parsers were made to yield bare
-    //! messages.
+    //! The prefix contract.
     //!
     //! `crypto` shares its parsers between
     //! two paths: `execute`, whose errors travel far from the task that
     //! produced them and so name the handler, and `validate_static_input`,
     //! whose errors become `FieldError`s where the field path already supplies
-    //! that context. The prefix used to be formatted on and then stripped back
-    //! off (`strip_handler_prefix`).
+    //! that context. The parsers yield bare messages and the shell prefixes
+    //! once, rather than a prefix being formatted on and stripped back off.
     //!
-    //! Making the parsers bare and re-prefixing once at the shell is the fix,
-    //! and the way it goes wrong is silent: an execution error that loses its
+    //! The way that goes wrong is silent: an execution error that loses its
     //! prefix, or a static message that gains one. Asserted for one input per
-    //! handler, so a half-converted handler fails.
+    //! handler, so a handler that breaks either half fails.
     //!
-    //! Written before the conversion, where it failed on all three — which is
-    //! how it turned up that `strip_handler_prefix` had stopped working.
-    //! `DataflowError::Validation` renders as `"Validation error: {0}"`, so a
-    //! `strip_prefix("crypto: ")` never matches at position 0 and returned the
-    //! whole string. The `split_once` it replaced *did* match mid-string, so
-    //! hardening the function against a mid-sentence cut turned it into a
-    //! no-op, and these messages have read `"Validation error: crypto: …"`
-    //! ever since. Unreleased; this is the repair.
+    //! Stripping is the fragile direction: a label in front of the prefix
+    //! (`"Validation error: crypto: …"`) makes a `strip_prefix("crypto: ")`
+    //! miss at position 0, and a `split_once` cuts mid-sentence instead.
 
     use serde_json::json;
 
@@ -484,11 +475,11 @@ mod message_shape_pin {
     ///
     /// Both halves are asserted because the conversion can fail in either
     /// direction, and a lost prefix is the quieter of the two — nothing breaks,
-    /// the message is just less useful in a trace than it was.
+    /// the message is just less useful in a trace.
     #[tokio::test]
     async fn crypto_execution_messages_keep_the_handler_name() {
         // A key reference that resolves to nothing fails at execution; an
-        // unknown algorithm no longer gets that far, it is refused at load.
+        // unknown algorithm never gets that far, it is refused at load.
         let err = super::twin::v4(
             super::crypto::NAME,
             super::crypto::CryptoFunction,

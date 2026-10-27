@@ -1,8 +1,8 @@
 //! F8: `http_call` must not replay non-idempotent side effects.
 //!
-//! `max_retries` defaults to 3 and the retry loop used to run regardless of
-//! method, so a POST that timed out (or 5xx'd) was re-sent up to 3× with no
-//! idempotency key — duplicate charges and duplicate orders out of the box.
+//! `max_retries` defaults to 3, so a retry loop that ran regardless of method
+//! would re-send a POST that timed out (or 5xx'd) up to 3× with no idempotency
+//! key — duplicate charges and duplicate orders out of the box.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

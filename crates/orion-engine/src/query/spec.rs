@@ -336,20 +336,18 @@ fn parse_u64(v: Option<&Json>, name: &str) -> Result<Option<u64>, QueryError> {
 impl QuerySpec {
     /// Replace every logical name in the projection and sort with its physical
     /// name, honouring renames, the `queryable` allowlist, `unmapped` policy
-    /// and identifier rules — the same gate the filter already went through
-    /// (W2).
+    /// and identifier rules — the same gate the filter goes through (W2).
     ///
-    /// `resolve_field` used to have exactly one call site, the filter lowerer.
-    /// `fields` and `sort` went to the backends as raw logical strings, so with
-    /// `"unmapped": "reject"` and `{"secret": {"queryable": false}}`,
-    /// `fields: ["secret"]` still emitted `SELECT "secret"` — the allowlist
-    /// protected the filter and nothing else. A column rename broke projection
-    /// and sort silently for the same reason.
+    /// Sent to a backend as raw logical strings, with `"unmapped": "reject"`
+    /// and `{"secret": {"queryable": false}}`, `fields: ["secret"]` would
+    /// emit `SELECT "secret"` — the allowlist protecting the filter and
+    /// nothing else — and a column rename would break projection and sort
+    /// silently.
     ///
     /// A read that names *no* fields is resolved too (F24): an empty `fields`
-    /// renders `SELECT *`, which walked
-    /// past the column allowlist entirely, because the caller named nothing to
-    /// check. It is replaced by the entity's declared queryable columns; see
+    /// would render `SELECT *`, walking past the column allowlist entirely,
+    /// because the caller named nothing to check. It is replaced by the
+    /// entity's declared queryable columns; see
     /// [`EntityRegistry::default_projection`](crate::query::EntityRegistry::default_projection)
     /// for the two cases that legitimately stay a wildcard.
     ///
@@ -421,8 +419,8 @@ mod tests {
     // W6: unknown envelope keys are typos that silently changed results
     // -----------------------------------------------------------------
 
-    /// `"fileds"` used to select every column and `"lmit": 5000` fell back to
-    /// the default of 100 — the misspelled intent was silently discarded.
+    /// Accepted, `"fileds"` would select every column and `"lmit": 5000` fall
+    /// back to the default of 100 — the misspelled intent silently discarded.
     #[test]
     fn unknown_envelope_keys_are_rejected_naming_the_key() {
         for bad in ["fileds", "lmit", "orderby"] {
@@ -618,8 +616,8 @@ mod tests {
         assert!(err.contains("'after' must be an object"), "{err}");
     }
 
-    /// The message used to be a hand-copied list and had already fallen a key
-    /// behind — `count` shipped in 1.6 and never reached it.
+    /// The message lists `ENVELOPE_KEYS` itself: a hand-copied list falls a
+    /// key behind as soon as the envelope grows one.
     #[test]
     fn the_unknown_key_message_lists_every_envelope_key() {
         let err = parse(&json!({ "source": "users", "cursor": 1 }))

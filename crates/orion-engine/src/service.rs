@@ -218,12 +218,11 @@ mod tests {
 
     /// No classification token survives into any persisted text.
     ///
-    /// The three classifications used to be message prefixes, and the async
-    /// path never stripped them: `queue::processing` hands `e.to_string()`
-    /// straight to `handle_failure`, so `orion.circuit_open: ` and friends were
-    /// written verbatim into `traces.error` and `trace_dlq` rows. `kind` is a
-    /// field now, so `Display` is the caller-safe sentence and nothing has to
-    /// remember to strip anything.
+    /// The async path hands `e.to_string()` straight to `handle_failure`
+    /// (`queue::processing`), so a classification carried as a message prefix
+    /// (`orion.circuit_open: ` and friends) would be written verbatim into
+    /// `traces.error` and `trace_dlq` rows. `kind` is a field, so `Display` is
+    /// the caller-safe sentence and nothing has to remember to strip anything.
     #[test]
     fn no_classification_token_reaches_persisted_error_text() {
         let errors = [

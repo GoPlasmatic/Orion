@@ -435,7 +435,7 @@ async fn test_db_invalid_sql_returns_error() {
 }
 
 /// F10: db_read must refuse result sets beyond query.max_limit instead of
-/// buffering them unbounded — one `SELECT * FROM big_table` used to be an
+/// buffering them unbounded — otherwise one `SELECT * FROM big_table` is an
 /// OOM waiting to happen.
 #[tokio::test]
 async fn test_db_read_row_cap_enforced() {
@@ -569,23 +569,14 @@ async fn test_db_read_row_cap_enforced() {
     assert_eq!(body["data"]["rows"].as_array().map(|a| a.len()), Some(2));
 }
 
-/// `db_write` no longer reads `numeric_as`, so the runtime and the schema agree.
+/// `numeric_as` is not a `db_write` input, so the runtime and the schema agree.
 ///
-/// `db_write` reused `DbRead::parse_statement`, which resolved `numeric_as` — a
-/// field `DB_WRITE_FIELDS` does not declare, the `db_write` reference page never mentions, and
-/// `db_write` cannot act on because it decodes no rows. So a *wrong* value
-/// failed the task with `db_write: 'numeric_as' must be one of number/string`,
-/// an error naming a field the function's own schema does not have, while a
-/// correct one did nothing.
+/// `db_write`'s config does not declare it, its reference page never mentions
+/// it, and `db_write` could not act on it because it decodes no rows.
 ///
-/// `db_write` is `deny_unknown: false` — Orion's own handlers take freeform
-/// inputs and ignore extra keys — so 1.12 ignored the key like any other
-/// stray, and the write proceeded.
-///
-/// Break 2a: dataflow-rs 4's derived config refuses a key it does not
-/// declare, so the workflow would not serve: its definition is refused at
-/// upload, the key's path named, and nothing is deployed or written. (The v1
-/// create path accepted the key and the load quarantined the channel.)
+/// Break 2a: the derived config refuses a key it does not declare, so the
+/// workflow would not serve: its definition is refused at upload, the key's
+/// path named, and nothing is deployed or written.
 #[tokio::test]
 async fn db_write_with_a_numeric_as_it_cannot_act_on_quarantines_its_channel() {
     let app = common::test_app().await;
@@ -607,7 +598,7 @@ async fn db_write_with_a_numeric_as_it_cannot_act_on_quarantines_its_channel() {
                 "function": { "name": "db_write", "input": {
                     "connector": "na-db",
                     "query": "INSERT INTO na_rows (id) VALUES (1)",
-                    // The value that used to fail the task outright.
+                    // Not a valid `numeric_as` mode either.
                     "numeric_as": "not-a-mode",
                     "output": "data.inserted"
                 }}

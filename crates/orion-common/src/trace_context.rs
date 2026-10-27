@@ -6,11 +6,10 @@
 //! worker that runs the workflow. So the three modules that need it —
 //! `server`, `engine::functions` and `queue` — sit at three different layers.
 //!
-//! It used to live entirely in `server::trace_context`, which made a workflow
-//! function handler reach up into the HTTP layer to propagate a trace header.
-//! The map helpers are here, below all three; the axum middleware that reads a
-//! request's headers stays in `orion_server::server::trace_context`, because that
-//! one really is about HTTP.
+//! The map helpers are here, below all three, so a workflow function handler
+//! never reaches up into the HTTP layer to propagate a trace header; the axum
+//! middleware that reads a request's headers lives in `orion-http`'s
+//! `trace_context`, because that one really is about HTTP.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;

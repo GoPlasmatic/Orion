@@ -138,9 +138,9 @@ pub(crate) async fn create_backup(
 /// filename.
 ///
 /// `VACUUM INTO` refuses a destination that exists, so two backups that agree
-/// on a name are one backup and one 500. The name used to carry seconds only,
-/// which made "the same name" mean "the same second" — reachable by two
-/// operators, a script, and any scheduler that fires on a boundary.
+/// on a name are one backup and one 500. A name carrying seconds only would
+/// make "the same name" mean "the same second" — reachable by two operators,
+/// a script, and any scheduler that fires on a boundary.
 ///
 /// Two defences, because neither is enough alone. Milliseconds narrow the
 /// window; the collision suffix closes it, because a clock has no resolution

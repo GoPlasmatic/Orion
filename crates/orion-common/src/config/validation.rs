@@ -85,10 +85,9 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     }
     // Cross-section (C7): a production cluster must not migrate at boot.
     //
-    // Every replica would try, they race, and the guardrail used to be a log
-    // line emitted *after* the race it warns about — so the safe shape of the
-    // flagship feature was neither the default nor enforced. The correct shape
-    // already exists everywhere it is needed: the Helm chart runs a
+    // Every replica would try and they would race; a log line emitted *after*
+    // the race it warns about is no guardrail. The correct shape exists
+    // everywhere it is needed: the Helm chart runs a
     // pre-install/pre-upgrade `orion-server migrate` Job, and
     // `docker-compose.ha.yml` a one-shot `migrate` service.
     //

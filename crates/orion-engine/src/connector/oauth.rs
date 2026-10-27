@@ -182,12 +182,12 @@ struct TokenEntry {
     /// Bumped by [`OAuthTokenManager::invalidate`] on every API 401, without
     /// taking `state`.
     ///
-    /// The invalidation used to be attempted under `state.try_lock()` and
-    /// simply skipped when another task held it — which is exactly when it
-    /// matters, because the task holding it is usually the one about to
-    /// publish a token. A skipped invalidation left the rejected token
-    /// fast-path eligible until its refresh margin, so the connector answered
-    /// 401 after 401 while a perfectly good refresh sat one call away.
+    /// Not under `state`: a `try_lock` that skipped when another task held it
+    /// would skip exactly when it matters, because the task holding it is
+    /// usually the one about to publish a token. A skipped invalidation would
+    /// leave the rejected token fast-path eligible until its refresh margin,
+    /// so the connector would answer 401 after 401 while a perfectly good
+    /// refresh sat one call away.
     ///
     /// A counter rather than a flag, and read *before* a fetch rather than
     /// after: that is what makes an invalidation arriving mid-flight
@@ -684,13 +684,12 @@ pub struct TokenResponse {
 /// The four things a token request needs, independent of which grant asked for
 /// it and of whether the caller is a connector at all.
 ///
-/// `request_token_inner` used to take `&OAuth2Config` whole, which made the
-/// exchange unreachable from the inbound sign-in flow (#307) without adding
-/// authorization-code fields to that struct. That would not have been free:
+/// `request_token_inner` takes this rather than `&OAuth2Config` whole, so the
+/// inbound sign-in flow (#307) reaches the exchange without
+/// authorization-code fields on that struct. Adding them would not be free:
 /// `fingerprint` hashes the serialized `OAuth2Config`, and a persisted
 /// `connector_oauth_state` row is adopted only on a fingerprint match, so a new
-/// field would orphan every stored rotation state on upgrade. Narrowing the
-/// parameter instead leaves the fingerprint untouched.
+/// field would orphan every stored rotation state on upgrade.
 #[derive(Clone, Copy)]
 pub struct TokenEndpoint<'a> {
     pub token_url: &'a str,

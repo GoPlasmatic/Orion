@@ -134,9 +134,9 @@ pub(super) fn compute_cache_key(
     feed_object_sorted(&mut h, metadata.get("query"), &mut scratch);
 
     // `key_logic` first: it is the general form and the documented one to win
-    // when both are declared. The two branches used to be the other way round,
-    // so a channel declaring both keyed on the fields and never evaluated the
-    // expression its author wrote to say what varies the response (#354).
+    // when both are declared. Checking the fields first would key a channel
+    // declaring both on the fields and never evaluate the expression its
+    // author wrote to say what varies the response (#354).
     if let Some(compiled) = key_logic {
         // No usable key means bypass, exactly as an unresolvable
         // `cache_key_fields` does: a key that cannot be computed must not

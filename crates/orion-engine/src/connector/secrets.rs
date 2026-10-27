@@ -125,15 +125,14 @@ pub fn is_secret_reference(s: &str) -> bool {
 /// **Built once for the process.** This is the registry every resolution site
 /// reaches for — connector load, channel-auth compile per request, the
 /// `crypto` task function, `[secrets]` startup resolution, admin
-/// validate/test — and it used to be rebuilt at each of them: a `Vec`, six
-/// boxed resolvers, two `env::var` reads and a client clone, per call.
+/// validate/test — so rebuilding it at each would cost a `Vec`, six boxed
+/// resolvers, two `env::var` reads and a client clone, per call.
 ///
 /// Building it once is only sound because no entry closes over environment
-/// state any more. That was the previous shape's reason for existing: the
-/// `vault` entry captured `VAULT_ADDR`/`VAULT_TOKEN` at construction, so a
-/// renewed token needed a rebuilt registry. [`VaultSecretResolver`] now reads
-/// them *per resolution*, which keeps that property and adds one the rebuild
-/// never had — a token that appears after startup works without a reload.
+/// state: an entry that captured `VAULT_ADDR`/`VAULT_TOKEN` at construction
+/// would need a rebuilt registry for a renewed token. [`VaultSecretResolver`]
+/// reads them *per resolution*, so a renewed token, or one that appears after
+/// startup, works without a rebuild or a reload.
 pub fn default_resolvers() -> &'static [Box<dyn SecretResolver>] {
     static RESOLVERS: std::sync::OnceLock<Vec<Box<dyn SecretResolver>>> =
         std::sync::OnceLock::new();
@@ -376,7 +375,7 @@ pub async fn resolve_secret_string(value: &str, field: &str) -> Result<String, S
 ///
 /// Three phases rather than one recursive walk (H3c): collect the distinct
 /// references synchronously, resolve each **once** (a document repeating a
-/// reference costs one lookup — which matters now that a lookup can be an
+/// reference costs one lookup — which matters because a lookup can be an
 /// HTTP round trip), then substitute synchronously. It also sidesteps async
 /// recursion, which would otherwise need per-level boxing.
 pub async fn resolve_in_place(

@@ -43,22 +43,19 @@ impl AdminPrincipal {
     /// **Derivation** (O7):
     /// `key_id = "key-" || hex(SHA-256(KEY_ID_DOMAIN || SHA-256(key))[..8])`.
     ///
-    /// Three properties this buys, none of which the previous 8-character key
-    /// *prefix* had:
+    /// Three properties this buys, none of which a literal key *prefix* has:
     ///
-    /// 1. **Distinct keys get distinct ids.** The prefix was the first eight
-    ///    characters of the presented token, so two keys sharing a prefix —
-    ///    which any generator with a fixed `orion_sk_` style leader produces —
-    ///    were indistinguishable in the audit log. The digest covers the whole
-    ///    key.
+    /// 1. **Distinct keys get distinct ids.** The digest covers the whole key,
+    ///    so two keys sharing a prefix — which any generator with a fixed
+    ///    `orion_sk_` style leader produces — stay distinguishable in the
+    ///    audit log.
     /// 2. **It cannot be reversed to the key**, being two rounds of SHA-256
-    ///    over it. The old form leaked eight literal characters of a live
-    ///    credential into a database table and every log sink downstream.
+    ///    over it. A prefix would leak literal characters of a live credential
+    ///    into a database table and every log sink downstream.
     /// 3. **It is the same id whichever way the key is configured.** The
     ///    digest is identical for a plaintext `api_keys` entry and its
     ///    `sha256:<hex>` hash-at-rest form, so rotating an operator from one
     ///    to the other does not silently rename the actor in the audit trail.
-    ///    (The two forms used to produce two different-looking prefixes.)
     ///
     /// An operator holding the config can recompute the id for each of their
     /// keys and so map an audit row back to a key they issued — which is the
@@ -77,7 +74,7 @@ impl AdminPrincipal {
 /// True when `path` — an Axum `MatchedPath` template such as
 /// `/api/v2/admin/channels/{id}` — is behind admin authentication.
 ///
-/// The whole admin plane is guarded, with exactly one carve-out: the
+/// The whole admin plane is guarded, with one unconditional carve-out: the
 /// single-trace GET (R12). Its handler enforces its own two-lane rule — a
 /// valid admin credential, **or** the per-submission capability token returned
 /// with the async 202 — so the client that submitted a job can poll its own
@@ -86,12 +83,10 @@ impl AdminPrincipal {
 ///
 /// The trace *list* returns rows for every caller and stays fully guarded.
 ///
-/// Both endpoints moved from `/api/v2/data/traces*` to `/api/v2/admin/traces*`
-/// in 1.0 (R8). The carve-out is why this predicate did not simplify to a bare
-/// prefix test on the move: the exception moved with the route rather than
-/// disappearing. What the move does buy is a data plane with no static
-/// segments — so `traces` is a usable channel name again, and the rate
-/// limiter no longer has to special-case it.
+/// Both endpoints live under `/api/v2/admin/traces*` (R8), which keeps the
+/// data plane free of static segments — so `traces` is a usable channel name
+/// and the rate limiter needs no special case for it. The carve-out is why
+/// this predicate is not a bare prefix test.
 ///
 /// `/metrics` is the second carve-out, and a conditional one:
 /// `metrics_on_this_listener` must be
@@ -129,7 +124,7 @@ pub(crate) const METRICS_PATH: &str = "/metrics";
 /// Middleware that authenticates admin API requests.
 ///
 /// Attached, when `admin_auth.enabled`, to exactly the routes
-/// [`is_guarded_path`] names: the admin router (its routes and its fallback,
+/// `is_guarded_path` names: the admin router (its routes and its fallback,
 /// so an unregistered admin path answers 401 rather than reaching a data
 /// mount's catch-all) and `/metrics` on a listener that serves it. The
 /// router decides what is guarded; this decides whether the caller may pass.
@@ -323,8 +318,8 @@ mod tests {
     }
 
     /// RFC 9110 §11.1: the scheme is case-insensitive and any run of spaces
-    /// separates it from the key. The first of these used to be the only
-    /// accepted spelling besides `bearer `.
+    /// separates it from the key — not a prefix match against `Bearer ` and
+    /// `bearer `.
     #[test]
     fn the_bearer_scheme_is_parsed_not_prefix_matched() {
         let config = AdminAuthConfig {

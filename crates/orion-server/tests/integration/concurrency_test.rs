@@ -392,13 +392,14 @@ async fn test_concurrent_uploads_of_one_definition() {
 
 /// A rebuild publishes **once**.
 ///
-/// This is the structural guarantee, stated as a number. The engine and the
-/// channel estate used to be two `ArcSwap`s stored one after the other: each
-/// store atomic, the pair not. Between them the node served the new estate
-/// against the old engine, and no ordering of the two could remove that window
-/// — only choose which mismatch it produced.
+/// This is the structural guarantee, stated as a number. Stored as two
+/// `ArcSwap`s one after the other — each store atomic, the pair not — the
+/// engine and the channel estate would leave a window in which the node serves
+/// the new estate against the old engine, and no ordering of the two could
+/// remove it, only choose which mismatch it produced.
 ///
-/// So the fix is not "store them closer together", it is "there is one store".
+/// So the guarantee is not "store them closer together", it is "there is one
+/// store".
 /// Counting it is what keeps that true: re-split publication and this fails,
 /// whatever the two halves are called by then.
 #[tokio::test]
@@ -507,18 +508,18 @@ async fn a_reload_without_a_plugin_change_reuses_the_v4_registry() {
 ///
 /// The failure this pins is not a crash or an error code — it is a `200` that
 /// did nothing. With the estate and the engine published separately, a request
-/// arriving between the two stores was admitted against the *new* estate (the
-/// channel exists, its guards run) and executed by the *old* engine (which has
-/// no workflow for it). `process_message_for_channel` matched zero workflows,
-/// reported `Ok`, and the caller received its own input back with a `200`.
+/// arriving between the two stores would be admitted against the *new* estate
+/// (the channel exists, its guards run) and executed by the *old* engine (which
+/// has no workflow for it). `process_message_for_channel` would match zero
+/// workflows, report `Ok`, and hand the caller its own input back with a `200`.
 ///
 /// Every status code in that story is correct, which is exactly why
 /// `test_rebuild_under_data_load` above cannot see it: the assertion has
 /// to be on the body. `404` is a fine answer here — the channel genuinely is
 /// not active yet. `200` without the workflow's stamp is the bug.
 ///
-/// Timing-dependent by nature: it samples a window that no longer exists, so
-/// it proves nothing on its own. The guarantee is structural — one value, one
+/// Timing-dependent by nature: it samples for a window the single store rules
+/// out, so it proves nothing on its own. The guarantee is structural — one value, one
 /// store (`a_reload_publishes_exactly_one_generation`, and the retention test
 /// in `runtime::generation`). This is the net under it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

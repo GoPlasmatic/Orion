@@ -20,13 +20,10 @@ use crate::runtime::state::{AppState, DataPlane};
 use sync::process_sync_for_channel;
 
 pub fn data_routes() -> Router<AppState> {
-    // A single catch-all, with no static segments to shadow it. The trace
-    // reads used to sit here as `/traces` and `/traces/{id}`; static routes
-    // win over `/{*path}` in axum, so a channel named `traces` was
-    // permanently unreachable (`POST /api/v2/data/traces` returned 405) and
-    // the rate limiter carried a special case to skip the name. They moved to
-    // `/api/v2/admin/traces` in 1.0 (R8), where the admin-guarded list
-    // endpoint always belonged.
+    // A single catch-all, with no static segments to shadow it: static routes
+    // win over `/{*path}` in axum, so a static `/traces` here would make a
+    // channel named `traces` permanently unreachable (a 405). The trace reads
+    // live under `/api/v2/admin/traces` (R8), beside the admin-guarded list.
     Router::new().route("/{*path}", any(dynamic_handler))
 }
 
@@ -151,11 +148,11 @@ pub(crate) async fn dynamic_handler(
     // route table below, the channel's guards, and the engine the workflow
     // runs on all come from the same build.
     //
-    // The route match and the serviceability lookup used to be two separate
-    // loads of the channel registry, so a reload landing between them could
-    // resolve a route from one generation and miss the name in the next — a
-    // 404 for a channel present in both. Holding the generation also keeps
-    // admission and execution together, which two published values could not.
+    // Two loads — one for the route match, one for the serviceability lookup
+    // — would let a reload landing between them resolve a route from one
+    // generation and miss the name in the next: a 404 for a channel present
+    // in both. Holding the generation also keeps admission and execution
+    // together.
     let generation = state.runtime.load();
 
     // Resolve channel: try REST route table first, then direct name lookup.
@@ -720,12 +717,11 @@ async fn submit_async(
         h
     };
 
-    // R11: the pending row is written unconditionally. `trace.mode = "off"`
-    // used to skip it and answer 202 with a null `trace_id` and a `Warning`
-    // header — a receipt for work whose result could never be fetched, and a
-    // nullable id in the schema forever. Async submission *is* the request for
-    // a later result, so persistence is not optional on this path; the sync
-    // path still honours `off` exactly (see `for_async_submission`).
+    // R11: the pending row is written unconditionally, `trace.mode = "off"`
+    // included — skipping it would answer 202 with a receipt for work whose
+    // result could never be fetched. Async submission *is* the request for a
+    // later result, so persistence is not optional on this path; the sync
+    // path honours `off` exactly (see `for_async_submission`).
     let channel_id = Some(channel_runtime.channel.channel_id.as_str());
     // R12: mint an opaque capability token for this submission. Only its hash
     // is stored; the plaintext exists once, in this 202. Polling requires it
@@ -903,20 +899,6 @@ pub(crate) struct ProcessRequest {
 }
 
 impl ProcessRequest {
-    /// Read the request body, which may be the envelope or the payload itself.
-    ///
-    /// This endpoint had three behaviours for three body shapes, and only
-    /// one was documented. `{"data": …}` was the envelope; an **empty** body
-    /// became `{"data":{},"metadata":{}}`; and a **bare object** — `{"amount":
-    /// 5}`, the obvious thing to send, and what every other JSON API accepts —
-    /// failed with `missing field 'data'`. On the most-hit endpoint in the
-    /// product.
-    ///
-    /// The rule is now one sentence: **an object carrying `data` or `metadata`
-    /// is the envelope; anything else is the payload.** That keeps every
-    /// existing envelope working (they all carry `data`), keeps the empty body
-    /// meaning `{}`, and turns the previously-400 bare object into the payload
-    /// the caller plainly meant — a strictly widening change.
     /// Parse the body, without deciding what it means.
     ///
     /// Split from [`Self::classify`] (#278) so the channel's `body_mode` can
@@ -937,6 +919,11 @@ impl ProcessRequest {
     }
 
     /// Split a parsed body into `data` and `metadata` per the channel's mode.
+    ///
+    /// In `auto` mode the rule is one sentence: **an object carrying `data` or
+    /// `metadata` is the envelope; anything else is the payload.** A bare
+    /// object such as `{"amount": 5}` is the payload the caller plainly meant,
+    /// and an empty body is `{}` for both halves.
     ///
     /// The two modes differ for exactly one input shape — a top-level JSON
     /// *object* containing `data` or `metadata`. Arrays, scalars and objects

@@ -279,9 +279,8 @@ async fn test_data_query_limit_exceeds_max_rejected() {
 }
 
 /// W19: a nested list inside an `in` haystack has no portable form; it must be
-/// rejected at lowering — identically for every backend — not mistranslated.
-/// SQL used to error late with a fabricated `at: filter` location while Mongo
-/// and ES silently nested it.
+/// rejected at lowering, before any backend sees it — not mistranslated, and
+/// not refused late at a fabricated `at: filter` location.
 #[tokio::test]
 async fn test_data_query_nested_list_rejected() {
     let app = common::test_app().await;
@@ -316,8 +315,7 @@ async fn test_data_query_nested_list_rejected() {
 }
 
 /// W12: `skip` is capped like `limit` — rejected over `query.max_skip`,
-/// never clamped. The cap used to exist only on Elasticsearch, so the same
-/// envelope scanned arbitrarily deep on SQL.
+/// never clamped — so no envelope scans arbitrarily deep.
 #[tokio::test]
 async fn test_data_query_skip_exceeds_max_rejected() {
     let config = AppConfig {
@@ -355,8 +353,8 @@ async fn test_data_query_skip_exceeds_max_rejected() {
     );
 }
 
-/// W6: a misspelled envelope key used to be silently ignored — `"fileds"`
-/// selected every column. It must be rejected naming the key.
+/// W6: an unknown envelope key is rejected naming the key. Ignored, a
+/// misspelled `"fileds"` would select every column.
 #[tokio::test]
 async fn test_data_query_unknown_envelope_key_rejected() {
     let app = common::test_app().await;
@@ -608,11 +606,10 @@ async fn sqlite_app(conn: &str, mem: &str) -> axum::Router {
     app
 }
 
-/// `resolve_field` used to have exactly one call site — the filter lowerer —
-/// so `fields` and `sort` reached the backends as raw logical strings. With
-/// `{"secret": {"queryable": false}}`, `fields: ["secret"]` still emitted
-/// `SELECT "secret"`: the allowlist documented for the dialect protected the
-/// filter and nothing else.
+/// `fields` and `sort` resolve through `resolve_field` like the filter does,
+/// so the dialect's allowlist protects the projection too: with
+/// `{"secret": {"queryable": false}}`, `fields: ["secret"]` must not emit
+/// `SELECT "secret"`.
 #[tokio::test]
 async fn projection_cannot_read_a_non_queryable_column() {
     let conn = "dq-w2";
@@ -709,8 +706,8 @@ async fn sort_cannot_name_a_non_queryable_column() {
     );
 }
 
-/// A column rename used to apply to the filter and silently not to the
-/// projection, so `fields: ["email"]` selected a column that does not exist.
+/// A column rename applies to the projection and the sort as well as the
+/// filter; otherwise `fields: ["email"]` selects a column that does not exist.
 #[tokio::test]
 async fn projection_and_sort_honour_a_column_rename() {
     let conn = "dq-w2r";

@@ -1124,10 +1124,10 @@ mod tests {
                 "b.halt"
             ]
         );
-        // The nested ids are the ones that used to collide: both instances
-        // emitted a bare `deny`, and the workflow was refused at validation
-        // with a DUPLICATE_TASK_ID the author had no way to predict, because
-        // the name is private to the fragment (#294).
+        // The nested ids are the ones that would collide unprefixed: both
+        // instances would emit a bare `deny`, and the workflow would be refused
+        // at validation with a DUPLICATE_TASK_ID the author had no way to
+        // predict, because the name is private to the fragment (#294).
         assert_eq!(tasks[1]["tasks"][0]["id"], "a.deny");
         assert_eq!(tasks[4]["tasks"][0]["id"], "b.deny");
         assert!(f.is_empty(), "{f:?}");

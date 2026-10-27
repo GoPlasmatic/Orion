@@ -60,11 +60,9 @@ pub enum OrionError {
     /// response body when empty so clients expecting only the v0.1
     /// `{code, message}` envelope still work.
     ///
-    /// G11: `BadRequest(String)` used to sit beside this variant. Both were
-    /// 400, validators mixed them freely, and two identical `remap_to_field`
-    /// helpers existed purely to convert one into the other — so the pair
-    /// carried a distinction no caller could rely on. One variant now; the
-    /// former `BAD_REQUEST` code answers `VALIDATION_ERROR` like the rest.
+    /// G11: this is the only 400 variant. A second, unstructured 400 beside it
+    /// would carry a distinction no caller could rely on, and validators would
+    /// need helpers to convert one into the other.
     #[error("Validation failed: {message}")]
     Validation {
         code: &'static str,
@@ -338,13 +336,11 @@ impl OrionError {
 impl OrionError {
     /// The HTTP status, error code, and **client-safe** message for this error.
     ///
-    /// This is the single place the redaction policy lives. It used to be a
-    /// per-arm convention inside `IntoResponse` — three different 5xx shapes
-    /// coexisted, and whether an internal string reached the client was decided
-    /// one arm at a time. That is how G2, G3, G5 and G8 each became true
-    /// independently, and why nothing outside `IntoResponse` could ask "is this
-    /// message safe to show?" — which is what let the bulk-import handlers
-    /// embed raw driver text in a 200 body.
+    /// This is the single place the redaction policy lives. A per-arm
+    /// convention inside `IntoResponse` would decide one arm at a time whether
+    /// an internal string reaches the client (G2, G3, G5, G8), and would leave
+    /// nothing outside `IntoResponse` able to ask "is this message safe to
+    /// show?" — so a handler could embed raw driver text in a 200 body.
     ///
     /// The message is borrowed when the error's own text is what the client
     /// sees, and owned when it is redacted or formatted, so asking costs no
@@ -401,7 +397,7 @@ impl OrionError {
                 codes::RESPONSE_TOO_LARGE,
                 Cow::Borrowed(msg.as_str()),
             ),
-            // G2: `Internal` and `Config` used to return their message verbatim.
+            // G2: `Internal` and `Config` never return their message verbatim.
             // Reachable `Config` messages carry filesystem paths (TLS cert/key)
             // and whole database URLs — `detect_backend` is called on a
             // *connector's* connection string at request time, so a DSN with
@@ -502,9 +498,9 @@ impl OrionError {
     /// The structured field errors a validation refusal carries, empty for
     /// every other variant.
     ///
-    /// Exists so a caller can report them *as* structured errors. The set check
-    /// used to reach for `to_string()` here, which flattened a whole vector of
-    /// paths and codes into one prose line.
+    /// Exists so a caller can report them *as* structured errors, where
+    /// `to_string()` would flatten a whole vector of paths and codes into one
+    /// prose line.
     pub fn field_errors(&self) -> &[FieldError] {
         match self {
             OrionError::Validation { details, .. } => details,
@@ -532,11 +528,11 @@ impl IntoResponse for OrionError {
             _ => (Vec::new(), None),
         };
 
-        // The shared envelope's serde attributes carry the compat rules this
-        // used to spell imperatively: `details` is omitted when empty (v0.1
-        // clients), `request_id` when the per-request scope isn't populated
-        // (e.g. unit tests calling IntoResponse directly, or an inbound
-        // request with no x-request-id for the SetRequestIdLayer).
+        // The shared envelope's serde attributes carry the compat rules:
+        // `details` is omitted when empty (v0.1 clients), `request_id` when the
+        // per-request scope isn't populated (e.g. unit tests calling
+        // IntoResponse directly, or an inbound request with no x-request-id
+        // for the SetRequestIdLayer).
         let body = ErrorEnvelope {
             error: ErrorBody {
                 code: code.to_string(),
@@ -547,20 +543,19 @@ impl IntoResponse for OrionError {
         };
 
         let mut response = (status, axum::Json(body)).into_response();
-        // A 429 always carries `retry-after`. It used to be added by the rate
-        // limit middleware, which was the only producer; the per-channel limit
-        // now refuses from the ingress guards (S15), so the header belongs to
-        // the error rather than to one of its two call sites.
+        // A 429 always carries `retry-after`. Both the platform rate limit
+        // middleware and the per-channel limit in the ingress guards (S15)
+        // refuse with it, so the header belongs to the error rather than to
+        // either call site.
         if status == StatusCode::TOO_MANY_REQUESTS {
             response.headers_mut().insert(
                 axum::http::header::RETRY_AFTER,
                 axum::http::HeaderValue::from_static("1"),
             );
         }
-        // A 503 says the same thing, when there is something to say. Before
-        // `Unavailable` there was nothing to say it *with*: four causes shared
-        // one string variant, so every 503 either carried no hint or the wrong
-        // one. A cause that will not clear on its own — a quarantined channel,
+        // A 503 says the same thing, when there is something to say:
+        // `Unavailable` names the cause, so each 503 carries the hint that fits
+        // it. A cause that will not clear on its own — a quarantined channel,
         // a queue whose consumer died — deliberately sends no header rather
         // than inviting a retry loop against a node an operator has to fix.
         if let Some(secs) = retry_after {

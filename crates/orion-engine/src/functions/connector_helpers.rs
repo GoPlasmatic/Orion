@@ -99,10 +99,9 @@ pub fn to_exec_error(e: impl std::fmt::Display) -> HandlerError {
 /// A failure to *reach* a backend — pool acquisition, connection setup, DNS.
 ///
 /// [`ErrorClass::Connector`] rather than [`ErrorClass::Backend`] because the
-/// first is retryable and the second is not. Before F42 every non-HTTP connector failure went through
-/// [`to_exec_error`], so a dead Postgres or Redis was a non-retryable
-/// 500 while the *identical* HTTP outage was a retryable `Io` — DLQ retry
-/// policy diverged by backend for no principled reason.
+/// first is retryable and the second is not. A dead Postgres or MySQL is the
+/// *identical* outage to an unreachable HTTP host, and DLQ retry policy has no
+/// principled reason to diverge by backend (F42).
 ///
 /// Use for "could not connect"; keep [`to_exec_error`] for "connected, and the
 /// query failed", which is genuinely not worth retrying.
@@ -113,10 +112,10 @@ pub fn to_connect_error(e: impl std::fmt::Display) -> HandlerError {
 /// A caller-fixable limit or shape problem, e.g. a result set over
 /// `query.max_limit`.
 ///
-/// `Validation` maps to 400 with the message preserved. Routing these through
-/// [`to_exec_error`] made them 500 `ENGINE_ERROR` with the text replaced, so
-/// deliberately helpful guidance — *"add a LIMIT to the query or raise the
-/// cap"* — was sanitised away exactly when the caller needed it (F42).
+/// A 400 with the message preserved. Through [`to_exec_error`] it would be a
+/// 500 with the text replaced, so deliberately helpful guidance — *"add a
+/// LIMIT to the query or raise the cap"* — would be sanitised away exactly
+/// when the caller needs it (F42).
 pub fn to_limit_error(message: impl std::fmt::Display) -> HandlerError {
     HandlerError::new(ErrorClass::Limit, message)
 }
@@ -125,12 +124,11 @@ pub fn to_limit_error(message: impl std::fmt::Display) -> HandlerError {
 ///
 /// The distinction matters: a limit the caller can fix is a 400 with its text
 /// intact, a backend failure is a 500 with the text sanitised. Only the
-/// operation itself can tell them apart, and it used to say so by **prefixing
-/// its error string** with a marker the wrapper looked for and stripped
-/// (F42) — control flow through a string, in the one place a value under a
-/// `Result`'s `Err` was already available to carry it. A message that happened
-/// to start with the marker would have been misread as a limit; a limit whose
-/// text was reformatted anywhere in between would have silently become a 500.
+/// operation itself can tell them apart, so it says so in the value under the
+/// `Err` (F42), not in the text: with a marker prefixed to the error string, a
+/// message that happened to start with the marker would be misread as a
+/// limit, and a limit whose text was reformatted anywhere in between would
+/// silently become a 500.
 ///
 /// `From<String>` maps to [`Self::Backend`], so an operation with nothing to
 /// distinguish keeps returning `Result<_, String>` and reads the same.
@@ -471,9 +469,9 @@ mod error_taxonomy_tests {
 
     type DataflowError = dataflow_rs::Error;
 
-    /// F42: a dead Postgres/Redis used to be a **non-retryable** 500
-    /// while the identical HTTP outage was a retryable `Io`, so DLQ retry
-    /// policy diverged by backend for no principled reason.
+    /// F42: a dead Postgres/MySQL is as retryable as the identical HTTP
+    /// outage; DLQ retry policy has no principled reason to diverge by
+    /// backend.
     ///
     /// The constructors name a class, and `HandlerError`'s conversion picks
     /// the code and the retryability. Asserted
@@ -505,11 +503,9 @@ mod error_taxonomy_tests {
     /// A limit the operation classified reaches the caller as a 400 with its
     /// message intact — the guidance *is* the message.
     ///
-    /// This used to be carried by prefixing the error string with a marker
-    /// that `timed_query` looked for and stripped. The classification is a
-    /// value under the `Err` now, so there is no marker to leak, no message
-    /// that can be mistaken for one, and no reformatting in between that can
-    /// lose it.
+    /// The classification is a value under the `Err`, not a marker on the
+    /// error string, so there is no marker to leak, no message that can be
+    /// mistaken for one, and no reformatting in between that can lose it.
     #[tokio::test]
     async fn timed_query_reports_a_classified_limit_as_validation() {
         let err = DataflowError::from(
@@ -529,8 +525,8 @@ mod error_taxonomy_tests {
         );
     }
 
-    /// A message that *looks* like the old marker is just a message now. The
-    /// string-prefix scheme could not tell the difference.
+    /// A message that *looks* like a limit marker is just a message: the
+    /// classification is read from the value, never from the text.
     #[tokio::test]
     async fn a_backend_failure_is_never_reclassified_by_its_text() {
         let err = DataflowError::from(
@@ -588,7 +584,7 @@ mod error_taxonomy_tests {
         );
     }
 
-    /// An unmarked failure keeps the old behaviour: a 500 naming the handler.
+    /// A plain `String` failure is a backend failure: a 500 naming the handler.
     #[tokio::test]
     async fn timed_query_leaves_an_ordinary_failure_as_execution() {
         let err = DataflowError::from(

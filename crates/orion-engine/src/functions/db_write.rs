@@ -18,8 +18,7 @@ use crate::kit;
 /// This handler's name, for the shared write below (F48).
 pub(crate) const NAME: &str = "db_write";
 
-/// The connector's gate for a raw write: its `raw_write` operation. Shared by
-/// the dataflow-rs 3 handler and the dataflow-rs 4 function.
+/// The connector's gate for a raw write: its `raw_write` operation.
 fn gate(conn: &DbConnectorConfig, connector: &str) -> Result<(), HandlerError> {
     // Raw SQL cannot be classified per-op; it has its own gate.
     require_op_allowed(&conn.operations, "raw_write", connector)
@@ -27,8 +26,7 @@ fn gate(conn: &DbConnectorConfig, connector: &str) -> Result<(), HandlerError> {
 
 /// The write's answer, `{"rows_affected": n}` and, for an insert on a driver
 /// that reports one, `"last_insert_id"`, against a resolved and gated
-/// connector. Shared by the dataflow-rs 3 handler and the dataflow-rs 4
-/// function. `run_deadline` is the deadline of the run the call belongs to
+/// connector. `run_deadline` is the deadline of the run the call belongs to
 /// ([`QueryBudget::within`]).
 async fn write_rows(
     pool_cache: &SqlPoolCache,

@@ -1,9 +1,8 @@
 //! Consolidated integration-test binary.
 //!
-//! Every former `tests/*.rs` file is now a module here so the whole suite
-//! links into a single binary instead of ~43 separate ones. This collapses
-//! the per-edit relink cost dramatically. Add new test files under
-//! `tests/integration/` and declare them below.
+//! Each test file is a module here, so the whole suite links into a single
+//! binary rather than one per file, which keeps the per-edit relink cost down.
+//! Add new test files under `tests/integration/` and declare them below.
 
 // Tests unwrap and panic on what they did not expect; the workspace's
 // lints against both are for production code.

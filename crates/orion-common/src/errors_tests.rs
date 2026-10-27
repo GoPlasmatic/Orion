@@ -54,16 +54,11 @@ fn test_config_error_status() {
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
-/// G11: a closed trace queue used to be `Queue`, a **500** that
-/// `is_retryable()` reported as `true` — a contradiction, and one the
-/// OpenAPI document never believed: it has always described queue-full and
-/// queue-closed together as `503`. The adjacent arm in `TraceQueue::submit`
-/// (queue *full*) was already `ServiceUnavailable`, so the two halves of one
-/// condition answered with different status codes.
-///
-/// They still share the status, and now differ where they should: full is
-/// backpressure and clears, closed means the dispatcher is gone and does
-/// not. `Unavailable` is what lets one variant say both.
+/// G11: a closed trace queue is a **503**, like a full one — the OpenAPI
+/// document describes queue-full and queue-closed together as `503` — and is
+/// not retryable, which is where the two differ: full is backpressure and
+/// clears, closed means the dispatcher is gone and does not. `Unavailable` is
+/// what lets one variant say both.
 #[test]
 fn a_closed_queue_is_service_unavailable_but_not_retryable() {
     let err = OrionError::unavailable(Unavailable::QueueClosed, "queue is closed");

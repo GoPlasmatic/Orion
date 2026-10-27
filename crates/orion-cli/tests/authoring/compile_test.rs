@@ -41,8 +41,8 @@ fn definition_of(out: &std::path::Path, kind: &str, id: &str) -> serde_json::Val
 
 /// A set that uses every authoring convenience at once: a fragment with an
 /// argument, a `$from` in a task input, and a `$from` buried in a `map`
-/// mapping's `logic` — the last being the one the admin API used to store
-/// uncompiled.
+/// mapping's `logic` — the last being the one a residue check that skipped
+/// mapping logic would let reach the admin API uncompiled.
 fn sugared_set(label: &str) -> ScratchDir {
     // A distinct label per test: `ScratchDir` removes its directory on drop,
     // and these run in parallel, so a shared name lets one test delete the
@@ -153,8 +153,8 @@ fn a_deployment_is_fully_compiled() {
         serde_json::json!({ "unmapped": "identity" })
     );
     assert_eq!(tasks[2]["function"]["input"]["query"]["source"], "users");
-    // The deep one — inside a mapping's `logic`, where the admin API used to
-    // accept it and run it verbatim.
+    // The deep one — inside a mapping's `logic`, where an uncompiled `$from`
+    // would otherwise run verbatim.
     assert_eq!(
         tasks[3]["function"]["input"]["mappings"][0]["logic"]["body"],
         "User Not Found !"

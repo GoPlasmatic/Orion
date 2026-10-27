@@ -413,10 +413,9 @@ async fn test_bulk_insert_over_max_rows_rejected() {
 // W6 + W7: the mutation envelope is strict, and nested under `write`
 // ---------------------------------------------------------------------------
 
-/// W6: a misspelled envelope key used to be silently ignored — `"retuning"`
-/// meant no returning, a misspelled `filter` meant an unfiltered mutation.
-/// It must be rejected naming the key; the legacy flat form (whose object
-/// legitimately carries the handler keys alongside the envelope) still is.
+/// W6: an unknown key in the `write` envelope is rejected naming the key.
+/// Ignored, `"retuning"` would mean no returning and a misspelled `filter` an
+/// unfiltered mutation.
 #[tokio::test]
 async fn unknown_write_envelope_keys_are_rejected() {
     let conn = "dw-w6";
@@ -494,13 +493,11 @@ async fn the_pre_1_0_flat_envelope_is_refused_at_upload() {
 }
 
 /// A half-migrated task — envelope moved under `write`, stale flat keys left
-/// behind. 1.12 ran the `write` envelope and the stale keys were inert.
+/// behind.
 ///
-/// Break 2a: the stale keys are keys `data_write`'s dataflow-rs 4 config
-/// does not declare, so the workflow would not serve: its definition is
-/// refused at upload with each key's path, and nothing is deployed or
-/// written. (The v1 create path accepted them and the load quarantined the
-/// channel.)
+/// Break 2a: the stale keys are keys `data_write`'s config does not declare,
+/// so the workflow would not serve: its definition is refused at upload with
+/// each key's path, and nothing is deployed or written.
 #[tokio::test]
 async fn stale_flat_keys_beside_the_envelope_quarantine_the_channel() {
     let app = sqlite_app("dw-both", "dw_both").await;
@@ -595,12 +592,10 @@ async fn envelope_errors_are_reported_under_the_write_path() {
 // W3: `returning` is subject to the read allowlist
 // ---------------------------------------------------------------------------
 
-/// `returning` used to resolve through a helper that fell through to the raw
-/// column name regardless of policy, so `"returning": ["secret"]` read back
-/// any column the database user could see — including one the schema declared
-/// `queryable: false`, and any column at all under `unmapped: "reject"`. The
-/// doc comment justified skipping the `writable` check and silently skipped
-/// the allowlist with it.
+/// `returning` resolves through the read allowlist. Falling through to the raw
+/// column name would let `"returning": ["secret"]` read back any column the
+/// database user can see — including one the schema declared
+/// `queryable: false`, and any column at all under `unmapped: "reject"`.
 #[tokio::test]
 async fn returning_cannot_read_a_non_queryable_column() {
     let conn = "dw-w3";

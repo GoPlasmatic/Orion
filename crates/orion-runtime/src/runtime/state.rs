@@ -95,19 +95,17 @@ pub struct AppStateInner {
     /// publishes last wins. That is the *older* build often enough to matter,
     /// which leaves a just-deployed channel invisible until the next build.
     ///
-    /// This is now the *only* lock in the sequence. `ChannelLoader` used to
-    /// keep one of its own, which guarded its half alone and could not span
-    /// the engine store — the asymmetry that let the two halves be published a
-    /// moment apart.
+    /// This is the *only* lock in the sequence. `ChannelLoader` keeps none of
+    /// its own: a lock guarding the channel half alone could not span the
+    /// engine store, and would let the two halves be published a moment apart.
     pub reload_lock: tokio::sync::Mutex<()>,
     /// Serialises `POST /admin/backups` end to end: choosing the destination
     /// filename, running `VACUUM INTO`, and pruning to the retention count.
     ///
-    /// Two backups started in the same second used to pick the same
-    /// second-precision filename, and `VACUUM INTO` refuses a destination that
-    /// exists — so one of the two failed with a 500. The filename now carries
-    /// milliseconds and a collision suffix, which fixes the name; the lock
-    /// fixes the rest of it. Concurrent backups are two full copies of the
+    /// `VACUUM INTO` refuses a destination that exists, so two backups choosing
+    /// one filename would fail one of them with a 500. The filename carries
+    /// milliseconds and a collision suffix, which settles the name; the lock
+    /// settles the rest of it. Concurrent backups are two full copies of the
     /// database competing for the same disk the live database is on, and their
     /// retention prunes race each other over the same files.
     ///
@@ -144,8 +142,8 @@ pub struct AppStateInner {
     /// through [`AppStateInner::pool_stats`] or
     /// [`AppStateInner::backup_sqlite_into`] (R26). It stays public because
     /// bootstrap assembles it and the integration harness seeds rows through
-    /// it; the two route-layer call sites that used to unwrap a concrete
-    /// `sqlx` pool here now go through those methods instead.
+    /// it. A route that unwraps a concrete `sqlx` pool here instead of using
+    /// those methods ties a handler to one backend.
     #[doc(hidden)]
     pub db_pool: DbPool,
     pub config: Arc<AppConfig>,
@@ -273,9 +271,8 @@ impl AppStateInner {
     ///
     /// `Ok(false)` when the backend is not SQLite — the operation has no
     /// equivalent on PostgreSQL or MySQL, which rely on operator snapshot and
-    /// PITR tooling. The backup route used to `match` on the pool variant
-    /// itself, which is the only reason a concrete `sqlx` pool was reachable
-    /// from a handler.
+    /// PITR tooling. The variant `match` lives here so the backup route never
+    /// needs a concrete `sqlx` pool.
     pub async fn backup_sqlite_into(&self, path: &str) -> Result<bool, sqlx::Error> {
         let DbPool::Sqlite(pool) = &self.db_pool else {
             return Ok(false);

@@ -1,41 +1,37 @@
 //! A **definition set**: the channels, workflows and connectors that are
 //! authored together and must be consistent with each other.
 //!
-//! Orion validated one file at a time offline. `orion-cli lint wf.json`
-//! parses a workflow, checks its shapes, and says "valid" — while the channel
-//! that names it, the connector its tasks reach for, and the `channel_call`
-//! target it invokes all sit in files the command never opened. A set can be
-//! green on every per-file gate and still be missing a channel at runtime
-//! (#286).
+//! One file at a time is not enough. `orion-cli lint wf.json` parses a
+//! workflow, checks its shapes, and says "valid" — while the channel that
+//! names it, the connector its tasks reach for, and the `channel_call` target
+//! it invokes all sit in files the command never opens. A set can be green on
+//! every per-file gate and still be missing a channel at runtime (#286).
 //!
-//! The cross-reference pass that closes that already existed, in
-//! `package_cli::run_lint`, over a *promotion artifact*. It was the only
-//! consumer, so it owned the walk. A directory of definitions needs the same
-//! checks against a different container, which is what this module separates:
+//! The cross-reference pass runs over a set, not over a container: a
+//! directory of definitions and the one-file set `lint wf.json` builds around
+//! a single workflow need the same checks, which is what this module
+//! separates:
 //!
 //! ```text
-//! from_artifact()  ─┐                          ┌─ package lint
+//! from_directory() ─┐                          ┌─ lint / clippy
 //!                   ├─ DefinitionSet ─┐        │
-//! from_directory() ─┘                 ├─ check() ─┤
-//!                      Boundary ──────┘        └─ lint <dir>
+//! from_entries()   ─┘                 ├─ check() ─┤
+//!                      Boundary ──────┘        └─ compile
 //! ```
 //!
-//! Two loaders, one pass. The alternative — a second validator beside the
-//! first — is how the artifact form and the directory form come to disagree
-//! about what a valid set is, which is worse than having only one of them.
+//! Two loaders, one pass. A second validator beside the first is how two
+//! forms of a set come to disagree about what a valid set is.
 //!
 //! ## What a [`Boundary`] is for
 //!
-//! Not every name a set references has to live inside it. A promotion artifact
-//! says so explicitly in `requires`: these channels and connectors are expected
-//! to exist on the target already, so closure checking must not fail on them. A
-//! directory needs the same escape hatch for the same reason, so the concept is
-//! lifted out of the artifact and given to both.
+//! Not every name a set references has to live inside it: `lint` and `clippy`
+//! take `--requires-channel` / `--requires-connector` for channels and
+//! connectors expected to exist elsewhere, so closure checking does not fail
+//! on them.
 //!
-//! The *default* differs, and deliberately. An artifact's boundary is whatever
-//! it declares. A directory's is **empty** — everything must resolve in-set —
-//! because the gate exists to catch the missing channel, and a permissive
-//! default would be a gate that passes the bug it was built for.
+//! The default is **empty** — everything must resolve in-set, and `compile`
+//! always uses it — because the gate exists to catch the missing channel, and
+//! a permissive default would be a gate that passes the bug it was built for.
 
 pub mod analysis;
 mod check;

@@ -2,10 +2,9 @@
 //!
 //! The "pending migration ⇒ refuse to boot" check is the entire safety
 //! mechanism behind the Helm pre-upgrade Job and the compose `migrate`
-//! service, and nothing referenced `auto_migrate` from `tests/`. The check
-//! used to be inline in `main()`; it now lives in
-//! `orion::storage::init_pool_for_startup` so it is reachable without running
-//! the binary. `main()` calls exactly that function.
+//! service. It lives in `orion::storage::init_pool_for_startup`, reachable
+//! without running the binary, and the server's startup (`orion::run`) calls
+//! exactly that function.
 
 use std::path::Path;
 

@@ -74,12 +74,9 @@ impl ConfigCipher {
 
     /// Encrypt a config document for storage.
     pub fn encrypt(&self, plaintext: &str) -> Result<String, OrionError> {
-        // `Nonce::generate()` is aes-gcm 0.11's spelling of what was
-        // `Aes256Gcm::generate_nonce(&mut OsRng)`: nonce generation moved from
-        // AeadCore onto the `Generate` trait, and OsRng moved out of the aead
-        // root into `aead::rand_core`. Both draw from the OS CSPRNG and both
-        // panic if it fails, so the failure semantics here are unchanged.
-        // Requires the `getrandom` feature, which this crate already enables.
+        // `Nonce::generate()` (aes-gcm 0.11's `Generate` trait) draws a fresh
+        // 96-bit nonce from the OS CSPRNG and panics if it fails. Requires the
+        // `getrandom` feature, which this crate enables.
         let nonce = Nonce::generate();
         let ciphertext = self
             .cipher

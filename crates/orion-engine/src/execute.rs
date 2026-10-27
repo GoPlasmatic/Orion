@@ -1,20 +1,15 @@
 //! The one step between "the guards admitted this" and "shape a response".
 //!
 //! `channel::guards::apply_guards` is the single enforcement point for
-//! ingress, and everything after it used to be copied per transport: the sync
-//! HTTP route, the async trace queue, the Kafka consume loop (since removed)
-//! and the in-process `channel_call` handler each built a `Message`, loaded the engine
-//! snapshot, ran it, re-derived the "engine returned Ok
-//! but the message carries task errors" rule, and mapped a timeout — **four
-//! different ways**: an `OrionError::Timeout`, a synthesised engine timeout,
-//! a `fail("timeout", …)`, and another engine timeout with different wording. Nothing tied the four
-//! together, so the next change to dataflow-rs's error semantics was four
-//! edits and a test suite that could not tell if one was missed.
-//!
-//! They had already drifted. Kafka alone omitted the rollout bucket (correctly
-//! — a record has no sticky caller identity), and `channel_call` never applied
-//! the `has_errors` rule at all, so a target channel whose workflow failed its
-//! tasks reported success to its caller.
+//! ingress, and what follows it is shared the same way: building a `Message`,
+//! loading the engine snapshot, running it, the "engine returned Ok but the
+//! message carries task errors" rule, and mapping a timeout. Copied per
+//! transport — the sync HTTP route, the async trace queue, the in-process
+//! `channel_call` handler — those copies drift: one that skips the
+//! `has_errors` rule lets a target channel whose workflow failed its tasks
+//! report success to its caller, and a timeout mapped several ways makes every
+//! change to dataflow-rs's error semantics several edits that no test can
+//! check were all made.
 //!
 //! `runtime::execute_admitted_on_generation` is that step, once, over [`execute_on`]. What stays with each transport is
 //! what genuinely differs: persistence, response shaping, and what a

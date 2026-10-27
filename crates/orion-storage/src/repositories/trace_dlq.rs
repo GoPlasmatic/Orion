@@ -693,8 +693,8 @@ mod tests {
     /// Q3 regression. Replays the retry loop's full cycle — claim, resubmit
     /// (carrying `retry_count + 1`), delete the old row, worker fails again,
     /// re-enqueue seeded with the carried count — and asserts it terminates.
-    /// Before the carry, every re-enqueue landed at 0 and this loop never
-    /// stopped producing claimable rows.
+    /// Without the carry, every re-enqueue would land at 0 and this loop would
+    /// never stop producing claimable rows.
     #[tokio::test]
     async fn test_poison_message_converges_on_max_retries() {
         let repo = test_repo().await;

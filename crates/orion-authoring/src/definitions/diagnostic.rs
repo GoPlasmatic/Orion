@@ -1,25 +1,18 @@
 //! One shape for "something is wrong with a definition, here is where".
 //!
-//! Three types used to say this. `preflight::Finding` reported upgrade breaks
-//! in the stored estate; `definitions::Finding` reported set-check results and
-//! its own doc admitted it mirrored preflight's; `clippy::Diagnostic` was
-//! `Finding` plus a location, with a `from_finding` upcast to carry lint
-//! results through a clippy run. They agreed on every field that mattered —
-//! a stable machine-readable check id, the entity named as the author named it,
-//! what is wrong, and what to do — and differed only in what each had not
-//! needed yet.
-//!
-//! So there is one type, and the location is optional rather than a second
-//! type. A caller with no file to name leaves it `None` and renders exactly the
-//! line it rendered before.
+//! Set-check results and clippy findings share every field that matters — a
+//! stable machine-readable check id, the entity named as the author named it,
+//! what is wrong, and what to do — so there is one type, and the location is
+//! optional rather than a second type. A caller with no file to name leaves it
+//! `None`.
 //!
 //! **`FieldError` is deliberately not folded in.** It is the wire contract:
 //! a closed `code` vocabulary (`orion_api::error::field_codes::ALL`) pinned by
 //! `field_codes_drift_test`, serialized inside every error envelope a client
 //! reads. Merging it would make an internal report shape a published API. What
 //! the merge *is* for is the boundary between them — see
-//! [`Diagnostic::from_field_error`], which used to be `e.to_string()` over a
-//! whole `Vec<FieldError>` and threw away every path and code in it.
+//! [`Diagnostic::from_field_error`], which keeps every path a
+//! `Vec<FieldError>` carries rather than flattening it with `e.to_string()`.
 
 use serde_json::Value;
 
@@ -171,11 +164,10 @@ impl Diagnostic {
     /// One structured validation error, kept structured.
     ///
     /// The admin validators answer in `Vec<FieldError>` — a field path and a
-    /// code per problem. The set check used to collapse the whole vector with
-    /// `e.to_string()`, so a set gate could say *that* a workflow failed schema
-    /// validation but never which field, and reported one finding where there
-    /// were five. One diagnostic per field error, carrying its `path`, is the
-    /// fix.
+    /// code per problem. Collapsing the whole vector with `e.to_string()` would
+    /// let a set gate say *that* a workflow failed schema validation but never
+    /// which field, and report one finding where there were five. So: one
+    /// diagnostic per field error, carrying its `path`.
     ///
     /// The `code` is deliberately not carried. It belongs to the wire
     /// vocabulary a client reads, and `check` is already the id a pipeline
@@ -235,9 +227,8 @@ impl Diagnostic {
     /// The `--format json` line.
     ///
     /// The key is `rule`, not `check`, because this shape is what `clippy
-    /// --format json` has always emitted and a consumer is parsing it. The
-    /// field was renamed in Rust when the three types merged; the wire name
-    /// stays.
+    /// --format json` emits and a consumer is parsing it; the Rust field name
+    /// does not change the wire name.
     pub fn render_json(&self) -> Value {
         serde_json::json!({
             "level": self.severity.as_str(),

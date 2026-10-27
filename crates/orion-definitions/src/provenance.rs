@@ -2,10 +2,11 @@
 //!
 //! The authoring passes rewrite a document — a `$sql` reference becomes the
 //! statement its file holds, a `use` step the fragment's steps, an `$each`
-//! its copies — so a coordinate in the compiled form no longer always names
-//! text in the entity's own file, or the same index in its own arrays. The passes record, per
-//! compiled coordinate, where that subtree came from; a finding raised on the
-//! compiled form asks here which file an author should open.
+//! its copies — so a coordinate in the compiled form does not always name
+//! text in the entity's own file, or the same index in its own arrays. The
+//! passes record, per compiled coordinate, where that subtree came from; a
+//! finding raised on the compiled form asks here which file an author should
+//! open.
 
 use std::collections::BTreeMap;
 

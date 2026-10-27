@@ -2,8 +2,8 @@
 
 use super::*;
 
-/// A case runs the way a node runs an untraced message. 3000 sweeps took tens
-/// of gigabytes under the trace; it now finishes in a moment.
+/// A case runs the way a node runs an untraced message: 3000 sweeps finish in
+/// a moment, where running them under the trace would take tens of gigabytes.
 #[test]
 fn a_long_loop_case_runs_at_a_nodes_cost() {
     let scratch = suite_with(LONG_LOOP_WORKFLOW);
@@ -24,7 +24,7 @@ fn a_long_loop_case_runs_at_a_nodes_cost() {
     );
 }
 
-/// `expect_tasks` no longer reads the trace. It lists a task once per sweep,
+/// `expect_tasks` does not read the trace. It lists a task once per sweep,
 /// and still credits a task that failed.
 #[test]
 fn expect_tasks_counts_every_sweep_without_a_trace() {

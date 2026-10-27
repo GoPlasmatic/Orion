@@ -26,9 +26,7 @@ pub(crate) const NAME: &str = "db_read";
 ///
 /// The SQL text is a literal read from the task; only the parameters come from
 /// the message, which is what keeps them the sole request-controlled part of
-/// the statement. Owned by the dataflow-rs 3 handlers, which read it off the
-/// authored input per call; borrowed from the compiled config by the
-/// dataflow-rs 4 functions.
+/// the statement. The query is borrowed from the compiled config.
 pub struct DbRead<'q> {
     query: Cow<'q, str>,
     params: Vec<Value>,
@@ -36,8 +34,8 @@ pub struct DbRead<'q> {
 }
 
 impl<'q> DbRead<'q> {
-    /// The statement a dataflow-rs 4 config states, its binds rendered for
-    /// this call: [`DbRead::parse_statement`]'s reading, the query borrowed.
+    /// The statement a compiled config states, its binds rendered for this
+    /// call, the query borrowed.
     pub(super) fn statement(
         ctx: &Ctx<'_>,
         query: &'q str,
@@ -90,17 +88,14 @@ pub(super) fn rendered_row_format(
     read::row_format(numeric.as_ref(), binary.as_ref(), handler)
 }
 
-/// The connector's gate for a read: its `read` operation. Shared by the
-/// dataflow-rs 3 handler and the dataflow-rs 4 function.
+/// The connector's gate for a read: its `read` operation.
 fn gate(conn: &DbConnectorConfig, connector: &str) -> Result<(), HandlerError> {
     require_op_allowed(&conn.operations, "read", connector)
 }
 
 /// The rows a read returns, as a JSON array, against a resolved and gated
-/// connector. Shared by the dataflow-rs 3 handler and the dataflow-rs 4
-/// function, so both run the same statement the same way. `run_deadline`
-/// is the deadline of the run the call belongs to, which the dataflow-rs 4
-/// function passes on ([`QueryBudget::within`]).
+/// connector. `run_deadline` is the deadline of the run the call belongs
+/// to ([`QueryBudget::within`]).
 async fn read_rows(
     pool_cache: &SqlPoolCache,
     connector: &str,

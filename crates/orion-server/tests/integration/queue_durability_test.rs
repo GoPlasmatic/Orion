@@ -364,7 +364,7 @@ async fn oversized_result_marks_trace_failed_with_size_message() {
 // ============================================================
 
 /// Records the maximum number of concurrently in-flight `update_status`
-/// calls. With the old shared `Arc<Mutex<Receiver>>`, N workers serialized
+/// calls. With a shared `Arc<Mutex<Receiver>>`, N workers would serialize
 /// behind one lock and this could never exceed 1.
 struct ConcurrencyProbeRepo {
     current: Arc<std::sync::atomic::AtomicUsize>,
@@ -762,16 +762,16 @@ fn panicking_runtime() -> Arc<orion::runtime::RuntimeHandle> {
 /// Q6: the queue's memory reservation survives a panicking trace.
 ///
 /// `max_queue_memory_bytes` is enforced against a running total that the
-/// dispatcher decrements when a trace finishes. Those decrements used to run
-/// *after* `process_trace(...).await` returned, so a panic skipped them and the
-/// bytes stayed reserved for work that had already ended. The counter is the
-/// admission authority, so the damage is cumulative and permanent: enough
+/// dispatcher decrements when a trace finishes, panic or not. Run only *after*
+/// `process_trace(...).await` returned, a panic would skip them and leave the
+/// bytes reserved for work that had already ended. The counter is the
+/// admission authority, so the damage would be cumulative and permanent: enough
 /// panics and every submission answers 503 while the queue sits empty.
 ///
 /// The ceiling here fits one payload and not two, which is what makes the
 /// second submission the assertion. It is retried because releasing the
 /// reservation and accepting the next message are on different tasks — with
-/// the leak it never succeeds, with the fix it succeeds almost at once.
+/// a leak it never succeeds; without one it succeeds almost at once.
 ///
 /// The panic backtrace this prints to stderr is the test doing its job.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

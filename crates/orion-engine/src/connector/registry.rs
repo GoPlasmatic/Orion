@@ -280,9 +280,9 @@ impl ConnectorRegistry {
 
         let max = self.cb_config.max_breakers;
 
-        // N18: this warning used to be nested inside `len() >= max`, which
-        // implies it, so it fired on every eviction and never in advance —
-        // noise at exactly the moment signal was wanted.
+        // N18: the warning sits outside the `len() >= max` branch, which
+        // implies it: nested inside, it would fire on every eviction and never
+        // in advance — noise at exactly the moment signal is wanted.
         if breakers.len() >= max.saturating_mul(9) / 10 && breakers.len() < max {
             tracing::warn!(
                 count = breakers.len(),

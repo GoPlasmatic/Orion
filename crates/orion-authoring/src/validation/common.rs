@@ -45,11 +45,9 @@ pub(crate) const RESERVED_IDS: &[&str] = &[
     "reload",
 ];
 
-// G11: these returned `BadRequest`, and the channel/workflow validators each
-// carried an identical `remap_to_field` helper to promote that into a
-// `Validation` error with the caller's field path. The path is a parameter
-// now, so every caller gets the structured error directly and the helpers
-// are gone.
+// G11: the field path is a parameter, so every caller gets a structured
+// `Validation` error carrying its own path directly, with no helper to
+// promote a pathless refusal into one.
 
 pub(crate) fn validate_id(id: &str, path: &'static str) -> Result<(), OrionError> {
     if id.len() > MAX_ID_LEN {

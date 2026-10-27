@@ -3,15 +3,14 @@
 
 use crate::common;
 
-/// The reconnect storm, gone: rebuilding the generation for a deployment
-/// that does not touch a connection must leave its cached pools open.
+/// No reconnect storm: rebuilding the generation for a deployment that does
+/// not touch a connection must leave its cached pools open.
 ///
-/// A resync used to reload the connector registry and evict every SQL,
-/// MongoDB and cache pool on every config change, whatever it touched — so
-/// one workflow activation dropped every pooled connection on every node in
-/// the fleet. A deployment rebuild keys pools on the connection's settings
-/// and keeps them; the eviction handler closes what it drops, which is what
-/// makes a wrong eviction observable here.
+/// Evicting every SQL and cache pool on every change, whatever it touched,
+/// would make one workflow deployment drop every pooled connection on every
+/// node in the fleet. A deployment rebuild keys pools on the connection's
+/// settings and keeps them; the eviction handler closes what it drops, which
+/// is what makes a wrong eviction observable here.
 #[tokio::test]
 async fn a_definitions_deployment_leaves_cached_pools_open() {
     let db = common::ScratchDir::new("epoch_scope_pools");

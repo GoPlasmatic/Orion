@@ -142,10 +142,10 @@ pub fn record_oauth_login(channel: &str, provider: &str, leg: &'static str, outc
 /// One response declaration a shaped channel made and did not get (#312).
 ///
 /// The shaped-response path is deliberately soft — an authoring slip should not
-/// become an outage — but soft used to mean invisible: a `200` with the cookie
-/// simply absent, a trace recording a clean success, and one line on stdout.
-/// That presents to a browser exactly like the browser having refused the
-/// cookie, which is a long way to look for a type error.
+/// become an outage — but soft must not mean invisible: a `200` with the cookie
+/// simply absent and a trace recording a clean success presents to a browser
+/// exactly like the browser having refused the cookie, which is a long way to
+/// look for a type error.
 ///
 /// `kind` is the entry's code, a bounded set: `RESPONSE_COOKIE_DROPPED`,
 /// `RESPONSE_HEADER_DROPPED`, `RESPONSE_HEADER_NOT_ALLOWED`,
@@ -165,18 +165,14 @@ pub fn record_response_drop(channel: &str, kind: String) {
 
 /// Count one message through a channel, whatever its outcome.
 ///
-/// O14: this is now the *only* per-channel invocation counter.
-/// `orion_channel_executions_total{channel}` used to be incremented next to
-/// the `status="ok"` arm of this one, so it was `orion_messages_total` minus
-/// the label that says how the message ended — strictly less information
-/// under a second name.
+/// O14: this is the *only* per-channel invocation counter. A second counter
+/// incremented beside the `status="ok"` arm would be `orion_messages_total`
+/// minus the label that says how the message ended — strictly less
+/// information under a second name.
 ///
-/// `sum by (channel) (orion_messages_total)` is the replacement, and it is a
-/// **superset**, not an identity: the deleted counter had two call sites, both
-/// on the synchronous HTTP path, and never saw the async queue, DLQ or cron
-/// paths that also record messages. Expect the per-channel rate to be higher
-/// than the old series on any deployment that uses them — that is the blind
-/// spot closing, not double counting.
+/// `sum by (channel) (orion_messages_total)` is the per-channel rate, and it
+/// counts every path that records a message — the synchronous HTTP path, the
+/// async queue, DLQ retries and cron — not only HTTP.
 pub fn record_message(channel: &str, status: &'static str) {
     if !is_enabled() {
         return;
@@ -188,8 +184,8 @@ pub fn record_message(channel: &str, status: &'static str) {
 /// Increment the errors_total counter.
 ///
 /// O14: the label is `reason`, not `type`. Every other categorical label in
-/// this file is `reason`, `kind`, `outcome` or `status`; `type` was the lone
-/// exception, and it is also a reserved-feeling word in PromQL tooling.
+/// this file is `reason`, `kind`, `outcome` or `status`; `type` would be the
+/// lone exception, and it is also a reserved-feeling word in PromQL tooling.
 pub fn record_error(reason: &'static str) {
     if !is_enabled() {
         return;
@@ -200,9 +196,9 @@ pub fn record_error(reason: &'static str) {
 /// Publish the build-identity gauge, always `1`.
 ///
 /// The standard way to answer "which version is each replica running?" from
-/// Prometheus — the rollout and canary query. Previously `GIT_HASH` and
-/// `BUILD_TIMESTAMP` surfaced only in `--version`, one boot log line, and the
-/// admin-gated `/health` body, none of which a scrape can join against
+/// Prometheus — the rollout and canary query. `--version`, the boot log line
+/// and the admin-gated `/health` body also carry `GIT_HASH` and
+/// `BUILD_TIMESTAMP`, but none of them is something a scrape can join against
 /// (proposal O11).
 pub fn record_build_info(git_hash: &'static str, build_timestamp: &'static str) {
     if !is_enabled() {
@@ -305,14 +301,13 @@ pub fn set_active_workflows(count: f64) {
 
 /// Record HTTP request count and duration in a single call.
 ///
-/// Borrowed labels, owned only past the `is_enabled` gate. They used to be
-/// `String` parameters, on the reasoning that the caller had already allocated
-/// them — but the caller allocated them *for this call*, so with metrics
-/// disabled the request paid two allocations to reach an early return. The
-/// labels are cardinality-bounded (`method` is a verb, `path` is the matched
-/// route template), so they cannot be borrowed as `&'static str` and must be
-/// owned to become metric labels; the question is only whether that happens
-/// when nothing will read them.
+/// Borrowed labels, owned only past the `is_enabled` gate. `String`
+/// parameters would make the caller allocate them *for this call*, so with
+/// metrics disabled the request would pay two allocations to reach an early
+/// return. The labels are cardinality-bounded (`method` is a verb, `path` is
+/// the matched route template), so they cannot be borrowed as `&'static str`
+/// and must be owned to become metric labels; the question is only whether
+/// that happens when nothing will read them.
 pub fn record_http_request(method: &str, path: &str, status: u16, duration_secs: f64) {
     if !is_enabled() {
         return;
@@ -955,15 +950,15 @@ pub fn record_connector_duration(connector: &str, channel: &str, duration_secs: 
 /// Record one workflow task's body duration.
 ///
 /// Fed by `engine::observer`, which is the only way to time the eight sync
-/// built-ins (`map`, `validate`, `filter`, `parse_*`, `publish_*`, `log`):
+/// built-ins (`map`, `validation`, `filter`, `parse_*`, `publish_*`, `log`):
 /// they are dispatched inside a private executor method and never reach the
-/// handler registry, so no host can wrap them. Before this they were invisible
-/// to Prometheus entirely and showed up only as the unattributed
-/// `workflow_overhead_ms` residual in the opt-in profile surface.
+/// handler registry, so no host can wrap them. Without this they would show
+/// up only as the unattributed `workflow_overhead_ms` residual in the opt-in
+/// profile surface.
 ///
-/// `orion_connector_request_duration_seconds` remains the connector-scoped
-/// view; this is keyed by *task*, so three `db_read` tasks in one workflow are
-/// finally distinguishable.
+/// `orion_connector_request_duration_seconds` is the connector-scoped view;
+/// this is keyed by *task*, so three `db_read` tasks in one workflow are
+/// distinguishable.
 ///
 /// Label cardinality is bounded by the deployed workflow set — `workflow` and
 /// `task` are authored ids, not caller-supplied values, so no request can grow
@@ -1273,8 +1268,8 @@ mod tests {
 
     // -- O14: metric and label naming ------------------------------------
 
-    /// `orion_errors_total` is labelled `reason`, matching every other
-    /// categorical label in this file. It used to be `type`.
+    /// `orion_errors_total` is labelled `reason`, not `type`, matching every
+    /// other categorical label in this file.
     #[test]
     fn errors_total_is_labelled_by_reason() {
         let out = render_local(|| record_error("engine"));

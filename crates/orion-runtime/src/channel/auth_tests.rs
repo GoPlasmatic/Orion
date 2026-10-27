@@ -96,7 +96,7 @@ fn the_scheme_is_parsed_not_prefix_stripped() {
     }
 }
 
-/// `"Bearer"` and the old prefix spelling `"Bearer "` are one scheme; an
+/// `"Bearer"` and the prefix spelling `"Bearer "` are one scheme; an
 /// empty value is none; a value that cannot be a name is refused by field.
 #[test]
 fn a_configured_scheme_is_normalised_to_its_name() {
@@ -634,9 +634,9 @@ async fn explicit_fields_override_their_preset_rows() {
     );
 }
 
-/// The structural rules, exactly the ones create/validate enforce (#264's
-/// activation-time fix). Every case would previously have been accepted
-/// and quarantined at reload.
+/// The structural rules, exactly the ones create/validate enforce (#264):
+/// each case is refused up front rather than accepted and quarantined at
+/// reload.
 #[test]
 fn structural_mistakes_are_named() {
     let base = || ChannelAuthConfig {
@@ -974,8 +974,8 @@ async fn jwt_authorization_logic_answers_403() {
     // An authorization expression that errors at evaluation fails
     // CLOSED: 403, never a silent allow. The error is a decoder refusing
     // its input: the guards' engine runs in templating mode, where an
-    // unknown operator is not an error but a one-key object (the case
-    // used to name one, on a bare engine that is not the guards').
+    // unknown operator is not an error but a one-key object, so an
+    // unknown operator cannot stand in for an erroring one here.
     let mut cfg = jwt_config(&["HS512"], HS_SECRET);
     cfg.authorization_logic = Some(serde_json::json!({"hex_decode": ["zz"]}));
     let auth = jwt_auth(&cfg).await;
@@ -992,8 +992,8 @@ async fn jwt_authorization_logic_answers_403() {
 }
 
 /// The #331 matrix on a `jwt` channel, including its reproduction: a
-/// source configured as `"scheme": "Bearer"` — no trailing space — used to
-/// refuse every caller.
+/// source configured as `"scheme": "Bearer"` — no trailing space — accepts
+/// every conforming caller.
 #[tokio::test]
 async fn jwt_accepts_every_conforming_bearer_spelling() {
     let token = mint(jsonwebtoken::Algorithm::HS512, HS_SECRET, fresh_claims());

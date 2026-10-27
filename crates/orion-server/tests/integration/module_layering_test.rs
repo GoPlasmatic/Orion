@@ -107,8 +107,8 @@ fn files_of(module: &str) -> Vec<PathBuf> {
 }
 
 /// Whether `line` is a doc comment or a plain comment. A module may *mention*
-/// a higher layer in prose — several of them explain why they no longer
-/// depend on one — and that is not an edge.
+/// a higher layer in prose — to explain why it does not depend on one — and
+/// that is not an edge.
 fn is_comment(line: &str) -> bool {
     let t = line.trim_start();
     t.starts_with("//") || t.starts_with("/*") || t.starts_with('*')

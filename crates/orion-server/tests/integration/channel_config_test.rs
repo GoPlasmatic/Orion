@@ -101,13 +101,10 @@ async fn test_channel_without_timeout_succeeds() {
 
 #[tokio::test]
 async fn test_response_body_carries_no_internal_rollout_key() {
-    // Rollout routing used to stamp `data._rollout_bucket` into the message and
-    // could only null it again (dataflow-rs v3 had no `unset`), so every success
-    // body carried `"_rollout_bucket": null` — a field the caller never sent,
-    // persisted into traces.result_json too (proposal F31). The bucket is a
-    // message field now and never enters `data`, which is what makes this
-    // unexpressible rather than merely fixed; the assertion stays because it
-    // pins an observable API contract.
+    // The rollout bucket is a message field and never enters `data`, so no
+    // success body carries a `_rollout_bucket` the caller never sent (nor does
+    // traces.result_json, proposal F31). The assertion pins that observable
+    // API contract.
     let app = common::test_app().await;
 
     common::create_and_activate_channel(

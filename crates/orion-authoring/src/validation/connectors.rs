@@ -591,7 +591,7 @@ pub fn validate_create_connector(req: &CreateConnectorRequest) -> Result<(), Ori
         validate_id(id, "connector.id")?;
     }
     validate_name(&req.name, "connector.name")?;
-    // connector_type itself is now validated by serde at deserialization —
+    // connector_type itself is validated by serde at deserialization —
     // unknown values like "grpc" produce a 400 before this function runs.
     validate_connector_config(req.connector_type, &req.config)?;
     // F34: on create there is no stored value to restore a mask from, so a
@@ -773,8 +773,8 @@ mod tests {
                     "token_url": "https://idp/t", "client_id": "c", "client_secret": "s" }),
                 "only applies to the account_credentials grant",
             ),
-            // The widened catch-all: this used to fall through `_ => {}` and
-            // be accepted, leaving a seed the grant can never read.
+            // The catch-all: a seed this grant can never read is refused
+            // rather than accepted and ignored.
             (
                 json!({ "type": "oauth2", "grant": "account_credentials",
                     "account_id": "acct", "refresh_token": "rt",

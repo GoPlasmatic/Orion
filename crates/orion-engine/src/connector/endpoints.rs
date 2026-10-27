@@ -1,11 +1,9 @@
 //! Connector endpoint validation (S6).
 //!
-//! Until 1.0 only the `http` connector's URL was scheme-checked, and the
-//! runtime SSRF guard (`orion_server::validation::validate_url_not_private`) was
-//! called from exactly two places — `http_common.rs` and the Elasticsearch
-//! helper. No db, cache, mongo or kafka path checked anything, so a connector
-//! with `connection_string: "postgres://…@169.254.169.254/…"` was accepted and
-//! dialled.
+//! Every connector type's endpoint is checked, not only the `http`
+//! connector's URL: a db connector with
+//! `connection_string: "postgres://…@169.254.169.254/…"` would otherwise be
+//! accepted and dialled.
 //!
 //! Two layers close that:
 //!
@@ -17,11 +15,10 @@
 //!      ([`check_db_endpoint`]), with the same `allow_private_urls` opt-out
 //!      the HTTP connector already had.
 //!
-//! **Why not just call `validate_url_not_private`.** S7 made an
-//! `{http, https}` gate the *first* statement of that function, so calling it
-//! on a `postgres://` URL would refuse every database connector in existence. These paths go through
-//! `orion_server::validation::ssrf::validate_hostport_not_private` instead, which
-//! judges an already-split host and port and is scheme-agnostic by
+//! **Why not `validate_url_not_private`.** It refuses any scheme but `http`
+//! and `https` first (S7), so it would refuse every database connector. These
+//! paths use `orion_common::ssrf::validate_hostport_not_private` instead,
+//! which judges an already-split host and port and is scheme-agnostic by
 //! construction.
 
 use crate::connector::{ConnectorConfig, DbConnectorConfig};

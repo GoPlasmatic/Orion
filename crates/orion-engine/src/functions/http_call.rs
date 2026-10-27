@@ -85,9 +85,9 @@ async fn send(
         // `timeout_ms × (max_retries + 1)`, backoff included, since the
         // deadline is measured from the first attempt. On shipped defaults
         // (30 s × 4) that is 120 s. What it does is make the loop *bounded*:
-        // attempts plus backoff were previously unbounded, and a 60 s channel
-        // timeout could sit under a ~127 s retry loop still burning a
-        // connection after the caller gave up. The run's own deadline is not
+        // with attempts plus backoff unbounded, a 60 s channel timeout could
+        // sit under a ~127 s retry loop still burning a connection after the
+        // caller gave up. The run's own deadline is not
         // this loop's: the engine races every host call against the run's
         // deadline. Non-retryable methods get `max_retries = 0`, so their budget is
         // exactly one `timeout_ms`.
@@ -156,10 +156,10 @@ async fn send(
 /// read it (I183).
 ///
 /// The keys are the canonical ones. `path_logic`, `body_logic` and
-/// `response_path`, 3.15's serde aliases, are rewritten by the loader before
-/// a definition is parsed (I186), so here they are unknown keys like any
-/// other. A computed `connector` is refused here, where 3.15 accepted one at
-/// load and refused it on every call. `method` is one of 3.15's five, upper
+/// `response_path`, 3.15's serde aliases, are unknown keys like any other
+/// (I186): the loader reads a definition as stored. A computed `connector` is
+/// refused here, where 3.15 accepted one at load and refused it on every
+/// call. `method` is one of 3.15's five, upper
 /// case, as its `HttpMethod` read it; the config's check refuses anything
 /// else with that type's own message.
 ///
@@ -917,11 +917,8 @@ mod tests {
 
     /// A computed `output` is resolved before anything about the request is
     /// read, and one that names no path is refused with the family's
-    /// `VALIDATION_ERROR` and nothing is sent. 3.15's `http_call` read its
-    /// output through `resolve_string`, which refused nothing: it sent the
-    /// request and wrote the response at a context key no response shows,
-    /// which can no longer be written, so the request it sent is the one
-    /// difference. An output that names a path is written there, as 1.12
+    /// `VALIDATION_ERROR` and nothing is sent: there is no path to write the
+    /// response at. An output that names a path is written there, as 1.12
     /// wrote it.
     #[tokio::test]
     async fn a_computed_output_is_resolved_before_the_request() {

@@ -1,9 +1,7 @@
 //! The engine layer: what a workflow may call, how the engine is assembled
 //! from stored rows, and how one channel's run is driven.
 //!
-//! F45: this file used to carry all three of those plus the glob matcher, the
-//! rollout arithmetic and the lock accessors in one 468-line module. They are
-//! now three:
+//! F45: each lives in its own module:
 //!
 //! - [`handlers`] — the function-name vocabulary and the handler construction
 //!   behind Orion's own entries.
@@ -16,8 +14,8 @@
 //! - [`kit`] — what every dataflow-rs 4 function shares: the error mapping's
 //!   readers and field types, the connector shell, inert dependencies.
 //!
-//! Everything public is re-exported here, so `crate::…` paths are
-//! unchanged.
+//! Everything public is re-exported here, so a `crate::…` path names it
+//! without its module.
 
 /// Where the engine records the **code** of each failed task, for workflows
 /// that must branch on *why* a step failed (#280).

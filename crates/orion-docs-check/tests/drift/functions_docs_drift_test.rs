@@ -1,24 +1,22 @@
 //! Documentation drift guard for the task-function surface.
 //!
-//! `reference/functions/index.md` (the hub of the split reference) used to
-//! open by stating how many functions Orion ships — "**18 functions** … Eight are contributed by the dataflow-rs engine;
-//! ten are Orion handlers". The docs 2.0 proposal called numbers like that out
-//! by name (style rule 18: "no hand-maintained magic numbers … cite the
-//! generated source or omit the number"), because the estate had already
-//! shipped a 16-vs-18 disagreement between two pages. The page has since taken
-//! the rule's other half and omits them, pointing at `GET /admin/functions`
-//! instead — so the counts here are checked when present rather than required.
+//! `reference/functions/index.md` (the hub of the split reference) states no
+//! count of the functions Orion ships; it points at `GET /admin/functions`
+//! instead. That is style rule 18 — "no hand-maintained magic numbers … cite
+//! the generated source or omit the number" — because a count typed into two
+//! pages is how two pages come to disagree. So a count here is checked when
+//! present rather than required.
 //!
 //! `docs/lint.sh` check 5 stops the number being *restated* elsewhere. It
 //! cannot tell whether the number is *right*. This module can, and it checks
 //! the thing that actually rots first: the names.
 //!
-//! `engine::functions::schema::REGISTRY` is authoritative for the ten functions
-//! Orion implements itself — it is what `GET /api/v2/admin/functions` serves
-//! and what workflow-create input validation runs against. The other eight come
-//! from dataflow-rs and have no registry entry (they get no input-schema
-//! check), so the page's own summary table is the only place both sets are
-//! enumerated together. This module parses that table and asserts:
+//! `FunctionRegistry::builtin()` is authoritative — it is what
+//! `GET /api/v2/admin/functions` serves. Its `orion` entries are the functions
+//! Orion implements and input-validates; its `engine` entries are the
+//! dataflow-rs built-ins, which get no input-schema check. The page's own
+//! summary table is the only place both sets are enumerated together. This
+//! module parses that table and asserts:
 //!
 //! 1. Every registry function has a row.
 //! 2. No non-`Data` row invents a function the registry does not carry — which

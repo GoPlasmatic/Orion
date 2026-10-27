@@ -116,10 +116,10 @@ static METADATA: LazyLock<Path> =
 /// `ChannelCallConfig::fields()`' order (I179), each read as 1.12 read it (I183).
 ///
 /// The keys are the canonical ones. `channel_logic`, `data_logic` and
-/// `response_path`, 1.12's serde aliases, are rewritten by the loader
-/// before a definition is parsed (I186), so here they are unknown keys like
-/// any other. `channel` is required, so a task naming no target is refused
-/// at load, where 1.12 failed each call (I183); a non-string scalar is
+/// `response_path`, 1.12's serde aliases, are unknown keys like any other
+/// (I186): the loader reads a definition as stored. `channel` is required,
+/// so a task naming no target is refused at load, where 1.12 failed each
+/// call (I183); a non-string scalar is
 /// refused at load as 1.12's `check_channel_shape` refused it. `data` and
 /// `timeout_ms` written as `null` are unset ([`read::present`]), as serde
 /// read 1.12's `Option<Template>`.

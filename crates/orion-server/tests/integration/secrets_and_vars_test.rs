@@ -722,8 +722,8 @@ async fn a_new_generation_keeps_the_store() {
 // ---------------------------------------------------------------------------
 
 /// Upload `tasks` as a workflow, asserting it is refused at a path starting
-/// with `path` and that the refusal quotes no secret value: the v2 statement
-/// of a workflow the load used to quarantine for how it reads a secret.
+/// with `path` and that the refusal quotes no secret value: how a workflow
+/// reads a secret is judged at upload, so such a workflow is never stored.
 async fn assert_refused_at_upload(app: &axum::Router, name: &str, tasks: Value, path: &str) {
     let workflow = common::workflow_with_tasks(name, tasks);
     let (status, body) =
@@ -1502,17 +1502,17 @@ async fn an_absent_audience_element_is_dropped_rather_than_failing_the_task() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let rendered = body.to_string();
     // The token is junk, so the task fails — but on the token, not on the
-    // shape of `audience`. The old code dropped the null; the intervening
-    // change turned it into "'audience' must be a string ...".
+    // shape of `audience`: an absent element is dropped before the shape is
+    // checked.
     assert!(
         !rendered.contains("'audience' must be a string"),
         "an absent element must be dropped, not refused: {rendered}"
     );
 }
 
-/// A var in a *required* field. The shape check used to drop every `var://`
-/// member before typing the config, so a required field holding one was
-/// reported missing and the channel refused at create: `rate_limit` needs its
+/// A var in a *required* field. The shape check counts a `var://` member as
+/// present; dropping it before typing the config would report the field
+/// missing and refuse the channel at create — and `rate_limit` needs its
 /// `requests_per_second`, and an `oauth2_login` block needs nearly everything.
 #[tokio::test]
 async fn a_var_in_a_required_field_passes_create_and_serves() {

@@ -1,16 +1,9 @@
 //! The one registry of every function a workflow may name.
 //!
-//! Three static tables used to answer "may a workflow name this, and what does
-//! it accept?": `schema::registry()` (the Orion handlers' schemas),
-//! `ENGINE_BUILTINS` (the engine's own eight) and `CUSTOM_HANDLER_FUNCTIONS`
-//! (the names `register_functions` registers) — plus three more keyed by
-//! name in `handlers.rs` for the connector rules. Nine readers consulted them
-//! through nine free functions, each a linear scan over `&'static` rows, and
-//! the set was closed at compile time by construction: nothing that was not a
-//! `const` could be a function.
-//!
-//! A plugin function is exactly that — an entry that exists only once a
-//! component has been loaded — so the lookup has to be a *value*: built once
+//! It answers "may a workflow name this, and what does it accept?" for every
+//! reader. A set of static tables could not: it is closed at compile time,
+//! and a plugin function is an entry that exists only once a component has
+//! been loaded — so the lookup has to be a *value*: built once
 //! per `orion_server::runtime::RuntimeGeneration` from the static tables plus
 //! whatever that generation loaded, and handed to every reader. The static
 //! declarations live with the handlers; one inventory in `functions/mod.rs`
@@ -187,11 +180,10 @@ impl FunctionEntry {
 
 /// One entry of `GET /api/v2/admin/functions`.
 ///
-/// The endpoint used to serve the schema registry directly, which meant it
-/// listed only the functions Orion input-schema validates — 18 of the 27 valid
-/// names, omitting `map`, `filter`, `parse_json` and the rest. Those are the
-/// ones people actually type: in the deployment that reported it (#288) the
-/// nine omitted names were 425 of 631 tasks, `map` alone 310. A completion
+/// Every name a workflow may use, not only the functions Orion input-schema
+/// validates: those omit `map`, `filter`, `parse_json` and the rest, which are
+/// the ones people actually type — in the deployment that reported it (#288)
+/// such names were 425 of 631 tasks, `map` alone 310. A completion
 /// source offering the connector functions and none of those is not an
 /// incomplete catalogue, it is the wrong one.
 ///
@@ -389,10 +381,9 @@ impl FunctionRegistry {
     ///
     /// `None` for a name the registry does not know, which is a function that
     /// does not exist: the analysis then reports no writes rather than
-    /// guessing a shape for it. That is a deliberate change from the previous
-    /// hand-written `match`, whose catch-all arm applied the
-    /// `output`/`response_path` rule to *any* unrecognised name — so a typoed
-    /// function silently contributed a write.
+    /// guessing a shape for it: a catch-all applying the `output` rule to
+    /// *any* unrecognised name would let a typoed function silently contribute
+    /// a write.
     pub fn write_shape(&self, function: &str) -> Option<WriteShape> {
         self.get(function).map(|e| e.writes)
     }
@@ -848,11 +839,8 @@ mod registry_tests {
 
     /// Every dataflow-rs built-in is accepted.
     ///
-    /// This used to build a probe engine, let it fail, and **string-parse the
-    /// built-in list out of the `FunctionNotFound` Display impl** — because
-    /// the error message was the only public surface that enumerated it. The
-    /// engine publishes the list (`def::BUILTIN_FUNCTIONS`); every name on it
-    /// runs inline with no registration.
+    /// The engine publishes the list (`def::BUILTIN_FUNCTIONS`); every name on
+    /// it runs inline with no registration.
     #[test]
     fn every_builtin_is_accepted() {
         let registry = FunctionRegistry::builtin();
@@ -868,11 +856,9 @@ mod registry_tests {
     /// A function outside the engine's built-ins is accepted only if Orion
     /// registered one — and `enrich` is the case that proves it matters.
     ///
-    /// 1.12's engine parsed `enrich` into a typed built-in, so it was accepted
-    /// and skipped by the custom-input check by construction. It was added to
-    /// the old hand-copied name list to stop create rejecting it, which meant
-    /// every `enrich` workflow activated cleanly and then failed *every*
-    /// request with `FunctionNotFound`. Nothing registers a handler for it.
+    /// A name accepted at create with no handler behind it activates cleanly
+    /// and then fails *every* request with `FunctionNotFound`. Nothing
+    /// registers a handler for `enrich`.
     #[test]
     fn a_function_without_a_handler_is_refused() {
         let registry = FunctionRegistry::builtin();
@@ -909,7 +895,7 @@ mod registry_tests {
     }
 
     /// `validate`, 1.12's spelling of `validation`, names nothing: v3
-    /// spellings are no longer read.
+    /// spellings are not read.
     #[test]
     fn the_v3_spelling_of_validation_names_nothing() {
         let registry = FunctionRegistry::builtin();

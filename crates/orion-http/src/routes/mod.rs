@@ -235,10 +235,8 @@ pub(crate) async fn health_check(
     // Check database connectivity
     let db_healthy = state.ping_db().await.is_ok();
 
-    // One generation for the whole report: the workflow count and the
-    // quarantine list below come from the same build, where they used to be
-    // read from two independently swapped values and could describe different
-    // ones.
+    // One generation for the whole report, so the workflow count and the
+    // quarantine list below describe the same build.
     let generation = state.runtime.load();
     let workflows_loaded = workflows_loaded(&generation);
 
@@ -459,14 +457,11 @@ pub(crate) async fn liveness_check() -> Json<orion_api::LivenessResponse> {
 
 /// How many workflows the running engine holds.
 ///
-/// This used to acquire the engine read lock under
-/// `engine.health_check_timeout_secs` and report `None` on timeout — a real
-/// check in the `RwLock` era. The engine is an `ArcSwap` now: `load()` is
-/// lock-free and infallible, so the probe cannot fail and there is nothing
-/// for the timeout to bound (`health_check_timeout_secs` bounds the database
-/// ping instead). Both probes keep serving a constant
-/// `"engine": "ok"` component for response-shape stability — monitors key on
-/// the field — not because anything is checked.
+/// The engine is an `ArcSwap`: `load()` is lock-free and infallible, so the
+/// probe cannot fail and there is nothing for a timeout to bound
+/// (`engine.health_check_timeout_secs` bounds the database ping instead). Both
+/// probes serve a constant `"engine": "ok"` component for response-shape
+/// stability — monitors key on the field — not because anything is checked.
 fn workflows_loaded(generation: &crate::runtime::RuntimeGeneration) -> usize {
     generation.workflows().len()
 }
@@ -529,9 +524,9 @@ fn cron_component(
 /// dispatcher and persistence pool, the audit writer, the retention jobs, the
 /// DLQ retry consumer, the cluster reconciler).
 ///
-/// `"error"` means at least one `Required` task has stopped for good, which is
-/// the state that used to be invisible: a dead persistence worker dropped
-/// every trace routed to it while `/readyz` kept answering `ready`.
+/// `"error"` means at least one `Required` task has stopped for good — the
+/// state that must not be invisible: a dead persistence worker drops every
+/// trace routed to it while an unsupervised node keeps answering `ready`.
 /// `"degraded"` covers a task the supervisor is currently restarting, and an
 /// `Optional` one that has given up — retention stopping does not make a node
 /// unfit to serve.

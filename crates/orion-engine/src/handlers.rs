@@ -75,8 +75,7 @@ pub fn serving_registry(deps: HandlerDeps<'_>) -> dataflow_rs::Registry {
 ///
 /// An invalid registration is refused through `Registry::try_register`, so
 /// runtime names and schemas cannot panic the node. It is logged and returned.
-/// For a reserved built-in name, a task naming it calls the
-/// built-in, which dataflow-rs 3 also dispatched in the plugin's place. An
+/// For a reserved built-in name, a task naming it calls the built-in. An
 /// uploaded manifest cannot hold one, its functions living under its
 /// reverse-domain name; only a stored row that skipped the upload's check
 /// can.

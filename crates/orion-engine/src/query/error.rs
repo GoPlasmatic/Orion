@@ -132,11 +132,11 @@ impl QueryError {
     /// Whether the message names connector topology and must therefore be
     /// redacted before it reaches the anonymous data plane (G3).
     ///
-    /// This used to be a prefix written by the `Display` impl itself, which
-    /// meant every `to_string()` — including the ones that only ever reach a
-    /// log line — carried `orion.connector_detail: `. Classifying the variant
-    /// at the boundary keeps `Display` a plain sentence and puts the decision
-    /// where the redaction actually happens.
+    /// A prefix written by the `Display` impl would put
+    /// `orion.connector_detail: ` on every `to_string()` — including the ones
+    /// that only ever reach a log line. Classifying the variant at the boundary
+    /// keeps `Display` a plain sentence and puts the decision where the
+    /// redaction actually happens.
     pub fn is_connector_detail(&self) -> bool {
         // The physical name and the existence of an operator allowlist are
         // both connector topology. Every other variant is workflow-structural

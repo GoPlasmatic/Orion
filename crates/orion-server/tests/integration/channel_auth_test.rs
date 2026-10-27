@@ -213,8 +213,8 @@ async fn an_unauthenticated_caller_cannot_claim_an_idempotency_key() {
     );
 }
 
-/// The webhook case the README advertises and Orion could not previously do:
-/// a GitHub-format `sha256=<hex>` signature over the raw body.
+/// The webhook case the README advertises: a GitHub-format `sha256=<hex>`
+/// signature over the raw body.
 #[tokio::test]
 async fn an_hmac_signed_webhook_is_verified_against_the_raw_body() {
     let app = common::test_app().await;
@@ -413,8 +413,8 @@ async fn broken_auth_configs_are_refused_at_upload_not_quarantined() {
     let app = common::test_app().await;
 
     for (auth, expected) in [
-        // Each of these was previously accepted and only failed at engine
-        // reload, taking the channel into quarantine.
+        // Each of these, if accepted, would fail only at engine build,
+        // taking the channel into quarantine.
         (json!({"mode": "api_key"}), "auth.keys"),
         (json!({"mode": "hmac"}), "auth.secret"),
         (
@@ -679,10 +679,11 @@ fn challenge_of(resp: &axum::response::Response) -> String {
 }
 
 /// #331 over the wire. RFC 9110 §11.1 makes the scheme case-insensitive and
-/// lets any run of spaces separate it from the credential; the channel used to
-/// strip a byte-exact `"Bearer "` and refuse all three of the spellings below.
-/// The jwt channel is the issue's reproduction — `"scheme": "Bearer"`, no
-/// trailing space, which refused every caller.
+/// lets any run of spaces separate it from the credential, so the channel
+/// accepts all three of the spellings below rather than stripping a byte-exact
+/// `"Bearer "`. The jwt channel is the issue's reproduction —
+/// `"scheme": "Bearer"`, no trailing space, which a byte-exact strip refuses
+/// for every caller.
 #[tokio::test]
 async fn conforming_authorization_headers_are_accepted() {
     let app = common::test_app().await;
@@ -936,11 +937,11 @@ async fn a_lockout_on_one_channel_does_not_reach_another() {
     );
 }
 
-/// #354: `metadata.auth` is platform-reserved. A caller's envelope used to
-/// survive wherever no claims were merged over it — a channel with no `auth`,
-/// a party-level mode, and a `jwt` channel with `required: false` called
-/// without a token — so a workflow read `metadata.auth.claims.sub` as a
-/// verified identity the caller had simply written.
+/// #354: `metadata.auth` is platform-reserved. A caller's envelope must not
+/// survive where no claims are merged over it — a channel with no `auth`, a
+/// party-level mode, and a `jwt` channel with `required: false` called without
+/// a token — or a workflow would read `metadata.auth.claims.sub` as a verified
+/// identity the caller had simply written.
 #[tokio::test]
 async fn a_caller_cannot_supply_metadata_auth() {
     let app = common::test_app().await;
@@ -1015,11 +1016,11 @@ async fn a_caller_cannot_supply_metadata_auth() {
     assert_eq!(body_json(resp).await["data"]["whoami"], "alice");
 }
 
-/// #354: the response cache keys on the verified subject. `key_logic` used to
-/// be evaluated over the metadata *before* the claims merge, so a key on
-/// `metadata.auth.claims.sub` read the caller's envelope: bob, holding a valid
-/// token of his own, could store his body under alice's key and alice was
-/// then served it.
+/// #354: the response cache keys on the verified subject. Evaluated over the
+/// metadata *before* the claims merge, a `key_logic` on
+/// `metadata.auth.claims.sub` would read the caller's envelope: bob, holding a
+/// valid token of his own, could store his body under alice's key and alice
+/// would then be served it.
 #[tokio::test]
 async fn the_response_cache_keys_on_the_verified_subject() {
     let app = common::test_app().await;

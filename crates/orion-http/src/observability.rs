@@ -23,8 +23,8 @@ pub async fn http_metrics_middleware(
     next: Next,
 ) -> Response {
     // `Method` is an inline enum for the standard verbs, so cloning it is
-    // cheaper than the `to_string()` this used to do — and `as_str()` below
-    // then costs nothing. Only an extension method allocates.
+    // cheaper than a `to_string()` — and `as_str()` below then costs nothing.
+    // Only an extension method allocates.
     let method = req.method().clone();
     // The requested target and request id, for the access-log line, read
     // only when there is a line to write. The path is borrowed from

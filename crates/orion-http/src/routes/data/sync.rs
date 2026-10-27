@@ -289,12 +289,12 @@ fn push_header(
 ///
 /// **Soft is not the same as silent** (#312). Every drop below appends an entry
 /// to `drops`, which the caller folds into the response envelope's `errors` and
-/// counts in `orion_response_drops_total`. Before that, a workflow that
-/// declared a session cookie whose `secure` evaluated to a string got a `200`
-/// with no `Set-Cookie`, a trace that recorded a clean success, and one line on
-/// the server's stdout — which reads to a browser exactly like the browser
-/// having refused the cookie. The request still ships, because that part of the
-/// posture is right; it just no longer ships claiming nothing happened.
+/// counts in `orion_response_drops_total`. Without that, a workflow that
+/// declared a session cookie whose `secure` evaluated to a string would get a
+/// `200` with no `Set-Cookie` and a trace recording a clean success — which
+/// reads to a browser exactly like the browser having refused the cookie. The
+/// response still ships, because that part of the posture is right; it just
+/// does not ship claiming nothing happened.
 fn drain_shaped_response(
     data: &mut Value,
     cfg: &crate::channel::config::ChannelResponseConfig,
@@ -343,10 +343,9 @@ fn drain_shaped_response(
                     for item in items {
                         match item.as_str() {
                             Some(s) => push_header(&mut headers, &lower, s, &path, drops),
-                            // Reported, not skipped silently: the bare
-                            // `continue` this replaces is why an array of
-                            // cookies used to vanish with no warning and no
-                            // error (#298).
+                            // Reported, not skipped silently: a bare
+                            // `continue` here would make an array of cookies
+                            // vanish with no warning and no error (#298).
                             None => drops.push(drop_entry(
                                 "RESPONSE_HEADER_DROPPED",
                                 format!(
@@ -380,7 +379,7 @@ fn drain_shaped_response(
                 match crate::channel::cookies::format_set_cookie(spec) {
                     Ok(value) => push_header(&mut headers, "set-cookie", &value, &path, drops),
                     // The cookie is still dropped — a malformed `Set-Cookie` is
-                    // worse than none — but the response now says so. For an
+                    // worse than none — but the response says so. For an
                     // auth cookie the difference between set and not set is the
                     // whole request, and this failure presents to a browser
                     // exactly like the browser having refused the cookie.
@@ -573,8 +572,7 @@ pub(super) fn cached_response(body: String, shaped: bool, channel: &str) -> Resp
 /// config decided which guards ran, and the engine is the one whose workflows
 /// those guards admitted the request to. Passing them as one value is what
 /// stops a caller pairing a config from one generation with an engine from the
-/// next — the mismatch that used to be possible when the two halves were
-/// published separately (`runtime::generation`).
+/// next (`runtime::generation`).
 pub(super) struct AdmittedOn {
     pub generation: std::sync::Arc<crate::runtime::RuntimeGeneration>,
     pub channel_config: std::sync::Arc<crate::channel::ChannelRuntimeConfig>,
@@ -619,13 +617,12 @@ pub(super) async fn process_sync_for_channel(
     // the workflow runs and must not survive the response that spent it.
     //
     // That is enforced once, below, rather than at each place a response is
-    // built — which is what this comment used to claim and the code did not
-    // do. `append_cookies` sat on the three success arms only, so a callback
-    // whose workflow timed out, hit an engine error, or overran
-    // `max_result_size_bytes` answered 504/500 and left the spent cookie in
-    // the browser until its own `exp`. Clearing that cookie is the *only*
-    // single-use enforcement Orion performs (`oauth2_login.rs`), so the
-    // outcomes where it was skipped are exactly the ones a replay would follow.
+    // built: appending per success arm would miss a callback whose workflow
+    // timed out, hit an engine error, or overran `max_result_size_bytes`,
+    // answering 504/500 and leaving the spent cookie in the browser until its
+    // own `exp`. Clearing that cookie is the *only* single-use enforcement
+    // Orion performs (`oauth2_login.rs`), so the outcomes where it would be
+    // skipped are exactly the ones a replay would follow.
     let (response_cookies, oauth_authorize, oauth_provider, oauth_return_to) = match oauth {
         Some(o) => (o.response_cookies, o.authorize, o.provider, o.return_to),
         None => (Vec::new(), None, None, None),
@@ -688,10 +685,10 @@ pub(super) async fn process_sync_for_channel(
             duration: engine_duration,
         } = execution;
 
-        // One derivation of the label, shared with every other transport. The
-        // change this made here: a run that finished with task errors used to be
-        // counted `ok`, so a channel failing every request reported a 100% success
-        // rate while the async path counted the same runs as `error`.
+        // One derivation of the label, shared with every other transport, so a
+        // run that finished with task errors counts as `error` here exactly as
+        // it does on the async path — never as `ok`, which would report a
+        // channel failing every request at a 100% success rate.
         channel_config
             .metrics
             .record_message(channel, outcome.status_label());
@@ -771,15 +768,14 @@ pub(super) async fn process_sync_for_channel(
                 // shaped nothing does the sign-in proceed.
                 //
                 // Decided here, where the workflow's contribution is, but
-                // *returned* below with the shaped response — because this block
-                // used to `return`, and everything that writes the trace is below
-                // it. A channel with `run_workflow_on_authorize` therefore wrote
-                // no trace row under any `trace_storage.mode`, `sync` included,
-                // even though the workflow really ran: it can write rows, call
-                // connectors and emit task errors, and a failing sign-in was
-                // invisible to `GET /api/v2/data/traces`. The `record_response_drop`
-                // entries logged just above went with it, having no envelope to
-                // ride on.
+                // *returned* below with the shaped response — because everything
+                // that writes the trace is below this block. Returning here would
+                // leave a channel with `run_workflow_on_authorize` with no trace
+                // row under any `trace_storage.mode`, `sync` included, even though
+                // the workflow really ran: it can write rows, call connectors and
+                // emit task errors, and a failing sign-in would be invisible to
+                // `GET /api/v2/admin/traces`. The `record_response_drop` entries
+                // logged just above would go with it, having no envelope to ride on.
                 let mut authorize_outcome: Option<Result<Response, OrionError>> = None;
                 if let Some(login) = oauth_authorize {
                     if shaped.is_none() {

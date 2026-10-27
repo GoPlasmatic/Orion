@@ -68,9 +68,8 @@ async fn backup_test_app(
 // 0. There is no restore endpoint (O5)
 // ============================================================
 
-/// The docs used to tell operators to `POST /api/v2/admin/restore` (and
-/// `/backup`, singular). Neither route exists — pin that so the claim cannot
-/// silently reappear in the docs.
+/// Neither `POST /api/v2/admin/restore` nor `/backup` (singular) exists —
+/// pinned so docs telling operators to call them cannot silently reappear.
 #[tokio::test]
 async fn test_restore_endpoint_does_not_exist() {
     let app = common::test_app().await;

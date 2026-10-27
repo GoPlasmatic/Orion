@@ -436,11 +436,10 @@ impl std::fmt::Display for CachePurpose {
 /// The in-memory cache backends, one per namespace.
 pub struct CachePool {
     /// One in-memory instance per namespace (see [`CachePurpose`]), created
-    /// lazily and kept for the life of the process — like the single shared
-    /// instance before it, entries survive connector reloads and engine
-    /// reloads, and only a restart clears them. Distinct instances rather
-    /// than key prefixes so each namespace also gets its own LRU budget: a
-    /// hot workflow cache can no longer evict dedup entries.
+    /// lazily and kept for the life of the process — entries survive
+    /// connector reloads and engine reloads, and only a restart clears them.
+    /// Distinct instances rather than key prefixes so each namespace also gets
+    /// its own LRU budget: a hot workflow cache cannot evict dedup entries.
     memory: DashMap<String, Arc<MemoryCacheBackend>>,
     cleanup_interval_secs: u64,
     max_memory_cache_entries: usize,

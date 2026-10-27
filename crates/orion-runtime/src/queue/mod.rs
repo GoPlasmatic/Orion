@@ -52,8 +52,8 @@ async fn run_retention_job<F, Fut, R>(
     loop {
         // The tick races the shutdown signal, so stopping the node costs at
         // most one pass rather than one whole interval — retention intervals
-        // are measured in hours. This used to be `JoinHandle::abort()`, which
-        // could also cut a pass between its DELETE and its metric.
+        // are measured in hours. Stopping with `JoinHandle::abort()` instead
+        // could cut a pass between its DELETE and its metric.
         tokio::select! {
             _ = interval.tick() => {}
             _ = shutdown.signalled() => return,
@@ -239,7 +239,7 @@ fn json_serialized_len(value: &serde_json::Value) -> usize {
 /// the async submission serializes it once for the pending trace row, and its
 /// length is exactly what the counter would count, so the payload is not
 /// walked again. Measured once per submission and carried to the admission
-/// check and the reservation, where each used to serialize it afresh.
+/// check and the reservation, so neither serializes it afresh.
 pub fn message_size(payload: &Value, payload_json: Option<&str>, metadata: &Value) -> usize {
     payload_json.map_or_else(|| json_serialized_len(payload), str::len)
         + json_serialized_len(metadata)
@@ -657,10 +657,10 @@ mod tests {
 
     /// The retention half of the trace store, and only that.
     ///
-    /// This used to implement all eight `TraceRepository` methods to exercise
-    /// one, with seven `unimplemented!()` bodies standing in for a listing and
-    /// five writes the cleanup job never touches. Splitting the trait is what
-    /// lets a double say what it is a double *of*.
+    /// The cleanup job touches only `TraceRetention`, so the double implements
+    /// that and nothing else — no `unimplemented!()` bodies standing in for
+    /// methods it never calls. Splitting the trait is what lets a double say
+    /// what it is a double *of*.
     struct MockCleanupTraceRepo;
 
     #[async_trait::async_trait]

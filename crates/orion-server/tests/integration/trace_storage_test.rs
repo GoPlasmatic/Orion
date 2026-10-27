@@ -138,10 +138,9 @@ async fn batch_mode_persists_eventually() {
 // POST /{channel}/async behaviour under `off` mode
 // -----------------------------------------------------------------------
 
-/// R11: `mode = off` on the async path used to mint a throwaway UUID, answer
-/// 202 with `{"trace_id": null, "trace_token": null}` and a `Warning: 299`
-/// header, and enqueue the work anyway — a receipt whose documented follow-up
-/// was structurally impossible.
+/// R11: `mode = off` does not turn the async path into a receipt whose
+/// documented follow-up is structurally impossible (a null `trace_id`, a
+/// `Warning: 299`, the work enqueued anyway).
 ///
 /// Appending `/async` *is* the request for a result to be fetched later, so
 /// the row is written regardless of `mode`. The result must actually arrive:
@@ -267,7 +266,7 @@ async fn sampled_out_sync_trace_writes_no_rows() {
 
 /// N22: async submissions are never sampled out. The 202's `trace_id` is a
 /// receipt for a fetchable result, so `for_async_submission` pins the sample
-/// rate to 1.0 — the old behaviour kept the status row but dropped the
+/// rate to 1.0 — sampling one out would keep the status row but drop the
 /// result, leaving the caller a `completed` trace with nothing in it.
 #[tokio::test]
 async fn async_submission_is_never_sampled_out() {
@@ -409,10 +408,10 @@ async fn async_trace_records_channel_id() {
 // D6: retention deletes are chunked
 // ---------------------------------------------------------------------------
 
-/// The retention DELETE used to be one unbounded statement per tick. It is
-/// now issued in bounded chunks, which only matters if the loop still drains
-/// everything — a chunked delete that stops after the first chunk would
-/// silently leave the table growing.
+/// The retention DELETE runs in bounded chunks rather than one unbounded
+/// statement per tick, and the loop must still drain everything — a chunked
+/// delete that stops after the first chunk would silently leave the table
+/// growing.
 ///
 /// 2 500 rows against a 1 000-row chunk forces three statements plus the
 /// short final one, so this exercises the loop rather than the single-chunk

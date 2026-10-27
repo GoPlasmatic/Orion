@@ -361,11 +361,11 @@ async fn test_admin_preflight_is_answered_not_rejected() {
         resp.headers()
     );
 
-    // The default config is `allowed_origins = ["*"]`, which used to take the
-    // `CorsLayer::permissive()` branch and answer `Access-Control-Allow-Headers: *`.
-    // Per the Fetch Standard `Authorization` is a CORS non-wildcard
-    // request-header name, so `*` never covers it and a browser calling the
-    // admin API with a bearer token failed preflight on a **default install**.
+    // The default config is `allowed_origins = ["*"]`, and it must not answer
+    // `Access-Control-Allow-Headers: *` as `CorsLayer::permissive()` does. Per
+    // the Fetch Standard `Authorization` is a CORS non-wildcard request-header
+    // name, so `*` never covers it and a browser calling the admin API with a
+    // bearer token would fail preflight on a **default install**.
     let allowed = resp
         .headers()
         .get("access-control-allow-headers")

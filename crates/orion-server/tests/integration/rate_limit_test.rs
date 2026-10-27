@@ -391,11 +391,11 @@ async fn test_rate_limit_uses_x_real_ip_fallback() {
 
 /// S9: a REST-routed channel's own rate limit must actually apply.
 ///
-/// The middleware used to take the first path segment and look it up as a
-/// channel name. For `GET /orders/{id}` on a channel named `s9-orders-get`
-/// that lookup asked for a channel called `orders`, found nothing, and fell
-/// through to the platform limiter — so the configured limit silently never
-/// applied. The platform limits here are deliberately huge, so the only thing
+/// Looking the first path segment up as a channel name would, for
+/// `GET /orders/{id}` on a channel named `s9-orders-get`, ask for a channel
+/// called `orders`, find nothing, and fall through to the platform limiter —
+/// the configured limit silently never applying. The platform limits here are
+/// deliberately huge, so the only thing
 /// that can produce a 429 is the channel's own limiter.
 #[tokio::test]
 async fn test_rate_limit_applies_to_rest_routed_channel() {

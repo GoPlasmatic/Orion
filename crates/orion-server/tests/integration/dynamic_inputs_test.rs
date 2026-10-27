@@ -1,14 +1,13 @@
 //! Message-derived inputs for the raw connector handlers (proposal F1).
 //!
-//! dataflow-rs precompiles a task's `input` once at engine build, so a handler
-//! sees the literal workflow JSON. `db_read`, `db_write`, `cache_read`,
-//! `cache_write`, and `mongo_read` used to read those fields raw, which meant a
-//! cache key or bind parameter could only ever be a constant. They now fold
-//! `{"var": ..}` nodes against the message context
-//! (`connector_helpers::resolve_value`).
+//! `db_read`, `db_write`, `cache_read` and `cache_write` evaluate the
+//! `{"var": ..}` nodes in their resolvable input fields against the message on
+//! every call, so a cache key or bind parameter can come from the request
+//! rather than only ever being a constant.
 //!
 //! Every test here drives a real workflow through the HTTP surface, so it
-//! covers the precompilation behaviour that a unit test on the resolver cannot.
+//! covers the engine's compile-then-evaluate path, which a unit test on one
+//! field cannot.
 
 use crate::common;
 
@@ -17,9 +16,9 @@ use serde_json::json;
 use tower::ServiceExt;
 
 /// A cache key built from the request body: two requests with different ids
-/// must land on different entries. Under the old behaviour both wrote the
-/// literal object `{"var": "data.req.id"}` as the key and the second read returned
-/// the first caller's value.
+/// must land on different entries. Keyed on the literal object
+/// `{"var": "data.req.id"}`, both would share one entry and the second read
+/// would return the first caller's value.
 #[tokio::test]
 async fn cache_key_resolves_from_the_message() {
     let app = common::test_app().await;
@@ -392,8 +391,8 @@ async fn bind_params_support_the_var_default_form() {
     assert_eq!(body["data"]["rows"][0]["bound"], "fallback", "got {body}");
 }
 
-/// Constant inputs keep working unchanged — the resolver only rewrites
-/// `{"var": ..}` nodes, so already-authored workflows are unaffected.
+/// Constant inputs pass through as written — only `{"var": ..}` nodes are
+/// evaluated.
 #[tokio::test]
 async fn literal_inputs_are_unchanged() {
     let app = common::test_app().await;

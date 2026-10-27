@@ -46,7 +46,7 @@ async fn seen(app: &axum::Router, channel: &str, body: serde_json::Value) -> ser
     body_json(resp).await["data"]["input"].clone()
 }
 
-/// The defect, and the fix. On a payload-mode channel every sibling survives.
+/// On a payload-mode channel every sibling of `data` survives.
 #[tokio::test]
 async fn payload_mode_keeps_the_whole_body() {
     let app = common::test_app().await;

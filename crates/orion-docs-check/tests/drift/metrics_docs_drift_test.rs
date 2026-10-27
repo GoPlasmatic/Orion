@@ -1,12 +1,9 @@
 //! Documentation drift guard for the metric surface (proposal O14).
 //!
 //! Metric names and label keys are a public contract: they are typed into
-//! dashboards and alert rules that live outside this repository. O14 renamed
-//! three of them (`orion_errors_total`'s `type` label, `kafka_consumer_lag`,
-//! and the `orion_channel_executions_total` family it deleted outright), and
-//! the documentation table listing them sat in a different file — the exact
-//! shape of drift that leaves an operator reading a name the binary no longer
-//! emits.
+//! dashboards and alert rules that live outside this repository, while the
+//! documentation table listing them sits in a different file — the shape of
+//! drift that leaves an operator reading a name the binary does not emit.
 //!
 //! `src/metrics.rs` is authoritative: every `counter!` / `gauge!` /
 //! `histogram!` invocation in the crate lives there, so its macro arguments

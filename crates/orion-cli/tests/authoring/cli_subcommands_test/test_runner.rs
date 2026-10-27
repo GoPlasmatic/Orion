@@ -88,7 +88,7 @@ fn expect_reaches_metadata_temp_data_calls_and_the_audit_trail() {
 
 /// The regression #283 is about. The workflow writes `{"if": [...]}` verbatim
 /// because `cache_write` folds `{"var": ..}` and nothing else; a case asserting
-/// the intended number now fails where a stubbed run used to stay green.
+/// the intended number must fail, not stay green behind a stub.
 #[test]
 fn expect_calls_catches_jsonlogic_written_verbatim() {
     let scratch = suite_with(VERBATIM_LOGIC_WORKFLOW);
@@ -204,8 +204,8 @@ fn expect_tasks_asserts_which_tasks_ran() {
     assert!(out.contains("tasks: expected"), "{out}");
 }
 
-/// The root is required. A bare path used to mean `data.` and is now refused
-/// before the workflow runs, with the fix in the message.
+/// The root is required. A bare path is refused before the workflow runs,
+/// with the fix in the message.
 #[test]
 fn an_unrooted_expect_path_is_refused_with_the_fix() {
     let scratch = suite_with(HEADER_BRANCH_WORKFLOW);
@@ -222,9 +222,9 @@ fn an_unrooted_expect_path_is_refused_with_the_fix() {
     assert!(out.contains("temp_data"), "the roots must be listed: {out}");
 }
 
-/// The silent miss the roots exist to remove: `metadata.absent` used to resolve
-/// as `data.metadata.absent`, come back absent, and — because an expected null
-/// matches absent — *pass*. A typo'd root is the same class and now fails too.
+/// The silent miss the roots exist to remove: `metadata.absent` resolved as
+/// `data.metadata.absent` would come back absent and — because an expected
+/// null matches absent — *pass*. A typo'd root is the same class and fails too.
 #[test]
 fn a_typo_in_the_root_no_longer_passes_silently() {
     let scratch = suite_with(HEADER_BRANCH_WORKFLOW);

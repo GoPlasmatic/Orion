@@ -146,8 +146,8 @@ impl AdminAuthConfig {
                     // it was derived from, so the length floor below cannot apply.
                     continue;
                 }
-                // Plaintext keys: enforce a minimum length. `api_keys = ["a"]` was
-                // previously a valid production admin credential (proposal S12).
+                // Plaintext keys: enforce a minimum length, so `api_keys = ["a"]`
+                // is not a valid production admin credential (proposal S12).
                 if key.len() < MIN_PLAINTEXT_KEY_LEN {
                     let message = format!(
                         "{list_name}: plaintext keys must be at least \

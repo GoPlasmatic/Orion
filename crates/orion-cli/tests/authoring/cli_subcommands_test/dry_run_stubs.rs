@@ -3,8 +3,8 @@
 use super::*;
 
 /// Without a stub file, a connector-backed task names the stub that would
-/// satisfy it — rather than the `Connector '…' not found` the empty
-/// function map used to give, which told the author nothing actionable.
+/// satisfy it — not a bare `Connector '…' not found`, which tells the author
+/// nothing actionable.
 #[test]
 fn dry_run_without_stubs_names_the_missing_stub() {
     let wf = write_temp(CONNECTOR_WORKFLOW, "stub-missing");

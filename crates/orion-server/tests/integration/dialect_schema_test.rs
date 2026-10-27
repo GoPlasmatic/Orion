@@ -1,12 +1,11 @@
 //! The dialect's schema requirement and write-outcome contract (F24, F28).
 //!
-//! F24: through 0.x the dialect defaulted to identity mode, so a `data_query`
-//! or `data_write` that declared no `schema` reached every table the
-//! connector's database user could see — read *and* write. The safe mode
-//! existed but was opt-in per task, so one forgotten `schema` key reopened
-//! everything. These tests pin the flipped default, the error that tells an
-//! author what to add, and the two connector-level guards an operator can put
-//! on top of it.
+//! F24: a `data_query` or `data_write` that declares no `schema` is refused.
+//! Defaulting to identity mode would let it reach every table the connector's
+//! database user can see — read *and* write — and a safe mode that is opt-in
+//! per task is reopened by one forgotten `schema` key. These tests pin that
+//! default, the error that tells an author what to add, and the two
+//! connector-level guards an operator can put on top of it.
 //!
 //! F28: a `data_write` result carries a `status`, and SQL's is never `partial`
 //! because the statement runs in a transaction.
@@ -109,10 +108,10 @@ async fn a_query_without_a_schema_is_refused() {
 }
 
 /// The refusal has to be the *first* thing that fails, whatever else the query
-/// mentions. Every read planner used to lower the filter and resolve
-/// `fields`/`sort` before it resolved the table, so a real 0.x query — which
-/// always carries a filter — died on `invalid field reference 'name'` and
-/// never reached the one error that names the `schema` key to add.
+/// mentions. A planner that lowered the filter or resolved `fields`/`sort`
+/// before resolving the table would fail a schema-less query — which nearly
+/// always carries a filter — on `invalid field reference 'name'`, never
+/// reaching the one error that names the `schema` key to add.
 #[tokio::test]
 async fn a_schema_less_query_with_a_filter_is_refused_by_naming_the_schema() {
     let app = app_with("f24_rf", "f24-rf-admin", "f24-rf", json!({})).await;
@@ -176,9 +175,9 @@ async fn a_write_without_a_schema_is_refused() {
     );
 }
 
-/// The hole the policy flip alone would have left: `reject` used to bound only
-/// columns, and `{"source": "..."}` selects every column without resolving a
-/// single field — so no field check ever ran and the table resolved anyway.
+/// `reject` bounds tables as well as columns: `{"source": "..."}` selects
+/// every column without resolving a single field, so a column-only bound would
+/// run no field check and resolve the table anyway.
 #[tokio::test]
 async fn a_declared_schema_does_not_reach_an_undeclared_table() {
     let app = app_with("f24_e", "f24-e-admin", "f24-e", json!({})).await;
@@ -272,8 +271,8 @@ async fn an_entity_with_no_queryable_column_is_refused_not_widened() {
     );
 }
 
-/// The documented migration for a previously-identity-mode task: one explicit
-/// opt-in line keeps it working.
+/// Identity mode is still available to a task that asks for it with one
+/// explicit opt-in line.
 #[tokio::test]
 async fn identity_mode_still_works_when_asked_for_explicitly() {
     let app = app_with("f24_i", "f24-i-admin", "f24-i", json!({})).await;

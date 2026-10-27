@@ -1130,11 +1130,11 @@ async fn a_failure_on_an_ordinary_channel_carries_no_platform_cookie() {
 /// The authorize leg writes a trace when it runs a workflow.
 ///
 /// With `run_workflow_on_authorize` the workflow really runs before the
-/// redirect — it can write rows, call connectors and emit task errors — but the
-/// redirect used to `return` from a block sitting *above* `persist_trace_and_cache`,
-/// so no trace row was ever written under any `trace_storage.mode`, `sync`
-/// included. A failing sign-in workflow was invisible to the trace API, which
-/// is the one place an operator would look for it.
+/// redirect — it can write rows, call connectors and emit task errors — so its
+/// trace is persisted before the redirect is answered, under every
+/// `trace_storage.mode`. Otherwise a failing sign-in workflow would be
+/// invisible to the trace API, which is the one place an operator would look
+/// for it.
 #[tokio::test]
 async fn the_authorize_leg_persists_a_trace_when_it_runs_a_workflow() {
     let idp = Idp::new();
@@ -1337,9 +1337,9 @@ async fn a_successful_callback_still_holds_the_idempotency_key() {
 // ---------------------------------------------------------------------------
 
 /// The book's own example: `client_id` and `redirect_uri` as `var://`, the
-/// secrets as `env://`. Create-time validation used to drop every `var://`
-/// member before the shape check and then report both as missing fields, so
-/// the one complete sign-in example in the reference could not be deployed.
+/// secrets as `env://` — the one complete sign-in example in the reference, so
+/// it must deploy. Create-time validation counts a `var://` member as present
+/// rather than reporting it as a missing field.
 #[tokio::test]
 async fn the_documented_example_deploys_from_vars_and_env() {
     let idp = Idp::new();
@@ -1406,9 +1406,9 @@ async fn the_documented_example_deploys_from_vars_and_env() {
     );
 }
 
-/// `redirect_uri` resolves a secret reference at load, like `client_id`. It
-/// used to be refused at create as a non-`https` URL — the scheme check ran
-/// on the reference rather than on what it resolves to.
+/// `redirect_uri` resolves a secret reference at load, like `client_id`. The
+/// `https` scheme check runs on what the reference resolves to, not on the
+/// reference, so it is not refused at create as a non-`https` URL.
 #[tokio::test]
 async fn redirect_uri_resolves_an_env_reference_at_load() {
     let idp = Idp::new();

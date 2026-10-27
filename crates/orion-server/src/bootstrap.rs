@@ -520,8 +520,8 @@ pub async fn run(
     // Graceful shutdown. Stop the supervised tasks first: the retention jobs,
     // the DLQ retry consumer and the cluster reconciler all hold an `AppState` clone, and the
     // drain below cannot start until the last trace-queue sender is gone.
-    // Cooperative, so a job in the middle of a DELETE finishes it — this
-    // used to be `JoinHandle::abort()`.
+    // Cooperative, so a job in the middle of a DELETE finishes it rather than
+    // being aborted mid-statement.
     tasks
         .shutdown(std::time::Duration::from_secs(
             config.server.shutdown_force_timeout_secs,
@@ -653,19 +653,15 @@ pub fn build_rate_limit_state(
     }
 }
 
-/// Handles for the background tasks started by [`start_background_tasks`],
-/// plus the cluster tasks `run()` adds once `AppState` exists. Owns the
-/// abort/join sequence executed on graceful shutdown.
-/// The three queue drains, in the order they must run.
+/// The three queue drains started by [`start_background_tasks`], owning the
+/// order they must run in on graceful shutdown.
 ///
 /// Only the queue consumers are here. The periodic jobs (trace cleanup, audit
-/// cleanup, DLQ retry) and the cluster reconciler used to be `JoinHandle`s
-/// in this struct that shutdown `abort()`ed; they belong to
-/// [`crate::runtime::TaskRegistry`] now, which stops them cooperatively and —
-/// the point of the move — reports them to `/health` and `/readyz` while they
-/// are running.
+/// cleanup, DLQ retry) and the cluster reconciler belong to
+/// [`crate::runtime::TaskRegistry`], which stops them cooperatively and
+/// reports them to `/health` and `/readyz` while they are running.
 ///
-/// **Why these three did not move.** Each owns the receiving end of an `mpsc`
+/// **Why these three are not in the registry.** Each owns the receiving end of an `mpsc`
 /// channel and stops when the last sender drops, not on a signal; and the
 /// order below is load-bearing — the worker pool submits to the persistence
 /// queue, so persistence must drain after the workers finish, and the audit
@@ -934,9 +930,10 @@ pub struct Assembled {
 /// 5. [`build_committed_head`]: the deployment store hydrated and its head
 ///    built, after which the node reports ready.
 ///
-/// `main.rs` and the integration-test harness (`tests/integration/common`)
-/// both call this, so a step added here reaches both — the sequence used to
-/// be spelled twice and a step added to one ran untested in the other.
+/// The server's startup (`run`, which `main.rs` calls) and the
+/// integration-test harness (`tests/integration/common`) both call this, so a
+/// step added here reaches both — spelled twice, a step added to one would run
+/// untested in the other.
 ///
 /// It stops at `AppState`: the caller then builds the router, spawns the
 /// state-dependent serving tasks (cluster tasks, limiter prune) and runs the

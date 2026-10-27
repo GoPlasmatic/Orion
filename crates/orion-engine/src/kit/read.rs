@@ -5,17 +5,14 @@
 //! expressions, because the readers here coerce where a typed `Expr<String>`
 //! or `Expr<i64>` would refuse: `required_str` spells a number or a boolean
 //! out as a key, `optional_i64` reads a `null` result as absent. Running
-//! workflows rely on both, so each reader is its dataflow-rs 3 twin in
-//! `connector_helpers.rs`, moved onto the value
-//! `Ctx::eval` lends: the same coercions, the same `null` handling, the same
-//! message and the same class. The twins stay for the dataflow-rs 3
-//! handlers until those go, and the tests below hold the two to one
-//! behaviour.
+//! workflows rely on both, so each reader keeps 1.12's coercions, `null`
+//! handling, message and class over the value `Ctx::eval` lends, and the
+//! tests below pin them.
 //!
 //! Each reader takes the field's value as `Option<&OwnedDataValue>`: `None`
 //! when the task leaves the field unset. A value that is not a string is
-//! judged as dataflow-rs 3 judged it, through the JSON it bridged the
-//! value to — a datetime as its text, a non-finite number as `null` — so a
+//! judged through its JSON value — a datetime as its text, a non-finite
+//! number as `null` — so a
 //! datetime still reads as a key and a message still names the JSON type.
 //! A string is lent, never copied.
 

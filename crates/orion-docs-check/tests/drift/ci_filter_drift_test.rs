@@ -6,9 +6,9 @@
 //! on the `libtest` name — `cargo test --test integration -- --ignored
 //! data_parity_test postgres_test …` — so a module whose name is missing from
 //! those lines runs nowhere at all. It does not fail; it is silently never
-//! executed, and `tests/README.md` already has to warn about this in prose.
+//! executed.
 //!
-//! This test replaces the warning with an assertion, in the same spirit as
+//! This test makes that an assertion, in the same spirit as
 //! `config_docs_drift_test`: parse the workflow, parse the test tree, and
 //! refuse to let the two disagree.
 //!

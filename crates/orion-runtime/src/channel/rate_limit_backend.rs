@@ -18,8 +18,8 @@ pub trait RateLimitBackend: Send + Sync {
     /// `Ok(true)` = allow, `Ok(false)` = reject with 429. `Err` = the backing
     /// store could not answer; the **caller** resolves it through the
     /// channel's `rate_limit.on_backend_error` policy (N7) — `allow` fails
-    /// open, `deny` refuses with 503. Fail-open is no longer a trait
-    /// contract, it is the per-channel default. Takes the key by value:
+    /// open, `deny` refuses with 503. Fail-open is the per-channel default,
+    /// not a contract of this trait. Takes the key by value:
     /// callers already own one, and governor's keyed store wants `&String`.
     async fn check(&self, key: String) -> Result<bool, OrionError>;
 

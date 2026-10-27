@@ -99,12 +99,9 @@ pub fn serialize_task_trace_capped(
 /// which still honors the rollout percentages in aggregate.
 ///
 /// The bucket goes to the run as `RunOptions::routing_bucket`, which the
-/// engine matches against each workflow's own `rollout` range. It used to
-/// be written into `data._rollout_bucket` for a synthetic condition to read,
-/// which meant it was a caller-visible field that every response and trace
-/// boundary then had to strip back out — and, because dataflow-rs v3 had no
-/// `unset`, could only be nulled rather than removed. Four helpers and a const
-/// existed to hide that; none of them are needed now.
+/// engine matches against each workflow's own `rollout` range. It is not
+/// written into the message: a field in `data` would be caller-visible, and
+/// every response and trace boundary would have to strip it back out.
 pub fn rollout_bucket_for_identity(identity: Option<&str>) -> u8 {
     match identity {
         Some(id) if !id.is_empty() => (fnv1a64(id.as_bytes()) % 100) as u8,
@@ -407,12 +404,9 @@ mod tests {
         assert!(buckets.len() > 1, "empty identity should randomize");
     }
 
-    /// F31, restated for the routing-bucket shape. The bucket used to live at
-    /// `data._rollout_bucket`, which meant it serialized into every success
-    /// body and into `traces.result_json` as a field the caller never sent —
-    /// and, with no `unset` in dataflow-rs v3, could only be nulled rather than
-    /// removed. It is now a run option the message does not carry, so neither
-    /// the response view nor the persisted message can leak it.
+    /// F31: the routing bucket is a run option the message does not carry, so
+    /// it cannot serialize into a success body or `traces.result_json` as a
+    /// field the caller never sent.
     #[test]
     fn the_routing_bucket_is_not_part_of_the_message_body() {
         let msg = ingress_message(json!({"order_id": 7}), json!({}));

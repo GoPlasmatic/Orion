@@ -1,15 +1,15 @@
 //! D27 / D28: the row → DTO split must not move a single byte on the wire.
 //!
-//! Three endpoints used to serialize a storage row struct directly — audit
-//! logs and the two DLQ reads. Each now returns a DTO from
-//! `storage::models::dto`, reached through a `From`. These tests pin the exact
-//! top-level key set each response carries, so a field dropped, added or
-//! renamed during the conversion fails here rather than in a client.
+//! The audit-log read and the two DLQ reads each return a DTO from
+//! `storage::models::dto`, reached through a `From`, rather than a storage row
+//! struct. These tests pin the exact top-level key set each response carries,
+//! so a field dropped, added or renamed in the conversion fails here rather
+//! than in a client.
 //!
-//! The trace listing is pinned for the opposite reason: it must *keep* not
-//! carrying four columns. Its query used to be `SELECT *`, which read every
-//! caller's request body, the full engine message and one `access_token_hash`
-//! — a credential verifier — out of the database for every row on every page.
+//! The trace listing is pinned for the opposite reason: it must *not* carry
+//! four columns. A `SELECT *` would read every caller's request body, the full
+//! engine message and one `access_token_hash` — a credential verifier — out of
+//! the database for every row on every page.
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};

@@ -127,12 +127,12 @@ fn resolve_one(
     };
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(OrionError::Config {
-            // `[A-Za-z0-9_]`, matching the guard above. It used to read
-            // `[A-Z0-9_]`, which sent an operator debugging `env://my.db.url`
-            // looking at the case of the name when the `.` was the problem —
-            // and lowercase names are accepted, reaching
-            // `referenced_by_config_file` where the `ORION_*` guard reasons
-            // about them.
+            // `[A-Za-z0-9_]`, matching the guard above exactly: a message
+            // narrower than the guard (`[A-Z0-9_]`) would send an operator
+            // debugging `env://my.db.url` looking at the case of the name when
+            // the `.` is the problem — and lowercase names are accepted,
+            // reaching `referenced_by_config_file` where the `ORION_*` guard
+            // reasons about them.
             message: format!("Invalid env-var name '{name}' in {path} (allowed: [A-Za-z0-9_])"),
         });
     }

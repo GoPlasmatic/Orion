@@ -434,11 +434,11 @@ impl RouteTable {
     /// loser is simply dead — its declared route resolves to the winner's
     /// workflow, which is a *wrong answer*, not an error. Nothing said so.
     fn warn_on_conflicts(&self) {
-        // Canonicalised once per entry rather than once per *pair*. The inner
-        // loop used to call `winner.canonical()`, which rebuilds a `String` from
-        // the entry's segments, so the scan allocated O(n^2) strings — ~125k of
-        // them at 500 routes, on every engine reload, to report the handful of
-        // collisions that are usually zero.
+        // Canonicalised once per entry rather than once per *pair*. Calling
+        // `winner.canonical()` in the inner loop rebuilds a `String` from the
+        // entry's segments, so the scan would allocate O(n^2) strings — ~125k
+        // of them at 500 routes, on every engine reload, to report the handful
+        // of collisions that are usually zero.
         let canonicals: Vec<String> = self.entries.iter().map(RouteEntry::canonical).collect();
         for (i, entry) in self.entries.iter().enumerate() {
             let canonical = &canonicals[i];
@@ -583,9 +583,8 @@ mod tests {
 
     /// What the one projection produces, read through both of its views.
     ///
-    /// The two used to be separate walks that agreed by coincidence. Sharing a
-    /// body makes "they agree" untestable — it is now true by construction —
-    /// so what is worth pinning is the answer itself: a sign-in channel claims
+    /// Both views share one body, so "they agree" is true by construction and
+    /// not worth a test; what is worth pinning is the answer itself: a sign-in channel claims
     /// two routes, the callback is a `GET` whatever the channel's own methods
     /// say, the primary's methods come back in the spelling the operator
     /// wrote, and the roles are not interchangeable.
@@ -671,9 +670,9 @@ mod tests {
     }
 
     /// N10: static-segment matching is byte-exact — RFC 3986 makes the path
-    /// component case-sensitive, and the old `eq_ignore_ascii_case` let
+    /// component case-sensitive, and `eq_ignore_ascii_case` would let
     /// `/ORDERS/1` resolve to `/orders/{id}` while cache keys derived from
-    /// the raw path treated them as different requests.
+    /// the raw path treat them as different requests.
     #[test]
     fn test_match_segments_is_case_sensitive() {
         let segments = parse_route_pattern("/orders/{id}");
@@ -727,8 +726,8 @@ mod tests {
 
     /// N10: `%2F` reaches the workflow as a literal `/` inside the param —
     /// decoded exactly once, after splitting, so it never acts as a
-    /// separator. Previously the workflow received the raw `a%2Fb` and a
-    /// literal slash was inexpressible in a parameter.
+    /// separator. Handing the workflow the raw `a%2Fb` would make a literal
+    /// slash inexpressible in a parameter.
     #[test]
     fn test_params_are_percent_decoded_once() {
         let m = orders_table()

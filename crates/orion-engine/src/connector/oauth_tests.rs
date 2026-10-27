@@ -299,14 +299,15 @@ async fn concurrent_requests_share_one_acquisition() {
 
 // ---- 401 invalidation cannot be dropped ----
 
-/// The race the `try_lock` version lost.
+/// An invalidation is not lost while another task holds the state lock.
 ///
-/// `invalidate` used to attempt `state.try_lock()` and skip when another
-/// task held it — which is precisely when it matters, because the task
+/// An `invalidate` that tried `state.try_lock()` and skipped when another
+/// task held it would skip precisely when it matters, because the task
 /// holding it is the one about to publish a token. Here the lock is held
-/// for the whole invalidation, so the old code did nothing at all and the
-/// rejected token stayed fast-path eligible until its refresh margin: a
-/// connector answering 401 after 401 with a good refresh one call away.
+/// for the whole invalidation, so such an `invalidate` would do nothing at
+/// all and the rejected token would stay fast-path eligible until its
+/// refresh margin: a connector answering 401 after 401 with a good refresh
+/// one call away.
 #[tokio::test]
 async fn invalidation_is_not_lost_when_the_state_lock_is_held() {
     let idp = IdpState::ok(json!({ "access_token": "at-1", "expires_in": 3600 }));

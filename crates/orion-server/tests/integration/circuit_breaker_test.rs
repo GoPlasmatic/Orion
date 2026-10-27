@@ -505,9 +505,7 @@ async fn a_rejected_query_does_not_trip_the_breaker() {
 /// minted by `orion_engine::service::circuit_open` as a service error whose code is
 /// that kind — so shedding a dependency stays distinguishable from the
 /// `IO_ERROR` of a genuine connection failure and the `TIMEOUT_ERROR` of a slow
-/// one. Before 3.5.0 all three flattened to `TASK_ERROR` here, which is why
-/// `docs/src/releases/upgrade-to-1.0.md` still warns that the rejection is
-/// invisible outside the trace and the metric. It no longer is.
+/// one, rather than all three flattening to `TASK_ERROR`.
 #[tokio::test]
 async fn an_open_breaker_is_named_in_the_errors_of_a_continue_on_error_workflow() {
     let addr = start_failing_server().await;
@@ -574,9 +572,9 @@ async fn an_open_breaker_is_named_in_the_errors_of_a_continue_on_error_workflow(
 // `prune_breakers` runs on every rebuild and drops breakers whose channel or
 // connector the new generation no longer carries. A breaker's stored channel
 // is the routing identity (`metadata.channel` — the channel *name*), not a
-// storage id. Wiring prune against a storage id matched no breaker's
-// channel, so every rebuild wiped the whole map, silently defeating circuit
-// breaking after the first deployment. This pins that a still-live
+// storage id. Pruning against a storage id would match no breaker's
+// channel, so every rebuild would wipe the whole map, silently defeating
+// circuit breaking after the first deployment. This pins that a still-live
 // pairing's breaker is kept, without the container-gated cluster suite.
 // ---------------------------------------------------------------------------
 

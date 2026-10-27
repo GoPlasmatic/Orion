@@ -432,8 +432,8 @@ mod tests {
     }
 
     /// An honest oversized `Content-Length` is refused before the body is
-    /// touched at all — the cheap half of the defence, which is all three of
-    /// the migrated callers used to have.
+    /// touched at all — the cheap half of the defence; the cap applied while
+    /// streaming is the half a dishonest header cannot dodge.
     #[tokio::test]
     async fn a_declared_oversize_body_is_refused_unread() {
         use tokio::io::AsyncWriteExt;

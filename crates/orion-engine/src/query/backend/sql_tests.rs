@@ -316,9 +316,8 @@ fn test_sort_and_paging() {
 }
 
 /// W8: the shared rule is "a null sorts as the smallest value" — nulls
-/// first on `asc`, last on `desc`. It used to be the inverse, which no
-/// MongoDB `find` can express, so Mongo silently disagreed with SQL and ES
-/// on the ordering of every page containing a null.
+/// first on `asc`, last on `desc` — on every dialect, so no two backends
+/// disagree on the ordering of a page containing a null.
 #[test]
 fn test_null_ordering_is_nulls_smallest() {
     assert_eq!(
@@ -353,10 +352,9 @@ fn test_postgres_placeholders_via_build() {
     assert_eq!(sql, r#"SELECT * FROM "users" WHERE "id" = $1 LIMIT $2"#);
 }
 
-/// W8: MySQL has no `NULLS FIRST/LAST` clause and now needs none — its
-/// native ordering already puts nulls first on `ASC` and last on `DESC`,
-/// which is the rule. The `IS NULL` prefix key this replaced was a second,
-/// invisible sort key emitted to emulate the old inverse rule.
+/// W8: MySQL has no `NULLS FIRST/LAST` clause and needs none — its native
+/// ordering already puts nulls first on `ASC` and last on `DESC`, which is
+/// the rule — so no second, invisible `IS NULL` sort key is emitted.
 #[test]
 fn test_mysql_needs_no_null_ordering_emulation() {
     let stmt = plan_stmt(
@@ -409,7 +407,7 @@ fn test_limit_exceeds_max_rejected() {
 }
 
 /// W12: `skip` is bounded like `limit` — rejected over the cap, never
-/// clamped. The cap used to exist only on Elasticsearch.
+/// clamped.
 #[test]
 fn test_skip_exceeds_max_rejected() {
     let err = plan_stmt(
@@ -545,9 +543,9 @@ fn test_plan_sql_augments_parent_key_and_plans_include() {
     assert_eq!(inc.sort.len(), 1);
 }
 
-/// F27: an include without a `limit` used to fetch *every* child of every
-/// parent on the page. It now takes the envelope's own page policy —
-/// `default_limit` per parent.
+/// F27: an include without a `limit` takes the envelope's own page policy —
+/// `default_limit` per parent — rather than fetching *every* child of every
+/// parent on the page.
 #[test]
 fn test_include_without_limit_takes_the_default_page_size() {
     let plan = plan_include(json!({ "sort": [{ "id": "asc" }] }), &limits()).expect("plan");
@@ -576,9 +574,9 @@ fn test_include_limit_over_the_cap_is_rejected() {
 }
 
 /// F27: the per-parent page is cut in SQL by a partitioned `ROW_NUMBER()`,
-/// with the requested order key. The old query had neither `LIMIT` nor
-/// `ORDER BY`: it materialised every child of the whole parent page and the
-/// handler truncated an arbitrary — and run-to-run unstable — prefix.
+/// with the requested order key. Without `LIMIT` and `ORDER BY` the query
+/// would materialise every child of the whole parent page and the handler
+/// would truncate an arbitrary — and run-to-run unstable — prefix.
 #[test]
 fn test_include_child_query_pages_per_parent_in_sql() {
     let plan = plan_include(

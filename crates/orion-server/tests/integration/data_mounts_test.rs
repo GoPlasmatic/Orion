@@ -1,9 +1,9 @@
 //! #279: `server.data_mounts` — serving REST channels at additional paths.
 //!
 //! The data plane is hard-mounted at `/api/v2/data`. `route_pattern`s are
-//! already multi-segment and unrestricted, so `"/zoom/meetings/user"` was a
-//! legal pattern before this change — only the mount point was missing, which
-//! forced a reverse proxy whose only job was to prepend the prefix.
+//! multi-segment and unrestricted, so `"/zoom/meetings/user"` is a legal
+//! pattern; an extra mount point serves it there without a reverse proxy whose
+//! only job is to prepend the prefix.
 //!
 //! **Two of the tests here are security regressions, not features.** Under a
 //! root mount `MatchedPath` becomes the literal `/{*path}`, which does not
@@ -66,8 +66,8 @@ async fn a_mounted_channel_serves_async_too() {
 
 /// **Security regression 1.** With a root mount, `GET /api/v2/admin/nonexistent`
 /// matches the catch-all, so `MatchedPath` is `/{*path}` — which is not an
-/// admin path. Without the fix the request reaches the unauthenticated data
-/// plane, and a channel could claim any unregistered path under
+/// admin path. Judged by that, the request would reach the unauthenticated
+/// data plane, and a channel could claim any unregistered path under
 /// `/api/v2/admin/` and be served anonymously.
 #[tokio::test]
 async fn a_root_mount_does_not_disable_admin_auth() {

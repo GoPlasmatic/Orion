@@ -109,13 +109,12 @@ pub fn build_for(dialect: SqlDialect, stmt: &SelectStatement) -> (String, SqlxVa
 /// ORDER BY <sort>
 /// ```
 ///
-/// This used to be a bare `SELECT … WHERE fk IN (…)` with no `LIMIT` and no
-/// `ORDER BY`, and the handler truncated afterwards: 1000 parents × 10 000
-/// children materialised 10M rows to return 5 each, and because nothing ordered
-/// them, `include.limit` returned an *arbitrary* subset that could differ run to
-/// run. The window function is supported by every backend the dialect renders
-/// for (SQLite ≥ 3.25 — the bundled build is far newer, PostgreSQL ≥ 8.4,
-/// MySQL ≥ 8.0).
+/// A bare `SELECT … WHERE fk IN (…)` truncated afterwards would materialise
+/// 10M rows for 1000 parents × 10 000 children to return 5 each, and because
+/// nothing ordered them, `include.limit` would return an *arbitrary* subset
+/// that could differ run to run. The window function is supported by every
+/// backend the dialect renders for (SQLite ≥ 3.25 — the bundled build is far
+/// newer, PostgreSQL ≥ 8.4, MySQL ≥ 8.0).
 ///
 /// `<projection>` is [`IncludePlan::projection`] on **both** levels: the
 /// requested fields plus the foreign key (for grouping) plus the sort keys,

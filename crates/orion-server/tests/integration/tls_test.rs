@@ -1,9 +1,6 @@
 //! TLS/HTTPS coverage (T1).
 //!
-//! Before this file nothing in the repo matched `tls` case-insensitively —
-//! not the cert/key validation errors, not `load_rustls_config`, not a real
-//! handshake, and not the TLS serve loop whose graceful-shutdown path was
-//! broken until 1.0.0. Covered here:
+//! Covered here:
 //!   1. config validation rejects missing/blank cert and key paths
 //!   2. `load_rustls_config` succeeds on a real pair and fails on garbage
 //!   3. one HTTPS round-trip against a bound server, chain-validated

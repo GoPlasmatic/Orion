@@ -1,8 +1,8 @@
 //! `/readyz` component reporting (D15, O10).
 //!
 //! A cluster's shared store lives in the state database, so the database
-//! ping covers it; the `cluster_redis` component a cluster with a Redis
-//! used to report is gone, and must stay gone.
+//! ping covers it. There is no separate `cluster_redis` component, and there
+//! must not be one.
 
 use axum::http::StatusCode;
 use tower::ServiceExt;

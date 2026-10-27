@@ -25,11 +25,10 @@
 //! 2. `compile` reports which passes actually fired, so an author can see what
 //!    the command did to their document;
 //! 3. the admin API turns leftover residue into the error that **names** it.
-//!    Before this existed, an uncompiled `$from` reached the function-input
-//!    validator as literal JSON and was refused for missing the fields the
+//!    Without it, an uncompiled `$from` would reach the function-input
+//!    validator as literal JSON and be refused for missing the fields the
 //!    reference would have supplied — an error describing the symptom and
-//!    hiding the cause (#295). Every pass added from here gets that error for
-//!    free.
+//!    hiding the cause (#295). Every new pass gets that error for free.
 //!
 //! ## Adding a pass
 //!

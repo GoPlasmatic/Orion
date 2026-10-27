@@ -50,10 +50,9 @@ impl EffectiveTraceConfig {
     ///
     /// Pure and deterministic: `sampled_in` is the once-per-trace outcome of
     /// [`Self::draw_sample`], injected so this method never rolls its own
-    /// dice — an `&self` method that read as pure used to call
-    /// `rand::random` internally, which made the filter untestable between
-    /// the extremes and let one trace get independently sampled per call
-    /// site (N22).
+    /// dice — an `&self` method that reads as pure but calls `rand::random`
+    /// internally would make the filter untestable between the extremes and
+    /// let one trace be sampled independently per call site (N22).
     pub fn should_drop(&self, has_errors: bool, sampled_in: bool) -> Option<&'static str> {
         if matches!(self.mode, TraceStorageMode::Off) {
             return Some("off");
@@ -70,11 +69,9 @@ impl EffectiveTraceConfig {
     /// The same config as seen by an **async submission**, where trace
     /// persistence is not optional.
     ///
-    /// R11: `mode = "off"` on the async path used to mint a throwaway UUID,
-    /// answer 202 with `{"trace_id": null, "trace_token": null}` plus a
-    /// `Warning: 299` header, and enqueue the work anyway — a 202 whose
-    /// documented follow-up (`GET /admin/traces/{id}`) was structurally
-    /// impossible, and a nullable `trace_id` baked into the schema forever.
+    /// R11: honouring `mode = "off"` on the async path would mean a 202 whose
+    /// documented follow-up (`GET /admin/traces/{id}`) is structurally
+    /// impossible, and a nullable `trace_id` in the schema.
     ///
     /// Appending `/async` *is* the request for a result to be fetched later,
     /// and the trace row is the mechanism that makes that possible, not an
@@ -82,11 +79,11 @@ impl EffectiveTraceConfig {
     /// the sync path, where the caller already has the answer in hand, still
     /// honours `off` exactly.
     ///
-    /// N22: `sample_rate` is pinned to `1.0` for the same reason. It used to
-    /// be "deliberately left alone", which dropped the *result* while the
-    /// status rows still landed — the caller polled a `completed` trace with
-    /// nothing in it, the storage was spent anyway, and a sampled-out trace
-    /// was half-written instead of absent. A 202 is a receipt for a
+    /// N22: `sample_rate` is pinned to `1.0` for the same reason. Sampling
+    /// here would drop the *result* while the status rows still land — the
+    /// caller polls a `completed` trace with nothing in it, the storage is
+    /// spent anyway, and a sampled-out trace is half-written instead of
+    /// absent. A 202 is a receipt for a
     /// fetchable result, so async traces are never sampled out; sampling
     /// applies in full on the sync path, where a sampled-out trace produces
     /// no rows at all.
@@ -311,18 +308,18 @@ struct DepsFingerprint {
 /// One immutable generation of the channel estate: the serving map, the route
 /// table and the quarantine set, self-consistent with each other.
 ///
-/// N17: `by_name`, the route table and the quarantine map used to live behind
-/// three separate locks written one after another, so a reader could see a new
-/// serving map against an old route table or an old quarantine map — long
-/// enough to answer a request from a mismatched pair (a channel quarantined by
-/// this very reload resolved to `Ok(None)`, i.e. 404 "unknown channel" instead
-/// of 503 "quarantined"). They are one value now.
+/// N17: `by_name`, the route table and the quarantine map are one value. Held
+/// separately and written one after another, a reader could see a new serving
+/// map against an old route table or an old quarantine map — long enough to
+/// answer a request from a mismatched pair (a channel quarantined by this very
+/// reload resolves to `Ok(None)`, i.e. 404 "unknown channel" instead of 503
+/// "quarantined").
 ///
 /// It is a *value*, not a self-swapping registry: it carries no lock and no
 /// `ArcSwap`, and it is published — together with the engine built from the
 /// same rows — by [`crate::runtime::RuntimeHandle`]. That is what makes the
-/// pair atomic. While this type owned its own `ArcSwap`, each half of a reload
-/// was individually atomic and the *pair* was not, so a request could be
+/// pair atomic. Were this type to own its own `ArcSwap`, each half of a reload
+/// would be individually atomic and the *pair* would not, so a request could be
 /// admitted against a channel this generation had just added and then executed
 /// by the engine of the one before it — matching zero workflows and answering
 /// `200` with the caller's own input.
@@ -373,12 +370,11 @@ impl ChannelSnapshot {
     /// Every quarantined channel, for `/health` and the admin surface.
     ///
     /// N21: this — not a return value from [`ChannelLoader::build`] — is the
-    /// single place the quarantine set is read from. The build used to hand
-    /// the same list back as a `Vec`, which meant two representations of one
-    /// fact: callers that wanted the set afterwards could read either, and the
-    /// `Vec` could carry two entries for a channel broken in both the engine
-    /// build and its own config while the map (last-write-wins) carried the
-    /// more specific one.
+    /// single place the quarantine set is read from. A `Vec` handed back by
+    /// the build would be a second representation of one fact, and could
+    /// carry two entries for a channel broken in both the engine build and its
+    /// own config while the map (last-write-wins) carries the more specific
+    /// one.
     pub fn quarantined(&self) -> Vec<QuarantinedChannel> {
         let mut out: Vec<QuarantinedChannel> = self
             .quarantined

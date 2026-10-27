@@ -172,9 +172,9 @@ impl<'a> Analysis<'a> {
             })
             .collect();
         // The set already carries each document's spans — parsed once, when it
-        // was loaded. This used to re-read every file from disk and parse it a
-        // third time, which was both wasteful and wrong for an artifact or a
-        // single in-memory document, neither of which has a file to re-read.
+        // was loaded. Re-reading files from disk here would be both wasteful
+        // and wrong for an artifact or a single in-memory document, neither of
+        // which has a file to re-read.
         //
         // The `$from`/`use` filter stays: after expansion a compiled path no
         // longer addresses source coordinates, so locating one would point at

@@ -1,11 +1,10 @@
 //! Rolling-deploy drain gate (multi-instance-ha A9).
 //!
-//! Before this existed the two serve paths disagreed: TLS stopped accepting
-//! the instant a signal arrived (LB still routing here → connection refused),
-//! while plain HTTP kept accepting for the whole drain window but never told
-//! the LB anything — `/readyz` stayed 200 throughout. Both now share one
-//! sequence: withdraw readiness first, keep serving while the LB reacts,
-//! then stop accepting and drain in-flight work.
+//! The TLS and plain-HTTP serve paths share one sequence: withdraw readiness
+//! first, keep serving while the LB reacts, then stop accepting and drain
+//! in-flight work. Stopping at once refuses connections the LB is still
+//! routing here; serving through the drain window without withdrawing
+//! readiness leaves `/readyz` at 200 and tells the LB nothing.
 
 use std::future::Future;
 use std::sync::Arc;

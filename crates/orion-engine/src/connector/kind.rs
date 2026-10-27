@@ -48,10 +48,9 @@ impl PoolSlot {
 ///
 /// Separate from [`ConnectorKind`] because one target is not a kind:
 /// `data_query` and `data_write` speak the portable dialect and read the whole
-/// `ConnectorConfig` (its operation gates and dialect guards). They used to
-/// produce their own wrong-type refusal after resolution; [`DataBackend`]
-/// makes it the same refusal, from the same place, as every other wrong-type
-/// message.
+/// `ConnectorConfig` (its operation gates and dialect guards). [`DataBackend`]
+/// gives them the same wrong-type refusal, from the same place, as every
+/// other wrong-type message.
 pub trait ConnectorTarget {
     /// The typed config a handler binds once the connector is acceptable.
     type Config;
@@ -152,8 +151,8 @@ impl ConnectorType {
 mod tests {
     use super::*;
 
-    /// The guard that makes per-kind eviction no weaker than the blanket sweep
-    /// it replaced.
+    /// The guard that makes per-kind eviction reach every cache a blanket
+    /// sweep would.
     ///
     /// A cache reachable from no connector type is a cache nothing evicts —
     /// the connector updates and every node keeps serving from a pool built for
@@ -194,8 +193,8 @@ mod tests {
     }
 
     /// The one target that is not a kind: it accepts `db` and refuses the
-    /// rest, which is the refusal `data_query` used to produce by hand after
-    /// resolving the connector itself.
+    /// rest, so `data_query` and `data_write` need no wrong-type refusal of
+    /// their own.
     #[test]
     fn the_data_backend_target_accepts_db_and_nothing_else() {
         let db = ConnectorConfig::Db(DbConnectorConfig {

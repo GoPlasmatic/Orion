@@ -367,8 +367,8 @@ fn test_list_in_scalar_comparison_rejected() {
 
 #[test]
 fn test_list_as_chained_bound_rejected() {
-    // Previously a list bound survived lowering and only SQL errored (with a
-    // fabricated location); now every backend refuses identically, here.
+    // A list bound is refused here, in lowering, identically for every
+    // backend — not left for SQL to fail on with a fabricated location.
     let err =
         lower(&json!({ "<": [[1], {"field": "x"}, 10] }), &Params::new()).expect_err("list bound");
     assert_eq!(
@@ -474,7 +474,7 @@ fn test_unknown_relation_rejected_with_schema() {
 
 /// An object at a value position is never a literal: a single-key `$`
 /// object — `$oid` and `$date` included, the Mongo extended-JSON wrappers
-/// the dialect no longer reads — is an unknown operator, and a plain
+/// the dialect does not read — is an unknown operator, and a plain
 /// object is not representable.
 #[test]
 fn test_object_values_are_refused() {

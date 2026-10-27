@@ -459,8 +459,8 @@ mod tests {
 
     /// The write half of the trace store. The DLQ retry path re-creates a
     /// pending trace and settles its status; it reads nothing and expires
-    /// nothing, and now says so — this used to carry four `unimplemented!()`
-    /// bodies for methods the code under test cannot reach.
+    /// nothing, so the double implements only the write half and carries no
+    /// `unimplemented!()` bodies for methods the code under test cannot reach.
     #[async_trait]
     impl TraceSink for MockTraceRepo {
         async fn create_pending(

@@ -1,30 +1,22 @@
 //! One classification for a handler failure, and one place that turns it into
 //! an engine error.
 //!
-//! Four mechanisms used to answer *whose fault is this, is it retryable, and
-//! what status does it get*. Two are already gone: the `LIMIT_MARKER` prefix
-//! that smuggled a classification through an error string, and the
-//! `ServiceUnavailable(String)` that conflated four unrelated causes. This is
-//! the third.
-//!
-//! **What was wrong with three constructors.** `to_exec_error`,
-//! `to_connect_error` and `to_limit_error` each picked an engine error
-//! variant, and the variant is what decides retryability: `Io` is retried,
-//! `FunctionExecution` with no source is not, `Validation` is a 400 with the
-//! message preserved while the other two are 500s with it replaced. So a
-//! retry policy was being set, correctly but invisibly, at 55 separate call
-//! sites — and the reasoning for each choice lived in three doc comments that
-//! a 56th call site had no reason to read.
+//! The classification answers *whose fault is this, is it retryable, and what
+//! status does it get*: a caller's input is a 400 with the message preserved,
+//! a backend failure a 500 with it replaced, an unreachable backend retried.
+//! Chosen separately at each call site, that would be a retry policy set
+//! invisibly at dozens of places, its reasoning in doc comments a new call
+//! site has no reason to read.
 //!
 //! [`ErrorClass`] names the five judgements; [`HandlerError`] carries one; the
-//! `From` impl below is the only code that turns a judgement into a variant. A
-//! call site now says *what kind of failure this is*, which is a thing it
-//! knows, instead of *which error variant the retry loop should see*, which is
-//! a thing it should not have to.
+//! `From` impl below is the only code that turns a judgement into an engine
+//! error. A call site says *what kind of failure this is*, which is a thing it
+//! knows, instead of *which error the retry loop should see*, which is a thing
+//! it should not have to.
 //!
-//! The three constructors are kept, because at a call site `.map_err(
-//! to_connect_error)` reads better than a struct literal — they just build a
-//! `HandlerError` now, and `?` converts it.
+//! `to_exec_error`, `to_connect_error` and `to_limit_error` exist because at a
+//! call site `.map_err(to_connect_error)` reads better than a struct literal;
+//! they build a `HandlerError`, and `?` converts it.
 //!
 //! **One table, 1.12's codes.** Each class becomes a service error carrying
 //! the code 1.12 recorded for it (`VALIDATION_ERROR`, `IO_ERROR`,
@@ -60,10 +52,9 @@ pub enum ErrorClass {
     /// The backend could not be *reached* — pool acquisition, connection
     /// setup, DNS.
     ///
-    /// Retryable. Before F42 these went out as `FunctionExecution`, so a dead
-    /// Postgres, Redis or MongoDB was a non-retryable 500 while the identical
-    /// HTTP outage was a retryable `Io` — DLQ retry policy diverged by backend
-    /// for no principled reason.
+    /// Retryable, on every backend alike (F42): a dead Postgres or MySQL
+    /// database is the same outage as an unreachable HTTP host, and DLQ retry
+    /// policy has no principled reason to differ between them.
     Connector,
     /// The backend was reached and the operation failed.
     ///

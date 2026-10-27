@@ -1,18 +1,18 @@
 //! Supervision and liveness for the node's long-lived background tasks.
 //!
-//! Every one of them used to be a bare `tokio::spawn` whose `JoinHandle` was
-//! kept only so shutdown could `abort()` it. Nothing watched them. If the
-//! trace dispatcher, a persistence worker, the audit writer, the DLQ retry
-//! consumer or the cluster reconciler stopped — a panic in a task is not a
-//! process abort, it resolves the join handle nobody was awaiting — the node
-//! kept answering `/readyz` with `ready` and kept serving 200s. Submitters saw
-//! the symptom and reported it as something else: the trace queue turned a
-//! closed channel into a 503, the persistence queue counted it as an overflow
-//! drop, the audit queue logged a warning per lost row. **A node with a dead
-//! persistence worker silently lost traces while reporting ready.**
+//! A bare `tokio::spawn` whose `JoinHandle` is kept only so shutdown can
+//! `abort()` it is watched by nobody. If the trace dispatcher, a persistence
+//! worker, the audit writer, the DLQ retry consumer or the cluster reconciler
+//! stops — a panic in a task is not a process abort, it resolves the join
+//! handle nobody is awaiting — the node keeps answering `/readyz` with `ready`
+//! and keeps serving 200s, while submitters see the symptom as something else:
+//! the trace queue turns a closed channel into a 503, the persistence queue
+//! counts it as an overflow drop, the audit queue logs a warning per lost row.
+//! **A node with a dead persistence worker silently loses traces while
+//! reporting ready.**
 //!
-//! What this module adds is one owner that knows every task's name and state,
-//! so the probes can report it and shutdown can stop them cooperatively.
+//! This module is one owner that knows every task's name and state, so the
+//! probes can report it and shutdown can stop them cooperatively.
 //!
 //! # The two shapes, and why the distinction is real
 //!
@@ -253,7 +253,7 @@ impl TaskRegistry {
     /// signal is a failure however clean it looked — every caller here is an
     /// endless loop, so returning at all means something went wrong — and is
     /// retried after a capped backoff. A panic is caught by the join and
-    /// treated the same way, which is the case that used to be invisible.
+    /// treated the same way, so it cannot pass unnoticed.
     pub fn supervise<F, Fut>(&self, name: &'static str, criticality: Criticality, body: F)
     where
         F: Fn(Shutdown) -> Fut + Send + Sync + 'static,
@@ -389,14 +389,13 @@ impl TaskRegistry {
 ///
 /// # Why this type has no `Drop`
 ///
-/// It used to, and that made "created and never run" indistinguishable from
+/// A `Drop` would make "created and never run" indistinguishable from
 /// "started and stopped" (#310). The pool call site builds one guard as a
 /// template and clones it per worker; the template itself is never moved into
-/// a `run`, so returning from `start()` dropped a guard that had never run —
-/// and because the slot is shared by construction, that one drop recorded the
-/// whole pool as `Failed`. `/health` then reported `degraded` for the life of
-/// the process, microseconds before the workers logged that they had started,
-/// while traces persisted normally throughout.
+/// a `run`, so returning from `start()` drops a guard that never ran — and
+/// because the slot is shared by construction, that one drop would record the
+/// whole pool as `Failed`, leaving `/health` reporting `degraded` for the life
+/// of the process while traces persist normally throughout.
 ///
 /// A `bool` armed-flag would fix that case; splitting the type fixes the
 /// class. Only a guard that has actually been armed can report a stop, so the
@@ -490,7 +489,7 @@ mod tests {
     }
 
     /// The failure the supervisor exists for: a background task that panics
-    /// used to resolve a `JoinHandle` nobody awaited, so the node kept
+    /// resolves a `JoinHandle` nobody awaits, so an unsupervised node keeps
     /// reporting ready with the work silently stopped. A guarded task records
     /// it, and a `Required` one blocks readiness.
     #[tokio::test]

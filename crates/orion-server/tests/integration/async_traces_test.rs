@@ -70,8 +70,8 @@ async fn test_async_trace_completes_successfully() {
 }
 
 /// An async submission to a channel that does not exist is refused at
-/// ingress — it must not consume a queue slot or mint a trace. (It used to
-/// be accepted as a 202 no-op via the single-segment name fallback.)
+/// ingress — it must not consume a queue slot or mint a trace for a 202 that
+/// no channel will ever run.
 #[tokio::test]
 async fn test_async_trace_with_no_matching_channel() {
     let app = common::test_app().await;

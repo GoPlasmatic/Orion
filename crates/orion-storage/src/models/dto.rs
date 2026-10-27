@@ -1,11 +1,11 @@
 //! Row → DTO conversions: how a stored row becomes what the HTTP API serves.
 //!
-//! The DTO shapes themselves moved to the shared `orion-api` crate (they are
-//! the wire contract, and the CLI deserializes them); they are re-exported
-//! here under their pre-1.0 paths. What stays is every `From`/`TryFrom` from
-//! a row in [`super::rows`] into a DTO. That conversion is the only door
-//! between the database and a response body, which is what makes "which
-//! columns are public?" answerable by reading one file (D27, D28).
+//! The DTO shapes themselves live in the shared `orion-api` crate (they are
+//! the wire contract, and the CLI deserializes them) and are re-exported here
+//! under their established paths. What this module holds is every
+//! `From`/`TryFrom` from a row in [`super::rows`] into a DTO. That conversion
+//! is the only door between the database and a response body, which is what
+//! makes "which columns are public?" answerable by reading one file (D27, D28).
 
 use super::rows::{AuditLogEntry, CronOccurrence, TraceDlqEntry, TraceDlqSummary, TraceListRow};
 

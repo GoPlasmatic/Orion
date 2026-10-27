@@ -119,9 +119,9 @@ pub(super) async fn check_auth(
 /// It is not authentication: `Origin` is client-supplied, and a request that
 /// sends none is not checked at all.
 ///
-/// The key was called `cors.allowed_origins`, which promised a handshake it
-/// never performed; it is `origin_allow_list` now, with the old spelling
-/// still accepted (see [`crate::channel::ChannelConfig::allowed_origins`]).
+/// The key is `origin_allow_list`, not `cors.allowed_origins`, because it
+/// performs no CORS handshake; the pre-1.0 spelling is refused (see
+/// [`crate::channel::ChannelConfig::allowed_origins`]).
 pub(super) fn check_allowed_origin(
     channel: &str,
     channel_config: &Option<Arc<ChannelRuntimeConfig>>,

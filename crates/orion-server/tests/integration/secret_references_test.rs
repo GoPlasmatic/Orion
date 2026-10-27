@@ -20,13 +20,13 @@ use tower::ServiceExt;
 ///
 /// It sits in the reserved `ORION_SECRET_*` namespace (C4d) because it is set
 /// for the whole test binary, including the tests that call `load_config` —
-/// and every other `ORION_*` name is now refused at startup as a misspelled
+/// and every other `ORION_*` name is refused at startup as a misspelled
 /// override. That is exactly the convention an operator follows for an
 /// `env://` secret they want to keep in the ORION namespace.
-/// `ctor(unsafe)` rather than a bare `ctor`: 1.0 made the marker mandatory
-/// because a pre-main constructor runs before the Rust runtime is initialised,
-/// so the obligation was always there — 0.4 just did not make you write it.
-/// It is the same obligation the SAFETY note below already discharges.
+/// `ctor(unsafe)` rather than a bare `ctor`: a pre-main constructor runs
+/// before the Rust runtime is initialised, and the marker makes that
+/// obligation explicit. It is the same obligation the SAFETY note below
+/// already discharges.
 #[ctor::ctor(unsafe)]
 fn install_b5_env_fixture() {
     // SAFETY: runs pre-main on the sole thread of the process; no concurrent

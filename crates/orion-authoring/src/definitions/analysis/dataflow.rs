@@ -149,18 +149,18 @@ pub fn data_reads(value: &Value) -> Vec<String> {
 /// Context paths a task writes, for every function that writes one.
 ///
 /// The *shape* comes from the function registry
-/// ([`FunctionRegistry::write_shape`]), not from a `match`
-/// here. This function used to carry its own copy of every handler's output
-/// semantics — in a different file from the handlers, pinned by no test, which
-/// is the drift class the rest of this repo turns into build failures. Now the
-/// handler declares where it writes and this reads the declaration; extracting
-/// the path from the task's input is all that is left.
+/// ([`FunctionRegistry::write_shape`]), not from a `match` here: a local copy
+/// of every handler's output semantics would sit in a different file from the
+/// handlers, pinned by no test — the drift class the rest of this repo turns
+/// into build failures. The handler declares where it writes and this reads
+/// the declaration; extracting the path from the task's input is all that is
+/// left.
 ///
-/// An unknown function name yields no writes. The previous catch-all applied
-/// the `output`/`response_path` rule to any unrecognised name, so a typoed
-/// function contributed a phantom write to the analysis — a function that does
-/// not exist is already a lint error, and guessing on top of it only made the
-/// clippy rules reason about a pipeline that cannot run.
+/// An unknown function name yields no writes. Applying the
+/// `output`/`response_path` rule to an unrecognised name would give a typoed
+/// function a phantom write — a function that does not exist is already a lint
+/// error, and guessing on top of it only makes the clippy rules reason about a
+/// pipeline that cannot run.
 /// Where a task writes, and whether that list is complete.
 ///
 /// The mirror of [`Reads`], and for the same reason: a destination can be an

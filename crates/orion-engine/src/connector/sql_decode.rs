@@ -1,32 +1,32 @@
 //! Turning a SQL row into JSON, once per backend (#309).
 //!
-//! Connector queries used to run on an `sqlx::AnyPool`, and `Any` maps a
-//! driver's type info through a closed whitelist: `AnyTypeInfoKind` has nine
-//! variants, and `sqlx-postgres`'s conversion errors on anything it cannot
-//! spell. That is nine decodable Postgres types — `bool`, the three integer
-//! widths, both floats, `bytea`, `text`/`varchar` — and a task failure for
-//! `uuid`, `numeric`, `timestamptz`, `date`, `json`, `jsonb`, arrays and enums.
+//! Connector queries run on the driver's own pool, not an `sqlx::AnyPool`.
+//! `Any` maps a driver's type info through a closed whitelist:
+//! `AnyTypeInfoKind` has nine variants, and `sqlx-postgres`'s conversion
+//! errors on anything it cannot spell. That is nine decodable Postgres types —
+//! `bool`, the three integer widths, both floats, `bytea`, `text`/`varchar`
+//! — and a task failure for `uuid`, `numeric`, `timestamptz`, `date`,
+//! `json`, `jsonb`, arrays and enums.
 //!
-//! Two things made that worse than a missing feature. It is **data-dependent**:
+//! Two things make that worse than a missing feature. It is **data-dependent**:
 //! the conversion happens per row, so `SELECT '{"a":1}'::json … WHERE false`
-//! returned `200 []` and the same query with one row returned `500` — a query
-//! could pass every test against an empty table and fail the first time
-//! production had data. And it was **not just `db_read`**: `data_query` and
-//! `data_write` share this decoder, so the portable dialect inherited the same
-//! nine types.
+//! would return `200 []` and the same query with one row `500` — a query could
+//! pass every test against an empty table and fail the first time production
+//! had data. And it is **not just `db_read`**: `data_query` and `data_write`
+//! share this decoder, so the portable dialect would inherit the same nine
+//! types.
 //!
-//! The fix is to stop routing connectors through `Any` at all. That is not new
-//! architecture: `storage::DbPool` has held `Sqlite | Postgres | Mysql` behind
-//! a dispatch macro for the server's own database since 1.0. The connector path
-//! is the half that never got it.
+//! So no connector is routed through `Any`. `storage::DbPool` holds
+//! `Sqlite | Postgres | Mysql` behind a dispatch macro for the server's own
+//! database; the connector path has the same shape.
 //!
 //! ## Shape
 //!
 //! One `rows_to_json` per backend, each matching its own type info
-//! exhaustively rather than probing candidate Rust types in turn. The
-//! probe-cascade this pattern replaced (in the original `db_read`) fell through
-//! to `Value::Null` for anything it did not recognise, so a column read back as
-//! null even though the query succeeded — a wrong answer, not an error. A type
+//! exhaustively rather than probing candidate Rust types in turn. A probe
+//! cascade falls through to `Value::Null` for anything it does not recognise,
+//! so a column would read back as null even though the query succeeded — a
+//! wrong answer, not an error. A type
 //! this module does not handle is a **named 400**, because a decode failure is
 //! an authoring problem the author can act on, not an engine fault.
 
@@ -142,7 +142,7 @@ impl DecodeError {
 type Decoded<T> = Result<T, DecodeError>;
 
 /// Approximate in-memory byte footprint of a decoded JSON value, used to
-/// enforce `query.max_result_bytes` (`TD-09`) while streaming SQL/Mongo rows
+/// enforce `query.max_result_bytes` (`TD-09`) while streaming SQL rows
 /// so wide columns (`TEXT`, `JSONB`, `BYTEA`) cannot exhaust process memory.
 pub fn approx_json_value_bytes(v: &Value) -> usize {
     match v {

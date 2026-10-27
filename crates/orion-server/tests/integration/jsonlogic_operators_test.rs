@@ -1,12 +1,13 @@
 //! The JSONLogic operator vocabulary, and the guard that keeps it documented.
 //!
-//! datalogic-rs compiles only its core opcodes unless the extension features
-//! are switched on, and Orion cannot switch them on directly — the engine is
-//! reached through dataflow-rs (see CLAUDE.md), so the lever is dataflow-rs's
-//! `all-operators` feature in `Cargo.toml`. Before it was set, a workflow could
-//! not call `now`, format a date, uppercase a string or measure a length.
+//! datalogic-rs dispatches only its core opcodes unless the other operator
+//! families are selected, and Orion reaches it only through dataflow-rs (see
+//! CLAUDE.md): the levers are `all_operators()` on the expression-engine
+//! builder in `orion_exprs` (`orion-engine/src/operators.rs`) and dataflow-rs's
+//! `datetime` Cargo feature. Without them a workflow cannot call `now`, format
+//! a date, uppercase a string or measure a length.
 //!
-//! Losing that feature set again would be quiet rather than loud, which is what
+//! Losing an operator family would be quiet rather than loud, which is what
 //! makes this module necessary rather than merely tidy. The two author surfaces
 //! disagree about unknown operators:
 //!
@@ -19,9 +20,9 @@
 //!   [`an_unknown_operator_in_a_mapping_is_a_silent_literal`]. No error, no
 //!   failed task, `200` to the caller.
 //!
-//! Because most authoring happens in `map` mappings, dropping a feature would
+//! Because most authoring happens in `map` mappings, dropping a family would
 //! turn working workflows into ones that quietly emit `{"upper": [...]}` where
-//! a string used to be. [`every_documented_operator_is_compiled`] asserts on
+//! a string belongs. [`every_documented_operator_is_compiled`] asserts on
 //! *values* rather than on compile success precisely so it fails in that case.
 //!
 //! Three directions are asserted:
@@ -504,10 +505,9 @@ async fn a_task_guarded_by(logic: &Value, expected: &Value) -> bool {
 /// uses it to tell an operator apart from a data key, and a name missing from
 /// it is a node that check waves through.
 ///
-/// Both sides now derive from a running engine rather than from a typed list
-/// (dataflow-rs 3.7's `Engine::operator_names`, over datalogic 5.3's own
-/// opcode table), so this no longer guards a mirror against drift. What it
-/// still guards is coverage in the other direction: an operator the build
+/// The accessor derives from a running engine rather than from a typed list
+/// (dataflow-rs's operator names, over datalogic's own opcode table), so there
+/// is no mirror to drift. What this guards is coverage: an operator the build
 /// dispatches with no row above is one nothing has ever evaluated, and a row
 /// naming something the build does not dispatch is a documented operator that
 /// silently is not one.
@@ -736,11 +736,9 @@ async fn an_unknown_operator_in_a_mapping_is_a_silent_literal() {
 /// otherwise measure `0`, which reads exactly like "the two datetimes are the
 /// same" — a wrong answer indistinguishable from a right one.
 ///
-/// datalogic-rs has rejected unknown units since 5.3, which Orion has linked
-/// since 1.2.0, but `docs/src/reference/expressions.md` went on documenting the
-/// old silent-`0` behaviour for six releases because nothing asserted it. That
-/// is what this test is for: the claim on the reference page is now pinned to
-/// the engine rather than to a dependency's changelog.
+/// `docs/src/reference/expressions.md` documents this refusal; the test pins
+/// that claim to the engine rather than to a dependency's changelog, so the
+/// reference page cannot silently describe a silent-`0` behaviour again.
 #[test]
 fn date_diff_rejects_an_unknown_unit() {
     let logic = json!({"date_diff": [

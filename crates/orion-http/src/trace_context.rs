@@ -2,9 +2,9 @@
 //! `traceparent` off an inbound request.
 //!
 //! The transport-neutral map helpers — what the async trace queue and
-//! `http_call` use — are in [`orion_common::trace_context`]. They moved down because
-//! most of their callers are not the HTTP layer, and a workflow function
-//! handler reaching up into `server` to propagate a header was the giveaway.
+//! `http_call` use — are in [`orion_common::trace_context`], below this crate,
+//! because most of their callers are not the HTTP layer: a workflow function
+//! handler must not reach up into it to propagate a header.
 
 use axum::body::Body;
 use axum::extract::Request;

@@ -273,8 +273,8 @@ fn log_findings(workflow: &Workflow, compiled: &Compiled) {
 /// workflow not found among the active set, or a version that fails
 /// conversion — is reported as a [`ChannelLoadIssue`] instead of being
 /// silently skipped. Callers feed these into `ChannelLoader::build`, which
-/// quarantines the channel: previously it stayed registered in the route
-/// table with no workflow behind it, so requests got an opaque engine error.
+/// quarantines the channel; registered in the route table with no workflow
+/// behind it, it would answer every request with an opaque engine error.
 pub fn build_engine_workflows(
     channels: &[Channel],
     workflows: &[Workflow],
@@ -422,11 +422,10 @@ fn load_channel(
     // F30: buckets are 0–99, and percentages that do not sum to 100
     // misroute silently — under 100, the remainder of the traffic
     // matches no workflow version at all; over 100, later versions'
-    // ranges start past bucket 99 and are unreachable. Both used to be
-    // an accumulator and an `!= 100` check here. `Rollout::partition`
+    // ranges start past bucket 99 and are unreachable. `Rollout::partition`
     // is the engine's own arithmetic for exactly this, error direction
-    // included, so the invariant is now stated once — in the crate
-    // that routes on it.
+    // included, so the invariant is stated once — in the crate that
+    // routes on it.
     let ranges = dataflow_rs::def::Rollout::partition(&percentages).map_err(|e| {
         format!(
             "rollout percentages for workflow '{wf_id}' do not partition the \
@@ -477,13 +476,8 @@ fn load_channel(
 /// The `continue_on_error` column is written as dataflow-rs 4 spells it:
 /// `"on_failure": "continue"` when it is set, and nothing when it is
 /// not, which is the default. A task's own keys, inside `tasks_json`, are the
-/// author's and are left as written.
-///
-/// `http_call`'s destination path used to be rewritten here from Orion's
-/// `output` spelling to the upstream `response_path`, because
-/// `{"name": "http_call"}` deserializes into dataflow-rs's own
-/// `HttpCallConfig` and Orion could not annotate it. No function input has
-/// an alias any more: a row is read as it is stored.
+/// author's and are left as written: no function input has an alias, so a
+/// row is read as it is stored.
 ///
 /// # Errors
 ///
@@ -849,10 +843,9 @@ mod workflow_json_tests {
         assert_eq!(df_workflow.id(), "rollout-wf:v3");
         assert_eq!(df_workflow.channel(), "default");
 
-        // The author's condition is passed through untouched. It used to be
-        // wrapped in an `and` with two synthetic bucket comparisons against a
-        // key the ingress injected into `data`; the range is a typed field the
-        // engine gates on before it builds an arena.
+        // The author's condition is passed through untouched: the rollout
+        // range is a typed field the engine gates on before it builds an
+        // arena, not a bucket comparison folded into the condition.
         assert_eq!(json["condition"], serde_json::json!(true));
         let rollout = df_workflow.rollout().expect("rollout range");
         assert_eq!((rollout.bucket_start, rollout.bucket_end), (0, 50));

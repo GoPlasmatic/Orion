@@ -3,27 +3,27 @@
 //!
 //! A reload rebuilds two things — the channel snapshot (routes, guards, rate
 //! limiters, compiled validation) and the engine (the workflows themselves).
-//! They used to be two independently published `ArcSwap`s, stored one after
-//! the other. Each store was atomic; the *pair* was not. Between them the node
-//! served the new channel estate against the old engine, and the ordering
-//! comment that justified it ("guards before reachability") could only ever
-//! pick which mismatch you got, never remove it:
+//! Published as two `ArcSwap`s, each store would be atomic but the *pair*
+//! would not: between them the node serves the new channel estate against the
+//! old engine, and no store order removes the mismatch, it only picks which
+//! one you get:
 //!
-//! - a just-activated channel was routable while the old engine had no
-//!   workflow for it, so `process_message_for_channel` matched zero workflows,
-//!   returned `Ok`, and the caller was handed back its own input with a `200`
+//! - a just-activated channel is routable while the old engine has no
+//!   workflow for it, so `process_message_for_channel` matches zero workflows,
+//!   returns `Ok`, and the caller is handed back its own input with a `200`
 //!   — a success that did nothing;
-//! - a channel repointed to a different `workflow_id` was admitted under its
+//! - a channel repointed to a different `workflow_id` is admitted under its
 //!   new guards and executed by its old workflow.
 //!
-//! One value, one store. A request loads a [`RuntimeGeneration`] once and
+//! So: one value, one store. A request loads a [`RuntimeGeneration`] once and
 //! holds it for its whole life, so every answer it gives comes from a single
 //! build — and because the `Arc` keeps that generation alive, a reload
 //! midway through changes nothing underneath it.
 //!
 //! Publication is the only mutation, and [`RuntimeHandle::publish`] is the
 //! only way to perform it: there is no way to store one half. That is the
-//! whole guarantee, and `runtime_generation_test` pins it by counting stores.
+//! whole guarantee, and `concurrency_test::a_reload_publishes_exactly_one_generation`
+//! pins it by counting stores.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -962,7 +962,7 @@ mod tests {
         assert!(as_json(&Scalar::Str("not json".to_string()), &f).is_err());
     }
 
-    /// A uuid parameter no longer needs `($1)::uuid` around it.
+    /// A uuid parameter binds without a `($1)::uuid` cast around it.
     #[test]
     fn a_uuid_binds_from_the_string_sql_decode_emits() {
         let declared = vec![info::<uuid::Uuid>()];

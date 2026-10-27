@@ -45,8 +45,8 @@ pub struct TriggerFacts<'a> {
     /// The lock this run holds, when its channel takes one.
     pub singleton_key: Option<&'a str>,
     /// Which of the key's slots it holds — `0..slots`, stable for the
-    /// attempt, so a workflow can partition work by it the way one channel
-    /// per lane used to.
+    /// attempt, so a workflow can partition work by it rather than declaring
+    /// one channel per lane.
     pub singleton_slot: Option<u32>,
 }
 

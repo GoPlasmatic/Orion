@@ -125,8 +125,8 @@ async fn rejection_matrix_on_upload() {
             "definition.methods",
             None,
         ),
-        // #275: `requests_per_second: 0` used to be accepted and floored to 1
-        // by the limiter, so asking for "admit nothing" quietly got one per
+        // #275: `requests_per_second: 0` is refused, because the limiter
+        // floors it to 1: asking for "admit nothing" would quietly get one per
         // second — a limit that reads as far stricter than it is.
         (
             "zero-rps",

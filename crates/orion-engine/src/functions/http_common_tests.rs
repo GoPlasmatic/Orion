@@ -40,10 +40,9 @@ fn test_build_url_trims_slashes() {
     );
 }
 
-/// #277: a base URL carrying a query used to splice the path into the
-/// query value — `https://h/api?a=1` + `/orders` produced
-/// `https://h/api?a=1/orders`. None of the four tests above used a base
-/// with a query, which is why it survived.
+/// #277: a base URL carrying a query keeps the path out of the query value —
+/// `https://h/api?a=1` + `/orders` must not produce
+/// `https://h/api?a=1/orders`. The tests above use no base with a query.
 #[test]
 fn test_build_url_keeps_base_and_task_queries_apart() {
     assert_eq!(
@@ -1145,9 +1144,8 @@ async fn a_short_non_2xx_body_is_not_marked_truncated() {
 /// A server that streams without declaring a length cannot make
 /// `http_call` buffer past the connector's `max_response_size`.
 ///
-/// This path always enforced the cap while streaming — it is where the
-/// shape came from — so the test is here to keep it that way now that the
-/// loop lives in `http_body` and is shared with three other callers.
+/// The streaming loop lives in `http_body`, shared with other callers; this
+/// pins that `http_call` still enforces the cap through it.
 /// Driven through `execute_request` rather than `read_response` so the
 /// connector's configured limit is proved to reach it.
 #[tokio::test]

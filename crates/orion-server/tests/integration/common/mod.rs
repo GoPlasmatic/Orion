@@ -737,10 +737,10 @@ pub async fn poll_trace_until_done(
             return body;
         }
     }
-    // Running out of polls used to return the last non-terminal body, so a
-    // pipeline that stopped finishing traces surfaced as a confusing
-    // assertion further down — or, at the call sites that discard the result,
-    // as nothing at all. Fail here instead, naming the status it was stuck in.
+    // Running out of polls fails here, naming the status it was stuck in.
+    // Returning the last non-terminal body would surface a pipeline that
+    // stopped finishing traces as a confusing assertion further down — or, at
+    // the call sites that discard the result, as nothing at all.
     panic!(
         "trace {trace_id} did not reach a terminal status within {max_polls} polls \
          ({}ms); last body: {body}",
@@ -787,8 +787,8 @@ impl ScratchDir {
         // A process-wide counter beside the clock: the test binary runs its
         // cases in parallel, and on macOS the clock has microsecond
         // resolution, so two tests that reach here in the same microsecond
-        // used to share one directory — one test's `Drop` deleted the other's
-        // files mid-run, or its lint read the other's workflows.
+        // would otherwise share one directory — one test's `Drop` deleting the
+        // other's files mid-run, or its lint reading the other's workflows.
         static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "orion_test_{label}_{}_{}_{}",

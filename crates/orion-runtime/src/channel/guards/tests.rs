@@ -437,8 +437,7 @@ fn engine() -> ExprEngine {
 }
 
 /// The context hands back exactly what the transport moved in, and its
-/// root is the `{"data", "metadata"}` object each reader used to build for
-/// itself.
+/// root is the `{"data", "metadata"}` object every reader evaluates against.
 #[test]
 fn a_guard_context_hands_back_what_it_was_given() {
     let data = json!({"order": {"id": 7}});
@@ -756,7 +755,7 @@ async fn a_refused_caller_never_reaches_dedup_or_cache() {
 
 /// The channel's `timeout_ms` wins on every transport; the transport's
 /// default only fills in when the channel declares none (N16 — `/async`
-/// used to ignore the channel value entirely).
+/// included).
 #[tokio::test]
 async fn the_channel_timeout_outranks_the_transport_default() {
     let with_timeout = Runtime::new().timeout_ms(2_000).build();
@@ -836,9 +835,8 @@ async fn every_transport_carries_the_channel_timeout_into_its_admission() {
 
 // ---- Rate limit, on every transport (S15) ----
 
-/// The per-channel limit used to be enforced by the HTTP middleware and
-/// therefore by nothing else. Every transport now consults the same
-/// limiter.
+/// The per-channel limit is a guard, not HTTP middleware, so every transport
+/// consults the same limiter.
 #[tokio::test]
 async fn the_rate_limit_applies_on_every_transport() {
     let dl = engine();
@@ -1103,12 +1101,11 @@ async fn a_principal_key_with_no_claims_refuses_rather_than_falling_back() {
     ));
 }
 
-/// #275: the defect. A `key_logic` reading a header the context does not
-/// carry resolves to `null` — datalogic returns `null` for a missing path
-/// rather than erroring — and the old code serialized that into the key,
-/// so the bucket became the literal string `"null"` for *every* caller.
-/// An intended per-device quota silently became one shared channel-wide
-/// bucket, with no warning and no metric.
+/// #275: a `key_logic` reading a header the context does not carry resolves
+/// to `null` — datalogic returns `null` for a missing path rather than
+/// erroring. Serialized into the key, that makes the bucket the literal
+/// string `"null"` for *every* caller: an intended per-device quota silently
+/// becomes one shared channel-wide bucket, with no warning and no metric.
 ///
 /// A key that resolved to nothing has not been computed, so it takes the
 /// same path as an evaluation error: refuse, per N5.
@@ -1145,10 +1142,10 @@ async fn a_null_rate_limit_key_refuses_rather_than_collapsing() {
 
 /// The behavioural statement behind the fix, phrased so it fails loudly if
 /// the collapse ever returns: two distinct callers on a **1 rps** limiter
-/// are both refused *for key unavailability*. Under the old behaviour the
-/// first was admitted into the shared `"null"` bucket and the second was
-/// refused as over-limit — so asserting the variant, not just the refusal,
-/// is what makes this test meaningful.
+/// are both refused *for key unavailability*. With a shared `"null"` bucket
+/// the first would be admitted and the second refused as over-limit — so
+/// asserting the variant, not just the refusal, is what makes this test
+/// meaningful.
 #[tokio::test]
 async fn two_callers_with_a_null_key_do_not_share_a_bucket() {
     let dl = engine();
@@ -1204,8 +1201,8 @@ async fn an_empty_rate_limit_key_refuses() {
 }
 
 /// #275 part 2: a channel declares the header it keys on, and it becomes
-/// visible to `key_logic` on every transport — the per-device limit that
-/// was previously inexpressible.
+/// visible to `key_logic` on every transport, which is what makes a
+/// per-device limit expressible.
 #[tokio::test]
 async fn a_declared_custom_header_is_visible_to_key_logic() {
     for transport in [
@@ -2335,8 +2332,7 @@ fn absent_fields_are_not_silently_skipped() {
 }
 
 /// With both declared, `key_logic` decides the key and `cache_key_fields`
-/// is ignored — the documented precedence, which the branches used to
-/// invert (#354).
+/// is ignored — the documented precedence (#354).
 #[test]
 fn key_logic_takes_precedence_over_cache_key_fields() {
     let engine = engine();

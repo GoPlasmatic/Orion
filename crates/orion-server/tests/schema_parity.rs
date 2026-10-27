@@ -39,9 +39,9 @@
 //!   same reason; it is allow-listed by name in `DIVERGENT_INDEX_COLUMNS`.
 //! - **Defaults, collation, storage parameters.** Not compared.
 //! - **Trigger bodies.** There are none to compare: every UPDATE sets its own
-//!   `updated_at`, and `003_drop_updated_at_triggers` removed the triggers
-//!   that used to. Each backend is asserted to have no triggers at all (and
-//!   Postgres no trigger function), so one cannot come back on one backend.
+//!   `updated_at`, so none is needed. Each backend is asserted to have no
+//!   triggers at all (and Postgres no trigger function), so one cannot come
+//!   back on one backend.
 //!
 //! Nullability *is* compared. A column that is `NOT NULL` on two backends and
 //! nullable on the third is the same silent-until-fatal drift as a width

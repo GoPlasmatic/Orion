@@ -160,11 +160,10 @@ impl ProfileCollector {
         let workflow_overhead_ms = workflow_total_ms.map(|w| (w - handlers_total_ms).max(0.0));
 
         // F50: nesting is resolved by interval containment against the
-        // children collected once, rather than by attaching every depth>0
-        // sample to every depth-0 `channel_call`. The old approximation
-        // double-reported: two fan-out calls each listed the other's work, and
-        // the `samples.iter().any(...)` guard that gated it re-scanned the
-        // whole list per top-level sample for an answer that does not vary.
+        // children, collected once rather than re-scanned per top-level
+        // sample. Attaching every depth>0 sample to every depth-0
+        // `channel_call` would double-report: two fan-out calls would each
+        // list the other's work.
         let children: Vec<&HandlerSample> = samples.iter().filter(|s| s.depth > 0).collect();
 
         // Per-sample JSON with pct of workflow_total.

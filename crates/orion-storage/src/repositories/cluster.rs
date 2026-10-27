@@ -2,9 +2,8 @@
 //! leases (multi-instance-ha A7/A11).
 //!
 //! The breaker reset rides the single `config_epoch` row's `breaker_epoch`
-//! and `breaker_key`. The row's `epoch` and `epoch_scope*` columns carried
-//! the v1 entity-change bus and are no longer written; the v2 deployment
-//! head is what peers reconcile on.
+//! and `breaker_key`, its only payload columns; peers reconcile definitions
+//! on the v2 deployment head, not on this row.
 //!
 //! All statements use each backend's own clock (`datetime('now')` /
 //! `LOCALTIMESTAMP` / `UTC_TIMESTAMP()`) so lease comparisons never depend

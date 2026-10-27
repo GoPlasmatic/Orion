@@ -840,8 +840,8 @@ fn executed_task_ids(mut ids: Vec<String>, message: &dataflow_rs::Message) -> Ve
 
 /// The failure text for an `expect` path with no root, suggesting the fix.
 ///
-/// `data.` is suggested because it is what an unrooted path used to mean, and
-/// so is what almost every one of them intends.
+/// `data.` is suggested because it is what almost every unrooted path
+/// intends.
 fn unrooted_message(path: &str) -> String {
     format!(
         "expect path '{path}' has no root — did you mean 'data.{path}'? \

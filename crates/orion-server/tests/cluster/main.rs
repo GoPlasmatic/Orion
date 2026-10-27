@@ -3,9 +3,8 @@
 //! Each test builds N full `AppState`s (nodes) sharing one Postgres
 //! testcontainer, with cluster mode on and a fast reconciler poll
 //! (`cluster.epoch_poll_interval_ms`). This binary is separate from
-//! `tests/integration`, though no longer forced to be: the backend used to
-//! be a process-global `OnceLock` that the integration binary pinned to
-//! SQLite, and it is now carried on `DbPool` itself.
+//! `tests/integration` by choice: the backend is carried on `DbPool`, so
+//! nothing forces the split.
 //!
 //! Containers are per-test on purpose: the outage tests pause/stop theirs,
 //! and the shared stores (deployments, dedup keys) make each test
@@ -68,8 +67,8 @@ impl Drop for ClusterHarness {
         // `Drop` cannot await, so this only *signals* the supervisor rather
         // than joining it — which is all that is needed here: a loop wakes
         // at its next tick, sees the signal and returns, instead of running
-        // for the rest of the binary. It used to be `JoinHandle::abort()`,
-        // which could cut a rebuild mid-publish.
+        // for the rest of the binary. Unlike `JoinHandle::abort()`, a signal
+        // never cuts a rebuild mid-publish.
         for node in &self.nodes {
             node.state.tasks.signal_shutdown();
         }
@@ -813,9 +812,9 @@ async fn concurrent_admin_writes_converge() {
     }
 }
 
-/// N-generality: nothing in src/cluster assumes two nodes (D4 — no node
-/// registry); only the old harness was hard-wired. Three nodes over one
-/// Postgres, activation via node 0, nodes 1 and 2 both serve.
+/// N-generality: nothing in the runtime's `cluster/` assumes two nodes (D4 —
+/// no node registry). Three nodes over one Postgres, activation via node 0,
+/// nodes 1 and 2 both serve.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
 async fn three_node_activation_propagates() {

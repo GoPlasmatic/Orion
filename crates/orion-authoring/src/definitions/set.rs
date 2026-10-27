@@ -90,10 +90,10 @@ pub struct Definition {
     /// read them.
     ///
     /// Carried here so the document is parsed **once**. `definitions/json.rs`
-    /// exists to put `file:line:col` on a finding, but the set used to load
-    /// through `serde_json` and throw the spans away — so `lint`, `check` and
-    /// `compile` findings had no location at all, and `clippy` got one only by
-    /// re-reading every file from disk and parsing it a third time.
+    /// exists to put `file:line:col` on a finding; a set loaded through
+    /// `serde_json` alone would throw the spans away, leaving `lint`, `check`
+    /// and `compile` findings with no location and `clippy` re-reading every
+    /// file from disk to find one.
     ///
     /// `None` when the strict front end refused the bytes `serde_json`
     /// accepted — a duplicate key is the realistic case. The document still
@@ -367,8 +367,8 @@ impl DefinitionSet {
     /// Build a set from already-parsed documents — the artifact loader's entry
     /// point, and the one unit tests use.
     ///
-    /// `origin` is called with the index within its array, so an artifact can
-    /// keep reporting `workflows[3]` exactly as it did before.
+    /// `origin` is called with the index within its array, so an artifact
+    /// entry reports as `workflows[3]`.
     pub fn from_entries(entries: impl IntoIterator<Item = (Entity, String, Value)>) -> Self {
         Self {
             definitions: entries

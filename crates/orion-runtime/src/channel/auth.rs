@@ -586,18 +586,18 @@ impl CompiledHmac {
     }
 
     /// Decode one presented signature: the pinned encoding when configured,
-    /// else the pre-#264 auto-detection (hex first — unambiguous at MAC
-    /// lengths — then standard base64).
+    /// else auto-detection (hex first — unambiguous at MAC lengths — then
+    /// standard base64).
     ///
-    /// Both arms go through [`decode_bytes`], which is the point. The fallback
-    /// used to hand-roll `general_purpose::STANDARD`, which requires canonical
-    /// padding, while the pinned arm decodes through `B64_STD_LENIENT`
-    /// (`DecodePaddingMode::Indifferent`). So an **unpadded** standard-base64
-    /// signature verified with `auth.encoding = "base64"` set and was refused
-    /// as malformed without it — the same webhook, two answers, turning on a
-    /// field an operator may reasonably leave unset. `crypto.rs`'s header names
-    /// `channel::auth` as one of its four consumers precisely so there is one
-    /// spelling of each primitive; this was the call site that half-opted-in.
+    /// Both arms go through [`decode_bytes`], which is the point. A fallback
+    /// decoding with `general_purpose::STANDARD` would require canonical
+    /// padding while the pinned arm, through `B64_STD_LENIENT`
+    /// (`DecodePaddingMode::Indifferent`), does not — so an **unpadded**
+    /// standard-base64 signature would verify with `auth.encoding = "base64"`
+    /// set and be refused as malformed without it: the same webhook, two
+    /// answers, turning on a field an operator may reasonably leave unset.
+    /// `crypto.rs`'s header names `channel::auth` as one of its consumers so
+    /// there is one spelling of each primitive.
     ///
     /// Widening the decode cannot weaken anything: the bytes still have to
     /// match the HMAC, and a signature that decodes differently simply fails
@@ -1063,10 +1063,10 @@ pub enum SchemeRefusal {
 /// #auth-param ) ]`.
 ///
 /// The scheme is an ABNF literal, so it compares case-insensitively, and any
-/// run of spaces separates it from the credential. This used to be a byte
-/// `strip_prefix` over a configured `"Bearer "`, which refused `bearer <tok>`
-/// and `Bearer  <tok>` from spec-conforming clients and made the delimiter
-/// part of the configured value (#331). The credential comes back byte-exact:
+/// run of spaces separates it from the credential. A byte `strip_prefix` over
+/// a configured `"Bearer "` would refuse `bearer <tok>` and `Bearer  <tok>`
+/// from spec-conforming clients and make the delimiter part of the configured
+/// value (#331). The credential comes back byte-exact:
 /// an `api_key` digest is over exactly what was sent.
 pub fn scheme_credential<'v>(value: &'v str, scheme: &str) -> Result<&'v str, SchemeRefusal> {
     let (name, rest) = value.split_once(' ').unwrap_or((value, ""));
@@ -1081,10 +1081,10 @@ pub fn scheme_credential<'v>(value: &'v str, scheme: &str) -> Result<&'v str, Sc
 
 /// A configured scheme, normalised to the name [`scheme_credential`] compares.
 ///
-/// Surrounding whitespace is dropped, so the old prefix spelling `"Bearer "`
-/// and the natural one, `"Bearer"`, are the same scheme — while the field was a
-/// byte prefix, the second refused every caller and passed every offline check
-/// (#331). An empty value is no scheme: the bare credential it always meant.
+/// Surrounding whitespace is dropped, so the prefix spelling `"Bearer "` and
+/// the natural one, `"Bearer"`, are the same scheme — read as a byte prefix,
+/// the second would refuse every caller and pass every offline check (#331).
+/// An empty value is no scheme: the bare credential it always meant.
 /// Anything else must be an RFC 9110 token, because a value like `"Key="` can
 /// never match a scheme name and would otherwise refuse every request without
 /// saying why.

@@ -107,7 +107,7 @@ async fn run_write(
             .await?
         }
         // `DataBackend` admits `db` and nothing else; the wrong-type
-        // refusal this arm used to write is the wrapper's now.
+        // refusal is the wrapper's.
         other => unreachable!(
             "DataBackend admitted a '{}' connector",
             other.connector_type()

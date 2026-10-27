@@ -509,10 +509,9 @@ async fn test_upload_rejects_unknown_function() {
 /// `FunctionConfig::Custom` — and then dispatches to a handler registered under
 /// the same name. Nothing registers one.
 ///
-/// The gate used to be membership in a hand-copied name list, and `enrich` was
-/// added to it (F54) on the reasoning that "the engine runs it". The engine
-/// does not: such a workflow served cleanly and then failed every single
-/// request with `FunctionNotFound`, forever. dataflow-rs publishes the
+/// A hand-copied name list is the wrong gate: `enrich` reads as a name "the
+/// engine runs", yet such a workflow would serve cleanly and then fail every
+/// single request with `FunctionNotFound`, forever. dataflow-rs publishes the
 /// distinction as `BuiltinKind`, so the gate asks whether this engine can
 /// run the task rather than whether the name is spelled correctly.
 #[tokio::test]
@@ -569,8 +568,7 @@ fn workflow_with_tasks(id: &str, tasks: serde_json::Value) -> serde_json::Value 
 
 /// A task with no `id` is refused at upload, not discovered at first request.
 ///
-/// 1.12's task type required an `id`, so such a workflow used to be
-/// accepted, activate cleanly, and then fail to convert at engine
+/// Accepted, such a workflow would activate cleanly and then fail at engine
 /// load — quarantining its channel and answering 503 to every request with
 /// "missing field `id`". Same class as the `enrich` false-accept above.
 #[tokio::test]

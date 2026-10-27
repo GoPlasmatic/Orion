@@ -1,9 +1,9 @@
 //! Domain vocabulary: the small closed sets that both a row and a DTO spell,
 //! plus the string constants the SQL and the wire agree on.
 //!
-//! The definitions moved to the shared `orion-api` crate so the CLI reads the
+//! The definitions live in the shared `orion-api` crate so the CLI reads the
 //! same vocabulary the server writes; they are re-exported here under their
-//! pre-1.0 paths.
+//! established paths.
 
 pub use orion_api::enums::{
     CHANNEL_TYPE_ASYNC, CHANNEL_TYPE_SYNC, ChannelType, EntityStatus, STATUS_ACTIVE,

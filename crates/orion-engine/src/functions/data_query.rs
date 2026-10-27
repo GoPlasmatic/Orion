@@ -48,9 +48,7 @@ const MAX_INCLUDE_KEYS_PER_QUERY: usize = 1000;
 /// A portable query, read from the task with only its `params` folded against
 /// the message.
 ///
-/// Owned by the dataflow-rs 3 handler, which reads it off the authored input
-/// per call; the literals borrowed from the compiled config by the
-/// dataflow-rs 4 function.
+/// The literals are borrowed from the compiled config.
 pub struct DataQuery<'a> {
     query: Cow<'a, Value>,
     params: Map<String, Value>,
@@ -67,8 +65,7 @@ struct Backends<'a> {
 }
 
 /// The connector's gate for a read. Per-connector operation gates: reads
-/// can be disabled too (e.g. a write-only audit sink). Shared by the
-/// dataflow-rs 3 handler and the dataflow-rs 4 function.
+/// can be disabled too (e.g. a write-only audit sink).
 fn gate(conn: &ConnectorConfig, connector: &str) -> Result<(), HandlerError> {
     if let Some(gates) = conn.operation_gates() {
         require_op_allowed(gates, "read", connector)?;
@@ -77,8 +74,7 @@ fn gate(conn: &ConnectorConfig, connector: &str) -> Result<(), HandlerError> {
 }
 
 /// The query's answer, rows or a count, against a resolved and gated `db`
-/// connector. Shared by the dataflow-rs 3 handler and the dataflow-rs 4
-/// function. `run_deadline` is the deadline of the run the call belongs to,
+/// connector. `run_deadline` is the deadline of the run the call belongs to,
 /// which bounds every SQL leg with the connector's `query_timeout_ms`
 /// ([`QueryBudget::within`]).
 async fn run_query(
@@ -125,8 +121,7 @@ async fn run_query(
             .await?
         }
         // `DataBackend` admits `db` and nothing else, and it produced the
-        // wrong-type refusal — the one this handler used to write itself,
-        // here, after resolving.
+        // wrong-type refusal, so this handler writes none of its own.
         other => unreachable!(
             "DataBackend admitted a '{}' connector",
             other.connector_type()
@@ -378,18 +373,18 @@ async fn run_sql_count(
 ///
 /// The per-parent page is cut **in the child query** (`ROW_NUMBER() OVER
 /// (PARTITION BY fk ORDER BY …)`, see
-/// [`query::backend::sql::build_include_select`]), not here: this used to fetch
-/// every child of every parent on the page and truncate afterwards, so a
-/// thousand parents with ten thousand children each materialised ten million
-/// rows to return five apiece — in an order nothing defined (F27).
+/// [`query::backend::sql::build_include_select`]), not here: fetching every
+/// child of every parent on the page and truncating afterwards would
+/// materialise ten million rows for a thousand parents with ten thousand
+/// children each, to return five apiece — in an order nothing defined (F27).
 ///
 /// Grouping is by [`query::GroupKey`], not by the key's JSON text, so a parent
 /// key and a child foreign key that the driver rendered differently (`"7"` vs
 /// `7`) still join (W14).
 ///
 /// Every round trip — the main query and one child query per include relation —
-/// shares a single [`QueryBudget`]. Each used to start its own `timed_query`,
-/// which is a fresh budget, so a query with three includes could run for four
+/// shares a single [`QueryBudget`]. A `timed_query` per round trip would be a
+/// fresh budget each, so a query with three includes could run for four
 /// times the `query_timeout_ms` its connector was configured with. That is the
 /// hazard `QueryBudget` exists to close on the write path, and the read path
 /// with includes is the other place a logical operation spans round trips.

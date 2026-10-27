@@ -4061,7 +4061,7 @@
       },
       "CatalogueEntry": {
         "type": "object",
-        "description": "One entry of `GET /api/v2/admin/functions`.\n\nThe endpoint used to serve the schema registry directly, which meant it\nlisted only the functions Orion input-schema validates — 18 of the 27 valid\nnames, omitting `map`, `filter`, `parse_json` and the rest. Those are the\nones people actually type: in the deployment that reported it (#288) the\nnine omitted names were 425 of 631 tasks, `map` alone 310. A completion\nsource offering the connector functions and none of those is not an\nincomplete catalogue, it is the wrong one.\n\nA projection of [`FunctionEntry`] rather than the entry itself, because the\nwire shape is pinned by `docs/openapi.json` and the two are allowed to grow\nat different rates: `writes` and the connector rule are the analysis's\nbusiness and are not served.",
+        "description": "One entry of `GET /api/v2/admin/functions`.\n\nEvery name a workflow may use, not only the functions Orion input-schema\nvalidates: those omit `map`, `filter`, `parse_json` and the rest, which are\nthe ones people actually type — in the deployment that reported it (#288)\nsuch names were 425 of 631 tasks, `map` alone 310. A completion\nsource offering the connector functions and none of those is not an\nincomplete catalogue, it is the wrong one.\n\nA projection of [`FunctionEntry`] rather than the entry itself, because the\nwire shape is pinned by `docs/openapi.json` and the two are allowed to grow\nat different rates: `writes` and the connector rule are the analysis's\nbusiness and are not served.",
         "required": [
           "name",
           "description",
@@ -5526,7 +5526,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "One entry of `GET /api/v2/admin/functions`.\n\nThe endpoint used to serve the schema registry directly, which meant it\nlisted only the functions Orion input-schema validates — 18 of the 27 valid\nnames, omitting `map`, `filter`, `parse_json` and the rest. Those are the\nones people actually type: in the deployment that reported it (#288) the\nnine omitted names were 425 of 631 tasks, `map` alone 310. A completion\nsource offering the connector functions and none of those is not an\nincomplete catalogue, it is the wrong one.\n\nA projection of [`FunctionEntry`] rather than the entry itself, because the\nwire shape is pinned by `docs/openapi.json` and the two are allowed to grow\nat different rates: `writes` and the connector rule are the analysis's\nbusiness and are not served.",
+              "description": "One entry of `GET /api/v2/admin/functions`.\n\nEvery name a workflow may use, not only the functions Orion input-schema\nvalidates: those omit `map`, `filter`, `parse_json` and the rest, which are\nthe ones people actually type — in the deployment that reported it (#288)\nsuch names were 425 of 631 tasks, `map` alone 310. A completion\nsource offering the connector functions and none of those is not an\nincomplete catalogue, it is the wrong one.\n\nA projection of [`FunctionEntry`] rather than the entry itself, because the\nwire shape is pinned by `docs/openapi.json` and the two are allowed to grow\nat different rates: `writes` and the connector rule are the analysis's\nbusiness and are not served.",
               "required": [
                 "name",
                 "description",

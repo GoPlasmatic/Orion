@@ -51,9 +51,10 @@ use dataflow_rs::expr::{ExprEngine, Operator, Secrets};
 /// not an error but an object that echoes back as literal data, so membership
 /// here is the only thing separating a live call from inert JSON.
 ///
-/// This used to be a hand-maintained list of 75 names. It is asked of a built
-/// engine instead, backed by datalogic's own opcode table — so the vocabulary is derived from what this build actually dispatches
-/// rather than from what someone remembered to type. The distinction is not
+/// It is asked of a built engine rather than hand-maintained, backed by
+/// datalogic's own opcode table — so the vocabulary is derived from what this
+/// build actually dispatches rather than from what someone remembered to
+/// type. The distinction is not
 /// academic: enabling an extension family turns names on, and any crate in the
 /// dependency graph enabling a family Orion exposes no feature for would make
 /// operators live that a typed list would have called typos.

@@ -1,18 +1,18 @@
 //! Bounded, drained writer for admin audit-log rows (O7).
 //!
 //! Admin mutations must not wait on an audit INSERT, so the write is
-//! asynchronous. It used to be a bare `tokio::spawn` per event with a `warn!`
-//! on failure, which had two consequences an audit trail cannot have:
+//! asynchronous. A bare `tokio::spawn` per event with a `warn!` on failure
+//! would have two properties an audit trail cannot have:
 //!
-//! * **Unbounded.** One task per mutation, each holding a DB connection. A
-//!   bulk import of 1000 items spawned 1000 writers against a pool of 50.
-//! * **Not drained.** Nothing awaited those tasks, so a mutation accepted
-//!   moments before SIGTERM was answered `200` and then never recorded — the
-//!   process exited with the write still in flight. The last thing an operator
+//! * **Unbounded.** One task per mutation, each holding a DB connection: a
+//!   bulk import of 1000 items spawns 1000 writers against a pool of 50.
+//! * **Not drained.** Nothing awaits those tasks, so a mutation accepted
+//!   moments before SIGTERM is answered `200` and then never recorded — the
+//!   process exits with the write still in flight. The last thing an operator
 //!   did before a rolling restart is exactly the row an investigation wants.
 //!
-//! This module replaces both with one bounded queue and one writer task that
-//! is drained on shutdown. The drain is itself bounded (`audit.drain_timeout_secs`):
+//! So this is one bounded queue and one writer task that is drained on
+//! shutdown. The drain is itself bounded (`audit.drain_timeout_secs`):
 //! a database that has stopped accepting writes must not hold the process
 //! open, so the drain gives up and says how many rows it abandoned.
 

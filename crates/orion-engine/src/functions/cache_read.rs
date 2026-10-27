@@ -20,8 +20,8 @@ pub(crate) const NAME: &str = "cache_read";
 
 /// The refusal of a task naming both `key` and `keys`, or neither, in
 /// 1.12's words: `both` says which. dataflow-rs 4's config refuses both
-/// shapes at load, as 1.12's authoring did, so only a dataflow-rs 3 call
-/// meets it.
+/// shapes at load, as 1.12's authoring did, so a call meets it only as a
+/// defensive fallback.
 fn not_one_key_choice(name: &str, both: bool) -> HandlerError {
     HandlerError::new(
         ErrorClass::CallerInput,
@@ -41,8 +41,7 @@ enum Lookup<'k> {
 
 /// The lookup, against a resolved and gated cache connector: the value one
 /// key holds, or an array of the values several hold, in the order asked,
-/// `null` for a miss. Shared by the dataflow-rs 3 handler and the
-/// dataflow-rs 4 function, so both read the same store the same way.
+/// `null` for a miss.
 async fn look_up(
     pool: &CachePool,
     connector: &str,

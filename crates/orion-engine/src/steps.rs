@@ -1,6 +1,6 @@
-//! Walking a workflow's steps: its `tasks` array, which since dataflow-rs 3.6
-//! holds **steps** rather than tasks, and since 3.14 its loop's `setup` list,
-//! which holds steps too and runs first.
+//! Walking a workflow's steps: its `tasks` array, which holds **steps**
+//! rather than tasks, and its loop's `setup` list, which holds steps too and
+//! runs first.
 //!
 //! An element carrying a `tasks` key is a *task group* — `{id, condition,
 //! terminal, tasks}` — stating one condition for a contiguous run of tasks

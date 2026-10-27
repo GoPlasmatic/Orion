@@ -1,22 +1,22 @@
 //! Every endpoint path, built in one place.
 //!
 //! Static paths are `const`s; parameterized ones are functions. Every
-//! interpolated value goes through [`seg`], which percent-encodes it as a
+//! interpolated value goes through `seg`, which percent-encodes it as a
 //! single path segment.
 //!
 //! That encoding is not decoration. `OrionClient::execute` does
 //! `format!("{base}{path}")` and hands the string to reqwest, which parses it
-//! as a URL — so a `/`, `?` or `#` inside a value used to *restructure the
-//! request* rather than travel inside it. Entity ids are constrained to
-//! `[alnum][alnum.\-_]*` server-side and so encode to themselves, but a
-//! channel **name** is not: `validate_name` checks only emptiness and length.
-//! A channel named `orders/v2` was therefore reachable over HTTP and
-//! unreachable from this client, which is the whole of `orion-cli`.
+//! as a URL — so a `/`, `?` or `#` inside an unencoded value would
+//! *restructure the request* rather than travel inside it. Entity ids are
+//! constrained to `[alnum][alnum.\-_]*` server-side and so encode to
+//! themselves, but a channel **name** is not: `validate_name` checks only
+//! emptiness and length. Unencoded, a channel named `orders/v2` would be
+//! reachable over HTTP and unreachable from this client, which is the whole of
+//! `orion-cli`.
 //!
-//! The server has always been ready for the encoded spelling: it decodes a
-//! single-segment data path exactly once, "so the encoded spelling of a name
-//! reaches the same channel" (`routes/data/mod.rs`). This is the client
-//! producing it.
+//! The server decodes a single-segment data path exactly once, "so the encoded
+//! spelling of a name reaches the same channel" (`routes/data/mod.rs`). This is
+//! the client producing it.
 
 /// Everything but RFC 3986's unreserved set is percent-encoded.
 ///
@@ -177,7 +177,7 @@ pub const METRICS: &str = "/metrics";
 /// Build a URL query string from key-value pairs, skipping `None` values.
 /// Returns `""` when nothing is set, `"?k=v&k2=v2"` otherwise.
 ///
-/// Keys and values are percent-encoded through [`UNRESERVED_ONLY`], so a
+/// Keys and values are percent-encoded through `UNRESERVED_ONLY`, so a
 /// user-supplied filter value — tags have no server-side charset restriction —
 /// can never split into extra parameters or decode to something else.
 pub fn query_string(params: &[(&str, Option<String>)]) -> String {

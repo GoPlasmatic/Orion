@@ -217,9 +217,9 @@ impl TraceResultRow {
 /// A trace's last write — its result and its terminal status — which
 /// [`TraceSink::complete`] makes in one UPDATE.
 ///
-/// It used to be two: the result, then the status. Besides the extra
-/// statement, the queued `batch` mode wrote the status at once and the result
-/// with the next flush, so a poller could see `completed` with no result.
+/// One, not two: split into the result and the status, the queued `batch`
+/// mode could write the status at once and the result with the next flush,
+/// so a poller would see `completed` with no result.
 #[derive(Debug, Clone, Copy)]
 pub struct TraceCompletion<'a> {
     pub result_json: &'a str,
@@ -379,9 +379,9 @@ fn complete_update(
 /// Writing a trace: what the request path and the background workers do.
 ///
 /// Split from reading and from retention because the three have no consumer in
-/// common. The persistence queue needs these five and nothing else; it used to
-/// take a trait with eight methods to call three of them, which is also why a
-/// test double for it had to stub out a paginated listing it never touches.
+/// common. The persistence queue needs these methods and nothing else, so a
+/// test double for it does not have to stub out a paginated listing it never
+/// touches.
 ///
 /// The split is what makes an alternative sink writable at all — an OTel or
 /// ClickHouse exporter can satisfy this and could never satisfy
@@ -442,10 +442,10 @@ pub trait TraceReader: Send + Sync {
     async fn get_by_id(&self, id: &str) -> Result<Trace, OrionError>;
     /// One page of the trace listing, payload- and credential-free.
     ///
-    /// Carries [`TraceListRow`], not [`Trace`]: the list used to be a
-    /// `SELECT *`, which read every caller's request body, the full engine
-    /// message and one `access_token_hash` per row out of the database for a
-    /// response that shows none of them.
+    /// Carries [`TraceListRow`], not [`Trace`]: a `SELECT *` would read every
+    /// caller's request body, the full engine message and one
+    /// `access_token_hash` per row out of the database for a response that
+    /// shows none of them.
     async fn list_paginated(&self, filter: &TraceFilter) -> Result<TracePage, OrionError>;
 }
 
@@ -771,9 +771,9 @@ impl TraceRetention for SqlTraceRepository {
             let now = chrono::Utc::now().naive_utc();
             let cutoff = super::helpers::cutoff_hours_ago(now, hours);
             // D4: rows stuck in `pending`/`running` (queue submit failed,
-            // worker died mid-flight) previously matched no retention
-            // predicate and leaked forever — an unbounded leak on the
-            // hottest table, hidden because retention *looked* configured.
+            // worker died mid-flight) must match a retention predicate too,
+            // or they leak forever — an unbounded leak on the hottest table,
+            // hidden because retention *looks* configured.
             // Real processing is bounded by processing_timeout_ms (seconds),
             // so anything non-terminal at twice the retention window is
             // unambiguously dead.
@@ -964,8 +964,8 @@ mod tests {
     #[tokio::test]
     async fn test_delete_older_than_reclaims_stuck_traces() {
         // D4: pending/running rows whose worker died (or whose queue submit
-        // failed) previously leaked forever. Beyond twice the retention
-        // window they are unambiguously dead and must be reclaimed.
+        // failed) are never completed. Beyond twice the retention window they
+        // are unambiguously dead and must be reclaimed.
         let pool = test_pool().await;
         let repo = SqlTraceRepository::new(pool.clone());
 
