@@ -326,6 +326,14 @@ async fn a_quarantined_channel_is_absent_from_the_route_table() {
             .is_none(),
         "a quarantined channel must not own a route"
     );
+    let local = state.reconciler.local_status();
+    assert!(local.configuration_degraded);
+    let generation = state.runtime.published_count();
+    let repeated = orion::runtime::reconcile_deployment_revision(&state, local.applied_revision)
+        .await
+        .expect("an already-applied revision succeeds with its existing quarantine");
+    assert_eq!(repeated, local);
+    assert_eq!(state.runtime.published_count(), generation);
 }
 
 // ============================================================

@@ -229,17 +229,16 @@ async fn concurrent_reloads_converge_on_the_latest_rows() {
     for i in 0..8 {
         let state = state.clone();
         let revision = if i % 2 == 0 { older } else { latest };
-        tasks.push(tokio::spawn(async move {
-            orion::runtime::reconcile_deployment_revision(&state, revision)
-                .await
-                .is_ok()
-        }));
+        tasks.push((
+            revision,
+            tokio::spawn(async move {
+                orion::runtime::reconcile_deployment_revision(&state, revision).await
+            }),
+        ));
     }
-    for task in tasks {
-        assert!(
-            !task.await.unwrap(),
-            "a rebuild of a revision the node already applied, or moved past, must be refused"
-        );
+    for (revision, task) in tasks {
+        let result = task.await.unwrap();
+        assert_eq!(result.is_ok(), revision == latest, "{result:?}");
     }
     assert_eq!(
         state.runtime.load().id,
@@ -261,6 +260,85 @@ async fn concurrent_reloads_converge_on_the_latest_rows() {
         StatusCode::OK,
         "the channel is unrouted after concurrent rebuilds"
     );
+}
+
+/// Queue the background build ahead of the request's post-commit build, so the
+/// response deterministically exercises an already-applied revision.
+#[tokio::test]
+async fn apply_and_rollback_succeed_when_the_background_reconciler_applies_first() {
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    let mut config = orion::config::AppConfig::default();
+    config.cluster.epoch_poll_interval_ms = 3_600_000;
+    let state = common::test_state_with_config(config).await;
+    let app = orion::server::build_router(state.clone());
+    let apply = common::deploy::apply_body(
+        &app,
+        0,
+        json!({"schema_version": 2, "providers": [], "members": []}),
+        "background-first-apply",
+    )
+    .await;
+    let rollback = json!({
+        "base_revision": 1, "rollback_to": 1,
+        "idempotency_key": "background-first-rollback", "reason": "test"
+    });
+
+    for (revision, body) in [(1, apply), (2, rollback)] {
+        let before = state.runtime.published_count();
+        let guard = state.reload_lock.lock().await;
+        let background = orion::runtime::reconcile_deployment_revision(&state, revision);
+        tokio::pin!(background);
+        // Tokio's mutex queues in poll order. Register this caller before the
+        // request commits and queues its own reconciliation.
+        std::future::poll_fn(|cx| {
+            assert!(background.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        let request = tokio::spawn({
+            let app = app.clone();
+            async move {
+                app.oneshot(common::json_request(
+                    "POST",
+                    "/api/v2/admin/deployments",
+                    Some(body),
+                ))
+                .await
+                .unwrap()
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while state.deployments.current_head().0 != revision {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("request committed while the build is blocked");
+        drop(guard);
+        let (built, response) = tokio::join!(background, request);
+        built.expect("background build succeeds");
+        let response = response.unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body = common::body_json(response).await;
+        assert_eq!(body["committed_revision"], revision, "{body}");
+        assert_eq!(body["evaluation"]["converged"], true, "{body}");
+        assert!(body.get("local_error").is_none(), "{body}");
+        assert_eq!(state.runtime.published_count(), before + 1);
+        assert!(!state.reload_degraded.load(Ordering::Acquire));
+        let local = state.reconciler.local_status();
+        assert!(local.last_error.is_none(), "{local:?}");
+        assert_eq!(local.backoff_attempt, 0);
+        assert_eq!(
+            orion::runtime::reconcile_deployment_revision(&state, revision)
+                .await
+                .unwrap(),
+            local
+        );
+        assert_eq!(state.runtime.published_count(), before + 1);
+    }
+    state.tasks.shutdown(Duration::from_secs(2)).await;
 }
 
 // ============================================================

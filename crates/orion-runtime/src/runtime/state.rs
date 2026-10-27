@@ -85,7 +85,7 @@ pub struct AppStateInner {
     /// Builds the channel half of a generation. A reload's tool, not a
     /// request's: a request reads the estate off `runtime`.
     pub channel_loader: Arc<crate::channel::ChannelLoader>,
-    /// Serialises a deployment revision's build end to end.
+    /// Serialises a deployment revision's build and applied-status update.
     ///
     /// A build is a read-modify-write over the published generation: it reads
     /// the revision's members, builds the new engine, builds the channel

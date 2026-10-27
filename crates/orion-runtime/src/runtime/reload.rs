@@ -23,7 +23,17 @@ pub async fn reconcile_deployment_revision(
     use crate::extensions::deployment_store::{EntityKind, EntityRef};
     use crate::extensions::reconciler::CandidateBuildIssue;
 
+    // Publication and the applied-status update are one serialized operation:
+    // the request and background reconciler can target the same revision.
+    let reload_guard = state.reload_lock.lock().await;
     state.reconciler.observe_desired_head();
+    let local = state.reconciler.local_status();
+    if target_revision > 0
+        && local.applied_revision == target_revision
+        && local.desired_revision == target_revision
+    {
+        return Ok(local);
+    }
     let build_res = build_and_publish(state, target_revision).await;
 
     let mut build_issues = Vec::new();
@@ -62,6 +72,7 @@ pub async fn reconcile_deployment_revision(
     let status_res = state
         .reconciler
         .build_and_publish_candidate(target_revision, build_issues);
+    drop(reload_guard);
     let _ = state
         .reconciler
         .persist_local_status(state.repos.runtime_nodes.as_ref())
@@ -465,17 +476,12 @@ fn manifest_connectors(
 
 /// Build every member of `revision`'s manifest and publish the result as one
 /// generation, unless a newer revision is already desired or applied here.
+/// The caller holds `reload_lock` through the applied-status update.
 async fn build_and_publish(
     state: &AppState,
     revision: u64,
 ) -> Result<Arc<super::RuntimeGeneration>, crate::errors::OrionError> {
     let start = std::time::Instant::now();
-
-    // One build at a time, process-wide. Everything below is a
-    // read-modify-write over the published generation; overlapping builds
-    // read the same generation and the loser's publish wins. See
-    // `AppStateInner::reload_lock`.
-    let _reload_guard = state.reload_lock.lock().await;
 
     // A generation takes its connectors from the manifest's Connections,
     // every time. A failed build restores what the registry held.
