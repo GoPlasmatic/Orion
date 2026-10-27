@@ -44,7 +44,7 @@ pub async fn run(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Re
         println!("  Git hash:     {}", utils::truncate(git_hash, 12));
     }
     if !build_ts.is_empty() {
-        println!("  Built:        {build_ts}");
+        println!("  Built:        {}", format_build_timestamp(build_ts));
     }
     println!("  Status:       {status_display}");
     println!("  Uptime:       {}", utils::format_duration(uptime));
@@ -86,4 +86,12 @@ pub async fn run(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Re
     }
 
     Ok(if status == "ok" { 0 } else { 1 })
+}
+
+fn format_build_timestamp(raw: &str) -> String {
+    raw.parse::<i64>()
+        .ok()
+        .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+        .map(|date| date.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+        .unwrap_or_else(|| raw.to_string())
 }
