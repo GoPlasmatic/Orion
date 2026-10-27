@@ -4,6 +4,81 @@
 
 use serde_json::{Value, json};
 
+#[tokio::test]
+async fn convergence_requires_a_committed_revision_even_on_a_stale_replica() {
+    use crate::common;
+    use axum::http::StatusCode;
+
+    let db = common::ScratchDir::new("convergence_revision");
+    let mut config = orion::config::AppConfig::default();
+    config.storage.url = format!("{}?mode=rwc", db.url());
+    config.cluster.epoch_poll_interval_ms = 3_600_000;
+    let writer = common::test_state_with_config(config.clone()).await;
+    let reader = common::test_state_with_config(config).await;
+    let app = orion::server::build_router(reader.clone());
+
+    // A peer's commit exists in the database while the reader's catalog is empty.
+    common::deploy::commit_unchecked(&writer, 0, vec![]).await;
+    assert_eq!(reader.deployments.current_head().0, 0);
+    for target in ["this-node", "observed"] {
+        let (status, report) = common::deploy::send(
+            &app,
+            "GET",
+            &format!("/api/v2/admin/deployments/1/convergence?target={target}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{report}");
+        assert_eq!(report["converged"], false, "{report}");
+        assert_eq!(report["target_revision"], 1);
+        for missing in [0, 2, u64::MAX] {
+            let (status, error) = common::deploy::send(
+                &app,
+                "GET",
+                &format!("/api/v2/admin/deployments/{missing}/convergence?target={target}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{error}");
+            assert_eq!(error["error"]["code"], "REVISION_NOT_FOUND", "{error}");
+        }
+    }
+    common::deploy::commit_unchecked(&writer, 1, vec![]).await;
+    let (status, report) =
+        common::deploy::send(&app, "GET", "/api/v2/admin/deployments/1/convergence", None).await;
+    assert_eq!(status, StatusCode::OK, "historical revision: {report}");
+    let orion::storage::DbPool::Sqlite(pool) = &reader.db_pool else {
+        panic!("SQLite harness");
+    };
+    sqlx::query("UPDATE deployment_revisions SET members_compacted = TRUE WHERE revision = 1")
+        .execute(pool)
+        .await
+        .unwrap();
+    let (status, report) =
+        common::deploy::send(&app, "GET", "/api/v2/admin/deployments/1/convergence", None).await;
+    assert_eq!(status, StatusCode::OK, "compacted revision: {report}");
+    sqlx::query("ALTER TABLE deployment_revisions RENAME TO unavailable_revisions")
+        .execute(pool)
+        .await
+        .unwrap();
+    let (status, error) =
+        common::deploy::send(&app, "GET", "/api/v2/admin/deployments/3/convergence", None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{error}");
+    assert_eq!(error["error"]["code"], "DB_READ_ERROR", "{error}");
+    sqlx::query("ALTER TABLE unavailable_revisions RENAME TO deployment_revisions")
+        .execute(pool)
+        .await
+        .unwrap();
+    writer
+        .tasks
+        .shutdown(std::time::Duration::from_secs(2))
+        .await;
+    reader
+        .tasks
+        .shutdown(std::time::Duration::from_secs(2))
+        .await;
+}
+
 /// The v2 admin router behind `orion_client::V2Admin`: every typed
 /// client call, sent through the real routes.
 struct RouterClient(axum::Router);

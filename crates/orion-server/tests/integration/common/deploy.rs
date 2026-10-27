@@ -32,7 +32,12 @@ pub struct Upsert {
     pub requires: Vec<(&'static str, String)>,
 }
 
-async fn send(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+pub async fn send(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let resp = app
         .clone()
         .oneshot(json_request(method, uri, body))

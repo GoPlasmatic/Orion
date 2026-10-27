@@ -438,13 +438,24 @@ pub(crate) async fn get_deployment_revision(
     ),
     responses(
         (status = 200, description = "Convergence evaluation report", body = ConvergenceStatusResponse),
+        (status = 404, description = "No revision has that number (`REVISION_NOT_FOUND`)"),
     )
 )]
 pub(crate) async fn get_deployment_convergence(
     State(state): State<AppState>,
     Path(revision): Path<u64>,
     Query(query): Query<ConvergenceQuery>,
-) -> Json<ConvergenceStatusResponse> {
+) -> V2Result<Json<ConvergenceStatusResponse>> {
+    state
+        .deployments
+        .revision(&state.db_pool, revision)
+        .await?
+        .ok_or_else(|| {
+            V2Error::new(
+                DeploymentErrorKind::RevisionNotFound,
+                format!("deployment revision {revision} not found"),
+            )
+        })?;
     let local_node_id = state.reconciler.local_status().identity.node_id;
     let target = match query.target.as_deref().unwrap_or("this-node") {
         "observed" => {
@@ -465,5 +476,5 @@ pub(crate) async fn get_deployment_convergence(
         pending_nodes: report.pending_nodes,
         degraded_nodes: report.degraded_nodes,
     };
-    Json(dto)
+    Ok(Json(dto))
 }

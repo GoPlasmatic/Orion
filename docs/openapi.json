@@ -2636,6 +2636,16 @@
               }
             }
           },
+          "404": {
+            "description": "No revision has that number (`REVISION_NOT_FOUND`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
             "content": {
