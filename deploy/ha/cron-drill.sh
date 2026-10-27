@@ -27,44 +27,25 @@
 #   deploy/ha/cron-drill.sh              # assumes the stack is already up
 #   START_STACK=1 deploy/ha/cron-drill.sh
 #
-# Requires: docker compose, curl, jq. Runs ~60 s.
+# Requires: docker compose, curl, jq, orion-cli (see lib.sh). Runs ~60 s.
 
 set -euo pipefail
 
-COMPOSE=(docker compose -f docker-compose.ha.yml)
-LB_URL="${LB_URL:-http://localhost:8080}"
-NODES=(${NODES:-orion-a orion-b})
+cd "$(dirname "$0")/../.."
+source deploy/ha/lib.sh
+
 RESTART_NODE="${RESTART_NODE:-orion-b}"
-HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS:-60}"
 # Long enough to span the restart and several occurrences either side of it.
 OBSERVE_SECS="${OBSERVE_SECS:-45}"
-
-cd "$(dirname "$0")/../.."
-
-export ORION_ADMIN_API_KEYS="${ORION_ADMIN_API_KEYS:-drill-only-throwaway-admin-key-padded-past-32}"
-ADMIN_KEY="${ORION_ADMIN_API_KEYS%%,*}"
-auth=(-H "Authorization: Bearer ${ADMIN_KEY}")
-ADMIN="$LB_URL/api/v1/admin"
+# How much work one occurrence does: a 10,000-sweep loop summing this many
+# numbers per sweep. The default takes a release build a few seconds — longer
+# than the one-second schedule, so occurrences contend for the singleton.
+SPIN_SIZE="${SPIN_SIZE:-50000}"
 
 if [[ "${START_STACK:-0}" == "1" ]]; then
     echo "==> Starting the HA stack..."
     "${COMPOSE[@]}" up -d --wait
 fi
-
-wait_for_nodes() {
-    for node in "${NODES[@]}"; do
-        for ((i = 0; i < HEALTH_TIMEOUT_SECS; i++)); do
-            id=$("${COMPOSE[@]}" ps -q "$node" 2>/dev/null || true)
-            if [[ -n "$id" ]] &&
-                [[ "$(docker inspect -f '{{.State.Health.Status}}' "$id" 2>/dev/null || true)" == "healthy" ]]; then
-                continue 2
-            fi
-            sleep 1
-        done
-        echo "FAIL: $node did not become healthy within ${HEALTH_TIMEOUT_SECS}s"
-        exit 1
-    done
-}
 
 echo "==> Waiting for every node to be healthy: ${NODES[*]}"
 wait_for_nodes
@@ -75,51 +56,43 @@ curl -fsS -o /dev/null "$LB_URL/health" || {
     exit 1
 }
 
-cleanup() {
-    curl -fsS -X PATCH "${auth[@]}" -H 'Content-Type: application/json' \
-        -d '{"status":"archived"}' "$ADMIN/channels/ha-cron/status" >/dev/null 2>&1 || true
-    curl -fsS -X DELETE "${auth[@]}" "$ADMIN/channels/ha-cron" >/dev/null 2>&1 || true
-    curl -fsS -X PATCH "${auth[@]}" -H 'Content-Type: application/json' \
-        -d '{"status":"archived"}' "$ADMIN/workflows/ha-cron-wf/status" >/dev/null 2>&1 || true
-    curl -fsS -X DELETE "${auth[@]}" "$ADMIN/workflows/ha-cron-wf" >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
-cleanup
+work="$(mktemp -d)"
+found_head=$(head_revision)
+trap 'restore_head "$found_head" || echo "WARN: could not restore head revision $found_head"; rm -rf "$work"' EXIT
 
-echo "==> Creating a schedule that fires faster than its work takes"
+echo "==> Deploying a schedule that fires faster than its work takes"
 # `sleep` is not a task function, so the work is made slow the honest way: a
-# loop the engine has to walk. It only has to outlast one second.
-curl -fsS -X POST "${auth[@]}" -H 'Content-Type: application/json' -d '{
-  "workflow_id": "ha-cron-wf",
-  "name": "HA cron drill",
-  "condition": true,
-  "tasks": [
-    {
-      "id": "spin",
-      "name": "Take a moment",
-      "loop": { "counter": "data.i", "init": 0, "max": 400, "increment": 1 },
-      "function": { "name": "map", "input": { "mappings": [
-        { "path": "data.spin", "logic": { "cat": ["tick-", { "var": "data.i" }] } }
-      ] } }
-    }
-  ]
-}' "$ADMIN/workflows" >/dev/null
-curl -fsS -X PATCH "${auth[@]}" -H 'Content-Type: application/json' \
-    -d '{"status":"active"}' "$ADMIN/workflows/ha-cron-wf/status" >/dev/null
-
-curl -fsS -X POST "${auth[@]}" -H 'Content-Type: application/json' -d '{
-  "channel_id": "ha-cron",
-  "name": "ha-cron",
-  "channel_type": "async",
-  "protocol": "cron",
-  "workflow_id": "ha-cron-wf",
-  "transport_config": {
-    "schedule": "* * * * * *",
-    "concurrency": { "policy": "forbid" }
+# loop the engine has to walk, over numbers the schedule's payload carries (a
+# literal array would be folded when the workflow compiles).
+set_dir="$work/ha-cron"
+mkdir -p "$set_dir"
+jq -n '{
+  workflow_id: "ha-cron-wf",
+  name: "HA cron drill",
+  condition: true,
+  loop: {counter: "i", max: 10000},
+  tasks: [{
+    id: "spin",
+    name: "Take a moment",
+    function: {name: "map", input: {mappings: [{
+      path: "temp_data.sum",
+      logic: {reduce: [{var: "data.xs"}, {"+": [{var: "accumulator"}, {var: "current"}]}, 0]}
+    }]}}
+  }]
+}' >"$set_dir/workflow.json"
+jq -n --argjson n "$SPIN_SIZE" '{
+  channel_id: "ha-cron",
+  name: "ha-cron",
+  channel_type: "async",
+  protocol: "cron",
+  workflow_id: "ha-cron-wf",
+  transport_config: {
+    schedule: "* * * * * *",
+    concurrency: {policy: "forbid"},
+    payload: {xs: [range($n)]}
   }
-}' "$ADMIN/channels" >/dev/null
-curl -fsS -X PATCH "${auth[@]}" -H 'Content-Type: application/json' \
-    -d '{"status":"active"}' "$ADMIN/channels/ha-cron/status" >/dev/null
+}' >"$set_dir/channel.json"
+deploy_set "$set_dir"
 
 # The ledger, as either node reports it — it is shared state, so whichever
 # upstream the LB picks answers the same rows.

@@ -4,48 +4,33 @@
 # Two claims the plugin design makes about a cluster, exercised against the
 # real compose stack through its load balancer:
 #
-#   1. A plugin activated on one node converges on every node through the
-#      config epoch — each node compiles the component locally from the same
-#      rows — so the function is served by whichever node the LB picks.
-#   2. Activating a NEW version of a plugin under steady load produces zero
+#   1. A deployment carrying a plugin, applied through one node, converges on
+#      every node — each compiles the component locally from the same stored
+#      definition — so the function is served by whichever node the LB picks.
+#   2. Deploying a NEW revision of the plugin under steady load produces zero
 #      non-2xx responses: a request in flight finishes on the generation it
-#      started with, and the next one starts on the new digest.
+#      started with, and the next one starts on the new revision.
 #
 # Nodes are reached only through nginx (round-robin, two upstreams), so
 # "every node" is asserted as a run of consecutive LB reads that all agree —
-# with two upstreams, 20 in a row missing a node is a 2^-20 event.
-#
-# That argument holds only while every node is *in rotation*. nginx retries
-# the survivor when an upstream refuses a connection, so a booting node is
-# invisible to every read here: the convergence loops below would agree
-# against the survivor alone, and then the returning node's catch-up window
-# (it serves the estate it booted with until its first epoch tick) would land
-# inside the measured traffic as refusals. So the stack is waited for first.
+# with two upstreams, 20 in a row missing a node is a 2^-20 event. That holds
+# only while every node is in rotation, so the stack is waited for first
+# (see `wait_for_nodes` in lib.sh): a returning node's catch-up window would
+# otherwise land inside the measured traffic as refusals.
 #
 # Usage:
 #   deploy/ha/plugin-drill.sh              # assumes the stack is already up
 #   START_STACK=1 deploy/ha/plugin-drill.sh
 #
-# Requires: docker compose, curl, jq, python3. Runs ~40 s.
+# Requires: docker compose, curl, jq, orion-cli (see lib.sh). Runs ~40 s.
 
 set -euo pipefail
 
-COMPOSE=(docker compose -f docker-compose.ha.yml)
-LB_URL="${LB_URL:-http://localhost:8080}"
+cd "$(dirname "$0")/../.."
+source deploy/ha/lib.sh
+
 DURATION_SECS="${DURATION_SECS:-20}"
 CONSECUTIVE="${CONSECUTIVE:-20}"
-NODES=(${NODES:-orion-a orion-b})
-HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS:-60}"
-
-cd "$(dirname "$0")/../.."
-
-# The HA compose enforces admin auth (proposal P1); the stack needs the key
-# set for every command, and the admin calls below carry it.
-export ORION_ADMIN_API_KEYS="${ORION_ADMIN_API_KEYS:-drill-only-throwaway-admin-key-padded-past-32}"
-ADMIN_KEY="${ORION_ADMIN_API_KEYS%%,*}"
-auth=(-H "Authorization: Bearer ${ADMIN_KEY}")
-ADMIN="$LB_URL/api/v1/admin"
-
 FIXTURES="crates/orion-server/tests/fixtures/plugins"
 
 if [[ "${START_STACK:-0}" == "1" ]]; then
@@ -53,21 +38,8 @@ if [[ "${START_STACK:-0}" == "1" ]]; then
     "${COMPOSE[@]}" up -d --wait
 fi
 
-# Every node in rotation before anything is measured (see the header): a
-# node still booting is one the LB hides rather than one this drill can see.
 echo "==> Waiting for every node to be healthy: ${NODES[*]}"
-for node in "${NODES[@]}"; do
-    for ((i = 0; i < HEALTH_TIMEOUT_SECS; i++)); do
-        id=$("${COMPOSE[@]}" ps -q "$node" 2>/dev/null || true)
-        if [[ -n "$id" ]] &&
-            [[ "$(docker inspect -f '{{.State.Health.Status}}' "$id" 2>/dev/null || true)" == "healthy" ]]; then
-            continue 2
-        fi
-        sleep 1
-    done
-    echo "FAIL: $node did not become healthy within ${HEALTH_TIMEOUT_SECS}s"
-    exit 1
-done
+wait_for_nodes
 
 echo "==> Baseline check via LB: $LB_URL/health"
 curl -fsS -o /dev/null "$LB_URL/health" || {
@@ -75,77 +47,73 @@ curl -fsS -o /dev/null "$LB_URL/health" || {
     exit 1
 }
 
-upload_body() {
-    # The same JSON `orion-cli plugins create -f` sends: the manifest text and
-    # the component as base64. The fixture's upload manifest names eight
-    # functions the self-test can probe.
-    python3 -c 'import base64, json, sys
-manifest = open(sys.argv[1]).read()
-component = base64.b64encode(open(sys.argv[2], "rb").read()).decode()
-json.dump({"manifest": manifest, "component": component, "tags": ["drill"]}, sys.stdout)' \
-        "$FIXTURES/fixture-upload.toml" "$FIXTURES/fixture.wasm"
-}
+work="$(mktemp -d)"
+codes_file="$work/codes"
+# The refusals themselves, not just their count: a bare "36 non-2xx" says
+# nothing about which refusal it was, and the body distinguishes every one
+# this drill can provoke — an unknown channel from a quarantined one from a
+# workflow that failed. Kept to the first few; they are all the same shape.
+refusals_file="$work/refusals"
+touch "$codes_file" "$refusals_file"
+found_head=$(head_revision)
+trap 'restore_head "$found_head" || echo "WARN: could not restore head revision $found_head"; rm -rf "$work"' EXIT
 
-# A clean slate, in dependency order: the workflow before the plugin, since
-# a plugin delete is refused while an active workflow calls it.
-echo "==> Clearing any previous drill state"
-curl -fsS "${auth[@]}" -X DELETE "$ADMIN/channels/plugin-drill" >/dev/null 2>&1 || true
-curl -fsS "${auth[@]}" -X DELETE "$ADMIN/workflows/plugin-drill" >/dev/null 2>&1 || true
-curl -fsS "${auth[@]}" -X DELETE "$ADMIN/plugins/test.fixture" >/dev/null 2>&1 || true
-
-echo "==> Uploading and activating the fixture plugin (one node takes the write)"
-upload_body | curl -fsS "${auth[@]}" -X POST "$ADMIN/plugins" \
-    -H 'Content-Type: application/json' --data @- >/dev/null
-v1=$(curl -fsS "${auth[@]}" -X PATCH "$ADMIN/plugins/test.fixture/status" \
-    -H 'Content-Type: application/json' -d '{"status":"active"}' | jq -r '.data.digest')
-echo "    v1 digest: $v1"
-
-converged_on() {
-    # Every one of $CONSECUTIVE consecutive LB reads serves the function at
-    # the given digest — the round-robin has visited every upstream by then.
-    local digest="$1" i seen
-    for ((i = 0; i < CONSECUTIVE; i++)); do
-        seen=$(curl -fsS "${auth[@]}" "$ADMIN/functions" \
-            | jq -r '.data[] | select(.name == "test.fixture.wrap") | .plugin.digest')
-        if [[ "$seen" != "$digest" ]]; then
-            return 1
-        fi
-    done
-    return 0
-}
-
-echo "==> Waiting for every node to serve test.fixture.wrap at v1 (epoch poll is 2s)"
-for attempt in $(seq 1 30); do
-    if converged_on "$v1"; then
-        echo "    converged after ${attempt} check(s)"
-        break
-    fi
-    if [[ "$attempt" -eq 30 ]]; then
-        echo "FAIL: the plugin did not converge on every node"
-        exit 1
-    fi
-    sleep 1
-done
-
-echo "==> A workflow and channel that call the plugin"
-curl -fsS "${auth[@]}" -X POST "$ADMIN/workflows" -H 'Content-Type: application/json' -d '{
-  "workflow_id": "plugin-drill", "name": "plugin drill", "tags": ["drill"],
+# The fixture plugin, and a workflow and channel that call it. The upload
+# manifest names the functions the load-time self-test can probe.
+set_dir="$work/plugin-drill"
+mkdir -p "$set_dir/plugin"
+cp "$FIXTURES/fixture-upload.toml" "$FIXTURES/fixture.wasm" "$set_dir/plugin/"
+cat >"$set_dir/workflow.json" <<'EOF'
+{
+  "workflow_id": "plugin-drill",
+  "name": "plugin drill",
+  "condition": true,
   "tasks": [
     {"id": "parse", "name": "parse", "function": {"name": "parse_json", "input": {"source": "payload", "target": "input"}}},
     {"id": "wrap", "name": "wrap", "function": {"name": "test.fixture.wrap", "input": {"message": {"var": "data.input.msg"}, "output": "data.result"}}}
-  ]}' >/dev/null
-curl -fsS "${auth[@]}" -X PATCH "$ADMIN/workflows/plugin-drill/status" \
-    -H 'Content-Type: application/json' -d '{"status":"active"}' >/dev/null
-curl -fsS "${auth[@]}" -X POST "$ADMIN/channels" -H 'Content-Type: application/json' -d '{
+  ]
+}
+EOF
+cat >"$set_dir/channel.json" <<'EOF'
+{
   "channel_id": "plugin-drill", "name": "plugin-drill", "channel_type": "sync", "protocol": "http",
-  "methods": ["POST"], "route_pattern": "/plugin-drill", "workflow_id": "plugin-drill", "tags": ["drill"]}' >/dev/null
-curl -fsS "${auth[@]}" -X PATCH "$ADMIN/channels/plugin-drill/status" \
-    -H 'Content-Type: application/json' -d '{"status":"active"}' >/dev/null
-# The channel converges by the same epoch; wait for a run of successes.
+  "methods": ["POST"], "route_pattern": "/plugin-drill", "workflow_id": "plugin-drill"
+}
+EOF
+
+# The plugin's member revision as one LB read sees it.
+served_revision() {
+    curl -fsS "${auth[@]}" "$ADMIN/functions" |
+        jq -r '.data[] | select(.name == "test.fixture.wrap") | .plugin.version'
+}
+
+# Every one of $CONSECUTIVE consecutive LB reads serves the plugin at the
+# given revision — the round-robin has visited every upstream by then.
+wait_converged_on() {
+    local want="$1" attempt i
+    for attempt in $(seq 1 30); do
+        for ((i = 0; i < CONSECUTIVE; i++)); do
+            [[ "$(served_revision)" == "$want" ]] || continue 2
+        done
+        echo "    converged after ${attempt} check(s)"
+        return 0
+    done
+    echo "FAIL: plugin revision $want did not converge on every node"
+    exit 1
+}
+
+echo "==> Deploying the plugin, its workflow and channel (one node takes the write)"
+deploy_set "$set_dir"
+v1=$(served_revision)
+echo "    plugin revision: $v1"
+echo "==> Waiting for every node to serve test.fixture.wrap at revision $v1"
+wait_converged_on "$v1"
+
+# The channel converges with the same deployment; wait for a run of successes.
 for attempt in $(seq 1 30); do
     ok=1
     for ((i = 0; i < CONSECUTIVE; i++)); do
-        code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$LB_URL/api/v1/data/plugin-drill" \
+        code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$LB_URL/api/v2/data/plugin-drill" \
             -H 'Content-Type: application/json' -d '{"data":{"msg":"hi"}}')
         [[ "$code" == "200" ]] || { ok=0; break; }
     done
@@ -154,28 +122,21 @@ for attempt in $(seq 1 30); do
     sleep 1
 done
 
-# Version 2: the same component under a new draft — the digest is what a
-# generation names, so a re-upload of the same bytes is a legitimate new
-# version, and activating it is a full engine rebuild on every node.
-echo "==> Driving traffic for ${DURATION_SECS}s while activating version 2..."
-codes_file="$(mktemp)"
-# The refusals themselves, not just their count: a bare "36 non-2xx" says
-# nothing about which refusal it was, and the body distinguishes every one
-# this drill can provoke — an unknown channel from a quarantined one from a
-# workflow that failed. Kept to the first few; they are all the same shape.
-refusals_file="$(mktemp)"
-trap 'rm -f "$codes_file" "$refusals_file"' EXIT
+# Revision 2: the same component under a new manifest version. The plugin
+# definition's digest changes, so the apply is a new member revision and a
+# full engine rebuild on every node.
+sed 's/^version = .*/version = "0.0.1"/' "$FIXTURES/fixture-upload.toml" >"$set_dir/plugin/fixture-upload.toml"
+
+echo "==> Driving traffic for ${DURATION_SECS}s while deploying plugin revision 2..."
 end=$((SECONDS + DURATION_SECS))
 (
     sleep 4
-    curl -fsS "${auth[@]}" -X POST "$ADMIN/plugins/test.fixture/versions" >/dev/null
-    curl -fsS "${auth[@]}" -X PATCH "$ADMIN/plugins/test.fixture/status" \
-        -H 'Content-Type: application/json' -d '{"status":"active"}' >/dev/null
+    deploy_set "$set_dir"
 ) &
-activator=$!
+deployer=$!
 total=0
 while ((SECONDS < end)); do
-    response=$(curl -s -w '\n%{http_code}' --max-time 5 -X POST "$LB_URL/api/v1/data/plugin-drill" \
+    response=$(curl -s -w '\n%{http_code}' --max-time 5 -X POST "$LB_URL/api/v2/data/plugin-drill" \
         -H 'Content-Type: application/json' -d '{"data":{"msg":"hi"}}' || printf '\n000')
     code=${response##*$'\n'}
     echo "$code" >>"$codes_file"
@@ -185,36 +146,22 @@ while ((SECONDS < end)); do
     fi
     total=$((total + 1))
 done
-wait "$activator" || true
+wait "$deployer" || { echo "FAIL: deploying plugin revision 2 failed"; exit 1; }
 
 non2xx=$(grep -cv '^2' "$codes_file" || true)
-echo "==> $total requests during the activation, $non2xx non-2xx"
+echo "==> $total requests during the deployment, $non2xx non-2xx"
 sort "$codes_file" | uniq -c | sed 's/^/    /'
 if [[ -s "$refusals_file" ]]; then
     sed 's/^/    refused: /' "$refusals_file"
 fi
 
-v2=$(curl -fsS "${auth[@]}" "$ADMIN/plugins/test.fixture" | jq -r '.data.version')
-echo "==> Waiting for every node to serve version $v2"
-for attempt in $(seq 1 30); do
-    all=1
-    for ((i = 0; i < CONSECUTIVE; i++)); do
-        seen=$(curl -fsS "${auth[@]}" "$ADMIN/functions" \
-            | jq -r '.data[] | select(.name == "test.fixture.wrap") | .plugin.version')
-        [[ "$seen" == "$v2" ]] || { all=0; break; }
-    done
-    [[ "$all" == "1" ]] && { echo "    converged after ${attempt} check(s)"; break; }
-    [[ "$attempt" -eq 30 ]] && { echo "FAIL: version $v2 did not converge on every node"; exit 1; }
-    sleep 1
-done
+v2=$((v1 + 1))
+echo "==> Waiting for every node to serve revision $v2"
+wait_converged_on "$v2"
 
-echo "==> Leaving the stack as found"
-curl -fsS "${auth[@]}" -X DELETE "$ADMIN/channels/plugin-drill" >/dev/null
-curl -fsS "${auth[@]}" -X DELETE "$ADMIN/workflows/plugin-drill" >/dev/null
-curl -fsS "${auth[@]}" -X DELETE "$ADMIN/plugins/test.fixture" >/dev/null
-
+echo "==> Leaving the stack as found (head revision $found_head)"
 if [[ "$non2xx" -ne 0 ]]; then
-    echo "FAIL: $non2xx non-2xx response(s) while a plugin version activated under load"
+    echo "FAIL: $non2xx non-2xx response(s) while a plugin revision deployed under load"
     exit 1
 fi
-echo "PASS: converged on every node, and zero non-2xx across a version activation under load"
+echo "PASS: converged on every node, and zero non-2xx across a plugin deployment under load"

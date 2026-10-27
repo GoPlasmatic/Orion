@@ -1,25 +1,30 @@
 #!/usr/bin/env bash
-# Orion CLI lifecycle: create -> activate -> dry-run -> wire channel -> send.
+# Orion CLI lifecycle: lint -> dry-run -> compile -> deploy -> send -> trace.
 # Uses $ORION_SERVER_URL (exported by record.sh) so no --server flag is shown.
 source "$(dirname "$0")/lib.sh"
-cd "$EXAMPLES"
+# A scratch copy, so the compiled deployment lands outside the repository.
+cd "$(mktemp -d)"
+cp -R "$EXAMPLES" high-value-order
+# The payload alone: request.json is the HTTP body, `{"data": …}`.
+jq .data high-value-order/request.json > order.json
 
 sleep 0.4
-note "Manage Orion from your terminal — colored output, scriptable, fast."
+note "Manage Orion from your terminal — offline checks first, then one deploy."
 step "orion-cli health"
 
-note "Create a workflow from a file (it starts life as a draft)"
-step "orion-cli --yes workflows create -f workflow.json"
-step "orion-cli --yes workflows activate high-value-order"
+note "Check the definition set before anything reaches a server"
+step "orion-cli lint high-value-order"
 
-note "Dry-run it against sample data before any real traffic hits it"
-step "orion-cli workflows test high-value-order -d '{\"order_id\":\"ORD-9182\",\"total\":25000}'"
+note "Dry-run the workflow against sample input, offline"
+step "orion-cli dry-run -w high-value-order/workflow.json -i order.json --trace none | jq '{tasks, order: .output.order}'"
 
-note "Wire up the channel, reload, then send live data"
-step "orion-cli --yes channels create -f channel.json"
-step "orion-cli --yes channels activate orders"
-step "orion-cli --yes engine reload"
-step "orion-cli send orders -d '{\"order_id\":\"ORD-9182\",\"total\":25000}' --verbose"
+note "Compile and deploy — the server serves exactly what was applied"
+step "orion-cli compile high-value-order -o dist"
+step "orion-cli --yes deployments apply -d dist | jq '{committed_revision, converged: .evaluation.converged}'"
 
-note "Dry-run and live traffic through the same workflow — one tool, full lifecycle."
+note "Send live data through the channel, then read its trace"
+step "orion-cli send high-value-orders -d '{\"order_id\":\"ORD-9182\",\"total\":25000}'"
+step "orion-cli traces list --limit 1"
+
+note "The same files, checked offline and served live — one tool, full lifecycle."
 sleep 0.6
