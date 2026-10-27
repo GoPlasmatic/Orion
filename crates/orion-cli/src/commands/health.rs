@@ -53,11 +53,15 @@ pub async fn run(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Re
     if let Some(components) = resp.get("components").and_then(|c| c.as_object()) {
         println!("  {}", "Components:".bold());
         for (name, val) in components {
+            // The server's own word for each state: `disabled` is a
+            // configuration choice and `degraded` still serves, so neither
+            // reads as an error.
             let comp_status = val.as_str().unwrap_or("unknown");
-            let indicator = if comp_status == "ok" {
-                "OK".green()
-            } else {
-                "ERROR".red()
+            let indicator = match comp_status {
+                "ok" => "OK".green(),
+                "disabled" => "DISABLED".dimmed(),
+                "degraded" => "DEGRADED".yellow(),
+                other => other.to_uppercase().red(),
             };
             println!("    {name:<12} {indicator}");
         }
