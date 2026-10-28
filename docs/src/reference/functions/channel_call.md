@@ -45,10 +45,8 @@ depth prevent runaway recursion.
 ## Recursion
 
 A call to a channel already on the current call chain is a cycle, and a call
-deeper than [`engine.max_channel_call_depth`](../configuration/engine.md) is refused too. Both answer
-`508 LOOP_DETECTED` with the chain in the message, wherever along the chain
-the guard fires: the loop is in the deployed channels, not in the request, so
-the refusal is never retryable.
+deeper than [`engine.max_channel_call_depth`](../configuration/engine.md) is refused too. Both answer `508 LOOP_DETECTED` with the chain in the message, wherever the guard fires.
+The deployed channels contain the loop, so retrying the request cannot resolve it.
 
 ## Examples
 

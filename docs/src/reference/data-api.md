@@ -237,10 +237,8 @@ withheld.
 
 **`task_trace_json`** is the engine's execution trace, recorded when the
 channel opts in with `config.tracing.task_details` (default `false`). Its top
-level is `{ "initial": {...}, "steps": [...], "truncated": false }`. `initial`
-is the context the run started from (`data`, `metadata`, `temp_data`), and each
-step carries the changes it made, so replaying the changes in order from
-`initial` gives the context after every step. Request headers, cookies and
+level is `{ "initial": {...}, "steps": [...], "truncated": false }`. `initial` contains the starting context: `data`, `metadata` and `temp_data`.
+Each step carries its changes. Replay those changes in order from `initial` to reconstruct the context after each step. Request headers, cookies and
 OAuth state are redacted to `null`. `truncated` is `true` when the cap
 (`trace_queue.max_result_size_bytes`) was crossed: from that step on, steps keep
 everything but their changes. Each step entry:

@@ -122,7 +122,9 @@ These codes are stable contract: clients branch on them, and renaming one is a b
 
 ## The v2 admin code registry
 
-The v2 admin API's own refusals — connector packages, connections, plans and deployments — each carry a code from a closed registry, `orion_api::V2Code`. Every code has one kind, and the kind decides the status: `400` invalid, `403` forbidden, `404` not found, `409` conflict, `500` internal, `503` unavailable. Nothing else is answered under an unregistered code: a finding raised by another layer under a code of its own is answered as `PACKAGE_INVALID`, `ADMISSION_REJECTED` or `DEPLOYMENT_WOULD_NOT_BUILD`, with its code in the message. The v2 endpoints also answer the general codes above — `VALIDATION_ERROR` with field details for a body or a definition that would not serve, `UNAUTHORIZED`, `PAYLOAD_TOO_LARGE`.
+The v2 admin API's own refusals — connector packages, connections, plans and deployments — each carry a code from a closed registry, `orion_api::V2Code`. Every code has one kind, and the kind decides the status: `400` invalid, `403` forbidden, `404` not found, `409` conflict, `500` internal, `503` unavailable. Findings from other layers use `PACKAGE_INVALID`, `ADMISSION_REJECTED` or `DEPLOYMENT_WOULD_NOT_BUILD`, with their original code in the message.
+The API does not return unregistered codes. The v2 endpoints also return `UNAUTHORIZED`, `PAYLOAD_TOO_LARGE` and the other general codes above.
+`VALIDATION_ERROR` includes field details for an invalid body or definition.
 
 <div class="table-filter" data-label="Filter v2 admin codes"></div>
 
@@ -180,7 +182,7 @@ The v2 admin API's own refusals — connector packages, connections, plans and d
 | `INVENTORY_SELF_REFERENCE` | 400 | The package inventory: self reference |
 | `INVENTORY_SHAPE_INVALID` | 400 | The package inventory: shape invalid |
 | `CANONICAL_VALUE_UNSUPPORTED` | 400 | A value canonical JSON cannot carry, such as a non-integer number |
-| `MANIFEST_INVALID_JSON` | 400 | The package's `connector.json`: invalid json |
+| `MANIFEST_INVALID_JSON` | 400 | The package's `connector.json`: invalid JSON |
 | `MANIFEST_SHAPE_INVALID` | 400 | The package's `connector.json`: shape invalid |
 | `MANIFEST_ARTIFACT_MISSING` | 400 | The package's `connector.json`: artifact missing |
 | `MANIFEST_DEPENDENCY_ALIAS_DUPLICATE` | 400 | The package's `connector.json`: dependency alias duplicate |
@@ -191,11 +193,11 @@ The v2 admin API's own refusals — connector packages, connections, plans and d
 | `MANIFEST_PATH_INVALID` | 400 | The package's `connector.json`: path invalid |
 | `MANIFEST_RETRY_UNSAFE` | 400 | The package's `connector.json`: retry unsafe |
 | `MANIFEST_SCHEMA_VERSION_UNSUPPORTED` | 400 | The package's `connector.json`: schema version unsupported |
-| `DISTRIBUTION_INVALID_JSON` | 400 | `distribution.json`: invalid json |
+| `DISTRIBUTION_INVALID_JSON` | 400 | `distribution.json`: invalid JSON |
 | `DISTRIBUTION_SHAPE_INVALID` | 400 | `distribution.json`: shape invalid |
-| `DOCUMENT_INVALID_JSON` | 400 | A document in the package: invalid json |
+| `DOCUMENT_INVALID_JSON` | 400 | A document in the package: invalid JSON |
 | `DOCUMENT_LIMIT_EXCEEDED` | 400 | A document in the package: limit exceeded |
-| `SCHEMA_INVALID_JSON` | 400 | A schema in the package: invalid json |
+| `SCHEMA_INVALID_JSON` | 400 | A schema in the package: invalid JSON |
 | `SCHEMA_INVALID` | 400 | A schema in the package: invalid |
 | `SCHEMA_PROFILE_LIMIT` | 400 | A schema in the package: profile limit |
 | `SCHEMA_REFERENCE_CYCLE` | 400 | A schema in the package: reference cycle |

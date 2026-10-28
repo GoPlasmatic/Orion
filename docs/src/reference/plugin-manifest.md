@@ -129,10 +129,8 @@ See [Metrics › Plugins](./metrics.md#plugins).
 component that is `ok`, `degraded` when a deployed plugin did not load, or
 `disabled`. The admin-only detail lists every loaded version and every
 failure. The stages a failure names are `manifest`, `signature`, `artifact`,
-`compile`, `link`, `size`, `self_test` and `capacity`. `capacity` means the
-compile got no slot on the node's native work scheduler, or did not finish,
-within [`engine.native_work_timeout_ms`](./configuration/engine.md#native-work):
-the component may be fine and the node was busy.
+`compile`, `link`, `size`, `self_test` and `capacity`. `capacity` means compilation got no native scheduler slot or did not finish within [`engine.native_work_timeout_ms`](./configuration/engine.md#native-work).
+The component may be valid while the node is busy.
 
 ## Trust
 
@@ -147,9 +145,8 @@ component digest**, configured under
 public_keys = ["MCowBQYDK2VwAyEA…"]   # raw 32-byte keys, base64
 ```
 
-When any key is configured, a plugin definition must carry `signature`: the base64
-Ed25519 signature over the ASCII digest string (`sha256:<64 hex>`) by one of
-those keys. The digest is what is signed, not the bytes. A release
+With any verification key configured, a plugin definition must carry `signature`.
+This is a base64 Ed25519 signature over the ASCII digest string (`sha256:<64 hex>`), signed by one of those keys. The digest is what is signed, not the bytes. A release
 pipeline therefore signs the identity every other surface already names and never needs
 the component in memory. An upload with no signature is refused at
 `signature` with `REQUIRED`; one that does not verify, with `INVALID`. The

@@ -5,9 +5,8 @@
 # `parse_json`
 
 Reads a raw value (typically the request payload) and parses it as JSON into the
-data context, under one key. `data` already starts as a copy of the payload's
-fields, so this is for placing the payload, or a string holding JSON, under a
-name of your choosing.
+data context, under one key. `data` already contains a copy of the payload's fields.
+Use this function to place the payload, or a string holding JSON, under a chosen name.
 
 ## Synopsis
 

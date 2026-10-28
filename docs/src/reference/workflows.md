@@ -209,12 +209,15 @@ exactly three areas your JSONLogic can read:
 | `metadata` | ingress-stamped | Request context — channel name, method, headers, and params (see [Request metadata](#request-metadata)) |
 | `temp_data` | `{}` | Scratch space for intermediate values. Not part of the response |
 
-`data` starts as a copy of the request payload, so a field the caller sent is readable as `data.<field>` from the first condition on, the workflow's own included. The payload itself is kept apart: it lives in a sibling field outside the JSONLogic context, so `{"var": "payload.x"}` resolves to nothing, and it is never changed by a task. Two consequences follow from the seed:
+`data` starts as a copy of the request payload.
+Caller fields are readable as `data.<field>` from the first condition, including the workflow's condition. The original payload lives outside the JSONLogic context, so `{"var": "payload.x"}` resolves to nothing.
+Tasks do not change that original payload. Two consequences follow from the seed:
 
 - **The response carries the caller's fields.** The final `data` is the payload plus whatever the tasks wrote, so a field the workflow should not echo has to be removed or overwritten.
 - **An unmatched request answers with its own input.** When no workflow matches, nothing changes `data`, and the response is the payload.
 
-`parse_json` with `source: "payload"` is still how a workflow places the whole payload under one key (`target`), as in the example below; `parse_xml` is how an XML body becomes readable.
+Use `parse_json` with `source: "payload"` to place the whole payload under one `target` key, as below.
+Use `parse_xml` to make an XML body readable.
 
 ```json
 {
@@ -426,9 +429,12 @@ With `over`, the counter indexes the array: sweep `k` holds `over[k]` at `temp_d
 
 ## Error handling
 
-By default the pipeline halts on the first task that errors, and the error is returned to the caller. Set `"on_failure": "continue"` on a task to make that step non-fatal: its error is recorded and the next task runs. `continue_on_error: true` on the workflow is coarser: a failure that reaches the workflow ends it without failing the request, so the error is recorded and the next matching workflow runs, but this workflow's later tasks do not. A run that continues records each failure's code at [`metadata._orion_errors`](#branching-on-a-failure). A later task can branch on why the step failed rather than only on whether it did.
+By default the pipeline halts on the first task that errors, and the error is returned to the caller. Set `"on_failure": "continue"` on a task to make that step non-fatal: its error is recorded and the next task runs. A workflow's `on_failure: continue` applies at the workflow boundary.
+A failure ends that workflow and records its error, then the next matching workflow runs.
+Later tasks in the failed workflow do not run. A run that continues records each failure's code at [`metadata._orion_errors`](#branching-on-a-failure). A later task can branch on why the step failed rather than only on whether it did.
 
-"Errors" here means a handler failure or a status of `500` or above. A task that records a `4xx`, which is what a failing `validation` rule does, logs a warning and the pipeline carries on unless the task's `on_rejection` is `halt`. That is deliberate: a `4xx` is the task reporting on its input, not the engine failing to run it. It is also the one thing about this field worth knowing before you reach for it after a `validation`:
+"Errors" here means a handler failure or a status of `500` or above. A failing `validation` rule records a `4xx` and logs a warning.
+The pipeline continues unless the task's `on_rejection` is `halt`. That is deliberate: a `4xx` is the task reporting on its input, not the engine failing to run it. It is also the one thing about this field worth knowing before you reach for it after a `validation`:
 
 | To stop on | Use |
 |---|---|
@@ -448,7 +454,8 @@ When a channel resolves its workflows, Orion evaluates its deployed workflows in
 
 ### Rollout
 
-A workflow definition carries no rollout. A split of traffic between workflow revisions belongs to the deployment that serves them: a channel member's `rollouts` give each revision a share of 100 buckets. See [Deployments](../concepts/deployments.md#boundaries).
+A workflow definition carries no rollout. The deployment controls traffic splits between workflow revisions.
+A channel member's `rollouts` assign each revision a share of 100 buckets. See [Deployments](../concepts/deployments.md#boundaries).
 
 ## Examples
 

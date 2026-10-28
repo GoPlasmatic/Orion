@@ -1,4 +1,4 @@
-<!-- description: The `cache` connector config: the per-node memory backend, and the read and write operation gates. -->
+<!-- description: The cache connector settings: the per-node memory backend, cache purposes, and the operation gates for reads and writes. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-10-25 -->
 

@@ -28,14 +28,24 @@ A refusal answers the error envelope with a code from [the v2 admin code registr
 
 These endpoints, and the connector package and authoring endpoints beside them, are one strict, versioned contract. Every field of an answer is present unless its description says what its absence means. A request carrying a field the endpoint does not read is refused with a `400`, so a misspelled field is never silently ignored. A closed set of values, such as a member `kind` or a package `implementation`, is refused when the value is not one of them.
 
-`GET /api/v2/admin/runtime-capabilities` reports the contract's revision as `api_version`, an integer, `1` for this release. It moves when a change could make a client built against the previous revision misread an answer or send a request that is refused: a field removed, renamed, retyped or made required, a request field added, or a value added to a closed set an answer carries. An answer gaining a field does not move it. `orion-cli` speaks exactly one revision. Before each `deployments`, `provider` and `connections` command it reads the server's, and it refuses to go on against a server that reports another, or none, naming both: use the CLI from the same Orion release as the server.
+`GET /api/v2/admin/runtime-capabilities` reports the contract's revision as `api_version`, an integer, `1` for this release. The revision changes for incompatible requests or answers.
+That includes removed, renamed, retyped or newly required fields, new request fields, and additions to closed sets of answer values. An answer gaining a field does not move it. `orion-cli` speaks exactly one revision. Before each `deployments`, `provider` or `connections` command, the CLI reads the server's revision.
+It refuses a different or absent revision and names both values. Use the CLI from the same Orion release as the server.
 
 ```bash
 curl -s http://localhost:8080/api/v2/admin/runtime-capabilities | jq '{api_version, edition, node: .node_status.applied_revision}'
 # {"api_version": 1, "edition": "community", "node": 3}
 ```
 
-The same answer lists the channel drivers (`channel_drivers`), every registered provider backend with its `kind` and `driver_id` (`provider_backends`, a built-in driver with its `package_digest`), the deployment head (`deployment_head.revision`, `deployment_head.epoch`), the native work scheduler's load (`native_scheduler`) and this node's reconciler status (`node_status`: the desired and applied revisions, quarantined members, the last build error and its backoff).
+The same answer reports these capabilities and runtime state:
+
+| Field | Contents |
+|---|---|
+| `channel_drivers` | The registered channel drivers. |
+| `provider_backends` | Each backend's `kind` and `driver_id`, plus `package_digest` for built-in drivers. |
+| `deployment_head` | The head's `revision` and `epoch`. |
+| `native_scheduler` | The native work scheduler's load. |
+| `node_status` | Desired and applied revisions, quarantined members, the last build error and its backoff. |
 
 Once a deployment is committed, the node builds what it serves from the head manifest alone.
 
@@ -62,7 +72,13 @@ curl -s http://localhost:8080/api/v2/admin/definitions/sha256:3f9c… | jq '.def
 
 A definition that would not serve is refused with a `400`, each problem at its field under `definition`.
 
-A workflow the engine accepts but has something to say about is stored, and the answer lists it under `advisories`, each with a `check` id, the `path` the engine names and a `message`: a `$`-prefixed key the engine emits with one `$` stripped (`logic.escaped_template_key`), a `validation` whose failure stops nothing (`engine.unguarded_validation`), or an advisory this version has no id for (`engine.advisory`). These are the warnings `orion-cli lint` reports. They never refuse the upload, and `deployments apply -d` prints them. A channel or plugin answers an empty list.
+The server stores accepted workflows and reports engine advice under `advisories`. Each entry carries a `check` id, the engine's `path` and a `message`:
+
+- `logic.escaped_template_key`: a `$`-prefixed key emits with one `$` stripped.
+- `engine.unguarded_validation`: a `validation` failure stops nothing.
+- `engine.advisory`: the engine supplied advice without a check id this version recognises.
+
+These are the warnings `orion-cli lint` reports. They never refuse the upload, and `deployments apply -d` prints them. A channel or plugin answers an empty list.
 
 A channel reads back with its credentials masked as `******`: `auth.keys[*]`, `auth.secret`, `auth.secrets[*]`, `auth.jwt_keys[*].key`, and `oauth2_login`'s `client_secret`, `state_secret` and each `providers.<slug>.client_secret`. A secret reference such as `env://API_KEY` is shown as written. Only the read is masked: the stored bytes, and so the digest, are the definition as uploaded. A workflow may call a plugin function this node does not serve yet, by a qualified name such as `acme.iso8583.parse`. Its plugin can arrive in the same deployment, so the plan checks that name, not the upload.
 
@@ -97,12 +113,14 @@ A connection revision is the configuration a provider runs with. It is created u
 
 `provider_digest` names the provider. A built-in driver's digest is listed under `provider_backends[].package_digest` in `GET /api/v2/admin/runtime-capabilities`. The built-in drivers are `org.orion.http`, `org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite` and `org.orion.memory-cache`.
 
-The configuration is judged as the node will read it, `public_config` with each locator's reference at its path, before anything is stored. The references are not resolved, so a reference standing in a boolean or a number is read as the kind of value that field takes.
+The configuration is judged as the node reads it, `public_config` with each locator's reference at its path, before anything is stored. The references are not resolved, so a reference standing in a boolean or a number is read as the kind of value that field takes.
 
 - Over a **built-in driver**, it is typed as the connector the driver serves (`http`, `db` or `cache`) and checked the way that connector is: field types, endpoint schemes, `retry`, `operations` and `query_params` keys, OAuth2 shape, the cache backend. `orion-cli compile` makes the same check on a definition set's connectors, so a set that compiles is one this endpoint accepts.
 - Over an **uploaded provider package**, it must satisfy the package's `configuration_schema`.
 
-A configuration that would not load is refused with a `400` `VALIDATION_ERROR`, each problem at its field: under `public_config.`, or `secret_locators.` when a locator supplies the field. A failure only a resolved value can cause, such as a reference that resolves to an `ftp://` URL, surfaces when the node loads the deployment, in `/health` under `connectors.failed_to_load`.
+The server refuses invalid configuration with `400 VALIDATION_ERROR`.
+Each problem names its field under `public_config.`, or `secret_locators.` when a locator supplies it. Resolved values can still fail when the node loads the deployment, such as a reference resolving to an `ftp://` URL.
+`/health` reports these failures under `connectors.failed_to_load`.
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v2/admin/connections/orders-db/revisions \
@@ -121,7 +139,8 @@ The answer carries the revision's `configuration_digest`, taken over its public 
 
 ### Bindings
 
-A connection over a [workflow provider package](../functions/connector_call.md#workflow-provider-packages) also carries `bindings`: which connection each dependency alias the package declares calls, as `{"alias": "connection_id"}`. Every declared alias must be bound and nothing else may be. Each target must be a stored connection over a built-in driver or a `rust` provider, the one the dependency names in its `id` when it names one; a connection over another workflow package cannot be a dependency. A problem is refused with a `400` naming `bindings.<alias>`. A connection over any other provider takes no bindings.
+A connection over a [workflow provider package](../functions/connector_call.md#workflow-provider-packages) also carries `bindings`: which connection each dependency alias the package declares calls, as `{"alias": "connection_id"}`. Every declared alias must be bound and nothing else may be. Each target must be a stored connection over a built-in driver or a `rust` provider.
+Its provider must match the dependency's `id` when specified. Another workflow package cannot supply a dependency. A problem is refused with a `400` naming `bindings.<alias>`. A connection over any other provider takes no bindings.
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v2/admin/connections/crm/revisions \
@@ -143,7 +162,8 @@ The provider's answer is held to the operation's `output_schema` the same way. A
 
 `POST /api/v2/admin/connections/{id}/revisions/{revision}/probes` connects to the revision's backend and answers whether it responds. It takes no body: the probe runs through the provider the stored revision names, and nothing in the request can choose another. A revision that is not stored answers `404 CONNECTION_REVISION_NOT_FOUND`. The probe is recorded in the audit log (`v2_connection_probe`) before it runs, because it reaches a real backend with the connection's credentials.
 
-Over a built-in driver, the configuration is first resolved exactly as the node resolves it at load: `[vars]`, secret references, the typed parse and the endpoint scheme. Then the driver's own check runs:
+For a built-in driver, the node resolves `[vars]` and secret references, parses the typed configuration, and checks the endpoint scheme.
+The driver's own check then runs:
 
 | Driver | Check (`details.probe`) |
 |---|---|
@@ -151,7 +171,9 @@ Over a built-in driver, the configuration is first resolved exactly as the node 
 | `org.orion.http` | The URL's host is resolved and a TCP connection opened to it (`TCP connect to the URL's host`). No HTTP request is sent and no credential is presented. A private or internal address is refused unless `allow_private_urls` is set |
 | `org.orion.memory-cache` | A read of a probe key |
 
-A probe that ran answers `200`, whatever it found: `"healthy": true`, or `"healthy": false` with `details.error`, the stage that failed (`configuration`, `secret_resolution`, …) or what the backend did. When an uploaded provider answered the failure, `details.error_class` carries its normalised class (`unavailable`, `unauthorized`, …) and `details.effect_status` whether the check may have reached the backend (`not_started`, `completed`, `unknown`). A resolved secret never appears in the answer; a driver error that could carry one is written to the server log instead.
+A probe that ran answers `200` with `"healthy": true` or `"healthy": false`.
+Failures include `details.error`, naming the failed stage (`configuration`, `secret_resolution`, …) or the backend result. For an uploaded provider's failure, `details.error_class` carries its normalised class (`unavailable`, `unauthorized`, …).
+`details.effect_status` reports whether the check may have reached the backend: `not_started`, `completed` or `unknown`. A resolved secret never appears in the answer; a driver error that could carry one is written to the server log instead.
 
 Over an uploaded provider package, the probe validates the configuration and runs the provider's health check within an admitted run budget. A revoked package answers `403 PROVIDER_REVOKED`, and one this node has no backend for `404 PROVIDER_NOT_FOUND`.
 
@@ -187,7 +209,9 @@ A workflow, channel or plugin member's `definition_digest` names a stored defini
 
 ## Plan and apply
 
-A plan checks a manifest against a base revision without committing anything. It refuses a member whose definition is not stored and a connection revision that is not there. It also compiles the manifest the way the node would build it. A manifest that would not build is refused with `400 DEPLOYMENT_WOULD_NOT_BUILD`, naming why. Typical causes are a workflow calling a function no member serves, two channels claiming one route, or a workflow the engine cannot compile. It answers the `reviewed_manifest_digest`, and how the candidate changes the base, by member: `added_entities` the base does not deploy, `updated_entities` it deploys at another revision (`from_revision`, `to_revision`), and `removed_entities` the candidate drops, which stop serving. Nothing is stored: the plan is a function of the request and the store, so planning again answers the same plan.
+A plan checks a manifest against a base revision without committing anything. It refuses a member whose definition is not stored and a connection revision that is not there. It also compiles the manifest the way the node would build it. A manifest that would not build is refused with `400 DEPLOYMENT_WOULD_NOT_BUILD`, naming why. Typical causes are a workflow calling a function no member serves, two channels claiming one route, or a workflow the engine cannot compile. The answer includes `reviewed_manifest_digest` and the changes by member.
+`added_entities` names new members. `updated_entities` names revision changes with `from_revision` and `to_revision`.
+`removed_entities` names members the candidate drops; those members stop serving. Nothing is stored: the plan is a function of the request and the store, so planning again answers the same plan.
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v2/admin/deployment-plans \

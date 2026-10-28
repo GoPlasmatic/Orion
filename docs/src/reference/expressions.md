@@ -96,7 +96,8 @@ Format strings use the JSONLogic vocabulary: `yyyy`, `MM`, `dd`, `HH`, `mm`, `ss
 
 ### Encoding (Orion operators)
 
-Registered by Orion itself rather than gated by a cargo feature, so available on every expression surface: conditions, `map` logic, a connector function's `body`, channel guards. A string encodes as its UTF-8 bytes; any other value encodes as its compact-JSON text with key order preserved; `null` is an error. Decoders are strict. The input must be valid for the alphabet (base64 accepts padded and unpadded input), and the decoded bytes must be valid UTF-8. Binary payloads belong to the `crypto` function's `input_encoding` instead.
+Orion registers these operators on every expression surface, without a Cargo feature gate.
+They work in conditions, `map` logic, connector `body` expressions and channel guards. A string encodes as its UTF-8 bytes; any other value encodes as its compact-JSON text with key order preserved; `null` is an error. Decoders are strict. The input must be valid for the alphabet (base64 accepts padded and unpadded input), and the decoded bytes must be valid UTF-8. Binary payloads belong to the `crypto` function's `input_encoding` instead.
 
 | Operator | Example | Meaning |
 |----------|---------|---------|

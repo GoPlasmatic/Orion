@@ -4,7 +4,8 @@
 
 # Storage settings
 
-The `[storage]` section: the database URL, which selects the backend at runtime, the connection pool, encryption at rest, backups, migration at boot, and how long the deployment store keeps what nothing references.
+The `[storage]` section configures the database URL, connection pool, encryption at rest, backups, startup migrations and retention of unreferenced deployment artifacts.
+The URL selects the backend at runtime.
 
 ## Synopsis
 
@@ -83,7 +84,8 @@ The migrate step already exists in both reference deployments. The Helm chart ru
 
 ### Artifact collection
 
-Every definition, connection configuration and connector-package file a deployment can name is stored once, by digest, in the state database. A background job collects the ones nothing can still serve from. It runs every `artifact_gc_interval_secs`; in a cluster the node holding the `deployment_gc` job lease runs it, and the pass is one transaction behind the same head lock an apply takes, so it never interleaves with a deployment.
+Every definition, connection configuration and connector-package file a deployment can name is stored once, by digest, in the state database. A background job collects the ones nothing can still serve from. It runs every `artifact_gc_interval_secs`. In a cluster, the node holding the `deployment_gc` job lease runs it.
+Each pass uses one transaction and the same head lock as an apply, preventing interleaving with deployments.
 
 It never collects an artifact that is:
 

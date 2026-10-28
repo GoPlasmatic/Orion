@@ -60,7 +60,8 @@ Because `action` and `resource_type` match exactly, a filter is only as good as 
 
 Reads are not recorded: only mutations, and `POST /definitions/test`, which reaches live backends and so behaves like one.
 
-Every row but the two deployment rows goes through a bounded writer queue after its mutation commits; a queue that stays full drops rows and counts them on `orion_audit_events_dropped_total`. A deployment apply or rollback cannot lose its row that way: the row commits with the head move or not at all.
+Except for the two deployment rows, audit rows enter a bounded writer queue after their mutation commits.
+A queue that stays full drops rows and increments `orion_audit_events_dropped_total`. A deployment apply or rollback cannot lose its row that way: the row commits with the head move or not at all.
 
 ## Group a multi-step operation
 
