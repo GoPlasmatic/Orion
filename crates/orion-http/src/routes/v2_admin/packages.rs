@@ -3,21 +3,22 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
+use orion_api::Page;
 use orion_api::v2::{
     AdmitPackageRequest, AdmitPackageResponse, ConnectorPackageResponse, ConnectorPackageSummary,
-    ConnectorPackagesListResponse, EditionTier, PackageArtifactState, ProviderAdmissionDto,
-    RevokePackageRequest, RevokePackageResponse, UploadPackageRequest, UploadPackageResponse,
+    EditionTier, PackageArtifactState, ProviderAdmissionDto, RevokePackageRequest,
+    RevokePackageResponse, UploadPackageRequest, UploadPackageResponse,
 };
 use serde_json::Value;
 
-use super::{V2Error, V2Result, decode_files_map};
+use super::{ListQuery, V2Error, V2Result, decode_files_map, page_by_key};
 use crate::admin_auth::AdminPrincipal;
 use crate::extensions::Digest;
 use crate::extensions::authoring::pack_provider_package;
 use crate::extensions::deployment_store::{
     ArchiveEntryInput, ArtifactState, DeploymentErrorKind, ProviderAdmissionRow, ProviderPackageRow,
 };
-use crate::extract::OrionJson;
+use crate::extract::{OrionJson, OrionQuery};
 use crate::runtime::state::AppState;
 
 fn admission_dto(adm: &ProviderAdmissionRow) -> ProviderAdmissionDto {
@@ -78,14 +79,17 @@ fn package_row_to_summary(
     path = "/api/v2/admin/connector-packages",
     tag = "Providers",
     summary = "List uploaded and admitted connector provider packages",
-    description = "Returns all ingested provider packages alongside their admission and revocation state.",
+    description = "Returns a page of ingested provider packages, ordered by digest, each with its admission and revocation state.",
+    params(ListQuery),
     responses(
-        (status = 200, description = "Connector provider packages", body = ConnectorPackagesListResponse),
+        (status = 200, description = "A page of connector provider packages", body = Page<ConnectorPackageSummary>),
+        (status = 400, description = "A `limit` of 0, or a cursor this endpoint did not issue"),
     )
 )]
 pub(crate) async fn list_connector_packages(
     State(state): State<AppState>,
-) -> V2Result<Json<ConnectorPackagesListResponse>> {
+    OrionQuery(query): OrionQuery<ListQuery>,
+) -> V2Result<Json<Page<ConnectorPackageSummary>>> {
     let raw_packages = state.deployments.list_packages();
     let raw_admissions = state.deployments.list_admissions();
     let digests: Vec<String> = raw_packages
@@ -98,9 +102,7 @@ pub(crate) async fn list_connector_packages(
         .deployments
         .artifact_states(&state.db_pool, &digests)
         .await?;
-    let admissions: Vec<ProviderAdmissionDto> =
-        raw_admissions.iter().map(|a| admission_dto(a)).collect();
-    let packages: Vec<ConnectorPackageSummary> = raw_packages
+    let mut packages: Vec<ConnectorPackageSummary> = raw_packages
         .iter()
         .map(|p| {
             let adm = raw_admissions
@@ -112,11 +114,8 @@ pub(crate) async fn list_connector_packages(
             package_row_to_summary(p, admitted, revoked, artifact_state)
         })
         .collect();
-    Ok(Json(ConnectorPackagesListResponse {
-        count: packages.len(),
-        packages,
-        admissions,
-    }))
+    packages.sort_by(|a, b| a.digest.cmp(&b.digest));
+    Ok(Json(page_by_key(packages, |p| p.digest.clone(), &query)?))
 }
 
 /// `GET /api/v2/admin/connector-packages/{digest}`.

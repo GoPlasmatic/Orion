@@ -56,7 +56,11 @@ async fn list_paginates_and_omits_payloads() {
     let (app, _pending, _exhausted) = app_with_entries().await;
 
     let resp = app
-        .oneshot(common::json_request("GET", "/api/v2/admin/trace-dlq", None))
+        .oneshot(common::json_request(
+            "GET",
+            "/api/v2/admin/trace-dlq?include_total=true",
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -85,7 +89,7 @@ async fn list_filters_by_exhaustion_and_channel() {
         .clone()
         .oneshot(common::json_request(
             "GET",
-            "/api/v2/admin/trace-dlq?exhausted=true",
+            "/api/v2/admin/trace-dlq?exhausted=true&include_total=true",
             None,
         ))
         .await
@@ -97,7 +101,7 @@ async fn list_filters_by_exhaustion_and_channel() {
     let resp = app
         .oneshot(common::json_request(
             "GET",
-            "/api/v2/admin/trace-dlq?channel=orders",
+            "/api/v2/admin/trace-dlq?channel=orders&include_total=true",
             None,
         ))
         .await
@@ -161,7 +165,7 @@ async fn requeue_resets_an_exhausted_entry() {
         .clone()
         .oneshot(common::json_request(
             "GET",
-            "/api/v2/admin/trace-dlq?exhausted=true",
+            "/api/v2/admin/trace-dlq?exhausted=true&include_total=true",
             None,
         ))
         .await
@@ -196,7 +200,11 @@ async fn purge_removes_only_exhausted_entries() {
     assert_eq!(common::body_json(resp).await["data"]["purged"], 1);
 
     let resp = app
-        .oneshot(common::json_request("GET", "/api/v2/admin/trace-dlq", None))
+        .oneshot(common::json_request(
+            "GET",
+            "/api/v2/admin/trace-dlq?include_total=true",
+            None,
+        ))
         .await
         .unwrap();
     let body = common::body_json(resp).await;
@@ -224,7 +232,11 @@ async fn purge_requires_an_explicit_age() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
     let resp = app
-        .oneshot(common::json_request("GET", "/api/v2/admin/trace-dlq", None))
+        .oneshot(common::json_request(
+            "GET",
+            "/api/v2/admin/trace-dlq?include_total=true",
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(common::body_json(resp).await["total"], 2);
@@ -249,7 +261,11 @@ async fn purge_respects_the_age_bound() {
     assert_eq!(common::body_json(resp).await["data"]["purged"], 0);
 
     let resp = app
-        .oneshot(common::json_request("GET", "/api/v2/admin/trace-dlq", None))
+        .oneshot(common::json_request(
+            "GET",
+            "/api/v2/admin/trace-dlq?include_total=true",
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(common::body_json(resp).await["total"], 2);

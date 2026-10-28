@@ -9,9 +9,105 @@ use orion_common::errors::OrionError;
 #[derive(Debug, Serialize)]
 pub struct PaginatedResult<T> {
     pub data: Vec<T>,
-    pub total: i64,
+    /// `Some` only when the caller asked for the count; `None` is "not
+    /// counted", never "no rows".
+    pub total: Option<i64>,
     pub limit: i64,
-    pub offset: i64,
+    /// Where the page after this one starts; `None` on the last page.
+    pub next_cursor: Option<String>,
+}
+
+/// The `(created_at, id)` of a row, which is its position in every list.
+///
+/// `created_at` alone is not unique (rows written in one second share it on
+/// backends with second-precision defaults), so the id is the tie-break; without
+/// it a page boundary inside a group of equal timestamps skips or repeats rows.
+pub trait Keyed {
+    fn created_at(&self) -> chrono::NaiveDateTime;
+    fn id(&self) -> &str;
+}
+
+macro_rules! impl_keyed {
+    ($($row:ty),+ $(,)?) => {$(
+        impl Keyed for $row {
+            fn created_at(&self) -> chrono::NaiveDateTime {
+                self.created_at
+            }
+            fn id(&self) -> &str {
+                &self.id
+            }
+        }
+    )+};
+}
+
+impl_keyed!(
+    crate::models::TraceListRow,
+    crate::models::TraceDlqSummary,
+    crate::models::AuditLogEntry,
+    crate::models::CronOccurrence,
+);
+
+/// A position in a list: the `(created_at, id)` of the last row a caller saw.
+///
+/// Encoded as `<microseconds since the Unix epoch>.<id>`, URL-safe because every
+/// id is a UUID or a slug. **Opaque to callers** — the encoding is not part of
+/// the API contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeysetCursor {
+    pub created_at: chrono::NaiveDateTime,
+    pub id: String,
+}
+
+impl KeysetCursor {
+    pub fn of(row: &impl Keyed) -> Self {
+        Self {
+            created_at: row.created_at(),
+            id: row.id().to_string(),
+        }
+    }
+
+    pub fn encode(&self) -> String {
+        format!(
+            "{}.{}",
+            self.created_at.and_utc().timestamp_micros(),
+            self.id
+        )
+    }
+
+    pub fn decode(raw: &str) -> Result<Self, OrionError> {
+        let invalid = || {
+            OrionError::validation(
+                "Invalid `cursor`: pass back a `next_cursor` from a previous page unmodified"
+                    .to_string(),
+            )
+        };
+        let (micros, id) = raw.split_once('.').ok_or_else(invalid)?;
+        let micros: i64 = micros.parse().map_err(|_| invalid())?;
+        let created_at = chrono::DateTime::from_timestamp_micros(micros)
+            .ok_or_else(invalid)?
+            .naive_utc();
+        if id.is_empty() {
+            return Err(invalid());
+        }
+        Ok(Self {
+            created_at,
+            id: id.to_string(),
+        })
+    }
+
+    /// `(created_at, id)` strictly after this position in newest-first order —
+    /// the row-value comparison spelled out, because MySQL does not optimise
+    /// `(a, b) < (?, ?)` into an index range scan.
+    fn condition(&self, created_at: &DynIden, id: &DynIden) -> Condition {
+        use sea_query::Expr;
+        Condition::any()
+            .add(Expr::col(created_at.clone()).lt(self.created_at))
+            .add(
+                Condition::all()
+                    .add(Expr::col(created_at.clone()).eq(self.created_at))
+                    .add(Expr::col(id.clone()).lt(self.id.as_str())),
+            )
+    }
 }
 
 /// Converts an `Option<&str>` to a `sea_query::Value::String`, mapping `None`
@@ -112,46 +208,59 @@ pub enum Projection {
     Columns(Vec<DynIden>),
 }
 
-/// One page of a list query: which rows, in what order, and how many.
+/// One page of a list query: which rows, newest first, from where.
 ///
-/// A struct rather than seven positional parameters, three of which are
-/// `DynIden` and would transpose silently.
+/// A struct rather than positional parameters, several of which are `DynIden`
+/// and would transpose silently.
 pub struct Page {
     /// Table or current-version view to read.
     pub from: DynIden,
     pub projection: Projection,
     /// Filter, applied identically to the count and the page.
     pub cond: Condition,
-    pub sort: DynIden,
-    pub order: Order,
-    /// Already clamped by the caller — [`clamp_pagination`] for the filter
-    /// DTOs that default an absent page size, or an explicit `clamp` where
-    /// the values are not optional.
+    /// The ordering columns: `created_at` descending, then `id` descending.
+    pub created_at: DynIden,
+    pub id: DynIden,
+    /// Already clamped by the caller with [`clamp_limit`].
     pub limit: i64,
-    pub offset: i64,
+    /// Resume after this position; `None` starts at the newest row.
+    pub cursor: Option<KeysetCursor>,
+    /// Count the filtered set (opt-in; see [`PaginatedResult::total`]).
+    pub include_total: bool,
 }
 
-/// Count matching rows, then read one page of them.
+/// Read one page of a newest-first list.
 ///
-/// The single implementation of count-then-page — the trace DLQ, audit logs
-/// and cron occurrences list through it — so a pagination fix lands once.
-///
-/// `total` counts the rows matching `cond` across the whole table, ignoring
-/// `limit` and `offset`, which is what the paginated envelope's `total` means.
-pub async fn paginate<T: DbRow>(
+/// The single implementation of paging for the trace list, trace DLQ, audit logs
+/// and cron occurrences, so a pagination fix lands once. It reads `limit + 1`
+/// rows: the extra one is how it knows a next page exists, so a list whose length
+/// is an exact multiple of the page size does not end with an empty page.
+pub async fn paginate<T: DbRow + Keyed>(
     pool: &DbPool,
     page: Page,
 ) -> Result<PaginatedResult<T>, OrionError> {
-    let total = count_where(pool, page.from.clone(), page.cond.clone()).await?;
+    let total = if page.include_total {
+        Some(count_where(pool, page.from.clone(), page.cond.clone()).await?)
+    } else {
+        None
+    };
 
     let (sql, values) = crate::build_sqlx(pool.backend(), &mut page_select(&page));
-    let data = pool.fetch_all_as::<T>(&sql, values).await?;
+    let mut data = pool.fetch_all_as::<T>(&sql, values).await?;
+
+    let limit = usize::try_from(page.limit).unwrap_or(usize::MAX);
+    let next_cursor = if data.len() > limit {
+        data.truncate(limit);
+        data.last().map(|last| KeysetCursor::of(last).encode())
+    } else {
+        None
+    };
 
     Ok(PaginatedResult {
         data,
         total,
         limit: page.limit,
-        offset: page.offset,
+        next_cursor,
     })
 }
 
@@ -164,12 +273,17 @@ pub(crate) fn page_select(page: &Page) -> sea_query::SelectStatement {
         Projection::All => select.column(Asterisk),
         Projection::Columns(columns) => select.columns(columns.iter().cloned()),
     };
+    let mut cond = page.cond.clone();
+    if let Some(cursor) = &page.cursor {
+        cond = cond.add(cursor.condition(&page.created_at, &page.id));
+    }
     select
         .from(page.from.clone())
-        .cond_where(page.cond.clone())
-        .order_by(page.sort.clone(), page.order.clone())
-        .limit(page.limit as u64)
-        .offset(page.offset as u64)
+        .cond_where(cond)
+        .order_by(page.created_at.clone(), Order::Desc)
+        .order_by(page.id.clone(), Order::Desc)
+        // One more than the page: see [`paginate`].
+        .limit(page.limit as u64 + 1)
         .to_owned()
 }
 
@@ -200,28 +314,14 @@ pub async fn fetch_required_tx<T: DbRow>(
         .ok_or_else(err)
 }
 
-/// Normalises the `limit` / `offset` pagination parameters coming from filter
-/// DTOs into clamped values safe for SQL queries.
-///
-/// - `limit`:  defaults to 50, clamped to [1, 1000]
-/// - `offset`: defaults to 0, clamped to >= 0
-pub fn clamp_pagination(limit: Option<i64>, offset: Option<i64>) -> (i64, i64) {
-    let limit = limit.unwrap_or(50).clamp(1, 1000);
-    // `Ord::max`, not `ExprTrait::max`: sea-query 1.0 blanket-implements
-    // `ExprTrait` for everything that converts into an `Expr`, so a bare
-    // `.max(0)` on an integer is ambiguous wherever that trait is in scope.
-    let offset = Ord::max(offset.unwrap_or(0), 0);
-    (limit, offset)
+/// A page size: defaults to 50, clamped to [1, 1000].
+pub fn clamp_limit(limit: Option<i64>) -> i64 {
+    limit.unwrap_or(50).clamp(1, 1000)
 }
 
-/// Parses an optional sort-order string (`"asc"` or `"desc"`) into a
-/// `sea_query::Order`.  Defaults to `Desc` when the value is `None` or any
-/// unrecognised string.
-pub fn parse_sort_order(sort_order: Option<&str>) -> sea_query::Order {
-    match sort_order {
-        Some("asc") => sea_query::Order::Asc,
-        _ => sea_query::Order::Desc,
-    }
+/// Decode an optional `cursor` query value.
+pub fn parse_cursor(raw: Option<&str>) -> Result<Option<KeysetCursor>, OrionError> {
+    raw.map(KeysetCursor::decode).transpose()
 }
 
 /// The `LIKE` pattern for "this JSON array of strings contains `tag`".
@@ -616,35 +716,27 @@ mod tests {
     }
 
     #[test]
-    fn pagination_defaults() {
-        assert_eq!(clamp_pagination(None, None), (50, 0));
+    fn limit_defaults_and_clamps() {
+        assert_eq!(clamp_limit(None), 50);
+        assert_eq!(clamp_limit(Some(0)), 1);
+        assert_eq!(clamp_limit(Some(9999)), 1000);
     }
 
     #[test]
-    fn pagination_clamps() {
-        assert_eq!(clamp_pagination(Some(0), Some(-5)), (1, 0));
-        assert_eq!(clamp_pagination(Some(9999), Some(10)), (1000, 10));
-    }
-
-    #[test]
-    fn sort_order_asc() {
-        assert!(matches!(
-            parse_sort_order(Some("asc")),
-            sea_query::Order::Asc
-        ));
-    }
-
-    #[test]
-    fn sort_order_desc() {
-        assert!(matches!(
-            parse_sort_order(Some("desc")),
-            sea_query::Order::Desc
-        ));
-    }
-
-    #[test]
-    fn sort_order_none_defaults_desc() {
-        assert!(matches!(parse_sort_order(None), sea_query::Order::Desc));
+    fn a_cursor_round_trips_and_a_forged_one_is_refused() {
+        let cursor = KeysetCursor {
+            created_at: chrono::DateTime::from_timestamp_micros(1_700_000_000_123_456)
+                .expect("test")
+                .naive_utc(),
+            id: "0190-abc".to_string(),
+        };
+        assert_eq!(
+            KeysetCursor::decode(&cursor.encode()).expect("test"),
+            cursor
+        );
+        for bad in ["", "nodot", "x.id", "123.", "99999999999999999999.id"] {
+            assert!(KeysetCursor::decode(bad).is_err(), "{bad}");
+        }
     }
 
     // -- D18: the one count-then-page shape --
@@ -655,15 +747,39 @@ mod tests {
             from: crate::schema::Traces::Table.into_iden(),
             projection,
             cond: sea_query::Condition::all(),
-            sort: crate::schema::Traces::CreatedAt.into_iden(),
-            order: Order::Desc,
+            created_at: crate::schema::Traces::CreatedAt.into_iden(),
+            id: crate::schema::Traces::Id.into_iden(),
             limit: 25,
-            offset: 50,
+            cursor: None,
+            include_total: false,
         }
     }
 
     fn rendered(page: &Page) -> String {
         super::page_select(page).to_string(sea_query::SqliteQueryBuilder)
+    }
+
+    /// Newest first with the id as tie-break, one row past the page to learn
+    /// whether another follows, and the cursor as a strict `(created_at, id)`
+    /// comparison.
+    #[test]
+    fn the_page_query_is_keyset_ordered_and_reads_one_extra_row() {
+        let mut page = sample_page(Projection::All);
+        let sql = rendered(&page);
+        assert!(
+            sql.contains(r#"ORDER BY "created_at" DESC, "id" DESC LIMIT 26"#),
+            "{sql}"
+        );
+        assert!(!sql.contains("OFFSET"), "{sql}");
+        page.cursor = Some(KeysetCursor {
+            created_at: chrono::DateTime::from_timestamp_micros(1_700_000_000_000_000)
+                .expect("test")
+                .naive_utc(),
+            id: "t-9".to_string(),
+        });
+        let sql = rendered(&page);
+        assert!(sql.contains(r#""created_at" <"#), "{sql}");
+        assert!(sql.contains(r#""id" < 't-9'"#), "{sql}");
     }
 
     #[test]
@@ -743,8 +859,9 @@ mod tests {
     #[test]
     fn page_bounds_and_empty_filter_render_as_expected() {
         let sql = rendered(&sample_page(Projection::All));
-        assert!(sql.contains("LIMIT 25"), "{sql}");
-        assert!(sql.contains("OFFSET 50"), "{sql}");
+        // The page size plus the one extra row that reveals a next page.
+        assert!(sql.contains("LIMIT 26"), "{sql}");
+        assert!(!sql.contains("OFFSET"), "{sql}");
         assert!(sql.contains(r#"ORDER BY "created_at" DESC"#), "{sql}");
         // sea-query renders an empty `Condition::all()` as no predicate; what
         // matters is that it names no column.

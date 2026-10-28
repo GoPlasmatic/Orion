@@ -18,13 +18,13 @@ use crate::admin_auth::AdminPrincipal;
 use crate::errors::OrionError;
 use crate::extract::OrionQuery;
 use crate::routes::openapi::ErrorResponse;
-use crate::routes::response_helpers::{data_response, paginated_response};
+use crate::routes::response_helpers::{data_response, page_response};
 use crate::runtime::state::AppState;
 use crate::storage::models::{
     CronOccurrenceResponse, CronOccurrenceSummaryResponse, CronScheduleStatusResponse,
 };
 use crate::storage::repositories::cron::{CronOccurrenceFilter, status, trigger};
-use orion_api::{Data, Paginated};
+use orion_api::{Data, Page};
 
 use super::audit_log;
 
@@ -35,25 +35,25 @@ use super::audit_log;
     params(CronOccurrenceFilter),
     responses(
         (status = 200, description = "Paginated occurrences, newest first. Summaries only — \
-            fetch one by id for the failure reason, the trace id and the lease detail", body = Paginated<CronOccurrenceSummaryResponse>),
+            fetch one by id for the failure reason, the trace id and the lease detail", body = Page<CronOccurrenceSummaryResponse>),
     )
 )]
 #[tracing::instrument(skip(state))]
 pub(crate) async fn list_occurrences(
     State(state): State<AppState>,
     OrionQuery(filter): OrionQuery<CronOccurrenceFilter>,
-) -> Result<Json<Paginated<CronOccurrenceSummaryResponse>>, OrionError> {
+) -> Result<Json<Page<CronOccurrenceSummaryResponse>>, OrionError> {
     let result = state.repos.cron.list_paginated(&filter).await?;
     let rows: Vec<CronOccurrenceSummaryResponse> = result
         .data
         .iter()
         .map(CronOccurrenceSummaryResponse::from)
         .collect();
-    Ok(paginated_response(
+    Ok(page_response(
         rows,
-        result.total,
         result.limit,
-        result.offset,
+        result.next_cursor,
+        result.total,
     ))
 }
 

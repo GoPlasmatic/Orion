@@ -32,7 +32,7 @@ orion-cli audit-logs list --action v2_deployment_apply --resource-type deploymen
 orion-cli audit-logs list --resource-id nightly-order-rollup --start-time 2026-07-01T00:00:00Z
 ```
 
-Each entry carries the principal, the action, the resource type and id, a `details` object, and a timestamp. Filters are applied in the database and combine with AND. `action`, `resource_type`, `resource_id` and `principal` match exactly; `start_time` (inclusive) and `end_time` (exclusive) are RFC 3339; `offset` and `limit` page.
+Each entry carries the principal, the action, the resource type and id, a `details` object, and a timestamp. Filters are applied in the database and combine with AND. `action`, `resource_type`, `resource_id` and `principal` match exactly; `start_time` (inclusive) and `end_time` (exclusive) are RFC 3339; `limit` and `cursor` page (`next_cursor` from one page is the `cursor` of the next).
 
 > [!NOTE]
 > An unrecognized parameter is rejected with `400`. A mistyped filter can never come back as an unfiltered `200` that looks like a clean answer. If you are scripting against this endpoint, that refusal is the feature: a compliance query cannot silently widen.

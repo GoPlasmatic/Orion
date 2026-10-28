@@ -193,15 +193,6 @@ pub struct ProviderAdmissionDto {
     pub revoked: bool,
 }
 
-/// Every stored package, and every admission record (`GET /api/v2/admin/connector-packages`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct ConnectorPackagesListResponse {
-    pub count: usize,
-    pub packages: Vec<ConnectorPackageSummary>,
-    pub admissions: Vec<ProviderAdmissionDto>,
-}
-
 /// One connector provider package and its admission record
 /// (`GET /api/v2/admin/connector-packages/{digest}`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -303,15 +294,6 @@ pub struct ConnectionRevisionResponse {
     /// what a manifest member for this revision names as its
     /// `definition_digest`.
     pub configuration_digest: String,
-}
-
-/// Connection revisions, ordered by connection then revision
-/// (`GET /api/v2/admin/connections`, `GET /api/v2/admin/connections/{id}/revisions`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct ConnectionsListResponse {
-    pub count: usize,
-    pub connections: Vec<ConnectionRevisionResponse>,
 }
 
 /// Request body to create an immutable connection revision

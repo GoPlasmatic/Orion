@@ -8,7 +8,7 @@ Every Orion response is one of three JSON shapes: the admin success envelope, th
 
 ## The admin envelope
 
-Every admin 2xx body puts its payload under a top-level `data` key. List endpoints add pagination counters beside it: `limit` and `offset` always, and `total` where the endpoint computes it. The trace list makes `total` opt-in through `?include_total=true` and adds `next_cursor` (see [Data API](./data-api.md)). [Admin API](./admin-api/index.md) documents each endpoint's payload.
+Every admin 2xx body puts its payload under a top-level `data` key. List endpoints add `limit` and, when more rows follow, `next_cursor`; `total` appears only with `?include_total=true` (see [Envelopes](./admin-api/envelopes.md)). [Admin API](./admin-api/index.md) documents each endpoint's payload.
 
 ### The error envelope
 

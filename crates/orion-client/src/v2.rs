@@ -9,12 +9,13 @@
 
 use std::future::Future;
 
+use orion_api::Page;
 use orion_api::v2::{
     AdmitPackageRequest, AdmitPackageResponse, ConnectionProbeResponse, ConnectionRevisionResponse,
-    ConnectionsListResponse, ConnectorPackageResponse, ConnectorPackagesListResponse,
-    ConvergenceStatusResponse, CreateConnectionRevisionRequest, CreateConnectionRevisionResponse,
-    CreateDeploymentPlanRequest, CreateDeploymentRequest, CreateDeploymentResponse, Definition,
-    DefinitionResponse, DeploymentPlanResponse, DeploymentRevisionResponse, DeploymentsPage,
+    ConnectorPackageResponse, ConnectorPackageSummary, ConvergenceStatusResponse,
+    CreateConnectionRevisionRequest, CreateConnectionRevisionResponse, CreateDeploymentPlanRequest,
+    CreateDeploymentRequest, CreateDeploymentResponse, Definition, DefinitionResponse,
+    DeploymentPlanResponse, DeploymentRevisionResponse, DeploymentsPage,
     EditionTransitionPreflightRequest, EditionTransitionPreflightResponse, LintResponse,
     PackResponse, RevokePackageRequest, RevokePackageResponse, RuntimeCapabilitiesResponse,
     ScaffoldRequest, ScaffoldResponse, TestDefinitionRequest, TestDefinitionResponse,
@@ -40,6 +41,54 @@ where
 {
     let answer = client.send(method, &path, body).await?;
     Ok(serde_json::from_value(answer)?)
+}
+
+/// Which page of a list to read. Every list pages by an opaque cursor: pass the
+/// previous page's `next_cursor` back unmodified.
+#[derive(Debug, Clone, Default)]
+pub struct ListParams {
+    /// Rows per page; the server's default (50) when absent.
+    pub limit: Option<i64>,
+    /// Resume after this position; the start of the list when absent.
+    pub cursor: Option<String>,
+    /// Also count the whole filtered set.
+    pub include_total: bool,
+}
+
+impl ListParams {
+    /// `path` with these parameters as its query string.
+    pub fn apply(&self, path: String) -> String {
+        path + &paths::query_string(&[
+            ("limit", self.limit.map(|l| l.to_string())),
+            ("cursor", self.cursor.clone()),
+            (
+                "include_total",
+                self.include_total.then(|| "true".to_string()),
+            ),
+        ])
+    }
+}
+
+/// Every row of a list: read pages until the server stops offering a cursor.
+async fn all_pages<C, T, F, Fut>(fetch: F) -> Result<Vec<T>, C::Error>
+where
+    C: V2Admin + ?Sized,
+    F: Fn(ListParams) -> Fut,
+    Fut: Future<Output = Result<Page<T>, C::Error>>,
+{
+    let mut rows = Vec::new();
+    let mut params = ListParams {
+        limit: Some(1000),
+        ..ListParams::default()
+    };
+    loop {
+        let page = fetch(params.clone()).await?;
+        rows.extend(page.data);
+        match page.next_cursor {
+            Some(next) => params.cursor = Some(next),
+            None => return Ok(rows),
+        }
+    }
 }
 
 fn body<T: Serialize + ?Sized>(request: &T) -> Result<Option<Value>, serde_json::Error> {
@@ -128,10 +177,26 @@ pub trait V2Admin: Sync {
 
     // -- Connector packages --
 
+    /// One page of the stored packages, ordered by digest.
+    fn list_connector_packages_page(
+        &self,
+        params: &ListParams,
+    ) -> impl Future<Output = Result<Page<ConnectorPackageSummary>, Self::Error>> + Send {
+        call(
+            self,
+            Method::GET,
+            params.apply(paths::V2_CONNECTOR_PACKAGES.into()),
+            None,
+        )
+    }
+
+    /// Every stored package.
     fn list_connector_packages(
         &self,
-    ) -> impl Future<Output = Result<ConnectorPackagesListResponse, Self::Error>> + Send {
-        call(self, Method::GET, paths::V2_CONNECTOR_PACKAGES.into(), None)
+    ) -> impl Future<Output = Result<Vec<ConnectorPackageSummary>, Self::Error>> + Send {
+        all_pages::<Self, _, _, _>(
+            move |p| async move { self.list_connector_packages_page(&p).await },
+        )
     }
 
     fn get_connector_package(
@@ -182,23 +247,53 @@ pub trait V2Admin: Sync {
 
     // -- Connections --
 
-    /// Every stored revision of every connection.
-    fn list_connections(
+    /// One page of connection revisions, ordered by connection then revision.
+    fn list_connections_page(
         &self,
-    ) -> impl Future<Output = Result<ConnectionsListResponse, Self::Error>> + Send {
-        call(self, Method::GET, paths::V2_CONNECTIONS.into(), None)
-    }
-
-    fn list_connection_revisions(
-        &self,
-        connection_id: &str,
-    ) -> impl Future<Output = Result<ConnectionsListResponse, Self::Error>> + Send {
+        params: &ListParams,
+    ) -> impl Future<Output = Result<Page<ConnectionRevisionResponse>, Self::Error>> + Send {
         call(
             self,
             Method::GET,
-            paths::v2_connection_revisions(connection_id),
+            params.apply(paths::V2_CONNECTIONS.into()),
             None,
         )
+    }
+
+    /// Every stored revision of every connection.
+    fn list_connections(
+        &self,
+    ) -> impl Future<Output = Result<Vec<ConnectionRevisionResponse>, Self::Error>> + Send {
+        all_pages::<Self, _, _, _>(move |p| async move { self.list_connections_page(&p).await })
+    }
+
+    /// One page of one connection's revisions.
+    fn list_connection_revisions_page(
+        &self,
+        connection_id: &str,
+        params: &ListParams,
+    ) -> impl Future<Output = Result<Page<ConnectionRevisionResponse>, Self::Error>> + Send {
+        call(
+            self,
+            Method::GET,
+            params.apply(paths::v2_connection_revisions(connection_id)),
+            None,
+        )
+    }
+
+    /// Every stored revision of one connection.
+    fn list_connection_revisions(
+        &self,
+        connection_id: &str,
+    ) -> impl Future<Output = Result<Vec<ConnectionRevisionResponse>, Self::Error>> + Send {
+        let connection_id = connection_id.to_string();
+        all_pages::<Self, _, _, _>(move |p| {
+            let connection_id = connection_id.clone();
+            async move {
+                self.list_connection_revisions_page(&connection_id, &p)
+                    .await
+            }
+        })
     }
 
     fn get_connection_revision(

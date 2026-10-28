@@ -1,4 +1,4 @@
-<!-- description: The success and error envelopes every admin endpoint returns, how each list endpoint pages and sorts, and the four errors you will meet most. -->
+<!-- description: The success and error envelopes every admin endpoint returns, how each list endpoint pages, and the four errors you will meet most. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-14 -->
 
@@ -12,28 +12,32 @@ Every admin 2xx body puts its payload under a top-level `data` key — one shape
 { "data": { "version": "…", "generation": 3, "...": "..." } }
 ```
 
-List endpoints add pagination counters alongside it: `limit` and `offset` always, `total` where the endpoint computes it. The trace list makes `total` opt-in through `?include_total=true`, and adds `next_cursor`:
+A list answers the same envelope everywhere: `data` plus how to get the next page.
 
 ```json
-{ "data": [ ... ], "total": 137, "limit": 50, "offset": 0 }
+{ "data": [ ... ], "limit": 50, "next_cursor": "1753900000123456.0190…" }
 ```
 
-Pre-1.0 responses differed for ten handlers — the [upgrade guide](../../releases/upgrade-to-1.0/index.md) has the full list.
+| Field | Meaning |
+|---|---|
+| `data` | The rows of this page. |
+| `limit` | The page size applied, after clamping to 1–1000 (default 50). |
+| `next_cursor` | Present when more rows follow. Pass it back as `?cursor=`, unmodified. Opaque: do not parse it. Absent on the last page, and a page is never empty. |
+| `total` | Present only with `?include_total=true`: every row matching the filter, ignoring the page. Absent means "not counted", never "no rows". |
 
-## Paging and sorting by endpoint
+There is no `offset`. Pre-1.0 responses differed for ten handlers — the [upgrade guide](../../releases/upgrade-to-1.0/index.md) has the full list.
 
-**Rationale.** Traces use keyset paging because that table can grow without
-bound. Smaller administrative collections retain offset paging. Clients should follow the endpoint contract below rather than assuming every collection has the same sorting controls.
+## Paging by endpoint
 
-Not every list takes the same query parameters. The asymmetry is contract, not accident. The trace list pages by keyset because its table is the one that grows without bound. The narrower lists have result sets small enough that sorting client-side is cheaper than supporting it server-side.
+Every list pages by cursor. The lists are ledgers read newest-first, so a cursor resumes at an exact position in constant time, where an offset would skip or repeat rows as new ones arrive and cost a scan of everything it skips. The cursor encodes the pair `(created_at, id)`, so a page boundary inside a shared timestamp neither skips nor repeats rows. `total` is opt-in because the count is a full scan of the filtered set on PostgreSQL and InnoDB.
 
-| Endpoints | `limit` / `offset` | `sort_by` / `sort_order` | Other |
-|---|:---:|:---:|---|
-| `/traces` | Yes | Yes | `?cursor=` (keyset), `?include_total=true`; the response adds `next_cursor` and omits `total` unless asked |
-| `/audit-logs` | Yes | No | `?start_time=` / `?end_time=` (RFC 3339 or naive), `limit` clamped to 1–1000 |
-| `/trace-dlq` | Yes | No | — |
+| Endpoints | Order | Parameters |
+|---|---|---|
+| `/traces`, `/audit-logs`, `/trace-dlq`, `/cron/occurrences` | Newest first | `?limit=`, `?cursor=`, `?include_total=true`, plus the endpoint's filters |
+| `/connections`, `/connections/{id}/revisions`, `/connector-packages` | By key (connection then revision; package digest) | `?limit=`, `?cursor=`, `?include_total=true` |
+| `/deployments` | Newest revision first | `?limit=`, `?cursor=`; the page also carries `head_revision`, `epoch` and `applied_revision` |
 
-`limit` and `offset` are therefore the only two you can rely on everywhere.
+A `limit` of `0` is clamped to 1 on the ledgers and refused with `400` on the catalogues, and a cursor an endpoint did not issue is a `400` everywhere. The remaining collections (`/backups`, `/cron/status`, `/functions`) are small, complete catalogues and answer `{ "data": [ ... ] }` with no cursor.
 
 Errors follow one structure across both planes. See [Errors & Response Envelopes](../errors.md#the-error-envelope).
 

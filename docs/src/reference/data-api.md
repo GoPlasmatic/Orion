@@ -185,18 +185,18 @@ The page envelope is `{data, limit, offset}`. Two things are conditional:
 
 - **`total` is opt-in.** Ask for it with `?include_total=true` when you
   actually need it.
-- **`next_cursor`** appears when the page is in the default `created_at` ordering and may have a successor. Pass it back as `?cursor=` to get the next page, which is the only paging mode that stays flat as the table grows. Treat the value as opaque.
+- **`next_cursor`** appears when more rows follow. Pass it back as `?cursor=` to get the next page; the cost stays flat as the table grows. Treat the value as opaque. The list is always newest-first, and there is no `offset` or `sort_by`.
 
 ```bash
 # First page
 curl -s "http://localhost:8080/api/v2/admin/traces?limit=100"
-# → {"data": [...], "limit": 100, "offset": 0, "next_cursor": "1753900000123456.<uuid>"}
+# → {"data": [...], "limit": 100, "next_cursor": "1753900000123456.<uuid>"}
 
 # Next page
 curl -s "http://localhost:8080/api/v2/admin/traces?limit=100&cursor=1753900000123456.<uuid>"
 ```
 
-`cursor` is rejected with a `400` beside `offset` (two paging modes) or with `sort_by` set to anything but `created_at`. The reasoning, why offset paging degrades and why `updated_at` cannot carry a cursor, is in [Cursor paging](../concepts/design-notes.md#cursor-paging).
+A `cursor` this endpoint did not issue is a `400`. The reasoning, why offset paging degrades and why the ordering is fixed, is in [Cursor paging](../concepts/design-notes.md#cursor-paging).
 
 Get a specific trace (async traces need their `trace_token`; sync traces
 follow the admin trust model):

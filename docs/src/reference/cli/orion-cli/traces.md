@@ -23,17 +23,17 @@ id could read another caller's payload.
 
 | Subcommand | Description |
 |------------|-------------|
-| `list` | List traces; filter with `--status`, `--channel`, and `--mode`. Sorts by `created_at`, `updated_at`, `status`, `channel`, `mode`. |
+| `list` | List traces, newest first; filter with `--status`, `--channel`, and `--mode`. |
 | `get <id>` | Show trace details, including the result or error. |
 | `wait <id>` | Poll until the trace completes. `--interval <secs>` (default `1`), `--timeout <secs>` (default `60`). Exit codes: `0` completed, `1` failed, `2` timeout. |
 
 ## Options
 
-`list` has two paging controls beyond `--limit` / `--offset`:
+`list` pages with the flags in [Paging](./global-flags.md#paging):
 
 | Flag | Description |
 |------|-------------|
-| `--cursor <c>` | Keyset cursor from a previous page's `next_cursor`; pass it back unmodified. Valid only with the default `created_at` ordering, mutually exclusive with `--offset`, and cheaper on a large table because it never skips rows. |
+| `--cursor <c>` | Resume after this position: the previous page's `next_cursor`, passed back unmodified. The cost stays flat however deep the loop is. |
 | `--include-total` | Ask the server to compute `total`. Off by default: the count is a full scan of the filtered set. |
 
 ## Examples

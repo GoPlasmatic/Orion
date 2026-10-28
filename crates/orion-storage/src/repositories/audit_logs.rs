@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::NaiveDateTime;
-use sea_query::{Condition, Expr, ExprTrait, IntoIden, Order, Query, SimpleExpr};
+use sea_query::{Condition, Expr, ExprTrait, IntoIden, Query, SimpleExpr};
 
 use super::helpers::{Page, PaginatedResult, Projection};
 use crate::models::AuditLogEntry;
@@ -41,8 +41,10 @@ pub struct AuditLogFilter {
     pub end_time: Option<NaiveDateTime>,
     /// Page size, clamped to [1, 1000] (default 50).
     pub limit: Option<i64>,
-    /// Pagination offset (default 0).
-    pub offset: Option<i64>,
+    /// Resume after this position: the previous page's `next_cursor`, unmodified.
+    pub cursor: Option<String>,
+    /// Count the filtered set (default false; the count is a full scan).
+    pub include_total: Option<bool>,
 }
 
 /// Accepts RFC 3339 (`2026-07-01T00:00:00Z`) or a bare naive timestamp
@@ -239,7 +241,8 @@ impl AuditLogRepository for SqlAuditLogRepository {
         filter: &AuditLogFilter,
     ) -> Result<PaginatedResult<AuditLogEntry>, OrionError> {
         orion_common::metrics::timed_db_op("audit_logs.list", async {
-            let (limit, offset) = super::helpers::clamp_pagination(filter.limit, filter.offset);
+            let limit = super::helpers::clamp_limit(filter.limit);
+            let cursor = super::helpers::parse_cursor(filter.cursor.as_deref())?;
 
             // Every predicate is a bound parameter — no identifier or value is
             // ever interpolated into the SQL text.
@@ -271,10 +274,11 @@ impl AuditLogRepository for SqlAuditLogRepository {
                     from: AuditLogs::Table.into_iden(),
                     projection: Projection::All,
                     cond,
-                    sort: AuditLogs::CreatedAt.into_iden(),
-                    order: Order::Desc,
+                    created_at: AuditLogs::CreatedAt.into_iden(),
+                    id: AuditLogs::Id.into_iden(),
                     limit,
-                    offset,
+                    cursor,
+                    include_total: filter.include_total.unwrap_or(false),
                 },
             )
             .await
@@ -400,7 +404,7 @@ pub(crate) mod tests {
 
         let page = list_all(&repo).await;
         assert_eq!(page.data.len(), 1, "exactly one row, not two");
-        assert_eq!(page.total, 1);
+        assert_eq!(page.total, None, "the count is opt-in");
         let entry = &page.data[0];
         assert_eq!(entry.principal, "admin...");
         assert_eq!(entry.action, "activate");
@@ -442,7 +446,7 @@ pub(crate) mod tests {
             .expect("insert");
 
         assert_eq!(repo.delete_older_than(1).await.expect("cleanup"), 0);
-        assert_eq!(list_all(&repo).await.total, 1);
+        assert_eq!(list_all(&repo).await.data.len(), 1);
     }
 
     // -- O8: filtering --
@@ -464,19 +468,75 @@ pub(crate) mod tests {
     }
 
     async fn matching(repo: &SqlAuditLogRepository, filter: AuditLogFilter) -> Vec<AuditLogEntry> {
-        let page = repo.list_paginated(&filter).await.expect("list");
+        let page = repo
+            .list_paginated(&AuditLogFilter {
+                include_total: Some(true),
+                ..filter
+            })
+            .await
+            .expect("list");
         assert_eq!(
             page.total,
-            page.data.len() as i64,
+            Some(page.data.len() as i64),
             "total must count filtered rows, not the whole table"
         );
         page.data
     }
 
+    /// Walking by cursor visits every row once, in newest-first order, and ends
+    /// without an empty trailing page when the count divides the page size.
+    #[tokio::test]
+    async fn test_cursor_pages_walk_every_row_exactly_once() {
+        let repo = seeded_repo().await;
+        let mut seen = Vec::new();
+        let mut pages = 0;
+        let mut cursor = None;
+        loop {
+            let page = repo
+                .list_paginated(&AuditLogFilter {
+                    limit: Some(5),
+                    cursor: cursor.clone(),
+                    ..Default::default()
+                })
+                .await
+                .expect("list");
+            pages += 1;
+            seen.extend(page.data.iter().map(|e| e.id.clone()));
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+            assert!(pages < 10, "cursor walk is not terminating");
+        }
+        assert_eq!(pages, 1, "5 rows at limit 5 is one page, not two");
+        assert_eq!(seen.len(), 5);
+
+        let mut seen = std::collections::BTreeSet::new();
+        let mut cursor = None;
+        loop {
+            let page = repo
+                .list_paginated(&AuditLogFilter {
+                    limit: Some(2),
+                    cursor: cursor.clone(),
+                    ..Default::default()
+                })
+                .await
+                .expect("list");
+            for entry in &page.data {
+                assert!(seen.insert(entry.id.clone()), "{} repeated", entry.id);
+            }
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        assert_eq!(seen.len(), 5);
+    }
+
     #[tokio::test]
     async fn test_each_filter_narrows_results() {
         let repo = seeded_repo().await;
-        assert_eq!(list_all(&repo).await.total, 5);
+        assert_eq!(list_all(&repo).await.data.len(), 5);
 
         assert_eq!(
             matching(

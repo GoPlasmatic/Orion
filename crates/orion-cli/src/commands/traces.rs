@@ -37,22 +37,13 @@ enum TracesSubcommand {
         /// Filter by mode (sync, async)
         #[arg(long)]
         mode: Option<String>,
-        /// Sort by column (created_at, updated_at, status, channel, mode)
-        #[arg(long)]
-        sort_by: Option<String>,
-        /// Sort direction (asc, desc)
-        #[arg(long)]
-        sort_order: Option<String>,
         /// Page size
         #[arg(long)]
         limit: Option<i64>,
-        /// Page offset
-        #[arg(long)]
-        offset: Option<i64>,
-        /// Keyset cursor from a previous page's next_cursor (v1.0)
+        /// Resume after this position: the previous page's next_cursor
         #[arg(long)]
         cursor: Option<String>,
-        /// Ask the server for the total matching count (scans the filtered set)
+        /// Also count the whole filtered set (a scan; off by default)
         #[arg(long)]
         include_total: bool,
     },
@@ -113,10 +104,7 @@ impl TracesCmd {
                 status,
                 channel,
                 mode,
-                sort_by,
-                sort_order,
                 limit,
-                offset,
                 cursor,
                 include_total,
             } => {
@@ -126,10 +114,7 @@ impl TracesCmd {
                     ("status", status.clone()),
                     ("channel", channel.clone()),
                     ("mode", mode.clone()),
-                    ("sort_by", sort_by.clone()),
-                    ("sort_order", sort_order.clone()),
                     ("limit", limit.map(|l| l.to_string())),
-                    ("offset", offset.map(|o| o.to_string())),
                 ]);
                 list(client, format, quiet, &qs).await
             }
@@ -206,9 +191,6 @@ async fn list(client: &OrionClient, format: &OutputFormat, quiet: bool, qs: &str
     // `total` is opt-in on this endpoint (`--include-total`); without it the
     // footer reports the page, which is all the server sent.
     utils::print_list_footer(&resp, traces.len(), "trace(s)");
-    if let Some(next) = resp["next_cursor"].as_str() {
-        println!("{}", format!("next page: --cursor {next}").dimmed());
-    }
     Ok(0)
 }
 

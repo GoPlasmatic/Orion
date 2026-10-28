@@ -197,12 +197,12 @@ async fn test_trace_list_pagination() {
     )
     .await;
 
-    // Page 1: limit=2, offset=0
+    // Page 1: limit=2, counted.
     let resp = app
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v2/admin/traces?limit=2&offset=0&include_total=true",
+            "/api/v2/admin/traces?limit=2&include_total=true",
             None,
         ))
         .await
@@ -212,14 +212,14 @@ async fn test_trace_list_pagination() {
     assert_eq!(body["data"].as_array().unwrap().len(), 2);
     assert!(body["total"].as_i64().unwrap() >= 5);
     assert_eq!(body["limit"], 2);
-    assert_eq!(body["offset"], 0);
+    let cursor = body["next_cursor"].as_str().expect("more rows follow");
 
-    // Page 2: limit=2, offset=2
+    // Page 2 resumes after page 1.
     let resp = app
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v2/admin/traces?limit=2&offset=2",
+            &format!("/api/v2/admin/traces?limit=2&cursor={cursor}"),
             None,
         ))
         .await
@@ -227,7 +227,6 @@ async fn test_trace_list_pagination() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     assert_eq!(body["data"].as_array().unwrap().len(), 2);
-    assert_eq!(body["offset"], 2);
 }
 
 /// D8: keyset paging over the same five traces. Following `next_cursor`
@@ -289,13 +288,26 @@ async fn test_trace_list_keyset_pagination() {
     let unique: std::collections::BTreeSet<&String> = seen.iter().collect();
     assert_eq!(unique.len(), 5, "and none of them twice: {seen:?}");
 
-    // A cursor is meaningless for an ordering it cannot resume — say so
-    // rather than silently returning the first page again.
+    // A cursor this endpoint did not issue is refused, not ignored.
     let resp = app
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v2/admin/traces?sort_by=updated_at&cursor=1.abc",
+            "/api/v2/admin/traces?cursor=1.abc.not-ours",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "a well-formed cursor is accepted"
+    );
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v2/admin/traces?cursor=not-a-cursor",
             None,
         ))
         .await

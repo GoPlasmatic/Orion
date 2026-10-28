@@ -40,11 +40,15 @@ fn install_b5_env_fixture() {
 async fn connection_rows(app: &axum::Router, id: &str) -> Vec<Value> {
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v2/admin/connections", None))
+        .oneshot(json_request(
+            "GET",
+            "/api/v2/admin/connections?limit=1000",
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    body_json(resp).await["connections"]
+    body_json(resp).await["data"]
         .as_array()
         .into_iter()
         .flatten()

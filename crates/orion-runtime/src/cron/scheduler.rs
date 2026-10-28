@@ -383,10 +383,14 @@ mod tests {
     }
 
     async fn occurrence_count(repo: &Arc<SqlCronRepository>) -> i64 {
-        repo.list_paginated(&CronOccurrenceFilter::default())
-            .await
-            .expect("list")
-            .total
+        repo.list_paginated(&CronOccurrenceFilter {
+            include_total: Some(true),
+            ..Default::default()
+        })
+        .await
+        .expect("list")
+        .total
+        .expect("counted")
     }
 
     /// A new channel starts from now, never from whenever it was written. The

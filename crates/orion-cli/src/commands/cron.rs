@@ -41,9 +41,12 @@ enum CronSubcommand {
         /// Page size
         #[arg(long)]
         limit: Option<i64>,
-        /// Page offset
+        /// Resume after this position: the previous page's next_cursor
         #[arg(long)]
-        offset: Option<i64>,
+        cursor: Option<String>,
+        /// Also count the whole filtered set (a scan; off by default)
+        #[arg(long)]
+        include_total: bool,
     },
     /// Show one occurrence in full, including why it failed
     Get {
@@ -140,13 +143,15 @@ impl CronCmd {
                 channel_id,
                 status,
                 limit,
-                offset,
+                cursor,
+                include_total,
             } => {
                 let qs = utils::build_query_string(&[
                     ("channel_id", channel_id.clone()),
                     ("status", status.clone()),
                     ("limit", limit.map(|l| l.to_string())),
-                    ("offset", offset.map(|o| o.to_string())),
+                    ("cursor", cursor.clone()),
+                    ("include_total", include_total.then(|| "true".to_string())),
                 ]);
                 list(client, format, quiet, &qs).await
             }

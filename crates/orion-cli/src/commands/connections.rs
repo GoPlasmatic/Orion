@@ -26,6 +26,12 @@ pub enum ConnectionsSubcommand {
         /// Only this connection's revisions
         #[arg(long)]
         id: Option<String>,
+        /// Page size (default: 50, max: 1000)
+        #[arg(long)]
+        limit: Option<i64>,
+        /// Resume after this position: the previous page's next_cursor
+        #[arg(long)]
+        cursor: Option<String>,
     },
     /// Show one connection revision (the latest when no --revision)
     Get {
@@ -67,7 +73,6 @@ async fn resolve_revision(
     client
         .list_connection_revisions(connection_id)
         .await?
-        .connections
         .iter()
         .map(|c| c.revision)
         .max()
@@ -87,13 +92,18 @@ impl ConnectionsCmd {
         quiet: bool,
     ) -> Result<i32> {
         match &self.command {
-            ConnectionsSubcommand::List { id } => {
+            ConnectionsSubcommand::List { id, limit, cursor } => {
+                let params = orion_client::ListParams {
+                    limit: *limit,
+                    cursor: cursor.clone(),
+                    include_total: false,
+                };
                 let resp = match id {
-                    Some(id) => client.list_connection_revisions(id).await?,
-                    None => client.list_connections().await?,
+                    Some(id) => client.list_connection_revisions_page(id, &params).await?,
+                    None => client.list_connections_page(&params).await?,
                 };
                 if quiet {
-                    for item in &resp.connections {
+                    for item in &resp.data {
                         println!("{}@{}", item.connection_id, item.revision);
                     }
                     return Ok(0);

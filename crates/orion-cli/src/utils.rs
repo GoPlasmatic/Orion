@@ -206,29 +206,41 @@ pub async fn wait_for_trace(
     Ok(code)
 }
 
-/// Print the count line under a table, from an admin list envelope. `noun` is
-/// the already-pluralised label, e.g. `"workflow(s)"`.
-///
-/// Every list endpoint pages — 50 rows by default, 1000 at most — and reports
-/// the unpaged `total` alongside the page. Printing that total alone under a
-/// short page reads as "these are all of them", so when the page does not
-/// reach the total this says which is which and names the flags that fetch
-/// the rest.
+/// The line under a list: how many rows this page held, the total when the
+/// server was asked to count (`--include-total`), and, when more follow, the
+/// flag that fetches the next page.
 pub fn print_list_footer(resp: &Value, shown: usize, noun: &str) {
-    let total = resp["total"].as_i64().unwrap_or(shown as i64);
-    if total > shown as i64 {
-        println!(
-            "{}",
-            format!("Showing {shown} of {total} {noun} -- page with --limit / --offset").dimmed()
-        );
-    } else {
-        println!("{}", format!("{total} {noun}").dimmed());
+    println!("{}", list_footer(resp, shown, noun).dimmed());
+}
+
+/// [`print_list_footer`]'s text.
+pub fn list_footer(resp: &Value, shown: usize, noun: &str) -> String {
+    let mut line = match resp["total"].as_i64() {
+        Some(total) if total > shown as i64 => format!("Showing {shown} of {total} {noun}"),
+        Some(total) => format!("{total} {noun}"),
+        None => format!("{shown} {noun}"),
+    };
+    if let Some(next) = resp["next_cursor"].as_str() {
+        line.push_str(&format!(" -- next page: --cursor {next}"));
     }
+    line
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_footer_names_the_cursor_and_only_counts_when_asked() {
+        let page = serde_json::json!({"data": [], "next_cursor": "abc.1"});
+        assert_eq!(
+            list_footer(&page, 3, "rows"),
+            "3 rows -- next page: --cursor abc.1"
+        );
+        let counted = serde_json::json!({"total": 9});
+        assert_eq!(list_footer(&counted, 3, "rows"), "Showing 3 of 9 rows");
+        assert_eq!(list_footer(&serde_json::json!({}), 2, "rows"), "2 rows");
+    }
 
     #[test]
     fn truncate_ascii() {

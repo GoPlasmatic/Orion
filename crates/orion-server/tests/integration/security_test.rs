@@ -69,14 +69,17 @@ async fn test_sql_injection_in_audit_log_filter() {
     // One audited mutation, so an injected filter that matched everything
     // would have something to return.
     upload_workflow(&app, common::simple_log_workflow("Audited Workflow")).await;
-    common::wait_for_body(&app, "/api/v2/admin/audit-logs", |b| b["total"] == 1).await;
+    common::wait_for_body(&app, "/api/v2/admin/audit-logs?include_total=true", |b| {
+        b["total"] == 1
+    })
+    .await;
 
     // Attempt SQL injection via a filter (percent-encoded: ' OR 1=1 --)
     let resp = app
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v2/admin/audit-logs?resource_type=%27%20OR%201%3D1%20--",
+            "/api/v2/admin/audit-logs?resource_type=%27%20OR%201%3D1%20--&include_total=true",
             None,
         ))
         .await

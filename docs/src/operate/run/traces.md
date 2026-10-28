@@ -136,7 +136,7 @@ curl -s "http://localhost:8080/api/v2/admin/traces/<trace-id>"
 
 `status` takes one of `pending`, `running`, `completed`, `failed`. It is matched literally rather than validated. A value outside that set, such as `error`, comes back as an empty page rather than a `400`.
 
-The list endpoint pages by cursor. Pass `cursor` from `next_cursor` rather than walking `offset`, and ask for `include_total=true` only when you need the count. The reasoning is in [Cursor paging](../../concepts/design-notes.md#cursor-paging). A trace carries the per-task execution path, so it answers "which task skipped, and why" without re-running anything. Field by field, the object is specified in [Data API](../../reference/data-api.md). Requests can also carry a profiling flag to record per-function and per-connector timings.
+The list endpoint pages by cursor. Pass `cursor` from `next_cursor`, and ask for `include_total=true` only when you need the count. The reasoning is in [Cursor paging](../../concepts/design-notes.md#cursor-paging). A trace carries the per-task execution path, so it answers "which task skipped, and why" without re-running anything. Field by field, the object is specified in [Data API](../../reference/data-api.md). Requests can also carry a profiling flag to record per-function and per-connector timings.
 
 ## Verify
 

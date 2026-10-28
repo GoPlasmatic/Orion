@@ -1,26 +1,26 @@
 //! The 2xx envelopes, as the typed values `orion_api::envelope` defines: a
-//! handler returns `Json<Data<T>>` or `Json<Paginated<T>>`, which is what the
+//! handler returns `Json<Data<T>>` or `Json<Page<T>>`, which is what the
 //! OpenAPI document publishes and what a client reads back.
 
 use axum::Json;
-use orion_api::{Data, Paginated};
+use orion_api::{Data, Page};
 
 /// `{"data": item}`.
 pub fn data_response<T>(item: T) -> Json<Data<T>> {
     Json(Data { data: item })
 }
 
-/// `{"data": [...], "total", "limit", "offset"}`.
-pub fn paginated_response<T>(
+/// `{"data": [...], "limit", "next_cursor"?, "total"?}` — one page of a list.
+pub fn page_response<T>(
     data: Vec<T>,
-    total: i64,
     limit: i64,
-    offset: i64,
-) -> Json<Paginated<T>> {
-    Json(Paginated {
+    next_cursor: Option<String>,
+    total: Option<i64>,
+) -> Json<Page<T>> {
+    Json(Page {
         data,
+        limit: Some(limit),
+        next_cursor,
         total,
-        limit,
-        offset,
     })
 }

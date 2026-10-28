@@ -47,7 +47,7 @@ test_backups_list() {
 test_connections_list() {
     cli connections list
     assert_exit_code 0 "$CLI_EXIT"
-    assert_json_has_key "$CLI_OUTPUT" '.connections'
+    assert_json_has_key "$CLI_OUTPUT" '.data'
 }
 
 test_deployments_capabilities() {
@@ -82,15 +82,15 @@ test_list_flags_are_accepted() {
     # Paging (and, for traces, sorting) exist on the server for these lists;
     # the flag wiring is what this pins — a dropped parameter would still
     # exit 0.
-    cli traces list --limit 5 --offset 0 --sort-by created_at --sort-order asc
+    cli traces list --limit 5 --include-total
     assert_exit_code 0 "$CLI_EXIT"
     assert_json_eq "$CLI_OUTPUT" '.limit' '5'
 
-    cli dlq list --limit 5 --offset 0
+    cli dlq list --limit 5 --include-total
     assert_exit_code 0 "$CLI_EXIT"
     assert_json_eq "$CLI_OUTPUT" '.limit' '5'
 
-    cli cron list --limit 5 --offset 0
+    cli cron list --limit 5 --include-total
     assert_exit_code 0 "$CLI_EXIT"
     assert_json_eq "$CLI_OUTPUT" '.limit' '5'
 }

@@ -48,9 +48,12 @@ enum AuditLogsSubcommand {
         /// Maximum entries to return (default: 50, max: 1000)
         #[arg(long)]
         limit: Option<i64>,
-        /// Number of entries to skip
+        /// Resume after this position: the previous page's next_cursor
         #[arg(long)]
-        offset: Option<i64>,
+        cursor: Option<String>,
+        /// Also count the whole filtered set (a scan; off by default)
+        #[arg(long)]
+        include_total: bool,
     },
 }
 
@@ -86,7 +89,8 @@ impl AuditLogsCmd {
                 start_time,
                 end_time,
                 limit,
-                offset,
+                cursor,
+                include_total,
             } => {
                 let qs = utils::build_query_string(&[
                     ("action", action.clone()),
@@ -96,7 +100,8 @@ impl AuditLogsCmd {
                     ("start_time", start_time.clone()),
                     ("end_time", end_time.clone()),
                     ("limit", limit.map(|l| l.to_string())),
-                    ("offset", offset.map(|o| o.to_string())),
+                    ("cursor", cursor.clone()),
+                    ("include_total", include_total.then(|| "true".to_string())),
                 ]);
                 list(client, format, quiet, &qs).await
             }

@@ -81,13 +81,21 @@
             }
           },
           {
-            "name": "offset",
+            "name": "cursor",
             "in": "query",
-            "description": "Pagination offset (default 0).",
+            "description": "Resume after this position: the previous page's `next_cursor`, unmodified.",
             "required": false,
             "schema": {
-              "type": "integer",
-              "format": "int64"
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_total",
+            "in": "query",
+            "description": "Count the filtered set (default false; the count is a full scan).",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           }
         ],
@@ -97,7 +105,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Paginated_AuditLogEntryResponse"
+                  "$ref": "#/components/schemas/Page_AuditLogEntryResponse"
                 }
               }
             }
@@ -694,13 +702,53 @@
         "summary": "List every stored connection revision",
         "description": "Returns every stored revision of every connection, ordered by connection then revision, with its provider digest and configuration digest.",
         "operationId": "list_connections",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Rows per page: 50 by default, at most 1000.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The previous page's `next_cursor`, unmodified.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_total",
+            "in": "query",
+            "description": "Also count the whole filtered set (default false).",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "Connection revisions",
+            "description": "A page of connection revisions",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ConnectionsListResponse"
+                  "$ref": "#/components/schemas/Page_ConnectionRevisionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A `limit` of 0, or a cursor this endpoint did not issue",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -753,15 +801,53 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Rows per page: 50 by default, at most 1000.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The previous page's `next_cursor`, unmodified.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_total",
+            "in": "query",
+            "description": "Also count the whole filtered set (default false).",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "The connection's revisions",
+            "description": "A page of the connection's revisions",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ConnectionsListResponse"
+                  "$ref": "#/components/schemas/Page_ConnectionRevisionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A `limit` of 0, or a cursor this endpoint did not issue",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1075,15 +1161,55 @@
           "Providers"
         ],
         "summary": "List uploaded and admitted connector provider packages",
-        "description": "Returns all ingested provider packages alongside their admission and revocation state.",
+        "description": "Returns a page of ingested provider packages, ordered by digest, each with its admission and revocation state.",
         "operationId": "list_connector_packages",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Rows per page: 50 by default, at most 1000.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The previous page's `next_cursor`, unmodified.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_total",
+            "in": "query",
+            "description": "Also count the whole filtered set (default false).",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "Connector provider packages",
+            "description": "A page of connector provider packages",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ConnectorPackagesListResponse"
+                  "$ref": "#/components/schemas/Page_ConnectorPackageSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A `limit` of 0, or a cursor this endpoint did not issue",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1666,12 +1792,21 @@
             }
           },
           {
-            "name": "offset",
+            "name": "cursor",
             "in": "query",
+            "description": "Resume after this position: the previous page's `next_cursor`, unmodified.",
             "required": false,
             "schema": {
-              "type": "integer",
-              "format": "int64"
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_total",
+            "in": "query",
+            "description": "Count the filtered set (default false; the count is a full scan).",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           }
         ],
@@ -1681,7 +1816,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Paginated_CronOccurrenceSummaryResponse"
+                  "$ref": "#/components/schemas/Page_CronOccurrenceSummaryResponse"
                 }
               }
             }
@@ -2926,13 +3061,21 @@
             }
           },
           {
-            "name": "offset",
+            "name": "cursor",
             "in": "query",
-            "description": "Pagination offset (default 0).",
+            "description": "Resume after this position: the previous page's `next_cursor`, unmodified.",
             "required": false,
             "schema": {
-              "type": "integer",
-              "format": "int64"
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_total",
+            "in": "query",
+            "description": "Count the filtered set (default false; the count is a full scan).",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           }
         ],
@@ -2942,7 +3085,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Paginated_TraceDlqSummaryResponse"
+                  "$ref": "#/components/schemas/Page_TraceDlqSummaryResponse"
                 }
               }
             }
@@ -3249,37 +3392,9 @@
             }
           },
           {
-            "name": "offset",
-            "in": "query",
-            "description": "Page offset. Mutually exclusive with `cursor`.",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          },
-          {
-            "name": "sort_by",
-            "in": "query",
-            "description": "Column to sort by: created_at (default), updated_at, status, channel, mode.",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "sort_order",
-            "in": "query",
-            "description": "Sort direction: asc or desc (default).",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
             "name": "cursor",
             "in": "query",
-            "description": "Keyset cursor from a previous page's `next_cursor`: pass it back\nunmodified. Valid only with the default `created_at` ordering, and\nmutually exclusive with `offset`; cheaper than `offset` on a large\ntable because it never skips rows.",
+            "description": "Resume after this position: the previous page's `next_cursor`, unmodified.",
             "required": false,
             "schema": {
               "type": "string"
@@ -3301,7 +3416,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TracePage_TraceListItem"
+                  "$ref": "#/components/schemas/Page_TraceListItem"
                 }
               }
             }
@@ -4354,26 +4469,6 @@
           }
         }
       },
-      "ConnectionsListResponse": {
-        "type": "object",
-        "description": "Connection revisions, ordered by connection then revision\n(`GET /api/v2/admin/connections`, `GET /api/v2/admin/connections/{id}/revisions`).",
-        "required": [
-          "count",
-          "connections"
-        ],
-        "properties": {
-          "connections": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ConnectionRevisionResponse"
-            }
-          },
-          "count": {
-            "type": "integer",
-            "minimum": 0
-          }
-        }
-      },
       "ConnectorErrorClass": {
         "type": "string",
         "description": "The normalised class of a connector failure.",
@@ -4496,33 +4591,6 @@
           },
           "version": {
             "type": "string"
-          }
-        }
-      },
-      "ConnectorPackagesListResponse": {
-        "type": "object",
-        "description": "Every stored package, and every admission record (`GET /api/v2/admin/connector-packages`).",
-        "required": [
-          "count",
-          "packages",
-          "admissions"
-        ],
-        "properties": {
-          "admissions": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ProviderAdmissionDto"
-            }
-          },
-          "count": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "packages": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ConnectorPackageSummary"
-            }
           }
         }
       },
@@ -6797,9 +6865,9 @@
           "deleted"
         ]
       },
-      "Paginated_AuditLogEntryResponse": {
+      "Page_AuditLogEntryResponse": {
         "type": "object",
-        "description": "The paginated envelope: `data` plus the three counters, and nothing else.\n\nThis is the shape every admin list endpoint returns **except the trace\nlist** — read that one with [`TracePage`], not this type. `total` here is a\nplain `i64` and defaults to `0`, so a body that legitimately omits the field\nwould read as \"zero rows matched\" rather than \"not counted\".",
+        "description": "The envelope of every list: `data` plus how to get the next page.\n\nOne shape for every collection. A list pages by an opaque **cursor**, not an\noffset: the lists are append-heavy ledgers read newest-first, so an offset\nskips or repeats rows as new ones arrive and costs a scan of everything it\nskips, while a cursor resumes at an exact position in constant time.\n\n- `next_cursor` is present when a further page exists; pass it back as\n  `?cursor=`, unmodified. Absent on the last page. Do not parse it.\n- `total` is **opt-in** (`?include_total=true`): counting the filtered set is\n  a full scan on Postgres and InnoDB, so it is computed only when asked. An\n  absent `total` means \"not counted\", never \"no rows\".\n- `limit` is the page size applied. Absent from a complete catalogue that is\n  not paged at all.",
         "properties": {
           "data": {
             "type": "array",
@@ -6843,23 +6911,200 @@
             }
           },
           "limit": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64"
           },
-          "offset": {
-            "type": "integer",
-            "format": "int64"
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "total": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Total rows matching the filter, ignoring `limit`/`offset`."
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
           }
         }
       },
-      "Paginated_CronOccurrenceSummaryResponse": {
+      "Page_ConnectionRevisionResponse": {
         "type": "object",
-        "description": "The paginated envelope: `data` plus the three counters, and nothing else.\n\nThis is the shape every admin list endpoint returns **except the trace\nlist** — read that one with [`TracePage`], not this type. `total` here is a\nplain `i64` and defaults to `0`, so a body that legitimately omits the field\nwould read as \"zero rows matched\" rather than \"not counted\".",
+        "description": "The envelope of every list: `data` plus how to get the next page.\n\nOne shape for every collection. A list pages by an opaque **cursor**, not an\noffset: the lists are append-heavy ledgers read newest-first, so an offset\nskips or repeats rows as new ones arrive and costs a scan of everything it\nskips, while a cursor resumes at an exact position in constant time.\n\n- `next_cursor` is present when a further page exists; pass it back as\n  `?cursor=`, unmodified. Absent on the last page. Do not parse it.\n- `total` is **opt-in** (`?include_total=true`): counting the filtered set is\n  a full scan on Postgres and InnoDB, so it is computed only when asked. An\n  absent `total` means \"not counted\", never \"no rows\".\n- `limit` is the page size applied. Absent from a complete catalogue that is\n  not paged at all.",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "An immutable connection revision (`GET /api/v2/admin/connections/{id}/revisions/{revision}`).",
+              "required": [
+                "connection_id",
+                "revision",
+                "provider_digest",
+                "public_config",
+                "secret_locators",
+                "bindings",
+                "configuration_digest"
+              ],
+              "properties": {
+                "bindings": {
+                  "type": "object",
+                  "description": "Over a `workflow` provider package: the connection each of the\npackage's dependency aliases calls (`alias -> connection_id`). Empty\nfor any other provider.",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                },
+                "configuration_digest": {
+                  "type": "string",
+                  "description": "The digest over the public settings, the locators and the bindings:\nwhat a manifest member for this revision names as its\n`definition_digest`."
+                },
+                "connection_id": {
+                  "type": "string"
+                },
+                "provider_digest": {
+                  "type": "string"
+                },
+                "public_config": {
+                  "description": "The connection's settings, as created."
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "secret_locators": {
+                  "type": "object",
+                  "description": "Config path → secret reference (`env://`, `vault://`, …).",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
+      "Page_ConnectorPackageSummary": {
+        "type": "object",
+        "description": "The envelope of every list: `data` plus how to get the next page.\n\nOne shape for every collection. A list pages by an opaque **cursor**, not an\noffset: the lists are append-heavy ledgers read newest-first, so an offset\nskips or repeats rows as new ones arrive and costs a scan of everything it\nskips, while a cursor resumes at an exact position in constant time.\n\n- `next_cursor` is present when a further page exists; pass it back as\n  `?cursor=`, unmodified. Absent on the last page. Do not parse it.\n- `total` is **opt-in** (`?include_total=true`): counting the filtered set is\n  a full scan on Postgres and InnoDB, so it is computed only when asked. An\n  absent `total` means \"not counted\", never \"no rows\".\n- `limit` is the page size applied. Absent from a complete catalogue that is\n  not paged at all.",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A stored connector provider package (`GET /api/v2/admin/connector-packages`).",
+              "required": [
+                "publisher",
+                "provider_id",
+                "version",
+                "digest",
+                "implementation",
+                "tier",
+                "admitted",
+                "revoked",
+                "artifact_state",
+                "manifest",
+                "distribution",
+                "inventory"
+              ],
+              "properties": {
+                "admitted": {
+                  "type": "boolean",
+                  "description": "Admitted and not revoked."
+                },
+                "artifact_state": {
+                  "$ref": "#/components/schemas/PackageArtifactState"
+                },
+                "digest": {
+                  "type": "string",
+                  "description": "The package digest: `sha256:<64 lowercase hex>`."
+                },
+                "distribution": {
+                  "description": "The package's `distribution.json`."
+                },
+                "implementation": {
+                  "$ref": "#/components/schemas/ImplementationKind"
+                },
+                "inventory": {
+                  "description": "The package's `inventory.json`."
+                },
+                "manifest": {
+                  "description": "The package's `connector.json`."
+                },
+                "provider_id": {
+                  "type": "string"
+                },
+                "publisher": {
+                  "type": "string"
+                },
+                "revoked": {
+                  "type": "boolean"
+                },
+                "tier": {
+                  "$ref": "#/components/schemas/EditionTier",
+                  "description": "The tier `distribution.json` declares; `community` when it declares\nnone."
+                },
+                "version": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
+      "Page_CronOccurrenceSummaryResponse": {
+        "type": "object",
+        "description": "The envelope of every list: `data` plus how to get the next page.\n\nOne shape for every collection. A list pages by an opaque **cursor**, not an\noffset: the lists are append-heavy ledgers read newest-first, so an offset\nskips or repeats rows as new ones arrive and costs a scan of everything it\nskips, while a cursor resumes at an exact position in constant time.\n\n- `next_cursor` is present when a further page exists; pass it back as\n  `?cursor=`, unmodified. Absent on the last page. Do not parse it.\n- `total` is **opt-in** (`?include_total=true`): counting the filtered set is\n  a full scan on Postgres and InnoDB, so it is computed only when asked. An\n  absent `total` means \"not counted\", never \"no rows\".\n- `limit` is the page size applied. Absent from a complete catalogue that is\n  not paged at all.",
         "properties": {
           "data": {
             "type": "array",
@@ -6924,23 +7169,30 @@
             }
           },
           "limit": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64"
           },
-          "offset": {
-            "type": "integer",
-            "format": "int64"
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "total": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Total rows matching the filter, ignoring `limit`/`offset`."
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
           }
         }
       },
-      "Paginated_TraceDlqSummaryResponse": {
+      "Page_TraceDlqSummaryResponse": {
         "type": "object",
-        "description": "The paginated envelope: `data` plus the three counters, and nothing else.\n\nThis is the shape every admin list endpoint returns **except the trace\nlist** — read that one with [`TracePage`], not this type. `total` here is a\nplain `i64` and defaults to `0`, so a body that legitimately omits the field\nwould read as \"zero rows matched\" rather than \"not counted\".",
+        "description": "The envelope of every list: `data` plus how to get the next page.\n\nOne shape for every collection. A list pages by an opaque **cursor**, not an\noffset: the lists are append-heavy ledgers read newest-first, so an offset\nskips or repeats rows as new ones arrive and costs a scan of everything it\nskips, while a cursor resumes at an exact position in constant time.\n\n- `next_cursor` is present when a further page exists; pass it back as\n  `?cursor=`, unmodified. Absent on the last page. Do not parse it.\n- `total` is **opt-in** (`?include_total=true`): counting the filtered set is\n  a full scan on Postgres and InnoDB, so it is computed only when asked. An\n  absent `total` means \"not counted\", never \"no rows\".\n- `limit` is the page size applied. Absent from a complete catalogue that is\n  not paged at all.",
         "properties": {
           "data": {
             "type": "array",
@@ -6992,17 +7244,113 @@
             }
           },
           "limit": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64"
           },
-          "offset": {
-            "type": "integer",
-            "format": "int64"
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "total": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Total rows matching the filter, ignoring `limit`/`offset`."
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
+      "Page_TraceListItem": {
+        "type": "object",
+        "description": "The envelope of every list: `data` plus how to get the next page.\n\nOne shape for every collection. A list pages by an opaque **cursor**, not an\noffset: the lists are append-heavy ledgers read newest-first, so an offset\nskips or repeats rows as new ones arrive and costs a scan of everything it\nskips, while a cursor resumes at an exact position in constant time.\n\n- `next_cursor` is present when a further page exists; pass it back as\n  `?cursor=`, unmodified. Absent on the last page. Do not parse it.\n- `total` is **opt-in** (`?include_total=true`): counting the filtered set is\n  a full scan on Postgres and InnoDB, so it is computed only when asked. An\n  absent `total` means \"not counted\", never \"no rows\".\n- `limit` is the page size applied. Absent from a complete catalogue that is\n  not paged at all.",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One row of `GET /api/v2/admin/traces` — payload-free by design.\n\nThe narrower sibling of the single-trace read, for the same reason\n[`TraceDlqSummaryResponse`] is narrower than [`TraceDlqEntryResponse`]: a\nlisting that carried `input_json`/`result_json` would return every\ncaller's request body and the full engine message in one response. The\nserver's `SELECT` already omits those columns, so this type is the second\nhalf of that guarantee rather than a filter applied after the fact.\n\nPublished as `TraceListItem`, the name the spec has always used for this\ncomponent: the Rust type gained the `…Response` suffix every dto here\ncarries, but a component rename would break clients generated against the\nold spec — the upgrade guide tracks those as a compat surface.",
+              "required": [
+                "id",
+                "channel",
+                "mode",
+                "status",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "channel": {
+                  "type": "string",
+                  "description": "Channel name as it was when the trace ran — a snapshot, not a key."
+                },
+                "channel_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "completed_at": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "duration_ms": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "format": "double"
+                },
+                "error_message": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "id": {
+                  "type": "string"
+                },
+                "mode": {
+                  "type": "string",
+                  "description": "`sync` | `async`."
+                },
+                "started_at": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "description": "`pending` | `running` | `completed` | `failed`."
+                },
+                "updated_at": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
           }
         }
       },
@@ -7811,98 +8159,6 @@
           },
           "updated_at": {
             "type": "string"
-          }
-        }
-      },
-      "TracePage_TraceListItem": {
-        "type": "object",
-        "description": "The trace list's envelope, which [`Paginated`] cannot represent.\n\n`GET /api/v2/admin/traces` differs from every other list in two ways, both\ndeliberate and both invisible to `Paginated`:\n\n- **`total` is opt-in.** Counting rows across a large trace table is the\n  expensive half of the query, so it is computed only for\n  `?include_total=true` and the key is otherwise absent. Read through\n  `Paginated` that absence becomes `0` — indistinguishable from an empty\n  result, and the reason this type exists.\n- **`next_cursor` may be present.** The trace list pages by keyset, not by\n  offset; when more rows follow, this carries the cursor to pass as\n  `?cursor=`. `Paginated` drops the field silently.",
-        "properties": {
-          "data": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "description": "One row of `GET /api/v2/admin/traces` — payload-free by design.\n\nThe narrower sibling of the single-trace read, for the same reason\n[`TraceDlqSummaryResponse`] is narrower than [`TraceDlqEntryResponse`]: a\nlisting that carried `input_json`/`result_json` would return every\ncaller's request body and the full engine message in one response. The\nserver's `SELECT` already omits those columns, so this type is the second\nhalf of that guarantee rather than a filter applied after the fact.\n\nPublished as `TraceListItem`, the name the spec has always used for this\ncomponent: the Rust type gained the `…Response` suffix every dto here\ncarries, but a component rename would break clients generated against the\nold spec — the upgrade guide tracks those as a compat surface.",
-              "required": [
-                "id",
-                "channel",
-                "mode",
-                "status",
-                "created_at",
-                "updated_at"
-              ],
-              "properties": {
-                "channel": {
-                  "type": "string",
-                  "description": "Channel name as it was when the trace ran — a snapshot, not a key."
-                },
-                "channel_id": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "completed_at": {
-                  "type": "string"
-                },
-                "created_at": {
-                  "type": "string"
-                },
-                "duration_ms": {
-                  "type": [
-                    "number",
-                    "null"
-                  ],
-                  "format": "double"
-                },
-                "error_message": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "id": {
-                  "type": "string"
-                },
-                "mode": {
-                  "type": "string",
-                  "description": "`sync` | `async`."
-                },
-                "started_at": {
-                  "type": "string"
-                },
-                "status": {
-                  "type": "string",
-                  "description": "`pending` | `running` | `completed` | `failed`."
-                },
-                "updated_at": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "limit": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "next_cursor": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Keyset cursor for the next page; `None` on the last page. Opaque —\npass it back as `?cursor=`, do not parse it."
-          },
-          "offset": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "total": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Present only when the request asked for it with `?include_total=true`.\n`None` means \"not counted\", never \"no rows\"."
           }
         }
       },

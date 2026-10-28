@@ -133,11 +133,13 @@ async fn a_deployment_audit_row_commits_with_the_head(backend: &str, pool: &DbPo
                 .list_paginated(&AuditLogFilter {
                     action: Some(action.to_string()),
                     resource_type: Some("deployment".to_string()),
+                    include_total: Some(true),
                     ..Default::default()
                 })
                 .await
                 .expect("list audit rows")
                 .total
+                .expect("counted")
         }
     };
     let event = |action: &'static str| {

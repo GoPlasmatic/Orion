@@ -222,8 +222,8 @@ async fn cli_and_server_contract_end_to_end_against_running_server() {
         .unwrap();
     assert_eq!(admitted.admission.package_digest, digest);
     let listed = client.list_connector_packages().await.unwrap();
-    assert_eq!(listed.packages.len(), 1);
-    assert!(listed.packages[0].admitted);
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].admitted);
     assert!(
         client
             .get_connector_package(&digest)
@@ -260,7 +260,7 @@ async fn cli_and_server_contract_end_to_end_against_running_server() {
         .list_connection_revisions("cache-main")
         .await
         .unwrap();
-    assert_eq!(revisions.count, 1);
+    assert_eq!(revisions.len(), 1);
     let probe = client.probe_connection("cache-main", 1).await.unwrap();
     assert!(probe.healthy, "{probe:?}");
     assert!(probe.details.error.is_none(), "{probe:?}");

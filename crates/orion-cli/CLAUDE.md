@@ -50,7 +50,7 @@ E2E tests are shell-based (not `cargo test`). 11 test suites in `tests/e2e/suite
 - `src/client.rs` — thin presentation adapter over the shared `orion-client` crate's `OrionClient` (the transport itself — auth, 30s timeout, envelope parsing, typed `ClientError` — lives there); this wrapper translates typed errors into the CLI's terminal messages (hints, `[CODE] message`, field errors). Endpoint paths come from `orion_client::paths`, never format strings.
 - `src/config.rs` — `OrionConfig` loaded from `~/.orion/config.toml` (server_url, default_output), plus `resolve_api_key()` for the flag → env → file chain
 - `src/output.rs` — Output formatting: `print_table()` (tabled with rounded borders), `print_value()` (JSON/YAML)
-- `src/utils.rs` — shared command helpers: `wait_for_trace()` (shared by `traces wait` and `send --wait`), `read_json_input()`, `confirm()`, the status and duration formatters, and `print_list_footer()`, the renderer every list goes through (reads the envelope's top-level `total`; says `Showing N of M` when the page is short of it)
+- `src/utils.rs` — shared command helpers: `wait_for_trace()` (shared by `traces wait` and `send --wait`), `read_json_input()`, `confirm()`, the status and duration formatters, and `print_list_footer()`, the renderer every list goes through (says how many rows the page held, the `total` when `--include-total` asked for it, and `next page: --cursor …` when more follow)
 - `src/commands/` — One file per command group, each defining clap subcommands and `execute()` async functions
 
 ### Command Modules
@@ -75,7 +75,7 @@ E2E tests are shell-based (not `cargo test`). 11 test suites in `tests/e2e/suite
 
 Shared logic lives in `src/utils.rs`. A command module holds its clap definitions, its own tables and detail views, and the verbs unique to it.
 
-**Every list surface pages** (50 default, 1000 max, server-clamped), and traces also sort. Every list command must carry `--limit`/`--offset`/`--sort-by`/`--sort-order` — one that omits them silently truncates at 50 with no way to see the rest.
+**Every list surface pages by cursor** (50 default, 1000 max, server-clamped): `--limit`, `--cursor` (the previous page's `next_cursor`) and `--include-total`. There is no `--offset` and no `--sort-by` — lists are newest-first and filters narrow them. A list command that omits the paging flags silently truncates at 50 with no way to see the rest.
 
 ### Key Patterns
 

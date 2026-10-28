@@ -28,7 +28,14 @@ pub struct ProviderCmd {
 #[derive(Subcommand)]
 pub enum ProviderSubcommand {
     /// List uploaded and admitted connector provider packages
-    List,
+    List {
+        /// Page size (default: 50, max: 1000)
+        #[arg(long)]
+        limit: Option<i64>,
+        /// Resume after this position: the previous page's next_cursor
+        #[arg(long)]
+        cursor: Option<String>,
+    },
     /// Show one connector package, with its admission
     Get {
         /// Package digest (`sha256:<64 hex chars>`)
@@ -121,10 +128,16 @@ impl ProviderCmd {
         quiet: bool,
     ) -> Result<i32> {
         match &self.command {
-            ProviderSubcommand::List => {
-                let resp = client.list_connector_packages().await?;
+            ProviderSubcommand::List { limit, cursor } => {
+                let resp = client
+                    .list_connector_packages_page(&orion_client::ListParams {
+                        limit: *limit,
+                        cursor: cursor.clone(),
+                        include_total: false,
+                    })
+                    .await?;
                 if quiet {
-                    for item in &resp.packages {
+                    for item in &resp.data {
                         println!("{}", item.digest);
                     }
                     return Ok(0);
@@ -133,12 +146,12 @@ impl ProviderCmd {
                     output::print_value(format, &serde_json::to_value(&resp)?)?;
                     return Ok(0);
                 }
-                if resp.packages.is_empty() {
+                if resp.data.is_empty() {
                     println!("{}", "No v2 connector packages found.".dimmed());
                     return Ok(0);
                 }
                 let rows: Vec<ProviderRow> = resp
-                    .packages
+                    .data
                     .iter()
                     .map(|p| ProviderRow {
                         publisher: p.publisher.clone(),
@@ -150,6 +163,9 @@ impl ProviderCmd {
                     })
                     .collect();
                 output::print_table(rows);
+                if let Some(next) = &resp.next_cursor {
+                    println!("{}", format!("next page: --cursor {next}").dimmed());
+                }
                 Ok(0)
             }
             ProviderSubcommand::Get { digest } => {

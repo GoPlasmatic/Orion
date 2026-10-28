@@ -196,12 +196,9 @@ mod tests {
                 package: package(),
                 admission: None,
             }),
-            ("GET", "/api/v2/admin/connections/cache-1/revisions") => {
-                to_value(ConnectionsListResponse {
-                    count: 1,
-                    connections: vec![connection("cache-1", 1, "sha256:2222")],
-                })
-            }
+            ("GET", "/api/v2/admin/connections/cache-1/revisions?limit=1000") => to_value(
+                orion_api::Page::complete(vec![connection("cache-1", 1, "sha256:2222")]),
+            ),
             ("POST", "/api/v2/admin/connections/cache-1/revisions/1/probes") => {
                 to_value(ConnectionProbeResponse {
                     connection_id: "cache-1".into(),
@@ -533,16 +530,17 @@ mod tests {
                         package_digest: Some("sha256:p".into()),
                     }]))
                 }
-                ("GET", "/api/v2/admin/connections") => to_value(ConnectionsListResponse {
-                    count: 1,
-                    connections: vec![ConnectionRevisionResponse {
-                        connection_id: "db".into(),
-                        revision: 2,
-                        provider_digest: "sha256:p".into(),
-                        public_config: json!({"connection_string": "sqlite:/other.db"}),
-                        ..Default::default()
-                    }],
-                }),
+                ("GET", "/api/v2/admin/connections?limit=1000") => {
+                    to_value(orion_api::Page::complete(vec![
+                        ConnectionRevisionResponse {
+                            connection_id: "db".into(),
+                            revision: 2,
+                            provider_digest: "sha256:p".into(),
+                            public_config: json!({"connection_string": "sqlite:/other.db"}),
+                            ..Default::default()
+                        },
+                    ]))
+                }
                 ("POST", "/api/v2/admin/connections/db/revisions") => {
                     assert_eq!(body["revision"], 3, "one past the stored revisions");
                     assert!(body.get("connection_id").is_none(), "the path names it");

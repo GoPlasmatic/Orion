@@ -183,7 +183,10 @@ pub struct CronOccurrenceFilter {
     /// Inclusive upper bound on `scheduled_for`.
     pub until: Option<NaiveDateTime>,
     pub limit: Option<i64>,
-    pub offset: Option<i64>,
+    /// Resume after this position: the previous page's `next_cursor`, unmodified.
+    pub cursor: Option<String>,
+    /// Count the filtered set (default false; the count is a full scan).
+    pub include_total: Option<bool>,
 }
 
 impl CronOccurrenceFilter {
@@ -1047,17 +1050,17 @@ impl CronRepository for SqlCronRepository {
         filter: &CronOccurrenceFilter,
     ) -> Result<PaginatedResult<CronOccurrence>, OrionError> {
         orion_common::metrics::timed_db_op("cron.list_paginated", async {
-            let (limit, offset) = helpers::clamp_pagination(filter.limit, filter.offset);
             let page = Page {
                 from: sea_query::IntoIden::into_iden(CronOccurrences::Table),
                 projection: Projection::All,
                 cond: filter.condition(),
                 // Newest first: an operator opening the list is asking what
                 // happened recently.
-                sort: sea_query::IntoIden::into_iden(CronOccurrences::CreatedAt),
-                order: sea_query::Order::Desc,
-                limit,
-                offset,
+                created_at: sea_query::IntoIden::into_iden(CronOccurrences::CreatedAt),
+                id: sea_query::IntoIden::into_iden(CronOccurrences::Id),
+                limit: helpers::clamp_limit(filter.limit),
+                cursor: helpers::parse_cursor(filter.cursor.as_deref())?,
+                include_total: filter.include_total.unwrap_or(false),
             };
             helpers::paginate(&self.pool, page).await
         })

@@ -26,18 +26,19 @@ orion-cli [global flags] <command> [subcommand] [args] [flags]
 | `--no-color` | Disable colored output. |
 | `--yes` | Skip confirmation prompts. |
 
-### Paging and sorting
+### Paging
 
-Every `list` pages: 50 rows by default, 1000 at most. The count under the table
-says `Showing 50 of 3120 …` when the page is short of the total, so a truncated
-listing never reads as a complete one.
+Every `list` pages: 50 rows by default, 1000 at most. When more rows follow, the
+line under the table names the flag that fetches them (`next page: --cursor …`),
+so a truncated listing never reads as a complete one.
 
 | Flag | Applies to | Description |
 |------|-----------|-------------|
 | `--limit <n>` | every `list` | Page size, clamped to 1–1000. |
-| `--offset <n>` | as above | Rows to skip. |
-| `--sort-by <col>` | `traces list` | Column to order by: `created_at`, `updated_at`, `status`, `channel` or `mode`. |
-| `--sort-order <dir>` | `traces list` | `asc` or `desc`. |
+| `--cursor <c>` | as above | Resume after this position: the previous page's `next_cursor`, unmodified. |
+| `--include-total` | as above | Also count the whole filtered set. Off by default: the count is a full scan. |
+
+Lists are newest-first and have no `--offset` or `--sort-by`; filters narrow them.
 
 ## Environment variables
 

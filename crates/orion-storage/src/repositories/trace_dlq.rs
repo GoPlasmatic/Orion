@@ -23,8 +23,10 @@ pub struct TraceDlqFilter {
     pub exhausted: Option<bool>,
     /// Page size, clamped to [1, 1000] (default 50).
     pub limit: Option<i64>,
-    /// Pagination offset (default 0).
-    pub offset: Option<i64>,
+    /// Resume after this position: the previous page's `next_cursor`, unmodified.
+    pub cursor: Option<String>,
+    /// Count the filtered set (default false; the count is a full scan).
+    pub include_total: Option<bool>,
 }
 
 /// Exhaustion is a column-to-column comparison, built from the Iden enum in
@@ -72,9 +74,8 @@ fn summary_columns() -> [TraceDlq; 9] {
 
 /// The page `list_paginated` reads. A function, not an inline block, so a test
 /// can assert the exact SQL the repository runs.
-fn list_page(filter: &TraceDlqFilter) -> Page {
-    let (limit, offset) = super::helpers::clamp_pagination(filter.limit, filter.offset);
-    Page {
+fn list_page(filter: &TraceDlqFilter) -> Result<Page, OrionError> {
+    Ok(Page {
         from: TraceDlq::Table.into_iden(),
         // Narrower than the table on purpose: no `payload_json`, no
         // `metadata_json`. See `models::rows::TraceDlqSummary`.
@@ -85,11 +86,12 @@ fn list_page(filter: &TraceDlqFilter) -> Page {
                 .collect(),
         ),
         cond: filter.condition(),
-        sort: TraceDlq::CreatedAt.into_iden(),
-        order: sea_query::Order::Desc,
-        limit,
-        offset,
-    }
+        created_at: TraceDlq::CreatedAt.into_iden(),
+        id: TraceDlq::Id.into_iden(),
+        limit: super::helpers::clamp_limit(filter.limit),
+        cursor: super::helpers::parse_cursor(filter.cursor.as_deref())?,
+        include_total: filter.include_total.unwrap_or(false),
+    })
 }
 
 impl TraceDlqFilter {
@@ -499,7 +501,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
         filter: &TraceDlqFilter,
     ) -> Result<PaginatedResult<TraceDlqSummary>, OrionError> {
         orion_common::metrics::timed_db_op("trace_dlq.list_paginated", async {
-            super::helpers::paginate(&self.pool, list_page(filter)).await
+            super::helpers::paginate(&self.pool, list_page(filter)?).await
         })
         .await
     }
@@ -582,8 +584,10 @@ mod tests {
     /// would decode a `SELECT *` just as happily — sqlx ignores extra columns.
     #[test]
     fn list_projection_never_reads_the_payload_columns() {
-        let sql = super::super::helpers::page_select(&list_page(&TraceDlqFilter::default()))
-            .to_string(sea_query::SqliteQueryBuilder);
+        let sql = super::super::helpers::page_select(
+            &list_page(&TraceDlqFilter::default()).expect("test"),
+        )
+        .to_string(sea_query::SqliteQueryBuilder);
         for withheld in ["payload_json", "metadata_json"] {
             assert!(
                 !sql.contains(withheld),

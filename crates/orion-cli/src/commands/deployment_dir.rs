@@ -348,16 +348,12 @@ pub async fn prepare(
                     connection.driver
                 ),
             }
-            let found = matching_connection_revision(
-                connection,
-                &stored.connections,
-                history.head_connection(id),
-            );
+            let found =
+                matching_connection_revision(connection, &stored, history.head_connection(id));
             let assigned = match found {
                 Some(existing) => existing,
                 None => {
                     let revision = stored
-                        .connections
                         .iter()
                         .filter(|row| &row.connection_id == id)
                         .map(|row| row.revision)

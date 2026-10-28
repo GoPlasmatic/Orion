@@ -7,12 +7,11 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use orion_api::v2::{
-    ConnectionProbeResponse, ConnectionRevisionResponse, ConnectionsListResponse,
-    ConnectorErrorClass, CreateConnectionRevisionRequest, CreateConnectionRevisionResponse,
-    EffectStatus, ProbeDetails,
+    ConnectionProbeResponse, ConnectionRevisionResponse, ConnectorErrorClass,
+    CreateConnectionRevisionRequest, CreateConnectionRevisionResponse, EffectStatus, ProbeDetails,
 };
 
-use super::{V2Error, V2Result};
+use super::{ListQuery, V2Error, V2Result, page_by_key};
 use crate::admin_auth::AdminPrincipal;
 use crate::errors::{FieldError, OrionError};
 use crate::extensions::deployment_store::{
@@ -22,8 +21,9 @@ use crate::extensions::{
     AdmittedRun, AuthorityGrant, BudgetLimits, ConnectionId, ConnectionReference,
     EffectiveConnectionIdentity, ProviderRef, Revision, ValidateContext,
 };
-use crate::extract::OrionJson;
+use crate::extract::{OrionJson, OrionQuery};
 use crate::runtime::state::AppState;
+use orion_api::Page;
 use orion_api::error::field_codes;
 
 fn connection_row_to_dto(row: &ConnectionRevisionRow) -> ConnectionRevisionResponse {
@@ -38,18 +38,21 @@ fn connection_row_to_dto(row: &ConnectionRevisionRow) -> ConnectionRevisionRespo
     }
 }
 
-/// `rows` as a list, ordered by connection then revision.
-fn list_response(mut rows: Vec<std::sync::Arc<ConnectionRevisionRow>>) -> ConnectionsListResponse {
-    rows.sort_by(|a, b| {
-        (a.connection_id.as_str(), a.revision.get())
-            .cmp(&(b.connection_id.as_str(), b.revision.get()))
-    });
-    let connections: Vec<ConnectionRevisionResponse> =
+/// A revision's place in the list: connection, then revision. The revision is
+/// zero-padded so the keys sort numerically (`2` before `10`).
+fn list_key(row: &ConnectionRevisionResponse) -> String {
+    format!("{}@{:020}", row.connection_id, row.revision)
+}
+
+/// `rows` as one page, ordered by connection then revision.
+fn list_response(
+    rows: Vec<std::sync::Arc<ConnectionRevisionRow>>,
+    query: &ListQuery,
+) -> V2Result<Json<Page<ConnectionRevisionResponse>>> {
+    let mut dtos: Vec<ConnectionRevisionResponse> =
         rows.iter().map(|r| connection_row_to_dto(r)).collect();
-    ConnectionsListResponse {
-        count: connections.len(),
-        connections,
-    }
+    dtos.sort_by_key(list_key);
+    Ok(Json(page_by_key(dtos, list_key, query)?))
 }
 
 /// The stored revision `revision` of `connection_id`.
@@ -75,14 +78,17 @@ fn stored_revision(
     tag = "Connections",
     summary = "List every stored connection revision",
     description = "Returns every stored revision of every connection, ordered by connection then revision, with its provider digest and configuration digest.",
+    params(ListQuery),
     responses(
-        (status = 200, description = "Connection revisions", body = ConnectionsListResponse),
+        (status = 200, description = "A page of connection revisions", body = Page<ConnectionRevisionResponse>),
+        (status = 400, description = "A `limit` of 0, or a cursor this endpoint did not issue"),
     )
 )]
 pub(crate) async fn list_connections(
     State(state): State<AppState>,
-) -> Json<ConnectionsListResponse> {
-    Json(list_response(state.deployments.list_connections()))
+    OrionQuery(query): OrionQuery<ListQuery>,
+) -> V2Result<Json<Page<ConnectionRevisionResponse>>> {
+    list_response(state.deployments.list_connections(), &query)
 }
 
 /// `GET /api/v2/admin/connections/{id}/revisions`.
@@ -92,22 +98,24 @@ pub(crate) async fn list_connections(
     tag = "Connections",
     summary = "List one connection's revisions",
     description = "Returns every stored revision of the connection, oldest first. Empty for a connection with none.",
-    params(("id" = String, Path, description = "Connection identifier")),
+    params(("id" = String, Path, description = "Connection identifier"), ListQuery),
     responses(
-        (status = 200, description = "The connection's revisions", body = ConnectionsListResponse),
+        (status = 200, description = "A page of the connection's revisions", body = Page<ConnectionRevisionResponse>),
+        (status = 400, description = "A `limit` of 0, or a cursor this endpoint did not issue"),
     )
 )]
 pub(crate) async fn list_connection_revisions(
     State(state): State<AppState>,
     Path(connection_id): Path<String>,
-) -> Json<ConnectionsListResponse> {
+    OrionQuery(query): OrionQuery<ListQuery>,
+) -> V2Result<Json<Page<ConnectionRevisionResponse>>> {
     let rows = state
         .deployments
         .list_connections()
         .into_iter()
         .filter(|c| c.connection_id == connection_id)
         .collect();
-    Json(list_response(rows))
+    list_response(rows, &query)
 }
 
 /// `GET /api/v2/admin/connections/{id}/revisions/{revision}`.

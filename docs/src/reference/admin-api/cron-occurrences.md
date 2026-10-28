@@ -10,7 +10,7 @@ Every scheduled instant of a [cron channel](../channel-config/cron.md) becomes a
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v2/admin/cron/occurrences` | List occurrences, newest first, paginated (`?limit=`, `?offset=`). Filter with `?channel_id=`, `?status=`, `?since=`, `?until=`. Summaries only |
+| GET | `/api/v2/admin/cron/occurrences` | List occurrences, newest first, paginated (`?limit=`, `?cursor=`, `?include_total=true`). Filter with `?channel_id=`, `?status=`, `?since=`, `?until=`. Summaries only |
 | GET | `/api/v2/admin/cron/occurrences/{id}` | One occurrence in full: the failure reason, the trace id, the channel revision it ran under (`executing_version`) and the lease detail |
 | POST | `/api/v2/admin/cron/occurrences/{id}/retry` | Another attempt at the same occurrence. `409` unless it is `failed`, `skipped_misfire` or `skipped_singleton` |
 | POST | `/api/v2/admin/cron/occurrences/{id}/cancel` | Stop an occurrence that has not finished and free its singleton slot. Settles it `failed`. `409` once it is `completed`, `failed` or skipped |

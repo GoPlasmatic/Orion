@@ -1,9 +1,9 @@
 //! Proposal R17: every admin-plane 2xx body carries its payload under a
-//! top-level `data` key, and nothing else at the top level except the three
-//! pagination counters on list endpoints.
+//! top-level `data` key, and nothing else at the top level except the paging
+//! fields (`limit`, `next_cursor`, `total`) on list endpoints.
 //!
 //! One shape is what lets a client write one unwrapping function; a mix of
-//! `{"data": …}`, the paginated `{data, total, limit, offset}` and bare objects
+//! `{"data": …}`, the paginated `{data, limit, next_cursor?, total?}` and bare objects
 //! would not. These tests pin the single shape endpoint by endpoint;
 //! `admin_2xx_bodies_all_carry_the_data_envelope` is the one that would catch
 //! a *new* handler regressing to a bare object.
@@ -34,9 +34,10 @@ fn assert_data_envelope(body: &Value, what: &str) {
     );
 }
 
-/// Assert `body` is the paginated shape: `data` plus the three counters.
+/// Assert `body` is the page shape: `data` and `limit`, plus `next_cursor` and
+/// `total` only when there is something to say.
 #[track_caller]
-fn assert_paginated_envelope(body: &Value, what: &str) {
+fn assert_page_envelope(body: &Value, what: &str) {
     let obj = body
         .as_object()
         .unwrap_or_else(|| panic!("{what}: body is not a JSON object: {body}"));
@@ -44,8 +45,8 @@ fn assert_paginated_envelope(body: &Value, what: &str) {
     keys.sort_unstable();
     assert_eq!(
         keys,
-        vec!["data", "limit", "offset", "total"],
-        "{what}: expected the paginated envelope, got {keys:?} in {body}"
+        vec!["data", "limit"],
+        "{what}: expected the page envelope, got {keys:?} in {body}"
     );
     assert!(
         body["data"].is_array(),
@@ -85,42 +86,39 @@ async fn admin_2xx_bodies_all_carry_the_data_envelope() {
         assert_data_envelope(&get(&app, uri).await, uri);
     }
 
-    for uri in ["/api/v2/admin/audit-logs", "/api/v2/admin/trace-dlq"] {
-        assert_paginated_envelope(&get(&app, uri).await, uri);
+    for uri in [
+        "/api/v2/admin/audit-logs",
+        "/api/v2/admin/trace-dlq",
+        "/api/v2/admin/traces",
+    ] {
+        assert_page_envelope(&get(&app, uri).await, uri);
     }
 }
 
-/// The trace list is the one paginated endpoint that does not always carry
-/// `total` (D8): the count is a full scan of the filtered set, so it is opt-in.
-/// `include_total=true` puts it back, byte for byte.
+/// A list's `total` is opt-in: the count is a full scan of the filtered set, so
+/// it is paid only when asked for. `include_total=true` puts it back.
 #[tokio::test]
-async fn trace_list_omits_total_unless_asked() {
+async fn list_total_is_omitted_unless_asked() {
     let app = test_app().await;
 
-    let body = get(&app, "/api/v2/admin/traces").await;
-    let mut keys: Vec<&str> = body
-        .as_object()
-        .expect("object body")
-        .keys()
-        .map(String::as_str)
-        .collect();
-    keys.sort_unstable();
-    assert_eq!(
-        keys,
-        vec!["data", "limit", "offset"],
-        "an unasked-for `total` costs a COUNT(*) per page: {body}"
-    );
-
-    let counted = get(&app, "/api/v2/admin/traces?include_total=true").await;
-    assert_eq!(
-        counted["total"], 0,
-        "include_total=true must restore the count: {counted}"
-    );
+    for uri in [
+        "/api/v2/admin/traces",
+        "/api/v2/admin/audit-logs",
+        "/api/v2/admin/trace-dlq",
+    ] {
+        let body = get(&app, uri).await;
+        assert!(
+            body.get("total").is_none(),
+            "an unasked-for `total` costs a COUNT(*) per page: {uri}: {body}"
+        );
+        let counted = get(&app, &format!("{uri}?include_total=true")).await;
+        assert!(
+            counted["total"].is_number(),
+            "include_total=true must restore the count: {uri}: {counted}"
+        );
+    }
 }
 
-/// The single-trace read is the one admin endpoint whose envelope the rest of
-/// the suite cannot catch: `common::poll_trace_until_done` unwraps `data` for
-/// its callers, so without this test the wrapper would be unpinned.
 #[tokio::test]
 async fn single_trace_read_is_enveloped() {
     let app = test_app().await;

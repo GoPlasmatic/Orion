@@ -678,7 +678,7 @@ _run_case_test() {
             conn_id=$(jq -r ".connectors[$idx] | .id // .name" "$case_file")
             cli connections list
             response=$(jq -c --arg id "$conn_id" \
-                '[.connections[] | select(.connection_id == $id)] | max_by(.revision)' <<< "$CLI_OUTPUT")
+                '[.data[] | select(.connection_id == $id)] | max_by(.revision)' <<< "$CLI_OUTPUT")
             ;;
         send)
             local channel raw

@@ -1,10 +1,9 @@
 use crate::DbPool;
 use async_trait::async_trait;
-use chrono::NaiveDateTime;
-use sea_query::{Asterisk, Condition, Expr, ExprTrait, IntoIden, Order, Query};
+use sea_query::{Asterisk, Condition, Expr, ExprTrait, IntoIden, Query};
 use serde::Deserialize;
 
-use super::helpers::{Page, Projection};
+use super::helpers::{Page, PaginatedResult, Projection};
 use crate::models::{self, Trace, TraceListRow};
 use crate::{build_sqlx, schema::Traces};
 use orion_common::errors::OrionError;
@@ -21,117 +20,13 @@ pub struct TraceFilter {
     pub mode: Option<String>,
     /// Page size, clamped to [1, 1000] (default 50).
     pub limit: Option<i64>,
-    /// Page offset. Mutually exclusive with `cursor`.
-    pub offset: Option<i64>,
-    /// Column to sort by: created_at (default), updated_at, status, channel, mode.
-    pub sort_by: Option<String>,
-    /// Sort direction: asc or desc (default).
-    pub sort_order: Option<String>,
-    /// Keyset cursor from a previous page's `next_cursor`: pass it back
-    /// unmodified. Valid only with the default `created_at` ordering, and
-    /// mutually exclusive with `offset`; cheaper than `offset` on a large
-    /// table because it never skips rows.
+    /// Resume after this position: the previous page's `next_cursor`, unmodified.
     pub cursor: Option<String>,
     /// Compute `total` for this page (default false). Off by default:
     /// the count is a full scan of the filtered set on Postgres and InnoDB,
     /// paid on every page even though the number rarely changes what the
     /// caller does next.
     pub include_total: Option<bool>,
-}
-
-impl TraceFilter {
-    /// Whether the page is ordered by `created_at` — the default, and the only
-    /// ordering keyset pagination is offered for.
-    fn is_created_at_order(&self) -> bool {
-        matches!(self.sort_by.as_deref(), None | Some("created_at"))
-    }
-}
-
-/// One page of traces.
-///
-/// Deliberately not [`super::helpers::PaginatedResult`]: `total` is
-/// optional here because computing it is opt-in, and `next_cursor` has no
-/// meaning for the other list endpoints.
-#[derive(Debug)]
-pub struct TracePage {
-    /// [`TraceListRow`], not [`Trace`] — the listing reads neither the
-    /// payloads nor `access_token_hash`.
-    pub data: Vec<TraceListRow>,
-    /// `Some` only when the request asked for it with `include_total=true`.
-    pub total: Option<i64>,
-    pub limit: i64,
-    pub offset: i64,
-    /// Cursor for the page after this one, present when the ordering is
-    /// `created_at` and a further page may exist.
-    pub next_cursor: Option<String>,
-}
-
-/// Keyset position: the `(created_at, id)` of the last row a caller saw.
-///
-/// Encoded as `<microseconds since the Unix epoch>.<trace id>`, which is
-/// URL-safe by construction (trace ids are UUIDs). **Treat it as opaque** —
-/// the encoding is not part of the API contract and may change.
-///
-/// `created_at` alone is not unique (two traces can share a second on
-/// backends that store second-precision defaults), so the id is carried as
-/// the tie-break; without it a keyset page can skip or repeat rows.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TraceCursor {
-    pub created_at: NaiveDateTime,
-    pub id: String,
-}
-
-impl TraceCursor {
-    pub fn encode(&self) -> String {
-        format!(
-            "{}.{}",
-            self.created_at.and_utc().timestamp_micros(),
-            self.id
-        )
-    }
-
-    pub fn decode(raw: &str) -> Result<Self, OrionError> {
-        let invalid = || {
-            OrionError::validation(
-                "Invalid `cursor`: pass back a `next_cursor` from a previous page unmodified"
-                    .to_string(),
-            )
-        };
-        let (micros, id) = raw.split_once('.').ok_or_else(invalid)?;
-        let micros: i64 = micros.parse().map_err(|_| invalid())?;
-        let created_at = chrono::DateTime::from_timestamp_micros(micros)
-            .ok_or_else(invalid)?
-            .naive_utc();
-        if id.is_empty() {
-            return Err(invalid());
-        }
-        Ok(Self {
-            created_at,
-            id: id.to_string(),
-        })
-    }
-
-    /// `(created_at, id)` strictly after this position in `order` — the
-    /// row-value comparison spelled out, because MySQL does not optimise
-    /// `(a, b) < (?, ?)` into an index range scan.
-    fn condition(&self, order: &Order) -> Condition {
-        let (created_cmp, id_cmp) = if matches!(order, Order::Asc) {
-            (
-                Expr::col(Traces::CreatedAt).gt(self.created_at),
-                Expr::col(Traces::Id).gt(self.id.as_str()),
-            )
-        } else {
-            (
-                Expr::col(Traces::CreatedAt).lt(self.created_at),
-                Expr::col(Traces::Id).lt(self.id.as_str()),
-            )
-        };
-        Condition::any().add(created_cmp).add(
-            Condition::all()
-                .add(Expr::col(Traces::CreatedAt).eq(self.created_at))
-                .add(id_cmp),
-        )
-    }
 }
 
 /// Owned payload for a batched `store_completed` write.
@@ -305,9 +200,7 @@ fn list_columns() -> [Traces; 11] {
 /// The page `list_paginated` reads: filter, sort and the [`list_columns`]
 /// projection. A function, not an inline block, so a test can assert the
 /// exact SQL the repository runs rather than a re-typed copy of it.
-fn list_page(filter: &TraceFilter) -> Page {
-    let (limit, offset) = super::helpers::clamp_pagination(filter.limit, filter.offset);
-
+fn list_page(filter: &TraceFilter) -> Result<Page, OrionError> {
     let mut cond = Condition::all();
     if let Some(ref status) = filter.status {
         cond = cond.add(Expr::col(Traces::Status).eq(status.as_str()));
@@ -319,15 +212,7 @@ fn list_page(filter: &TraceFilter) -> Page {
         cond = cond.add(Expr::col(Traces::Mode).eq(mode.as_str()));
     }
 
-    let sort = match filter.sort_by.as_deref() {
-        Some("updated_at") => Traces::UpdatedAt,
-        Some("status") => Traces::Status,
-        Some("channel") => Traces::Channel,
-        Some("mode") => Traces::Mode,
-        _ => Traces::CreatedAt,
-    };
-
-    Page {
+    Ok(Page {
         from: Traces::Table.into_iden(),
         projection: Projection::Columns(
             list_columns()
@@ -336,11 +221,16 @@ fn list_page(filter: &TraceFilter) -> Page {
                 .collect(),
         ),
         cond,
-        sort: sort.into_iden(),
-        order: super::helpers::parse_sort_order(filter.sort_order.as_deref()),
-        limit,
-        offset,
-    }
+        // Newest first, the id as the tie-break: served by
+        // `idx_traces_created_at_id`.
+        created_at: Traces::CreatedAt.into_iden(),
+        id: Traces::Id.into_iden(),
+        limit: super::helpers::clamp_limit(filter.limit),
+        cursor: super::helpers::parse_cursor(filter.cursor.as_deref())?,
+        // Opt-in: COUNT(*) over the filtered set is a full scan on Postgres and
+        // InnoDB, and it was being paid on every page.
+        include_total: filter.include_total.unwrap_or(false),
+    })
 }
 
 /// `SELECT * FROM traces WHERE id = ?` — the single-row read shape, shared by
@@ -451,7 +341,10 @@ pub trait TraceReader: Send + Sync {
     /// caller's request body, the full engine message and one
     /// `access_token_hash` per row out of the database for a response that
     /// shows none of them.
-    async fn list_paginated(&self, filter: &TraceFilter) -> Result<TracePage, OrionError>;
+    async fn list_paginated(
+        &self,
+        filter: &TraceFilter,
+    ) -> Result<PaginatedResult<TraceListRow>, OrionError>;
 }
 
 /// Ageing traces out: the retention job, and nothing else.
@@ -682,88 +575,16 @@ impl TraceReader for SqlTraceRepository {
         .await
     }
 
-    async fn list_paginated(&self, filter: &TraceFilter) -> Result<TracePage, OrionError> {
+    async fn list_paginated(
+        &self,
+        filter: &TraceFilter,
+    ) -> Result<PaginatedResult<TraceListRow>, OrionError> {
         orion_common::metrics::timed_db_op("traces.list_paginated", async {
-            // The base page — projection (D27), filter, sort and clamped
-            // bounds — comes from `list_page`, the same builder the SQL-shape
-            // test asserts against, so keyset mode cannot drift away from the
-            // column list or reintroduce a `SELECT *`.
-            let mut page = list_page(filter);
-            let created_at_order = filter.is_created_at_order();
-
-            // Keyset mode (D8). Refused rather than silently ignored for any
-            // other ordering: `updated_at` is mutated in place by every
-            // status change, so a cursor over it would skip rows.
-            let cursor = match filter.cursor.as_deref() {
-                Some(raw) => {
-                    if !created_at_order {
-                        return Err(OrionError::validation(
-                            "`cursor` is only supported with the default `created_at` ordering"
-                                .to_string(),
-                        ));
-                    }
-                    if filter.offset.is_some_and(|o| o != 0) {
-                        return Err(OrionError::validation(
-                            "`cursor` and `offset` are two different pagination modes — pass one"
-                                .to_string(),
-                        ));
-                    }
-                    Some(TraceCursor::decode(raw)?)
-                }
-                None => None,
-            };
-
-            // Opt-in (D8): COUNT(*) over the filtered set is a full scan on
-            // Postgres and InnoDB, and it was being paid on every page.
-            let total = if filter.include_total.unwrap_or(false) {
-                Some(
-                    super::helpers::count_where(&self.pool, Traces::Table, page.cond.clone())
-                        .await?,
-                )
-            } else {
-                None
-            };
-
-            let (limit, offset) = (page.limit, page.offset);
-            if let Some(ref cursor) = cursor {
-                page.cond = page.cond.clone().add(cursor.condition(&page.order));
-                // The two modes are exclusive; the cursor carries the position.
-                page.offset = 0;
-            }
-
-            let order = page.order.clone();
-            let mut select = super::helpers::page_select(&page);
-            if created_at_order {
-                // The tie-break the cursor compares on, so a page boundary
-                // that lands inside a group of same-second rows is stable.
-                // Served by `idx_traces_created_at_id`.
-                select.order_by(Traces::Id, order);
-            }
-
-            let (sql, values) = build_sqlx(self.pool.backend(), &mut select);
-            let data = self.pool.fetch_all_as::<TraceListRow>(&sql, values).await?;
-
-            // A short page is the last page; anything else may have more.
-            // Only offered for the created_at ordering, which is the only one
-            // the cursor can resume from.
-            let next_cursor = match data.last() {
-                Some(last) if created_at_order && data.len() as i64 == limit => Some(
-                    TraceCursor {
-                        created_at: last.created_at,
-                        id: last.id.clone(),
-                    }
-                    .encode(),
-                ),
-                _ => None,
-            };
-
-            Ok(TracePage {
-                data,
-                total,
-                limit,
-                offset,
-                next_cursor,
-            })
+            // The page — projection (D27), filter and keyset position — comes
+            // from `list_page`, the same builder the SQL-shape test asserts
+            // against, so it cannot drift from the column list or reintroduce a
+            // `SELECT *`.
+            super::helpers::paginate(&self.pool, list_page(filter)?).await
         })
         .await
     }
@@ -846,8 +667,9 @@ mod tests {
         assert_eq!(page.data[0].channel, "orders");
 
         // The exact statement `list_paginated` runs, not a re-typed copy.
-        let sql = super::super::helpers::page_select(&list_page(&TraceFilter::default()))
-            .to_string(sea_query::SqliteQueryBuilder);
+        let sql =
+            super::super::helpers::page_select(&list_page(&TraceFilter::default()).expect("test"))
+                .to_string(sea_query::SqliteQueryBuilder);
         for withheld in [
             "input_json",
             "result_json",
@@ -1166,35 +988,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cursor_is_refused_where_it_would_lie() {
+    async fn test_a_malformed_cursor_is_refused() {
         let pool = test_pool().await;
         let repo = SqlTraceRepository::new(pool.clone());
-        let cursor = TraceCursor {
-            created_at: chrono::Utc::now().naive_utc(),
-            id: "some-id".to_string(),
-        }
-        .encode();
-
-        // updated_at is mutated in place by every status change, so a cursor
-        // over it would skip rows.
-        let wrong_sort = repo
-            .list_paginated(&TraceFilter {
-                cursor: Some(cursor.clone()),
-                sort_by: Some("updated_at".to_string()),
-                ..Default::default()
-            })
-            .await;
-        assert!(matches!(wrong_sort, Err(OrionError::Validation { .. })));
-
-        let both_modes = repo
-            .list_paginated(&TraceFilter {
-                cursor: Some(cursor),
-                offset: Some(10),
-                ..Default::default()
-            })
-            .await;
-        assert!(matches!(both_modes, Err(OrionError::Validation { .. })));
-
         let malformed = repo
             .list_paginated(&TraceFilter {
                 cursor: Some("not-a-cursor".to_string()),
@@ -1204,26 +1000,11 @@ mod tests {
         assert!(matches!(malformed, Err(OrionError::Validation { .. })));
     }
 
-    #[test]
-    fn test_cursor_round_trips() {
-        let cursor = TraceCursor {
-            created_at: chrono::DateTime::from_timestamp_micros(1_767_225_600_123_456)
-                .expect("test")
-                .naive_utc(),
-            id: "3f1a-uuid".to_string(),
-        };
-        assert_eq!(
-            TraceCursor::decode(&cursor.encode()).expect("test"),
-            cursor,
-            "a cursor must survive the round trip it exists for"
-        );
-    }
-
-    /// `sort_by=updated_at` is in the whitelist, so it must be backed by an
-    /// index — the whole point of D8's migration. Asserted against the
-    /// schema rather than a plan, so it holds on every backend.
+    /// The list is ordered by `(created_at, id)`, so it must be backed by an
+    /// index. Asserted against the schema rather than a plan, so it holds on
+    /// every backend.
     #[tokio::test]
-    async fn test_sortable_columns_are_indexed() {
+    async fn test_the_list_order_is_indexed() {
         let pool = test_pool().await;
         let crate::DbPool::Sqlite(p) = &pool else {
             unreachable!("Test requires SQLite");
@@ -1235,12 +1016,11 @@ mod tests {
         .await
         .expect("test");
         let names: Vec<String> = indexes.into_iter().map(|(n,)| n).collect();
-        for expected in ["idx_traces_updated_at", "idx_traces_created_at_id"] {
-            assert!(
-                names.iter().any(|n| n == expected),
-                "{expected} must exist — sorting on an unindexed column \
-                 full-scans the traces table. Have: {names:?}"
-            );
-        }
+        let expected = "idx_traces_created_at_id";
+        assert!(
+            names.iter().any(|n| n == expected),
+            "{expected} must exist — the list is ordered by it, and an unindexed \
+             order full-scans the traces table. Have: {names:?}"
+        );
     }
 }

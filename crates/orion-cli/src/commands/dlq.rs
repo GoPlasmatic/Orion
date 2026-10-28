@@ -34,9 +34,12 @@ enum DlqSubcommand {
         /// Page size
         #[arg(long)]
         limit: Option<i64>,
-        /// Page offset
+        /// Resume after this position: the previous page's next_cursor
         #[arg(long)]
-        offset: Option<i64>,
+        cursor: Option<String>,
+        /// Also count the whole filtered set (a scan; off by default)
+        #[arg(long)]
+        include_total: bool,
     },
     /// Show one dead-letter entry, including its payload
     Get {
@@ -85,13 +88,15 @@ impl DlqCmd {
                 channel,
                 exhausted,
                 limit,
-                offset,
+                cursor,
+                include_total,
             } => {
                 let qs = utils::build_query_string(&[
                     ("channel", channel.clone()),
                     ("exhausted", exhausted.map(|e| e.to_string())),
                     ("limit", limit.map(|l| l.to_string())),
-                    ("offset", offset.map(|o| o.to_string())),
+                    ("cursor", cursor.clone()),
+                    ("include_total", include_total.then(|| "true".to_string())),
                 ]);
                 list(client, format, quiet, &qs).await
             }

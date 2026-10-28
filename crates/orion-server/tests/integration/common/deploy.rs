@@ -456,9 +456,9 @@ pub async fn create_connection(app: &Router, connector: &Value) -> (String, u64,
         .unwrap_or_else(|| panic!("the node reports no built-in digest for {driver}"))
         .to_string();
 
-    let (status, listed) = send(app, "GET", "/api/v2/admin/connections", None).await;
+    let (status, listed) = send(app, "GET", "/api/v2/admin/connections?limit=1000", None).await;
     assert_eq!(status, StatusCode::OK, "{listed}");
-    let revision = listed["connections"]
+    let revision = listed["data"]
         .as_array()
         .into_iter()
         .flatten()

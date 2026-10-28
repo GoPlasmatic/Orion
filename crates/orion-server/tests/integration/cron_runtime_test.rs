@@ -308,13 +308,21 @@ async fn archiving_stops_materialisation_and_keeps_history() {
 
     // Let the reconciler notice and pause the cursor, then confirm the count
     // has stopped moving.
-    let settled = common::wait_for_body(&app, "/api/v2/admin/cron/occurrences?limit=200", |_| true)
-        .await["total"]
+    let settled = common::wait_for_body(
+        &app,
+        "/api/v2/admin/cron/occurrences?limit=200&include_total=true",
+        |_| true,
+    )
+    .await["total"]
         .as_i64()
         .unwrap_or(0);
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-    let after = common::wait_for_body(&app, "/api/v2/admin/cron/occurrences?limit=200", |_| true)
-        .await["total"]
+    let after = common::wait_for_body(
+        &app,
+        "/api/v2/admin/cron/occurrences?limit=200&include_total=true",
+        |_| true,
+    )
+    .await["total"]
         .as_i64()
         .unwrap_or(0);
 
@@ -980,7 +988,7 @@ async fn a_payload_that_fails_validation_fails_the_occurrence_visibly() {
     // Nothing completes, because the payload cannot ever satisfy the rule.
     let completed = common::wait_for_body(
         &app,
-        "/api/v2/admin/cron/occurrences?status=completed",
+        "/api/v2/admin/cron/occurrences?status=completed&include_total=true",
         |_| true,
     )
     .await;

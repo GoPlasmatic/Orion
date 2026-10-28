@@ -403,5 +403,9 @@ async fn the_hermetic_rules_refuse_at_upload() {
         );
     }
     let (_, listed) = send(&app, "GET", "/api/v2/admin/connector-packages", None).await;
-    assert_eq!(listed["count"], 0, "nothing refused was stored: {listed}");
+    assert_eq!(
+        listed["data"].as_array().map(Vec::len),
+        Some(0),
+        "nothing refused was stored: {listed}"
+    );
 }

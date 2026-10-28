@@ -6,11 +6,11 @@ use crate::admin_auth::AdminPrincipal;
 use crate::errors::OrionError;
 use crate::extract::{OrionJson, OrionQuery};
 use crate::routes::openapi::ErrorResponse;
-use crate::routes::response_helpers::{data_response, paginated_response};
+use crate::routes::response_helpers::{data_response, page_response};
 use crate::runtime::state::AppState;
 use crate::storage::models::{TraceDlqEntryResponse, TraceDlqSummaryResponse};
 use crate::storage::repositories::trace_dlq::TraceDlqFilter;
-use orion_api::{Data, DlqPurgeResponse, Paginated};
+use orion_api::{Data, DlqPurgeResponse, Page};
 
 use super::audit_log;
 
@@ -36,14 +36,14 @@ pub(crate) struct PurgeTraceDlqRequest {
         // D28: the summary, not the full entry. The listing has never carried
         // `payload_json` / `metadata_json`, but the spec advertised them here
         // because the row struct that *did* have them was also the wire type.
-        (status = 200, description = "Paginated DLQ entries without payloads — fetch one by id for the payload", body = Paginated<TraceDlqSummaryResponse>),
+        (status = 200, description = "Paginated DLQ entries without payloads — fetch one by id for the payload", body = Page<TraceDlqSummaryResponse>),
     )
 )]
 #[tracing::instrument(skip(state))]
 pub(crate) async fn list_trace_dlq(
     State(state): State<AppState>,
     OrionQuery(filter): OrionQuery<TraceDlqFilter>,
-) -> Result<Json<Paginated<TraceDlqSummaryResponse>>, OrionError> {
+) -> Result<Json<Page<TraceDlqSummaryResponse>>, OrionError> {
     let result = state.repos.trace_dlq.list_paginated(&filter).await?;
 
     let rows: Vec<TraceDlqSummaryResponse> = result
@@ -51,11 +51,11 @@ pub(crate) async fn list_trace_dlq(
         .iter()
         .map(TraceDlqSummaryResponse::from)
         .collect();
-    Ok(paginated_response(
+    Ok(page_response(
         rows,
-        result.total,
         result.limit,
-        result.offset,
+        result.next_cursor,
+        result.total,
     ))
 }
 

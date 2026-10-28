@@ -112,7 +112,7 @@ async fn materialisation_is_idempotent_on_the_scheduled_instant() {
         .list_paginated(&CronOccurrenceFilter::default())
         .await
         .expect("list");
-    assert_eq!(page.total, 1);
+    assert_eq!(page.data.len(), 1);
     assert_eq!(page.data[0].id, "a");
 
     // A different instant, and a different channel at the same instant, are
@@ -1231,7 +1231,7 @@ async fn retention_deletes_terminal_rows_and_keeps_pending_ones() {
         .list_paginated(&CronOccurrenceFilter::default())
         .await
         .expect("list");
-    assert_eq!(page.total, 1);
+    assert_eq!(page.data.len(), 1);
     assert_eq!(page.data[0].id, "pending-old");
 }
 
@@ -1259,7 +1259,7 @@ async fn the_listing_filters_by_channel_status_and_window() {
         })
         .await
         .expect("list");
-    assert_eq!(by_channel.total, 2);
+    assert_eq!(by_channel.data.len(), 2);
 
     let by_status = repo
         .list_paginated(&CronOccurrenceFilter {
@@ -1268,7 +1268,7 @@ async fn the_listing_filters_by_channel_status_and_window() {
         })
         .await
         .expect("list");
-    assert_eq!(by_status.total, 1);
+    assert_eq!(by_status.data.len(), 1);
     assert_eq!(by_status.data[0].id, "b");
 
     let windowed = repo
@@ -1278,7 +1278,7 @@ async fn the_listing_filters_by_channel_status_and_window() {
         })
         .await
         .expect("list");
-    assert_eq!(windowed.total, 2);
+    assert_eq!(windowed.data.len(), 2);
 }
 
 #[tokio::test]
@@ -1353,7 +1353,7 @@ async fn purging_a_channel_removes_its_cursor_and_its_occurrences() {
         .list_paginated(&CronOccurrenceFilter::default())
         .await
         .expect("list");
-    assert_eq!(page.total, 1);
+    assert_eq!(page.data.len(), 1);
     assert_eq!(page.data[0].channel_id, "keep");
 }
 

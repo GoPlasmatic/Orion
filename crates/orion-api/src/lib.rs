@@ -79,5 +79,5 @@ pub use enums::{
     TRACE_STATUS_COMPLETED, TRACE_STATUS_FAILED, TRACE_STATUS_PENDING, TRACE_STATUS_RUNNING,
     VALID_CHANNEL_TYPES,
 };
-pub use envelope::{Data, Paginated, TracePage};
+pub use envelope::{Data, Page};
 pub use error::{ErrorBody, ErrorEnvelope, ErrorKind, FieldError, V2Code, codes, field_codes};

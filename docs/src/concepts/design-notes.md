@@ -70,18 +70,19 @@ Stated normatively in: [Configuration](../reference/configuration/rate-limit.md)
 
 ## Cursor paging
 
-**The rule as shipped:** the trace list pages with an opaque `next_cursor` in the default `created_at` ordering. `cursor` is refused with a `400` beside `offset` or any other `sort_by`, and `total` is opt-in.
+**The rule as shipped:** every list pages with an opaque `next_cursor` over `(created_at, id)`, newest first. There is no `offset` and no per-list sort. `total` is opt-in.
 
-Offset paging is the intuitive mode and the one that degrades. `OFFSET n` does not seek. The database walks and discards `n` rows to find the page start, so the cost of fetching a page grows linearly with its depth. A loop that drains a large traces table pays more for every page than for the one before it. A keyset cursor turns the same request into an index seek: "rows strictly after this position". Its cost is flat no matter how deep the loop is. The two modes disagree about what a position means, so passing both is refused rather than guessed at.
+Offset paging is the intuitive mode and the one that degrades. `OFFSET n` does not seek. The database walks and discards `n` rows to find the page start, so the cost of fetching a page grows linearly with its depth. A loop that drains a large traces table pays more for every page than for the one before it. Worse, the lists are append-heavy ledgers read newest-first, so every new row shifts every later offset: a page boundary skips or repeats rows as the table grows underneath the loop. A keyset cursor turns the same request into an index seek, "rows strictly after this position", whose cost is flat no matter how deep the loop is and whose position does not move.
 
-Two decisions inside the cursor:
+Three decisions inside the cursor:
 
-- **It orders by `created_at` and refuses everything else.** A cursor is a position in an ordering, and a position is only meaningful if rows hold still. `created_at` is immutable. `updated_at` is rewritten in place by every status change, so a row can cross the cursor's position between two page fetches. A trace that moves from ahead of the cursor to behind it is silently skipped; one that moves the other way is served twice. That is why `cursor` with any `sort_by` but `created_at` is a `400`, not a best effort.
-- **It carries a tie-break.** `created_at` alone is not unique: two traces can share a timestamp on backends whose defaults store second precision. The cursor therefore encodes the pair `(created_at, id)`, and the page condition compares on the pair. A page boundary that falls inside a shared timestamp neither skips nor repeats the rows sharing it. The comparison is spelled out as two clauses rather than a row-value `(a, b) < (?, ?)`, because MySQL does not turn the row-value form into an index range scan.
+- **One ordering.** A cursor is a position in an ordering, and a position is only meaningful if rows hold still. `created_at` is immutable; `updated_at` is rewritten in place by every status change, so a row could cross the cursor between two fetches and be skipped or served twice. The lists therefore offer only the `created_at` ordering and no `sort_by`; filters (`status`, `channel`, `mode`, …) narrow a list instead.
+- **It carries a tie-break.** `created_at` alone is not unique: rows can share a timestamp on backends whose defaults store second precision. The cursor encodes the pair `(created_at, id)`, and the page condition compares on the pair. The comparison is spelled out as two clauses rather than a row-value `(a, b) < (?, ?)`, because MySQL does not turn the row-value form into an index range scan.
+- **It reads one row past the page.** That extra row is how the server knows another page exists, so a list whose length is an exact multiple of the page size does not end with an empty page.
 
-`total` is opt-in (`?include_total=true`) for the same economics. Counting the filtered set is a full scan on PostgreSQL and InnoDB. A paging loop that asked for the count on every page would pay that scan once per page. The number rarely changes between pages.
+`total` is opt-in (`?include_total=true`). Counting the filtered set is a full scan on PostgreSQL and InnoDB. A paging loop that asked for the count on every page would pay that scan once per page, and the number rarely changes what the caller does next.
 
-The cursor encodes `<microseconds since the epoch>.<trace id>` today. Treat it as opaque: the encoding is not part of the API contract and may change.
+The cursor encodes `<microseconds since the epoch>.<id>` today. Treat it as opaque: the encoding is not part of the API contract and may change.
 
 The same shape applies to a page read through the portable dialect, where `after` derives the comparison from the sort. It applies to a raw `db_read` too, where you write it yourself. See [Paging](../reference/data-dialect.md#paging).
 

@@ -57,7 +57,7 @@ async fn wait_for_audit_total(app: &axum::Router, min_total: i64) {
             .clone()
             .oneshot(json_request(
                 "GET",
-                "/api/v2/admin/audit-logs?limit=1",
+                "/api/v2/admin/audit-logs?limit=1&include_total=true",
                 None,
             ))
             .await
@@ -90,12 +90,12 @@ async fn test_audit_pagination() {
 
     wait_for_audit_total(&app, 5).await;
 
-    // Page 1: limit=2, offset=0
+    // Page 1: limit=2, counted.
     let resp = app
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v2/admin/audit-logs?limit=2&offset=0",
+            "/api/v2/admin/audit-logs?limit=2&include_total=true",
             None,
         ))
         .await
@@ -108,15 +108,15 @@ async fn test_audit_pagination() {
         body["total"].as_i64().unwrap() >= 5,
         "total should be at least 5"
     );
-    assert_eq!(body["offset"], 0);
     assert_eq!(body["limit"], 2);
+    let cursor = body["next_cursor"].as_str().expect("more rows follow");
 
-    // Page 2: limit=2, offset=2
+    // Page 2 resumes after page 1's last row: no overlap with it.
     let resp = app
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v2/admin/audit-logs?limit=2&offset=2",
+            &format!("/api/v2/admin/audit-logs?limit=2&cursor={cursor}"),
             None,
         ))
         .await
@@ -125,7 +125,11 @@ async fn test_audit_pagination() {
     let body = body_json(resp).await;
     let page2 = body["data"].as_array().unwrap();
     assert_eq!(page2.len(), 2, "second page should have 2 entries");
-    assert_eq!(body["offset"], 2);
+    let first: Vec<_> = page1.iter().map(|e| &e["id"]).collect();
+    assert!(
+        page2.iter().all(|e| !first.contains(&&e["id"])),
+        "page 2 repeated a row from page 1"
+    );
 }
 
 // ============================================================
@@ -230,7 +234,11 @@ async fn audit_query(app: &axum::Router, query: &str) -> (StatusCode, serde_json
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v2/admin/audit-logs{query}"),
+            // These tests assert on `total`, which is opt-in.
+            &format!(
+                "/api/v2/admin/audit-logs{query}{}include_total=true",
+                if query.contains('?') { '&' } else { '?' }
+            ),
             None,
         ))
         .await

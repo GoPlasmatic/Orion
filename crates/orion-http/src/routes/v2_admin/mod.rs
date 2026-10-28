@@ -111,6 +111,67 @@ pub fn v2_admin_routes(
         .layer(DefaultBodyLimit::max(max_admin_body_size))
 }
 
+/// The default and the largest page of a v2 list.
+pub(crate) const DEFAULT_PAGE: usize = 50;
+pub(crate) const MAX_PAGE: usize = 1000;
+
+/// Query parameters shared by the v2 lists that page over a catalogue held in
+/// memory (connections, connector packages). They are ordered by a stable key,
+/// and `cursor` is the key the previous page ended at.
+#[derive(Debug, Default, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
+pub struct ListQuery {
+    /// Rows per page: 50 by default, at most 1000.
+    pub limit: Option<usize>,
+    /// The previous page's `next_cursor`, unmodified.
+    pub cursor: Option<String>,
+    /// Also count the whole filtered set (default false).
+    pub include_total: Option<bool>,
+}
+
+/// One page of `items`, which must already be ordered by `key` ascending.
+///
+/// The cursor is the key of the last row returned: the next page is every row
+/// with a greater key. A key rather than a position, so rows added or removed
+/// between requests never shift what the next page holds.
+pub(crate) fn page_by_key<T>(
+    items: Vec<T>,
+    key: impl Fn(&T) -> String,
+    query: &ListQuery,
+) -> V2Result<orion_api::Page<T>> {
+    let limit = query.limit.unwrap_or(DEFAULT_PAGE);
+    if limit == 0 {
+        return Err(OrionError::invalid_field(
+            "limit",
+            orion_api::error::field_codes::INVALID,
+            "limit must be at least 1",
+        )
+        .into());
+    }
+    let limit = limit.min(MAX_PAGE);
+    let total = query
+        .include_total
+        .unwrap_or(false)
+        .then_some(items.len() as i64);
+    let mut rest: Vec<T> = match query.cursor.as_deref() {
+        Some(after) => items
+            .into_iter()
+            .filter(|i| key(i).as_str() > after)
+            .collect(),
+        None => items,
+    };
+    let more = rest.len() > limit;
+    rest.truncate(limit);
+    let next_cursor = more.then(|| rest.last().map(&key)).flatten();
+    Ok(orion_api::Page {
+        data: rest,
+        limit: Some(limit as i64),
+        next_cursor,
+        total,
+    })
+}
+
 /// What a v2 handler refuses with: a registered store refusal, or one of the
 /// general refusals every endpoint shares (a body that does not parse, a
 /// definition that would not serve, by field).

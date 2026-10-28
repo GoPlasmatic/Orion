@@ -11,11 +11,11 @@ use crate::errors::OrionError;
 use crate::extract::{OrionQuery, PeerAddr};
 // Referenced by the `#[utoipa::path]` `body = ErrorResponse` annotations below.
 use crate::routes::openapi::ErrorResponse;
-use crate::routes::response_helpers::data_response;
+use crate::routes::response_helpers::{data_response, page_response};
 use crate::runtime::state::AppState;
 use crate::storage::models::TraceListItemResponse;
 use crate::storage::repositories::traces::TraceFilter;
-use orion_api::{Data, TraceDetailResponse, TracePage};
+use orion_api::{Data, Page, TraceDetailResponse};
 
 #[utoipa::path(
     get,
@@ -23,7 +23,7 @@ use orion_api::{Data, TraceDetailResponse, TracePage};
     tag = "Traces",
     params(TraceFilter),
     responses(
-        (status = 200, description = "Page of traces. Not the common paginated envelope: `total` is present only with `include_total=true`, because the count scans the whole filtered set, and `next_cursor` carries the keyset position of the last row, to pass back as `?cursor=`, when the page is ordered by `created_at` (the default) and may have a successor.", body = TracePage<TraceListItemResponse>),
+        (status = 200, description = "Page of traces. Not the common paginated envelope: `total` is present only with `include_total=true`, because the count scans the whole filtered set, and `next_cursor` carries the keyset position of the last row, to pass back as `?cursor=`, when the page is ordered by `created_at` (the default) and may have a successor.", body = Page<TraceListItemResponse>),
         (status = 400, description = "Malformed cursor, or cursor combined with offset or a non-default sort", body = ErrorResponse),
     )
 )]
@@ -31,7 +31,7 @@ use orion_api::{Data, TraceDetailResponse, TracePage};
 pub(crate) async fn list_traces(
     State(state): State<AppState>,
     OrionQuery(filter): OrionQuery<TraceFilter>,
-) -> Result<Json<TracePage<TraceListItemResponse>>, OrionError> {
+) -> Result<Json<Page<TraceListItemResponse>>, OrionError> {
     let result = state.repos.traces.list_paginated(&filter).await?;
     // Payload-free projection (S14): `input_json` holds the caller's request
     // body and `result_json`/`task_trace_json` the full engine message, so a
@@ -43,15 +43,12 @@ pub(crate) async fn list_traces(
         .iter()
         .map(TraceListItemResponse::from)
         .collect();
-    // `total` and `next_cursor` are both conditional (D8): the trace page,
-    // not the common paginated envelope.
-    Ok(Json(TracePage {
-        data: rows,
-        total: result.total,
-        limit: result.limit,
-        offset: result.offset,
-        next_cursor: result.next_cursor,
-    }))
+    Ok(page_response(
+        rows,
+        result.limit,
+        result.next_cursor,
+        result.total,
+    ))
 }
 
 /// Query parameters for `GET /traces/{id}`.

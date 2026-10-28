@@ -418,7 +418,7 @@ async fn a_built_in_connection_probe_connects() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["count"], 1, "{body}");
+    assert_eq!(body["data"].as_array().map(Vec::len), Some(1), "{body}");
 }
 
 /// A provider that answers what it was sent, so a test can tell whether a
