@@ -38,6 +38,8 @@ pub struct CompletedTrace<'a> {
     pub response_json: std::borrow::Cow<'a, str>,
     pub duration_ms: f64,
     pub has_errors: bool,
+    /// Whether execution stopped with a timeout or engine error.
+    pub failed: bool,
     pub task_trace_json: Option<String>,
 }
 
@@ -54,15 +56,12 @@ pub async fn route_store_completed(
 ) {
     // `should_drop` already returned for `Off`; remaining modes are Sync / Async / Batch.
     //
-    // `sync` awaits the insert before the caller answers: that is the mode's
-    // documented promise (`docs/src/operate/run/traces.md` — "written inline
-    // before responding", "a served request implies a persisted trace"), so a
-    // caller holding a response can read its trace, and a crash after the
-    // response cannot lose it. Moving the insert off the request path is what
-    // `async` and `batch` are for.
+    // Sync awaits the write attempt. A failed insert is logged and leaves the
+    // workflow response unchanged, since external effects may have happened.
     if matches!(cfg.mode, TraceStorageMode::Sync) {
         if let Err(e) = trace_repo
             .store_completed(crate::storage::repositories::traces::TraceCompletedRef {
+                failed: trace.failed,
                 channel: trace.channel,
                 channel_id: trace.channel_id,
                 mode: trace.mode,
@@ -77,6 +76,7 @@ pub async fn route_store_completed(
         }
     } else {
         let task = TracePersistenceTask::StoreCompleted(TraceCompletedRow {
+            failed: trace.failed,
             channel: trace.channel.to_string(),
             channel_id: trace.channel_id.map(str::to_string),
             mode: trace.mode.to_string(),

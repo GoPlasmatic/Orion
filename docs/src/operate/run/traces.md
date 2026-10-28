@@ -16,12 +16,27 @@ You need access to the instance's config, and an admin credential to read traces
 
 | Mode | Behaviour | Use for |
 |---|---|---|
-| `sync` | Written inline before responding | Correctness-first estates. A served request implies a persisted trace |
+| `sync` | Await the database write attempt before responding | Immediate trace visibility after a successful write |
 | `async` | Enqueued to a bounded background queue, one write per task | Lifting the write cap when the trace table limits throughput |
 | `batch` | Bounded queue; workers commit `batch_size` rows per transaction | Highest throughput |
 | `off` | No persistence | Hot paths you never inspect |
 
-Use `sync` for anything where a missing trace is a problem. Use `batch` for high-volume channels where the database write rate caps request throughput. The trade is explicit. In `async` and `batch` the request path runs ahead of the trace table. If it overruns `trace_storage.max_pending`, traces are shed according to `async_on_overflow`: `drop`, or `block` to apply backpressure to the request path.
+`sync` remains the default. Use it when you need the trace write attempt to finish
+before the response. Orion logs a failed write and returns the original workflow
+response; a response alone does not prove that the trace exists. Sampling and
+`errors_only` can also exclude a synchronous request from persistence.
+
+Use `batch` for high-volume channels where the database write rate caps request throughput. In `async` and `batch` the request path runs ahead of the trace table. If it overruns `trace_storage.max_pending`, traces are shed according to `async_on_overflow`: `drop`, or `block` to apply backpressure to the request path. A process crash can also lose queued writes. `block` waits only up to `overflow_block_timeout_ms` before dropping.
+
+Synchronous timeouts and engine/backend failures use the same effective trace
+policy as other sync runs. Selected traces record `status: failed`, the failure
+reason, elapsed time and available partial execution detail. `errors_only` retains
+these failures; sampling and `off` still apply. A failed trace write leaves the
+original HTTP error unchanged. Failure results obey `trace_queue.max_result_size_bytes`:
+Orion omits oversized partial data first, then replaces oversized error detail with
+a size-limit message. A cap too small for that minimal record prevents persistence.
+Ordinary workflow task errors continue to return
+through their response envelope and trace.
 
 > [!NOTE]
 > `mode = "off"` does not turn off async traces. It applies to the synchronous endpoint, where the caller already holds the answer. Appending `/async` *is* a request for a result to fetch later, so the row is written before the `202` returns and `trace_id` is always present. `off` is safe to combine with async channels.

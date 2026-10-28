@@ -508,6 +508,33 @@ impl serde::Serialize for FullDetailEnvelope<'_> {
 const SANITIZED_ERROR_MESSAGE: &str =
     "Task processing failed; full detail is available in the trace";
 
+/// Keep a failure record within the same result bound as completed runs.
+/// Prefer the diagnostic over a large partial data document. A cap too small
+/// for even the minimal record must not replace the original HTTP error.
+fn failed_trace_result(
+    message: &dataflow_rs::Message,
+    error: &OrionError,
+    max_bytes: usize,
+) -> Option<String> {
+    let mut result = json!({
+        "id": message.id(), "status": "failed", "data": message.context().data(),
+        "errors": [{"code": error.response_parts().1, "message": error.to_string()}],
+    });
+    let mut serialized = result.to_string();
+    if max_bytes == 0 || serialized.len() <= max_bytes {
+        return Some(serialized);
+    }
+    result["data"] = Value::Null;
+    serialized = result.to_string();
+    if serialized.len() <= max_bytes {
+        return Some(serialized);
+    }
+    result["errors"][0]["message"] =
+        json!("Failure detail exceeds trace_queue.max_result_size_bytes");
+    serialized = result.to_string();
+    (serialized.len() <= max_bytes).then_some(serialized)
+}
+
 /// Map engine error records to the shape the caller sees: code and
 /// task_id, with the message decided by `verbose`.
 ///
@@ -696,24 +723,59 @@ pub(super) async fn process_sync_for_channel(
             .metrics
             .record_message_duration(channel, engine_duration.as_secs_f64());
 
-        match outcome {
+        let result = match outcome {
             crate::engine::RunOutcome::Timeout(ms) => {
                 metrics::record_error("timeout");
-                Err(OrionError::Timeout {
-                    channel: channel.to_string(),
-                    timeout_ms: ms,
-                })
+                Err(OrionError::Timeout { channel: channel.to_string(), timeout_ms: ms })
             }
             crate::engine::RunOutcome::EngineError(e) => {
                 metrics::record_error("engine");
                 Err(OrionError::Engine(e))
+            }
+            crate::engine::RunOutcome::Ok | crate::engine::RunOutcome::WorkflowErrors(_) => Ok(()),
+        };
+        match result {
+            Err(error) => {
+                let plan = TracePlan::decide(&channel_config.trace_storage, true);
+                if plan.persists() {
+                    // Full error detail stays in the trace; the existing error
+                    // response applies the data plane's sanitization policy.
+                    let Some(response_json) = failed_trace_result(
+                        &message, &error, state.config.trace_queue.max_result_size_bytes,
+                    ) else {
+                        metrics::record_error("result_size_exceeded");
+                        tracing::warn!(channel, "Failure trace cannot fit trace_queue.max_result_size_bytes; returning the original error");
+                        return Err(error);
+                    };
+                    let trace_start = Instant::now();
+                    route_store_completed(
+                        &channel_config.trace_storage,
+                        &*state.traces,
+                        &state.trace_persistence_queue,
+                        CompletedTrace {
+                            mode: "sync",
+                            channel,
+                            channel_id: Some(channel_config.channel.channel_id.as_str()),
+                            input_json: serde_json::to_string(&data).ok(),
+                            response_json: std::borrow::Cow::Owned(response_json),
+                            duration_ms: start.elapsed().as_secs_f64() * 1000.0,
+                            has_errors: true,
+                            failed: true,
+                            task_trace_json: crate::engine::utils::serialize_task_trace_capped(
+                                task_trace.as_ref(), state.config.trace_queue.max_result_size_bytes, channel,
+                            ),
+                        },
+                    ).await;
+                    if let Some(p) = &profile { p.set_trace_store(trace_start.elapsed()); }
+                }
+                Err(error)
             }
             // A synchronous caller is handed its task errors in the envelope with
             // a 200 — the response carries the whole story, and a workflow that
             // partially succeeded still has data worth returning. Only the metric
             // label changed with the shared step: `orion_messages_total` counts
             // this as `error` now, as the async path always did.
-            crate::engine::RunOutcome::Ok | crate::engine::RunOutcome::WorkflowErrors(_) => {
+            Ok(()) => {
                 // The *request's* duration — guards, execution, and the response
                 // build below. `execute_admitted` already recorded the engine
                 // call's own latency on `orion_message_duration_seconds`; this one
@@ -972,6 +1034,7 @@ pub(super) async fn process_sync_for_channel(
                     &channel_config,
                     &plan,
                     CompletedTrace {
+                        failed: false,
                         mode: "sync",
                         channel,
                         channel_id: Some(channel_config.channel.channel_id.as_str()),

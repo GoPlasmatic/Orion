@@ -197,6 +197,7 @@ async fn postgres_keyset_pagination_walks_every_trace_once() {
     for _ in 0..7 {
         seeded.insert(
             repo.store_completed(orion::storage::repositories::traces::TraceCompletedRef {
+                failed: false,
                 channel: "orders",
                 channel_id: Some("ch-orders"),
                 mode: "sync",

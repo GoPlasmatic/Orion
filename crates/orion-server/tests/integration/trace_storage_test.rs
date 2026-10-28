@@ -54,6 +54,254 @@ async fn submit_sync(app: &axum::Router, channel: &str) -> StatusCode {
     resp.status()
 }
 
+fn budget_failure_workflow() -> serde_json::Value {
+    common::workflow_with_tasks(
+        "Budget failure",
+        json!([
+            {"id":"first", "function":{"name":"map", "input":{"mappings":[{"path":"data.partial","logic":true}]}}},
+            {"id":"second", "function":{"name":"map", "input":{"mappings":[{"path":"data.finished","logic":true}]}}}
+        ]),
+    )
+}
+
+#[tokio::test]
+async fn a_failure_trace_bounds_partial_data_without_replacing_the_http_error() {
+    for cap in [500, 1] {
+        let mut config = cfg_with_storage(TraceStorageMode::Sync);
+        config.engine.max_run_tasks = 1;
+        config.trace_queue.max_result_size_bytes = cap;
+        let (state, pool) = common::test_state_and_pool(config).await;
+        let app = orion::server::build_router(state);
+        common::create_and_activate_channel(&app, "bounded-failure", budget_failure_workflow())
+            .await;
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v2/data/bounded-failure",
+                Some(json!({"data":{"large":"x".repeat(2000)}})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        if cap == 1 {
+            assert_eq!(list_total(&app).await, 0);
+        } else {
+            let (_, result) = stored_payloads(&pool, "bounded-failure").await;
+            assert!(result.len() <= cap);
+            let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+            assert!(result["data"].is_null());
+            assert!(
+                result["errors"][0]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("budget")
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn trace_write_failure_preserves_the_original_sync_error() {
+    for timeout in [true, false] {
+        let mut config = cfg_with_storage(TraceStorageMode::Sync);
+        if !timeout {
+            config.engine.max_run_tasks = 1;
+        }
+        let (state, pool) = common::test_state_and_pool(config).await;
+        let app = orion::server::build_router(state);
+        common::create_and_activate_channel_with_config(
+            &app,
+            "store-fails",
+            budget_failure_workflow(),
+            if timeout {
+                json!({"timeout_ms":0})
+            } else {
+                json!({})
+            },
+        )
+        .await;
+        pool.execute_query(
+            "DROP TABLE traces",
+            sea_query_sqlx::SqlxValues(sea_query::Values(vec![])),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            submit_sync(&app, "store-fails").await,
+            if timeout {
+                StatusCode::GATEWAY_TIMEOUT
+            } else {
+                StatusCode::BAD_REQUEST
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_provider_contract_failure_keeps_its_diagnostic_in_the_trace() {
+    struct ContractFailure;
+    impl dataflow_rs::Function for ContractFailure {
+        type Config = ();
+        async fn call(
+            &self,
+            _: &mut dataflow_rs::Ctx<'_>,
+            _: &(),
+        ) -> dataflow_rs::Result<dataflow_rs::Outcome> {
+            Err(orion::engine::functions::connector_call::connector_error(
+                orion_extension_api::ConnectorError::contract_violation(
+                    "dispatch",
+                    "provider fixture failed its contract",
+                    orion_extension_api::EffectStatus::NotStarted,
+                ),
+            )
+            .into())
+        }
+    }
+    let (state, pool) = common::test_state_and_pool(cfg_with_storage(TraceStorageMode::Sync)).await;
+    let app = orion::server::build_router(state.clone());
+    common::create_and_activate_channel(
+        &app,
+        "contract-failure",
+        common::simple_log_workflow("contract"),
+    )
+    .await;
+    let engine = dataflow_rs::Engine::builder()
+        .register("contract", ContractFailure)
+        .workflow_json(
+            &json!({"id":"contract","channel":"contract-failure","on_failure":"fail",
+            "tasks":[{"id":"contract","function":{"name":"contract"}}]}),
+        )
+        .build()
+        .unwrap();
+    let generation = state.runtime.load();
+    state
+        .runtime
+        .publish_parts(orion::runtime::generation::GenerationParts::new(
+            engine,
+            generation.channels.clone(),
+            generation.functions.clone(),
+            generation.plugins.clone(),
+        ));
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v2/data/contract-failure",
+            Some(json!({"data":{}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let public = body_json(response).await;
+    assert!(
+        !public.to_string().contains("provider fixture failed"),
+        "public error must remain sanitized: {public}"
+    );
+    let (_, stored) = stored_payloads(&pool, "contract-failure").await;
+    assert!(stored.contains("PROVIDER_CONTRACT_VIOLATION"), "{stored}");
+    assert!(
+        stored.contains("provider fixture failed its contract"),
+        "{stored}"
+    );
+}
+
+#[tokio::test]
+async fn fatal_sync_failures_obey_the_trace_policy_and_keep_the_http_error() {
+    for mode in [
+        TraceStorageMode::Sync,
+        TraceStorageMode::Async,
+        TraceStorageMode::Batch,
+        TraceStorageMode::Off,
+    ] {
+        for timeout in [true, false] {
+            let mut config = cfg_with_storage(mode);
+            config.trace_storage.errors_only = true;
+            if !timeout {
+                config.engine.max_run_tasks = 1;
+            }
+            let (state, pool) = common::test_state_and_pool(config).await;
+            let app = orion::server::build_router(state);
+            common::create_and_activate_channel_with_config(
+                &app,
+                "fatal",
+                budget_failure_workflow(),
+                if timeout {
+                    json!({"timeout_ms":0,"tracing":{"task_details":true}})
+                } else {
+                    json!({"tracing":{"task_details":true}})
+                },
+            )
+            .await;
+            assert_eq!(
+                submit_sync(&app, "fatal").await,
+                if timeout {
+                    StatusCode::GATEWAY_TIMEOUT
+                } else {
+                    StatusCode::BAD_REQUEST
+                },
+                "{mode:?}"
+            );
+            if mode == TraceStorageMode::Off {
+                assert_eq!(list_total(&app).await, 0);
+                continue;
+            }
+            let (input, result) = stored_payloads(&pool, "fatal").await;
+            assert!(input.contains("\"x\":1"));
+            let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+            assert_eq!(result["status"], "failed");
+            assert!(
+                result["errors"][0]["message"]
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty())
+            );
+            if !timeout {
+                assert_eq!(result["data"]["partial"], true);
+            }
+            let (status,): (String,) = pool
+                .fetch_one_as(
+                    "SELECT status FROM traces WHERE channel = 'fatal'",
+                    sea_query_sqlx::SqlxValues(sea_query::Values(vec![])),
+                )
+                .await
+                .unwrap();
+            assert_eq!(status, "failed");
+        }
+    }
+}
+
+#[tokio::test]
+async fn sampled_out_fatal_sync_failures_do_not_persist() {
+    for timeout in [true, false] {
+        let mut config = cfg_with_storage(TraceStorageMode::Sync);
+        config.trace_storage.sample_rate = 0.0;
+        if !timeout {
+            config.engine.max_run_tasks = 1;
+        }
+        let app = common::test_app_with_config(config).await;
+        common::create_and_activate_channel_with_config(
+            &app,
+            "sampled-fatal",
+            budget_failure_workflow(),
+            if timeout {
+                json!({"timeout_ms":0})
+            } else {
+                json!({})
+            },
+        )
+        .await;
+        assert_eq!(
+            submit_sync(&app, "sampled-fatal").await,
+            if timeout {
+                StatusCode::GATEWAY_TIMEOUT
+            } else {
+                StatusCode::BAD_REQUEST
+            }
+        );
+        assert_eq!(list_total(&app).await, 0);
+    }
+}
+
 // -----------------------------------------------------------------------
 // Sync mode (baseline, default)
 // -----------------------------------------------------------------------

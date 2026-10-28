@@ -1387,6 +1387,7 @@ async fn trace_cleanup_ticks_on_both_nodes_delete_exactly_once() {
             .repos
             .traces
             .store_completed(orion::storage::repositories::traces::TraceCompletedRef {
+                failed: false,
                 channel: "cleanup-ch",
                 channel_id: None,
                 mode: "sync",
@@ -1411,6 +1412,7 @@ async fn trace_cleanup_ticks_on_both_nodes_delete_exactly_once() {
         .repos
         .traces
         .store_completed(orion::storage::repositories::traces::TraceCompletedRef {
+            failed: false,
             channel: "cleanup-ch",
             channel_id: None,
             mode: "sync",

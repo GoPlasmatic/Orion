@@ -618,6 +618,7 @@ async fn a_burst_of_traces_commits_as_a_single_batch() {
             queue
                 .submit(orion::queue::TracePersistenceTask::StoreCompleted(
                     TraceCompletedRow {
+                        failed: false,
                         channel: "probe".to_string(),
                         channel_id: None,
                         mode: "sync".to_string(),
@@ -680,6 +681,7 @@ async fn a_burst_of_large_traces_flushes_on_the_byte_budget() {
             queue
                 .submit(orion::queue::TracePersistenceTask::StoreCompleted(
                     TraceCompletedRow {
+                        failed: false,
                         channel: "probe".to_string(),
                         channel_id: None,
                         mode: "sync".to_string(),

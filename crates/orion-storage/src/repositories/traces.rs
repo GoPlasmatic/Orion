@@ -144,6 +144,8 @@ pub struct TraceCompletedRow {
     pub mode: String,
     pub input_json: Option<String>,
     pub result_json: String,
+    /// A fatal execution failure (timeout or engine error).
+    pub failed: bool,
     pub duration_ms: f64,
     /// Optional per-task execution trace JSON. Populated only when the
     /// channel has `config.tracing.task_details = true`.
@@ -165,6 +167,8 @@ pub struct TraceCompletedRef<'a> {
     pub mode: &'a str,
     pub input_json: Option<&'a str>,
     pub result_json: &'a str,
+    /// A fatal execution failure (timeout or engine error).
+    pub failed: bool,
     pub duration_ms: f64,
     /// Optional per-task execution trace JSON. Populated only when the
     /// channel has `config.tracing.task_details = true`.
@@ -182,6 +186,7 @@ impl TraceCompletedRow {
             mode: &self.mode,
             input_json: self.input_json.as_deref(),
             result_json: &self.result_json,
+            failed: self.failed,
             duration_ms: self.duration_ms,
             task_trace_json: self.task_trace_json.as_deref(),
         }
@@ -262,7 +267,7 @@ fn completed_values(
     let channel_id_val = super::helpers::optional_string_value(row.channel_id);
     [
         Expr::val(id),
-        Expr::val("completed"),
+        Expr::val(if row.failed { "failed" } else { "completed" }),
         Expr::val(row.channel),
         Expr::val(channel_id_val),
         Expr::val(row.mode),
@@ -868,6 +873,7 @@ mod tests {
         // Create a completed trace
         let id = repo
             .store_completed(TraceCompletedRef {
+                failed: false,
                 channel: "orders",
                 channel_id: Some("ch_orders"),
                 mode: "sync",
@@ -900,6 +906,7 @@ mod tests {
         // Create a recent trace that should NOT be deleted
         let _recent_id = repo
             .store_completed(TraceCompletedRef {
+                failed: false,
                 channel: "orders",
                 channel_id: Some("ch_orders"),
                 mode: "sync",
@@ -1011,6 +1018,7 @@ mod tests {
         for i in 0..n {
             let id = repo
                 .store_completed(TraceCompletedRef {
+                    failed: false,
                     channel: "orders",
                     channel_id: Some("ch_orders"),
                     mode: "sync",
@@ -1107,6 +1115,7 @@ mod tests {
         let repo = SqlTraceRepository::new(pool.clone());
         for _ in 0..5 {
             repo.store_completed(TraceCompletedRef {
+                failed: false,
                 channel: "orders",
                 channel_id: Some("ch_orders"),
                 mode: "sync",
