@@ -16,12 +16,11 @@ orion-cli dry-run -w <workflow.json> -i <input.json> [--stubs <stubs.json>] [--m
 
 With `--definitions`, a set whose [`package` document](../shared-definitions.md#the-package-document) declares a `requires.orion` range excluding this binary stops before anything runs. One line names the range and this version.
 
-A computed `output` that resolves to `null` currently fails in the offline stub
-layer, even for task functions whose serving implementation falls back to `data`.
-The call does not reach the call log. Use an explicit destination such as
-`"output": "data"` when that fallback is intended. Matching the serving policy
-requires the upstream resolver extension tracked in
-[dataflow-rs #83](https://github.com/GoPlasmatic/dataflow-rs/issues/83).
+Stubbed calls use each task function's serving output policy. A computed `null`
+falls back to `data` where the function permits that fallback; `http_call` and
+`channel_call` reject it. An unset optional output writes nothing. The call log
+records the resolved destination while preserving secret redaction and errors in
+other input fields.
 
 The printed document carries `data`, `metadata`, `temp_data`, `audit_trail` and `calls`. Those are the same five documents, in the same shape, that a case's `expect` roots address. It also carries `output`, an alias of `data` kept for existing `jq` filters. `tasks` lists the ids of the tasks that ran, once per loop sweep and per `for_each` element. Last come `matched` (whether any task ran), `errors`, and `trace` unless `--trace none`.
 

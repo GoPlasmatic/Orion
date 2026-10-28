@@ -323,7 +323,10 @@ impl StubLayer {
                 .transpose()?,
             _ => None,
         };
-        let input = Value::from(&ctx.input()?);
+        let input = Value::from(&match output.as_ref() {
+            Some(path) => ctx.input_with_primary_output(path)?,
+            None => ctx.input_without_primary_output()?,
+        });
         let target = definition
             .stub_target
             .and_then(|field| input.get(field))
@@ -416,8 +419,15 @@ mod tests {
         use crate::offline::{OfflineRun, run_single, single_engine};
 
         let offline = crate::kit::OfflineDeps::new();
-        let compiler = crate::serving_registry(offline.deps())
-            .compiler(dataflow_rs::program::CompileOptions::default());
+        let mut deps = offline.deps();
+        let secrets = crate::ResolvedSecrets::from_values(
+            [("REDACTION_TEST".to_string(), json!("sentinel-never-log"))]
+                .into_iter()
+                .collect(),
+        );
+        deps.exprs = crate::operators::orion_exprs(&secrets, 0).expect("test secrets compile");
+        let compiler =
+            crate::serving_registry(deps).compiler(dataflow_rs::program::CompileOptions::default());
         let workflow = json!({
             "id": "w", "name": "w", "channel": "c", "status": "active",
             "condition": true, "tasks": tasks,
@@ -516,35 +526,82 @@ mod tests {
         );
     }
 
-    // Ctx::input resolves the output again when building the call log. This
-    // preserves the existing offline refusal even for handlers that allow a
-    // null destination to fall back to data. See improvements §7.5.
     #[tokio::test]
-    async fn a_computed_null_output_is_refused_before_recording() {
-        for (name, mut input, target) in [
-            ("http_call", json!({"connector": "api"}), "api"),
-            ("channel_call", json!({"channel": "child"}), "child"),
+    async fn a_computed_null_output_uses_each_functions_serving_policy() {
+        for (name, mut input, target, accepts_null) in [
+            ("http_call", json!({"connector": "api"}), "api", false),
+            ("channel_call", json!({"channel": "child"}), "child", false),
             (
                 "cache_read",
                 json!({"connector": "cache", "key": "k"}),
                 "cache",
+                true,
             ),
             (
                 "cache_delete",
                 json!({"connector": "cache", "keys": ["k"]}),
                 "cache",
+                true,
+            ),
+            (
+                "db_read",
+                json!({"connector": "db", "query": "SELECT 1"}),
+                "db",
+                true,
             ),
         ] {
             input["output"] = json!({"var": "data.missing"});
-            let (_, calls, error) = run(
-                json!([{"id": "call", "name": "call", "function": {"name": name, "input": input}}]),
+            let (message, calls, error) = run(
+                json!([{"id": "call", "function": {"name": name, "input": input}}]),
                 stub(name, target, json!({"answer": 1})),
                 json!({}),
             )
             .await;
-            assert!(error.is_some(), "{name}");
-            assert!(calls.is_empty(), "{name}");
+            if accepts_null {
+                assert!(error.is_none(), "{name}: {error:?}");
+                assert_eq!(data(&message), json!({"answer": 1}), "{name}");
+                assert_eq!(calls.len(), 1, "{name}");
+                assert_eq!(calls[0].input["output"], "data", "{name}");
+            } else {
+                assert!(error.is_some(), "{name}");
+                assert!(calls.is_empty(), "{name}");
+            }
         }
+    }
+
+    #[tokio::test]
+    async fn supplying_an_output_keeps_other_errors_and_secret_redaction() {
+        let (message, calls, error) = run(
+            json!([{"id":"read", "function":{"name":"http_call", "input":{
+                "connector":"api", "output":{"var":"data.destination"},
+                "headers":{"authorization":{"secret":"REDACTION_TEST"}}
+            }}}]),
+            stub("http_call", "api", json!({"ok":true})),
+            json!({"destination":"data.result"}),
+        )
+        .await;
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(data(&message)["result"], json!({"ok":true}));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].input["output"], "data.result");
+        assert!(calls[0].input["headers"]["authorization"].is_null());
+        assert!(!calls[0].input.to_string().contains("REDACTION_TEST"));
+        assert!(!calls[0].input.to_string().contains("sentinel-never-log"));
+
+        let (_, calls, error) = run(
+            json!([{"id":"read", "function":{"name":"cache_read", "input":{
+                "connector":"cache", "key":{"throw":"invalid key"},
+                "output":{"var":"data.destination"}
+            }}}]),
+            stub("cache_read", "cache", json!({"ok":true})),
+            json!({"destination":"data.result"}),
+        )
+        .await;
+        assert!(
+            error.is_some(),
+            "non-output resolution errors must still fail"
+        );
+        assert!(calls.is_empty());
     }
 
     #[tokio::test]
