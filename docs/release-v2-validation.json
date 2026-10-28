@@ -1,0 +1,432 @@
+{
+  "date": "2026-10-28",
+  "branch": "dataflow-4",
+  "source_base_commit": "12968e1bfa3a191aa0b4aff87ce81756ba5c7fcb",
+  "workspace_version": "1.12.0",
+  "environment": {
+    "os": "macOS 27.0.1",
+    "architecture": "arm64",
+    "rustc": "1.99.1",
+    "msrv_rustc": "1.98.1",
+    "docker": "29.9.2",
+    "wasm_tools": "1.258.0"
+  },
+  "source_sha256": {
+    "Cargo.toml": "acf5612d243c3939bd6f2618ee771576336d20ada057f6feed36f7b9c3d2b491",
+    "Cargo.lock": "ffe4c635fa9866df597c0e19425b090810c84ecbba613ce540d278c6c6f83199",
+    "crates/orion-http/Cargo.toml": "57af169612cceb71e231c29264c05e9a5bcb6141bd86f5b5908945fcb9ec0ae9",
+    "deny.toml": "3b65cb31681086929807230593e9745557cc58af3565fcbeba9c2518d1d33915",
+    "Dockerfile": "d3d9452a91891dc09ca4fd6f5516cd704be3c9b6223d113fb5ababa0c7439c53",
+    ".dockerignore": "9a30356ae76c980247cfb4cd3fc5141eb6323a223e55933ff0ada4d972ffda96",
+    "deploy/ha/plugin-drill.sh": "759d5252e381f9825683430183d23f6a68aee00822d7422ad971dbcac3e747c5",
+    "crates/orion-server/tests/benchmark/bench.sh": "f1a14c242115371653ea1e5fb2bc18b63f4f02a1a80150c290c7091a2db93e41",
+    "crates/orion-server/tests/benchmark/fixtures/workflows/bench_simple_log.json": "3a871f061b8968c96287ee84366483af35cdc403283030cd130153679a1eacc1",
+    "crates/orion-server/tests/benchmark/fixtures/workflows/bench_complex_ecommerce.json": "b51374f7a2b5b4b8e36005c4449c47914510471ca624ac2cb311e9afccaac83e",
+    "crates/orion-server/tests/benchmark/fixtures/workflows/bench_plugin_echo.json": "30b605e7228019d3d85ca5d96b83216f74db2dc5d47287829c19fd3a2c13325f",
+    "crates/orion-server/tests/benchmark/fixtures/workflows/bench_jsonlogic_echo.json": "52b60d3a3e6a8b7822529cc34029bae840b36151c00f3efba0fffb3d77cdede9"
+  },
+  "dependency_versions": {
+    "ctutils": "0.4.6",
+    "rustls-webpki": "0.103.16",
+    "tokio": "1.54.1",
+    "utoipa": "6.0.0",
+    "utoipa-gen": "6.0.1",
+    "utoipa-swagger-ui": "10.0.2"
+  },
+  "workspace_test_counts": {
+    "passed": 3107,
+    "failed": 0,
+    "ignored": 79
+  },
+  "checks": [
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 1.51
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 50.63
+    },
+    {
+      "name": "workspace",
+      "command": [
+        "cargo",
+        "test",
+        "--workspace"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 151.21
+    },
+    {
+      "name": "doctests",
+      "command": [
+        "cargo",
+        "test",
+        "--doc"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 47.37
+    },
+    {
+      "name": "rustdoc",
+      "command": [
+        "cargo",
+        "doc",
+        "--workspace",
+        "--no-deps",
+        "--lib"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 33.08
+    },
+    {
+      "name": "msrv",
+      "command": [
+        "CARGO_INCREMENTAL=0",
+        "cargo",
+        "+1.98",
+        "check",
+        "--workspace",
+        "--all-targets",
+        "--locked"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "e2e",
+      "command": [
+        "bash",
+        "tests/e2e/run.sh"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 113.87
+    },
+    {
+      "name": "workflow-cases",
+      "command": [
+        "cargo",
+        "run",
+        "-p",
+        "orion-cli",
+        "--",
+        "test",
+        "examples/workflow-tests",
+        "--plugin-dir",
+        "examples/packages/fixed-width-statement",
+        "--plugin-dir",
+        "examples/packages/c4-referee"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 55.99
+    },
+    {
+      "name": "containers",
+      "command": [
+        "python3",
+        "/private/tmp/orion-release-containers.py"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 387.42
+    }
+  ],
+  "containers": [
+    {
+      "name": "data-sql",
+      "command": [
+        "cargo",
+        "test",
+        "--test",
+        "integration",
+        "--",
+        "--ignored",
+        "postgres_test",
+        "mysql_test",
+        "db_column_types_test",
+        "data_roundtrip_test",
+        "data_parity_test",
+        "integrity_errors_test"
+      ],
+      "exit_code": 0,
+      "passed": 32,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "cli-sql",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "orion-cli",
+        "--test",
+        "authoring",
+        "--",
+        "--ignored",
+        "sql_check_test"
+      ],
+      "exit_code": 0,
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "vault",
+      "command": [
+        "cargo",
+        "test",
+        "--test",
+        "integration",
+        "--",
+        "--ignored",
+        "vault_test"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "storage-postgres",
+      "command": [
+        "cargo",
+        "test",
+        "--test",
+        "storage_postgres",
+        "--",
+        "--ignored"
+      ],
+      "exit_code": 0,
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "storage-mysql",
+      "command": [
+        "cargo",
+        "test",
+        "--test",
+        "storage_mysql",
+        "--",
+        "--ignored"
+      ],
+      "exit_code": 0,
+      "passed": 8,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "schema-parity",
+      "command": [
+        "cargo",
+        "test",
+        "--test",
+        "schema_parity",
+        "--",
+        "--ignored"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "cluster",
+      "command": [
+        "cargo",
+        "test",
+        "--test",
+        "cluster",
+        "--",
+        "--ignored",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "passed": 21,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "e2e": {
+    "suites": 11,
+    "passed": 87,
+    "failed": 0,
+    "skipped": 0
+  },
+  "examples": {
+    "workflow_lint_files": 14,
+    "offline_cases": 20,
+    "live_packages": 13,
+    "quickstart_runs": 2,
+    "each_package_runs": 2,
+    "second_apply_unchanged": true
+  },
+  "fresh_plugin_checks": [
+    {
+      "name": "plugin-fixture-build",
+      "command": [
+        "bash",
+        "crates/orion-server/tests/fixtures/plugins/build.sh"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.19
+    },
+    {
+      "name": "plugin-codec-build",
+      "command": [
+        "bash",
+        "examples/plugins/fixed-width/build.sh"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.11
+    },
+    {
+      "name": "plugin-rules-build",
+      "command": [
+        "bash",
+        "examples/plugins/c4-rules/build.sh"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.13
+    },
+    {
+      "name": "plugin-regressions",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "orion-server",
+        "--test",
+        "integration",
+        "--",
+        "plugin_abi_cases_test",
+        "plugin_runtime_test",
+        "plugin_sdk_test",
+        "admin_plugins_test"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 23.01
+    },
+    {
+      "name": "sdk",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "orion-plugin-sdk"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 11.0
+    },
+    {
+      "name": "workflow-cases",
+      "command": [
+        "cargo",
+        "run",
+        "-p",
+        "orion-cli",
+        "--",
+        "test",
+        "examples/workflow-tests",
+        "--plugin-dir",
+        "examples/packages/fixed-width-statement",
+        "--plugin-dir",
+        "examples/packages/c4-referee"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 5.08
+    }
+  ],
+  "component_hashes": {
+    "crates/orion-server/tests/fixtures/plugins/fixture.wasm": {
+      "original_sha256": "2728c7f3da19f25c023a374f125ec511457a006d19e4606263717056e3a30c2b",
+      "rebuilt_sha256": "bf664af6f7cee5ca725f35d68856d4cf896a6d0f7de43da82640d446256302a6"
+    },
+    "examples/packages/fixed-width-statement/fixed-width.wasm": {
+      "original_sha256": "0dbab10a151367eb3659e3c95f0f257743f1d1a6784e8280bdae3b36af0bad29",
+      "rebuilt_sha256": "6b14c4c7d48febce1472a8ed3a725cfd1573fdfb6284b0c2a9e88a55fe77545f"
+    },
+    "examples/packages/c4-referee/c4-rules.wasm": {
+      "original_sha256": "17d09d5c4d109d9d425823c211954e7cd4cdd472dd60eb7a7d4ac886c2c6c274",
+      "rebuilt_sha256": "49ecd6e32f8ffe07fb7289d190de2ce2688861a938c098ca265599e3c0613125"
+    }
+  },
+  "http_smoke": {
+    "rows": 11,
+    "duration": "2s",
+    "concurrency": 4,
+    "fixed_concurrency_cases": [
+      1,
+      10,
+      50,
+      100
+    ],
+    "errors": 0,
+    "committed_replacements": 3,
+    "unchanged_apply_passed": true,
+    "http_404_load_expected_exit": 1
+  },
+  "image": {
+    "tag": "orion:v2-release-check-20261028",
+    "image_id": "sha256:09a9b68bd8e3c12e7dadc7c25d6d8baf2264280788753ff630ea37aafe4eecde",
+    "profile": "dist",
+    "codegen_units": 16,
+    "lto": false,
+    "published": false
+  },
+  "ha": {
+    "nodes": 2,
+    "rolling_requests": 2618,
+    "rolling_non_2xx": 0,
+    "plugin_requests": 1419,
+    "plugin_non_2xx": 0,
+    "plugin_expected_revision_source": "committed manifest",
+    "cron_occurrences": 44,
+    "cron_distinct_instants": 44,
+    "cron_completed": 19,
+    "cron_skipped_singleton": 25,
+    "cron_max_sampled_running": 1,
+    "cron_overlap_samples": 0,
+    "cluster_http_errors": 0,
+    "stack_removed": true
+  },
+  "package_verification": {
+    "command": [
+      "cargo",
+      "package",
+      "--locked",
+      "--workspace"
+    ],
+    "clean_source_export": true,
+    "packages_verified": 15,
+    "incremental": false,
+    "dev_debug": 0,
+    "exit_code": 0
+  },
+  "dependency_policy": {
+    "command": [
+      "cargo",
+      "deny",
+      "check"
+    ],
+    "exit_code": 0,
+    "duplicate_warnings_retained": true
+  }
+}

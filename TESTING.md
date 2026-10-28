@@ -3,7 +3,7 @@
 The complete map of the repo's test estate: every layer, what it covers,
 what it needs, how to run it, and which CI job gates it. Detail lives next
 to the code — [`crates/orion-server/tests/README.md`](crates/orion-server/tests/README.md)
-for the server's six cargo test binaries, [`tests/e2e/README.md`](tests/e2e/README.md)
+for the server's cargo test binaries, [`tests/e2e/README.md`](tests/e2e/README.md)
 for the end-to-end suite — this file is the top of that tree.
 
 Three principles shape the setup:
@@ -37,7 +37,7 @@ Three principles shape the setup:
 | Touched a **rider crate** (`orion-api`, `orion-client`, `orion-definitions`, `orion-extension-api`, `orion-common`, `orion-storage`, `orion-engine`, `orion-plugin-host`, `orion-runtime`, `orion-authoring`, `orion-http`, `orion-plugin-sdk`), including its manifest | `cargo package --locked --workspace` (needs a clean tree) — no version bump: every crate shares `workspace.package.version` and a release moves it |
 | Touched the MSRV surface (new language features) | `cargo +1.98 check --workspace --all-targets` — `just check` does **not** cover this; CI runs it as its own job |
 | Touched the examples | `just workflow-tests` + `./examples/deploy.sh <name>` against a local server (`ORION_PLUGINS__ENABLED=true` for `fixed-width-statement` and `c4-referee`; it needs both binaries, `cargo build -p orion-server -p orion-cli`) |
-| Touched the plugin sandbox, the manifest, the SDK, or the WIT | `cargo test --test integration plugin_runtime_test admin_plugins_test plugin_abi_cases_test plugin_sdk_test`; after a guest or SDK change, `crates/orion-server/tests/fixtures/plugins/build.sh` and `examples/plugins/fixed-width/build.sh` (needs `wasm32-unknown-unknown` + `wasm-tools`) and commit the components — the `plugin-sdk` CI job rebuilds both from source and runs the ABI cases against the fresh bytes |
+| Touched the plugin sandbox, the manifest, the SDK, or the WIT | `cargo test --test integration plugin_runtime_test admin_plugins_test plugin_abi_cases_test plugin_sdk_test`; after a guest or SDK change, `crates/orion-server/tests/fixtures/plugins/build.sh` `examples/plugins/fixed-width/build.sh` and `examples/plugins/c4-rules/build.sh` (needs `wasm32-unknown-unknown` + `wasm-tools`) and commit the components — the `plugin-sdk` CI job rebuilds all three from source and runs the ABI cases against the fresh bytes |
 | Release session | `RELEASING.md` — rc pipeline rehearsal, benchmarks, HA drill |
 
 ## Layer 1 — unit tests (every crate)
@@ -52,7 +52,7 @@ enum round-trips), `orion-client` (path builders, error classification), and
 `orion-plugin-sdk` (the JSON boundary and the error classes of the guest ABI).
 
 ```bash
-cargo test --workspace          # what CI runs (server + CLI + the three lib crates)
+cargo test --workspace          # what CI runs (all workspace crates)
 cargo test -p orion-api         # one crate
 ```
 
@@ -161,7 +161,7 @@ just test-containers    # all of the below, in CI's exact invocations
 `metrics_exposition` (in-memory, no Docker) asserts the rendered `/metrics`
 body from its own process, where the recorder race can't occur.
 
-*Needs Docker. CI: `integration-containers` job, a six-leg matrix (one
+*Needs Docker. CI: `integration-containers` job, a seven-leg matrix (one
 runner per invocation) — kept drift-free by `ci_filter_drift_test`.*
 
 ## Layer 4 — end-to-end suite (`tests/e2e/`)
@@ -203,10 +203,10 @@ The examples are executable and CI treats them as a gate (`examples` job):
   Both scripts compile with `orion-cli compile` and deploy with
   `orion-cli deployments apply -d`; each deploy replaces the node's head, so
   every package is proven on its own, and the second run applies nothing.
-- **From source:** the `plugin-sdk` CI job rebuilds the test fixture and the
-  example codec from their Rust sources on the shipped `orion-plugin-sdk`,
+- **From source:** the `plugin-sdk` CI job rebuilds the test fixture and both
+  example guests from their Rust sources on the shipped `orion-plugin-sdk`,
   runs the ABI case suite against the fresh fixture and the example cases
-  against the fresh codec — so "supported SDK" is a job, not a claim.
+  against the fresh guests — so "supported SDK" is a job, not a claim.
 
 ## Layer 6 — meta-suites (quality of the tests themselves)
 
@@ -233,8 +233,8 @@ The examples are executable and CI treats them as a gate (`examples` job):
 | Packaging | `package` CI job | `cargo package --locked --workspace` verify-builds the crates.io tarballs (riders included). Gated by the `changes` job: it runs when a manifest moves or a file is added/renamed under `crates/`, the only two ways an `include` allowlist can drop a needed file, and on the weekly sweep |
 | Docker / Helm / Book | `docker-build`, `helm`, `book` jobs | Image builds; chart lints, renders, and rejects misspelled values; book builds |
 | CodeQL | `codeql.yml` | Static security analysis |
-| HA rolling drill | `ha-drill.yml` (path-filtered + weekly) | SIGTERM one of two replicas under load through the LB → zero non-2xx; then the plugin drill (`deploy/ha/plugin-drill.sh`) and the cron drill (`deploy/ha/cron-drill.sh`). Both still set up their definitions through the v1 entity routes (`/admin/plugins`, `/admin/workflows`, `/admin/channels`), which the server no longer has, so neither runs against this tree until it is ported onto compile + `deployments apply -d`. Ported, the plugin drill proves a plugin deployment converges on both nodes under load with zero non-2xx; the cron drill proves two reconcilers produce one occurrence per scheduled instant, and a `forbid` singleton stays non-overlapping across a node restart |
-| Plugin SDK | `plugin-sdk` CI job (path-filtered) | The test fixture and the example codec rebuild from source on the shipped `orion-plugin-sdk`; the ABI case suite and the example's offline cases pass against the fresh components |
+| HA rolling drill | `ha-drill.yml` (path-filtered + weekly) | SIGTERM one of two replicas under load through the LB, then the plugin and cron drills. Setup uses compile + `deployments apply -d`; each drill restores the prior head. Until a v2 image ships, scripts select the local-build overlay. Record zero non-2xx across rolling/plugin replacement and the cron singleton/recovery verdicts against the candidate image. |
+| Plugin SDK | `plugin-sdk` CI job (path-filtered) | The test fixture and both example guests rebuild from source on the shipped `orion-plugin-sdk`; the ABI case suite and the example's offline cases pass against the fresh components |
 
 ## Layer 8 — benchmarks (manual, recorded per release)
 
@@ -244,11 +244,13 @@ shared runners are noise. Run on dedicated hardware at release checkpoints;
 each release's record is committed under `crates/orion-server/tests/benchmark/results/vX.Y.Z/`
 (procedure: `RELEASING.md`).
 
-Its setup still drives the v1 admin routes (workflow and channel CRUD,
-`POST /engine/reload`), which the server no longer has: until it is ported
-onto compile + `deployments apply -d`, and its `multi` and `reload`
-scenarios redesigned for a node that serves one deployment head, the script
-does not run against this tree.
+The HTTP runner builds matching server/CLI binaries, compiles complete definition
+sets and applies v2 deployments. `multi` puts twelve workflows and channels in
+one head; `reload` alternates two definitions under traffic and checks that each
+apply commits a new revision. Probes verify serving behavior before timing;
+request errors fail the run. Use a short debug run to validate the setup and a
+dedicated release build for performance claims. See
+[the HTTP benchmark guide](crates/orion-server/tests/benchmark/README.md).
 
 For the v4 run-view and fan-out workloads, run
 `python3 crates/orion-server/tests/benchmark/run-view.py --profile dev --rounds 3`.
@@ -261,7 +263,7 @@ The behavioral regressions run in `orion-engine` with
 ## CI at a glance
 
 Push/PR: `changes`, `fmt`, `lint`, `msrv`, `test`, `cli-e2e`, `examples`,
-`integration-containers` (a six-leg matrix, one runner per container suite),
+`integration-containers` (a seven-leg matrix, one runner per container suite),
 `coverage`, `deny`, `package`, `book`, `helm`, `docker-build` — plus
 `mutants` on PRs, `plugin-sdk` and `ha-drill`/`cross-os-build` when their
 paths change.

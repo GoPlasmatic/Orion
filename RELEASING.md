@@ -1,134 +1,147 @@
 # Releasing Orion
 
-The release process for maintainers: what a version tag triggers, how the
-first signed release is proven (P12), and the benchmark session the 1.0
-README numbers come from (C13). Everything here assumes a clean tree on
-`main` with `cargo fmt` / `clippy --all-targets` / `cargo test` green and
-the container-gated suites verified.
+Cut releases from `main` after the workspace gate and the current release
+matrix pass. The v2 migration changes the API, deployment model and state
+schema; use the [v2 release evidence](docs/release-v2-evidence.md) to track the
+remaining gates and their owners. Historical 1.0 proof below does not validate
+an unbuilt v2 release candidate.
 
-Releases are cut from `main` directly. There was a long-lived `v1.0.0`
-branch while the monorepo restructure was in flight; it was merged and
-deleted once `main` became the workspace, and nothing here needs a release
-branch. If one is ever reintroduced, the tag steps below still work — they
-name refs explicitly rather than relying on the current branch.
+## Prepare the candidate
 
-## What a release-shaped tag triggers
+1. Run `just check`: workspace formatting, Clippy with `-D warnings`, workspace
+   tests, default-member doctests and workspace Rustdoc with `-D warnings`.
+   Run `cargo +1.98 check --workspace --all-targets --locked` for the MSRV.
+2. Run all **seven** `just test-containers` legs, the 11-suite e2e runner,
+   examples lint/offline cases and live quickstart/package deployments twice.
+   Rebuild all three plugin components and run the SDK/ABI/runtime and offline
+   example cases against the fresh bytes. Use the commands in
+   [TESTING.md](TESTING.md) and `.github/workflows/ci.yml`; record actual selected
+   counts and failures, without carrying forward v1 suite totals.
+3. Run `cargo deny check bans sources licenses`, documentation lint and the
+   book build. Preserve justified duplicate warnings. Check advisories through
+   the current CI policy too.
+4. Verify the registry-only dependency graph. Swagger UI 10.0.2 contains
+   utoipa#1645's ZIP 9 security fixes; this branch removes the temporary utoipa
+   workspace patches and git-source exception. Keep the minimum at 10.0.2 or
+   newer so registry consumers receive the fix too. Run the affected tests,
+   OpenAPI drift guard, dependency policy and workspace gate after updates.
+5. Reconcile both crates' `Unreleased` notes with the final behavior. Document
+   strict v2 definitions, the `{initial, steps, truncated}` trace, matching
+   server/CLI API versions, Community removals and the fresh-database move from
+   1.x. Preserve dated release history. Do not advertise reference-only
+   Enterprise work as shipped Community capability.
+6. Capture the HTTP and run-view benchmark evidence below. Run current HA
+   rolling, plugin and cron drills against the candidate image; record the
+   image digest. Until a v2 image exists, the drill scripts use
+   `docker-compose.ha.build.yml` for a local v2 build. Verify the published
+   candidate before removing that fallback or changing the v1 image pin.
+7. Confirm Console v2 support in Orion-ui before refreshing its recording and
+   guide. Track that repository's release as an external dependency.
 
-The workspace has two releasable packages, `orion-server` and `orion-cli`,
-**versioned in lockstep** — as is everything else in the workspace. There is
-one version number, `workspace.package.version` in the root `Cargo.toml`, and
-every crate inherits it with `version.workspace = true`. A bare `v*` tag
-(e.g. `v1.0.0`, `v1.0.0-rc.1`) is the joint release: dist announces every
-dist-able package sitting at the tagged version, so one tag yields one GitHub
-release carrying both sets of archives, both installers and both tap formulae,
-and both docker-release workflows build their image.
+The workspace has fifteen crates sharing `workspace.package.version`; the
+server and CLI are the two distributed binaries. Use `cargo release` for the
+lockstep bump. Its workspace configuration updates the version requirements,
+commits and tags, and disables automatic push and publication. Do not bump a
+member manifest by hand.
 
-`cargo release <level|version>` is the tool for the bump. It rewrites
-`workspace.package.version` and the two `workspace.dependencies` requirements
-(the only other places the number appears — a path dependency still needs a
-`version` to be publishable), commits, and tags. It is configured not to push
-or publish: the tag is what starts the pipelines, and publishing stays with
-`crates-publish.yml`, which is idempotent and knows the rider order.
+For a candidate, rehearse `cargo release version --workspace <candidate-version>`
+and run it with `--execute` after reviewing the plan. This version-only subcommand
+leaves the commit and tag until the generated changes are ready. Every bump also
+needs a regenerated `docs/openapi.json` (`cargo run -- dump-openapi`) and the
+new `Tested with Orion <version>.` tutorial stamps. Move a tutorial's
+`last_verified` date only after rerunning its documented path. Run the gate
+again, commit the version/generated changes, and tag that final commit.
+Cut the dated changelog section on the actual release day, leaving a
+new empty `Unreleased` section and updated compare links.
+
+Run `cargo package --locked --workspace` from a **clean candidate checkout**
+after committing the bump and resolving the registry prerequisite. Packaging
+a dirty development tree with `--allow-dirty` is diagnostic evidence only.
+
+## Publish and verify
+
+Push a release-shaped tag only after the required CI run passes for its exact
+commit. A bare `vX.Y.Z` or `vX.Y.Z-rc.N` tag releases both binaries; use the full
+ref (`git push origin refs/tags/<tag>`). Package-prefixed tags
+`orion-server-vX.Y.Z` and `orion-cli-vX.Y.Z` select just that binary. The tag's
+version must match the workspace version.
+
+A server release starts these independent pipelines behind `ci-gate.yml`:
+
+- `release.yml` uses cargo-dist to build archives and installers, attach
+  attestations, and publish the GitHub release and Homebrew formulae. Candidate
+  versions produce prereleases.
+- `docker-release.yml` builds per-architecture images and merges their manifest,
+  signs it with cosign, attaches the SPDX SBOM and provenance, then verifies the
+  published output. A prerelease never becomes `latest`. The CLI image has its
+  own `docker-release-cli.yml` workflow.
+- `crates-publish.yml` publishes twelve library riders in dependency order,
+  then `orion-server`, using `.github/scripts/publish-crates.sh`. It skips a
+  version already present in the sparse registry index and fails if the index
+  cannot be read. Prerelease tags skip registry publication. `orion-cli` does
+  not publish to crates.io because another project owns that name; it ships
+  through dist, Homebrew, GHCR and `cargo install --git`.
+
+Check `CRATES_IO_TOKEN` and the cross-repository `GH_PAT` before tagging.
+A `workflow_dispatch` dry run skips the image merge/signing job, so a real
+candidate tag must prove that path. Verify its image and a downloaded dist
+archive from outside the producing runner:
 
 ```bash
-cargo release patch --execute      # or minor / major / 1.4.0-rc.1
-git push origin refs/tags/v1.3.2
+cosign verify ghcr.io/goplasmatic/orion:<candidate-version> \
+  --certificate-identity-regexp 'github.com/GoPlasmatic/Orion' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+gh attestation verify oci://ghcr.io/goplasmatic/orion:<candidate-version> -R GoPlasmatic/Orion
+gh attestation verify <downloaded-archive> -R GoPlasmatic/Orion
 ```
 
-Editing `workspace.package.version` by hand and tagging works just as well;
-the tool exists so the three numbers cannot drift apart.
+Record run URLs and digests. Fix a failed candidate with a new candidate
+version. Repeat the image and HA checks for the artifact you intend to promote.
+Cloudflare Workers Builds publishes docs from changes on `main`; verify the
+served upgrade guide and version in its deployment dashboard.
 
-**Only `orion-server` is published to crates.io.** `orion-cli` is not, and
-this is deliberate: the `orion-cli` name on crates.io was registered in
-January 2021 by an unrelated Lisp compiler
-([github.com/wafelack/orion](https://github.com/wafelack/orion)) and is owned
-by that author's account. All three of its versions are yanked, but yanking
-never frees a name, so a publish would fail with "not an owner" — and it
-would fail *after* the rider crates and `orion-server` were already live and
-unyankable-in-place. Nothing regresses: the CLI has never shipped through
-crates.io (before the monorepo merge it lived in `GoPlasmatic/Orion-cli`,
-which had no crates.io pipeline at all), and it still reaches users through
-the dist installers, the Homebrew tap, `ghcr.io/goplasmatic/orion-cli` and
-`cargo install --git`, which is what the install docs describe. Securing the
-name would be the only prerequisite to adding it back.
+## Benchmark evidence
 
-The package-prefixed tags are the out-of-band path for shipping one package
-alone: `orion-server-vX.Y.Z` and `orion-cli-vX.Y.Z` each release exactly
-their own package (release.yml's dist plan and docker-release-cli.yml both
-match on the prefix; crates-publish does too, and an `orion-cli-v*` tag
-simply gives it nothing to publish).
+The [v1.0.0 session](crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md)
+is historical. Keep README figures labeled with their measured version until
+a dedicated v2 session replaces them. A debug smoke run proves the benchmark
+setup works; it does not supply release throughput or a speedup claim.
 
-Because lockstep means a bare tag names a version one package may not have
-reached, the CLI's pipelines degrade rather than fail on a mismatch:
-docker-release-cli's `prepare` job skips the CLI image when a bare tag's
-version disagrees with `crates/orion-cli/Cargo.toml`. A prefixed
-`orion-cli-v*` tag that disagrees is still a hard error — that one is a
-mistake, not a server-only release.
+On idle, dedicated hardware, record CPU, cores, memory, OS, toolchain, exact
+commit and binary versions. Build both binaries from that commit:
 
-The library crates (`orion-api`, `orion-client`,
-`orion-definitions`, `orion-extension-api`, `orion-common`, `orion-storage`, `orion-engine`, `orion-plugin-host`, `orion-runtime`, `orion-authoring`, `orion-http`, `orion-plugin-sdk`) are never tagged: crates-publish publishes
-them automatically as riders — in dependency order, skipping versions already
-on crates.io — right before `orion-server`, since crates.io refuses a crate
-whose dependency it doesn't host. `orion-plugin-sdk` depends on nothing else
-in the workspace and is a rider for a different reason: it is what a plugin
-author links against, so it has to be on crates.io for the SDK to be usable
-at all.
+```bash
+cargo build --release --locked -p orion-server -p orion-cli
+BENCH_RELEASE=1 BENCH_SKIP_BUILD=1 BENCH_DURATION=30s \
+  BENCH_OUTPUT_DIR=/tmp/orion-http-candidate \
+  bash crates/orion-server/tests/benchmark/bench.sh
+python3 crates/orion-server/tests/benchmark/run-view.py --profile dev --rounds 3 \
+  --output /tmp/orion-run-view-candidate.json
+```
 
-**Lockstep is what makes the riders safe, and it is why there is nothing to
-remember here.** Skip-if-present means a rider whose contents changed without
-a version bump would be skipped at publish time, leaving the released binary
-linked against older crates.io content while the repo builds the newer local
-one — a divergence nothing in CI can see, because the workspace always
-resolves the path dependency. Sharing one workspace version makes that
-unrepresentable: a release moves the number, so every rider's version moves
-with it.
+The HTTP runner compiles and applies complete v2 deployments. Its seven local
+scenarios emit eleven rows: health, simple, complex, twelve-channel estate,
+four concurrency levels, deployment replacement, Wasm echo and JSONLogic echo.
+The estate carries twelve copies of the simple workload in **one head**.
+Replacement alternates two definitions and requires a new committed revision;
+an unchanged apply would measure no reload. Output probes precede timing, and
+request failures make the runner fail. Run-view allocations and whole-process
+RSS have different measurement windows; follow [the report's methodology](crates/orion-server/tests/benchmark/RUN_VIEW.md).
 
-It used to be a maintainer obligation instead — bump each rider you touched,
-then bump every dependent whose requirement you had to edit, which made *that*
-dependent a changed rider needing its own bump — policed by a `package`-job
-step that diffed the rider directories against the push base. The step and the
-cascade are both gone; if you find yourself hand-editing a `version` in a
-member manifest, that is the mistake.
+The opt-in `cluster` scenario deploys to a disposable v2 HA stack through its
+load balancer and restores the prior head with compare-and-swap. Set
+`ORION_ADMIN_API_KEYS` and point `BENCH_CLUSTER_URL` at the LB. Start the stack
+with `docker-compose.ha.build.yml` while no published v2 image exists; use
+`docker-compose.ha.n3.yml` for three nodes. Capture N=2 and N=3, the rolling
+restart drill and the plugin/cron drill verdicts. Require all upstreams healthy
+before comparing per-node overhead or scaling efficiency.
 
-`cargo package --locked --workspace` — what the `package` job runs — is the
-local rehearsal. It needs a **clean working tree**, so run it after committing
-the bump, not before. A server-release tag starts three independent
-pipelines, all gated on a successful CI run for the tagged commit (T10):
-
-- **`release.yml`** (generated by cargo-dist): builds archives and
-  installers per target, attests every artifact
-  (`github-attestations = true` in `dist-workspace.toml`), and publishes a
-  GitHub release. dist marks `-rc.*` versions as prereleases automatically.
-- **`docker-release.yml`**: builds per-arch images by digest, then the
-  `merge` job assembles the multi-arch manifest, signs it (keyless
-  `cosign sign`), attaches an SBOM (`cosign attest --type spdxjson`) and
-  build provenance, and **verifies its own output** — `cosign verify` +
-  `gh attestation verify` against the published tag, so an unsigned release
-  fails itself. `latest` is only applied to non-prerelease versions
-  (`latest=auto`), so an rc never becomes `latest`. The Helm chart publishes
-  after the manifest exists.
-- **`crates-publish.yml`**: runs `.github/scripts/publish-crates.sh` —
-  `cargo publish --locked` to crates.io for the three rider crates and
-  `orion-server` (not `orion-cli` — see above), skipping any version that is
-  already live so the job is safe to re-run. Presence is read from the sparse
-  index (`index.crates.io`), never the crates.io JSON API: the API rate-limits
-  and a 429 read as "not published yet" is what failed the v1.1.0 run. An
-  index that cannot be read stops the release rather than guessing, and
-  cargo's own *"already exists on crates.io index"* is treated as a
-  successful skip. The workflow skips prerelease tags (anything containing
-  `alpha`/`beta`/`rc`/`pre`), so the rc rehearsal does not publish a crate —
-  the real tag is its first execution.
-
-**Required repository secrets** — a missing one fails its pipeline only
-*after* the tag exists, so check both before tagging:
-
-- `CRATES_IO_TOKEN` — `crates-publish.yml`'s registry token.
-- `GH_PAT` — `release.yml`'s Homebrew job pushes the formula to
-  `GoPlasmatic/homebrew-tap` with it; the built-in `GITHUB_TOKEN` cannot
-  write to another repository.
-
-Nothing rides `workflow_dispatch` dry runs for signing: `dry_run` skips the
-`merge` job entirely, which is why the first execution needs a real tag.
+Commit raw outputs and a hardware/methodology `SUMMARY.md` under a new
+`crates/orion-server/tests/benchmark/results/<candidate>/` directory. Add its
+explicit `.gitignore` exception. Compare only matching workloads/configuration;
+the old multi-selection and activation-reload scenarios have different
+semantics. Publish both plugin and JSONLogic rows. Update the README's table,
+SVGs and plugin performance reference only from the dedicated release record.
 
 ## First signed release: the `v1.0.0-rc.1` run (P12)
 
@@ -145,177 +158,8 @@ passed, both in CI and independently off-runner:
   `sha256:9cc1fa0cb7e78860e59855a1a56bd393bcbc6a75b2ab8df916dbb2496040b40b`
   carrying a cosign signature, an SPDX SBOM and SLSA provenance.
 
-The procedure below is what was run, kept as the routine for the next
-release. Nothing here is outstanding work for 1.0.0 — but do repeat it: the
-rc run is what proves the pipeline still signs, and step 4's off-runner check
-is what proves it independently of the runner that produced the artifact.
-
-1. **Version bump (required):** dist refuses a tag whose version is not the
-   package version. On `main` set `version = "1.0.0-rc.1"` in
-   **both** `crates/orion-server/Cargo.toml` and `crates/orion-cli/Cargo.toml`
-   — they release in lockstep, and a bare tag only announces the packages that
-   match it (one commit; `Cargo.lock` updates with it), push, and wait
-   for CI to go green on that commit — the release pipelines gate on it.
-
-   **Regenerate the OpenAPI spec in the same commit**, or CI fails:
-
-   ```bash
-   cargo run -- dump-openapi > docs/openapi.json
-   ```
-
-   `docs/openapi.json` embeds `info.version` from `CARGO_PKG_VERSION`, and
-   `openapi_test::committed_openapi_json_is_up_to_date` compares the committed
-   file against what the binary emits. Every version bump therefore breaks
-   three CI jobs (Test, Test Coverage and MSRV all run the suite) until the
-   spec is regenerated. This applies to **each** bump — the one here and the
-   one back to `1.0.0` in step 8.
-
-   **Re-stamp the tutorial pages in the same commit**, for the same reason.
-   Twelve pages under `docs/src/` state `Tested with Orion <version>.` in
-   their opening paragraph, and `docs/lint.sh` (the `book` CI job) fails when
-   that version is not the workspace version — `bash docs/lint.sh` names
-   every page that is behind. The version is mechanical; the page's
-   `<!-- last_verified: <date> -->` stamp is not. Move the date only for a
-   page whose documented path you actually re-ran, so a stale date stays
-   visible rather than being laundered by the bump.
-2. **Tag and push:**
-
-   ```bash
-   git tag v1.0.0-rc.1
-   git push origin refs/tags/v1.0.0-rc.1
-   ```
-
-   Push the tag by its full `refs/tags/` name. This used to be mandatory:
-   the release branch was itself called `v1.0.0`, so once the final tag
-   existed the two shared a name and a bare `git push origin v1.0.0` failed
-   with `src refspec v1.0.0 matches more than one`. That branch is gone, so
-   the ambiguity is too — but keep the fully-qualified form. It is
-   unambiguous whatever a branch is called, and the next release branch to
-   be named after its version would reintroduce exactly this.
-
-3. **Watch the pipelines** (`crates-publish` skips its publish job on an
-   rc tag, so the live ones are `release.yml` and `docker-release.yml`).
-   The whole of P12 is the `merge` job's
-   *"Verify what is attached to the published tag"* step: it must pass
-   `cosign verify` and `gh attestation verify` against
-   `ghcr.io/goplasmatic/orion:1.0.0-rc.1`.
-4. **Verify independently from a clean machine** (not the CI runner):
-
-   ```bash
-   cosign verify ghcr.io/goplasmatic/orion:1.0.0-rc.1 \
-     --certificate-identity-regexp 'github.com/GoPlasmatic/Orion' \
-     --certificate-oidc-issuer https://token.actions.githubusercontent.com
-   gh attestation verify oci://ghcr.io/goplasmatic/orion:1.0.0-rc.1 -R GoPlasmatic/Orion
-   # And one dist artifact, downloaded from the GitHub release:
-   gh attestation verify <downloaded-archive> -R GoPlasmatic/Orion
-   ```
-
-5. **On failure:** fix, bump to `-rc.2`, repeat. The rc artifacts are honest
-   prereleases — no cleanup needed either way.
-6. **Close P12**: record the green run's URL in a commit whose message
-   names P12 (the audit trackers are retired; `git log --grep=P12` is the
-   index, per CONTRIBUTING's proposal-ID convention).
-7. **Cut the CHANGELOG** (CONTRIBUTING §Cutting a Release, step 2): fold
-   `## [Unreleased]` into the dated release heading, re-stamp the heading's
-   date to the day the tag is actually cut, leave an empty `[Unreleased]` on
-   top, and check the compare links at the foot of the file name the new
-   tag. Do this after the last feature commit lands — an entry dated before
-   its content silently drops whatever shipped in between.
-8. **For the real release:** set `version = "1.0.0"` back in both crate
-   manifests **and regenerate `docs/openapi.json` again** (step 1's command —
-   the spec currently records the rc version), land, wait for CI, then
-   `git tag v1.0.0 && git push origin refs/tags/v1.0.0`.
-9. **Publish the docs:** nothing to merge — releases are cut from `main`, so
-   the tagged commit is already the one `docs.goplasmatic.io` builds from.
-   Cloudflare Workers Builds watches this repo and rebuilds on a push to
-   `main` touching `docs/`, which means the docs went live with the commit
-   you tagged rather than after it. Confirm rather than assume: the deploy
-   runs outside GitHub, so check the Cloudflare dashboard (Workers →
-   orion-docs → Deployments), not the Actions tab, and confirm the upgrade
-   guide and the new version strings are actually being served.
-
-   **Resolved for 1.0.0.** This Worker did not exist when the note above was
-   first written — `docs.goplasmatic.io` resolved nowhere, which given
-   `custom_domain: true` in `docs/wrangler.jsonc` meant no deploy had ever
-   succeeded. It was created before the 1.0.0 tag and the hostname now serves
-   (verified 2026-08-21). Nothing to do here at each release except the
-   confirmation in the paragraph above; re-read this only if the hostname
-   stops resolving, since `orion-server`'s `homepage` and `documentation`
-   metadata point at it and are frozen into the crates.io listing at publish
-   time.
-
-## The benchmark session (C13)
-
-**Done for 1.0.0, and outstanding ever since.** The 1.0.0 record is committed at
-[`crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md`](crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md)
-and the README's Performance section cites it — including the cluster scenario,
-which was skipped in the original session and captured separately on
-2026-08-15, so the N=2 and N=3 scaling numbers are published. **No record has
-been captured since**: 1.1.0 through 1.5.1 all shipped citing the 1.0.0
-figures, which was defensible each time — those releases added capability
-rather than reworking the request path — but it has to stay a decision rather
-than become an omission, and the README's "measured on v1.0.0" framing has to
-stay accurate either way.
-
-**1.6.0 is where that stops being defensible**, for two reasons. The runtime
-generation is now one published value rather than two, which touches the hot
-path of every request; and scenario H (`plugin`) is new, so there is no
-published number for the sandbox at all — `docs/src/reference/plugin-manifest.md`
-says as much under "Performance" and points here. Run the session below at
-the 1.6.0 tag (or its rc) and land the numbers.
-
-Numbers must come from **dedicated hardware** — a laptop running other work
-produces numbers worse than none.
-
-1. **Hardware:** a machine doing nothing else, on AC power, thermals
-   settled. Record CPU model, core count, RAM, and OS in the results.
-2. **Build:** `cargo build --release` at the tagged commit (or the rc).
-3. **Single-instance scenarios** (needs `hey`, `jq`, `curl`):
-
-   ```bash
-   BENCH_RELEASE=1 BENCH_DURATION=30s ./crates/orion-server/tests/benchmark/bench.sh
-   ```
-
-4. **Cluster scenario**: bring up the HA compose stack
-   (`docker compose -f docker-compose.ha.yml up -d --wait`, N=2), then:
-
-   ```bash
-   BENCH_RELEASE=1 ./crates/orion-server/tests/benchmark/bench.sh cluster
-   ```
-
-   Repeat at N=3 by adding the third-node overlay
-   (`docker compose -f docker-compose.ha.yml -f docker-compose.ha.n3.yml up -d --wait`
-   — the base stack is hard-wired to two nodes, and the overlay carries the
-   three-server nginx upstream). Scenario G compares against scenario B for
-   per-node cluster overhead; compute scaling efficiency at N=2 and N=3.
-
-   While the stack is up, run the **plugin drill** too —
-   `deploy/ha/plugin-drill.sh` — and record its verdict beside the numbers:
-   a plugin activated on one node converges on the other, and a new version
-   activated under load through the LB produces zero non-2xx. At N=3 the
-   `CONSECUTIVE` window it uses to assert "every node" should be raised
-   (`CONSECUTIVE=30`).
-
-   Scenario H (`plugin`, in the default set since 1.6) is the plugin cost:
-   the fixture's `identity` on the hot path against the same rewrite as a
-   `map`. Publish both rows and their ratio in
-   `docs/src/reference/plugin-manifest.md` under "Performance".
-5. **Record:** commit the run outputs under
-   `crates/orion-server/tests/benchmark/results/v<version>/` — one `.txt` per
-   scenario plus a `SUMMARY.md` recording the hardware (CPU model, cores, RAM,
-   OS) and the scaling-efficiency numbers, following the tracked
-   `results/v1.0.0/` layout. `.gitignore` ignores scratch runs under
-   `results/` and re-includes each release directory explicitly, so **add the
-   new release's line before committing**. The `v0.2.0`, `v1.0.0` and `v1.1.0`
-   lines are already there — `v1.1.0` speculatively, for a session that was
-   never run, so it re-includes a directory that does not exist.
-6. **Publish:** regenerate `docs/media/benchmark-light.svg` /
-   `docs/media/benchmark-dark.svg` from the new numbers (same style, both color
-   schemes), and replace the README's Performance section numbers — table,
-   alt text, and the "measured on v1.0.0" framing — with the new ones,
-   including cluster scaling efficiency.
-7. **Close the checkpoint**: the commit that lands the numbers names C13 in
-   its message (`git log --grep=C13` is the index).
+Keep those URLs and the 1.0 digest as historical signing evidence. For a new
+candidate, follow the current procedure above and record its own results.
 
 ## Musl promotion checkpoint (P13)
 

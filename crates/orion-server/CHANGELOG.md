@@ -7,200 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- Connection pools distinguish effective connector settings across SQL,
-  MongoDB, Redis and SMTP. In-flight creation cannot refill an evicted
-  entry or supply a different connector revision's pool.
-- Timed-out or cancelled model calls retain inference and cold-load permits
-  until their blocking jobs finish. Live inference accounting follows that
-  lifetime too.
-- Live definition mutations and connector imports commit their audit and
-  configuration notification together. Failed inline reloads remain pending
-  and are retried on single nodes as well as replicas. Deferred definition
-  edits still wait for explicit reload.
-- Reload reads active channels, workflows, plugins and models in one database
-  snapshot. PostgreSQL and MySQL snapshots explicitly use repeatable-read
-  isolation; connector refreshes share the reload lock.
-- Model work estimation follows stored weight shapes through standard Cast,
-  Identity and DequantizeLinear nodes, with bounded traversal and the existing
-  conservative fallback for unknown transformations.
-
-### Security
-
-- Swagger UI uses upstream's pinned ZIP 9 build fix for
-  RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369, pending a
-  published release containing utoipa#1645. The workspace patches must be
-  replaced with that release before publishing crates, since downstream
-  consumers do not inherit patches.
-
 ### Changed
 
-- **dataflow-rs 3 is gone, and its spellings are no longer read.** Every
-  engine is dataflow-rs 4: serving, `dry-run`, `test` and
-  `POST /workflows/{id}/test`. Definitions are parsed strictly (the v3
-  compat reader is off), so these are refused at create and quarantine a
-  stored row at load, each refusal naming the key to write instead:
-  - a task's `halt_on` and `continue_on_error`: write `on_rejection` and
-    `on_failure` (`"halt_on": "failure"` is `"on_rejection": "halt"`;
-    `"continue_on_error": true` is `"on_failure": "continue"`);
-  - the function name `validate`: write `validation`;
-  - the pre-1.0 input aliases `path_logic`, `body_logic`, `response_path`
-    (`http_call`), `key_logic`, `value_logic` (`publish_kafka`),
-    `channel_logic`, `data_logic`, `response_path` (`channel_call`);
-  - any other key a task, group or workflow does not define. An extension
-    goes in `ext`.
+- **Deploy one complete v2 head.** Upload immutable definitions and connection
+  revisions, then plan and apply a manifest under compare-and-swap. A node serves
+  only its committed deployment. Apply and rollback build a complete runtime
+  generation; requests in flight finish on the generation they entered. The
+  reconciler retries pending builds on single nodes and replicas.
+- **Use `/api/v2/` and matching server/CLI builds.** The v1 routes and per-entity
+  workflow/channel/plugin activation APIs are gone. Compile definition sets with
+  `orion-cli compile`, deploy with `orion-cli deployments apply -d`, and use a new
+  deployment revision for a change. An unchanged directory applies nothing.
+  The CLI refuses an incompatible server API version.
+- **Move from 1.x with a fresh state database.** Orion 2 refuses a 1.x database;
+  it provides no in-place conversion. Export definitions with the old tooling,
+  lint and compile them with the new CLI, and redeploy onto a new database.
+  Keep the old database for traces, audit logs, the DLQ and cron history. See
+  [the upgrade guide](../../docs/src/operate/maintain/upgrades.md).
+- **Run dataflow-rs 4.0.3 throughout.** Serving, `dry-run`, offline `test` and
+  `POST /api/v2/admin/definitions/test` share the v4 compiler and function
+  registry. Authoring analysis uses its typed expressions and operator metadata.
+  Traces use `{initial, steps, truncated}`. No v3 execution path remains.
+- **Write strict v2 definitions.** Unknown workflow, group, task and function
+  input keys fail validation. Use `on_rejection`, `on_failure` and `validation`
+  instead of a task's `halt_on`, `continue_on_error` and the function `validate`.
+  Retired input aliases fail with replacement hints; Orion does not rewrite
+  them. Put extensions in `ext`. A task's `name` is optional; the workflow-level
+  `continue_on_error` field remains supported. A definition the engine rejects
+  quarantines its channel at load, with issue code and authored path in the
+  diagnostic. Writes of arrays or scalars need a path below a context root.
+- **Community providers cover HTTP, PostgreSQL, MySQL/MariaDB, SQLite and
+  in-memory cache.** Connections pin their driver or admitted provider package
+  and revision. Credentials use node-resolved references. REST/HTTP and cron
+  channels remain available. Community registers no source protocol; an
+  extension must supply its provider, driver and runner lifecycle together.
+- **Workflow numbers follow the v4 value representation.** Signed
+  64-bit integers retain integer precision. Larger unsigned JSON numbers can reach a
+  workflow plugin as floating-point values. Use strings for exact identifiers
+  beyond that range; the raw plugin JSON ABI does not promise workflow-level
+  preservation of arbitrary unsigned integers.
 
-  A task's `name` is optional, as it is to the engine. The function
-  catalogue no longer serves `aliases`, and the
-  `engine.group_continue_on_error` advisory is gone with the key it
-  reported. A trace is dataflow-rs 4's `{initial, steps, truncated}`.
-  The workflow-level `continue_on_error` field is unchanged.
+### Fixed
 
-- **Use the published dataflow-rs 4.0.0 release.** Builds no longer require
-  a local dataflow-rs checkout. Extension operator families are selected
-  explicitly at runtime, preserving the datetime and tensor vocabulary.
-  datalogic-rs 5.8.2 and datavalue-rs 0.3.2 supply the expression evaluator.
+- Cancelled or timed-out Wasm calls release live-instance accounting after
+  their stores drop. Concurrency-limit deadline coverage now uses a controlled
+  permit holder. Offline connector stubs follow the declared output policy.
+- Child channel calls transfer their result data instead of cloning it.
+  Loop evaluation and fan-out use the v4 persistent run view and per-element
+  overlays; behavior tests cover isolation, ordered folding, cancellation and
+  trace replay. See [the allocation measurements](tests/benchmark/RUN_VIEW.md).
+- Connection pool identities include effective settings. In-flight creation
+  cannot refill an evicted entry or supply another connection revision's pool.
 
-- **Authoring analysis uses dataflow-rs 4's typed expression compiler and
-  operator metadata.** Constant folding and template evaluation use the same
-  expression settings as channel guards. Scope and determinism come from
-  the live operator catalogue; secret reads remain excluded from offline
-  evaluation. Plugin registration uses the engine's fallible API, so an
-  invalid runtime function specification is reported instead of panicking.
+- Container builds install curl for Swagger UI assets. The HA plugin drill
+  checks committed plugin revisions while replicas catch up, and rejects an
+  empty revision instead of treating it as a convergence target.
 
-- **`POST /api/v1/admin/workflows/validate` compiles a condition as activation
-  does.** It compiled the workflow's and each task's `condition` on a bare
-  JSONLogic engine outside templating mode, which refused an object with more
-  than one key (`Invalid JSONLogic in workflow condition: Invalid operator:
-  Unknown Operator`) that activation compiles, as a template emitting that
-  object, and runs. It now compiles on the one expression engine the process
-  builds at boot, which the channel guards, channel auth and the Kafka consumer
-  also evaluate on, so `valid: false` names only a condition activation refuses
-  too.
+### Removed
 
-- **dataflow-rs 4's compile decides which stored workflows load.** At boot and
-  on every reload (an admin mutation, `POST /api/v1/admin/engine/reload`, a
-  cluster resync), every active workflow is compiled on dataflow-rs 4 first,
-  and a workflow it refuses quarantines its channel: refused at every ingress
-  with a `503`, and listed under `load_issues` and on `/health`. dataflow-rs 3
-  still runs every message, over the workflows dataflow-rs 4 accepted, and a
-  workflow dataflow-rs 3 refuses still quarantines its channel with its own
-  reason. A rollout set still loads whole or not at all, on both. A refusal's
-  reason now names each issue's step, code and path, `workflow 'w' failed to
-  compile: task 't1': UNKNOWN_KEY at tasks[0].function.input.limit: unknown
-  key `limit``, where it was dataflow-rs 3's text (`Duplicate task id …`
-  is now `DUPLICATE_STEP_ID at loop.setup[0].id: …`). A channel is
-  quarantined for:
-  - **any issue dataflow-rs 4 rejects**, which covers every load refusal
-    below;
-  - **break 2, a near miss of a known key** (`LIKELY_TYPO`), such as a task's
-    `conditon` or `log`'s `mesage`, whose setting 1.12 silently dropped;
-  - **break 2a, a key a function's input does not declare.** 1.12's own
-    functions ignored one: `db_read`'s `limit`, `db_write`'s `numeric_as`,
-    `data_write`'s flat `op`, `target` and `values` left beside its `write`
-    envelope, `cache_write`'s `output` (which 1.12 resolved and ignored), a
-    stray key in `cache_read`, `cache_delete`, `cache_incr`, `channel_call`,
-    `model_infer` or a `jwt_verify` `keys` element;
-  - **break 21, a result that is never an object written at a literal context
-    root**, the default `data` included: `db_read`, `data_query` reading rows,
-    `mongo_read`, `mongo_aggregate`, `storage_presign`, `crypto`, `jwt_sign`,
-    `cache_read` with `keys`, and `cache_incr`. 1.12 replaced the root with
-    the array, string or number; dataflow-rs 4 refuses that write on every
-    message, so the load refuses the workflow and names the fix:
-    `` `db_read` writes an array of rows, and a context root takes only an
-    object (break 21): set `output` to a path below it, such as `data.rows` ``;
-  - **a field the function requires, missing**, where 1.12 failed every call
-    with "requires '…'": every connector function's `connector`, `send_email`'s
-    `to` and `subject`, `storage_presign`'s `key` and `expires_in`,
-    `storage_head`'s `key`, `publish_kafka`'s `topic`, `db_read`'s,
-    `db_write`'s and `data_query`'s `query`, `data_write`'s `write`, the Mongo
-    functions' `database`, `collection`, `op` and `pipeline`, `cache_write`'s
-    `key` and `value`, `cache_delete`'s `keys`, `cache_incr`'s `key`,
-    `cache_invalidate`'s `namespaces`, `crypto`'s `op`, `jwt_sign`'s
-    `algorithm` and `key`, `jwt_verify`'s `token` and `algorithms` (and each
-    `keys` element's `algorithm` and `key`), `model_infer`'s `model` and
-    `input`, and `channel_call`'s `channel`;
-  - **a value 1.12 refused when the workflow was written, or failed every call
-    on:**
-    - in any function, a non-string `connector`; an `output` that names no
-      context root (`"result"`, `""`, `INVALID_PATH`), or is not written as a
-      string, where 1.12 wrote the result at a key no response shows; a
-      `{"secret": …}` node inside a document, which is never evaluated
-      (`SECRET_IN_DOCUMENT`): `db_read`'s, `db_write`'s and the portable
-      pair's `params`, `numeric_as` and `binary_as`, the Mongo documents,
-      `cache_write`'s `value` and `ttl_secs`, `send_email`'s `to`, `cc` and
-      `bcc`, `jwt_sign`'s `claims` and `audience` (where 1.12 minted the
-      secret's name into `aud`), an object of a `jwt_verify` `issuer` or
-      `audience` list, and a plugin function's interpolated field; a
-      malformed `var` hole in one (`{"var": 5}`, `{"var": []}`, three
-      elements, or a path rooted at no context root), which 1.12 bound as
-      `null` (`INVALID_PATH`); an undeclared secret in key material
-      (`crypto`'s and `jwt_sign`'s `key`, `jwt_verify`'s `keys[].key`,
-      `issuer` and `audience`), `UNKNOWN_SECRET`; a `{"secret": …}` node as
-      `crypto`'s, `jwt_sign`'s or `jwt_verify`'s `output`, which 1.12 never
-      evaluated (`SECRET_IN_MESSAGE_WRITE`);
-    - `send_email`: `headers` that is not an object;
-    - `db_read` and `db_write`: a non-string `query`;
-    - `mongo_write`: an unknown op; a `document`, `documents` or `update` the
-      op needs, missing; a filtered op with no `filter` and no `"all": true`;
-      a field the op does not take; an empty update, or one with plain keys;
-      unusable `array_filters`; an operator key in a replacement; a
-      non-string `database`, `collection` or `op`; a non-boolean `all`;
-    - `mongo_aggregate`: a literal pipeline that is not an array, is empty,
-      has a stage that is not one `$`-key object, or names an unknown stage;
-    - `cache_read`: both `key` and `keys`, or neither;
-    - `crypto`: an unknown op; an algorithm the op does not take; a field the
-      op requires, missing or `null`, or one it does not take; an unknown
-      encoding; static JSON `data` with `input_encoding`; `params` keys and
-      bounds; a non-string `op`, `algorithm`, `encoding` or `key_encoding`;
-    - `jwt_sign`: an unsupported algorithm; neither `expires_in` nor a literal
-      `exp` claim; an `expires_in` that is not a duration; a non-string
-      `key_encoding`;
-    - `jwt_verify`: an `algorithms` that is empty, unsupported, not an array
-      or holds a non-string; neither `keys` nor `jwks_url`; a `jwks_url` that
-      is not HTTPS or not a string; `keys` that is not an array, or an element
-      that is not an object or lacks a string `algorithm` or a `key`; a
-      non-boolean `require_exp`;
-    - `model_infer`: an unknown or non-string `runtime`; a literal
-      `timeout_ms` that is not a positive integer; `raw: true` beside
-      `select`; a blank `model`; a non-boolean `raw`; an `output` or
-      `stats_output` not written as a string;
-    - a plugin function: no `output` where the function declares no default
-      root; an empty or blank `output`; a template whose folded constant is
-      not of its kind;
-    - `channel_call`: `"channel": null`.
-
-  Every other Defect loads, a `PAYLOAD_VAR` (a `var` rooted at `payload`,
-  which reads nothing) above all: the loader logs it at `warn` with the
-  workflow, version and path, and `POST /api/v1/admin/workflows/validate`
-  reports it.
-
-- **A stored alias is read as its canonical key.** dataflow-rs 4's function
-  inputs have no aliases, so before compiling a row the loader rewrites
-  `http_call`'s `path_logic`, `body_logic` and `response_path`,
-  `publish_kafka`'s `key_logic` and `value_logic`, and `channel_call`'s
-  `channel_logic`, `data_logic` and `response_path` to `path`, `body`,
-  `output`, `key`, `value`, `channel` and `data`, in every step, a group's and
-  `loop.setup`'s included, and logs each rewrite at `info` (target
-  `orion::engine::loader`) with the workflow, version, task and both
-  spellings. The stored row is never rewritten. A task holding both spellings
-  is quarantined, the alias reported as `UNKNOWN_KEY`, as 1.12 refused the
-  duplicate field.
-
-- **`POST /api/v1/admin/workflows/validate` warns of what loads with a
-  Defect.** A Defect dataflow-rs 4 reports at load and does not quarantine on,
-  such as a `PAYLOAD_VAR`, is a warning at its path, `PAYLOAD_VAR: …`. `valid`
-  keeps meaning that create accepts the workflow.
+- Community's built-in model inference, Kafka, MongoDB, Redis, SMTP and object
+  storage capabilities, their commands and their old admin APIs. Enterprise
+  provider implementation and benchmarks belong to Orion-ext; extracted
+  reference code does not establish a runnable provider.
 
 ### Security
 
-- **A secret read whose value would be written or handed on is refused at
-  load.** A `{"secret": …}` read in `model_infer`'s `select`, where 1.12
-  wrote the secret's value into the message, or in a plugin function's
-  template field, where 1.12 evaluated it into the guest's input for the
-  guest to return, is `SECRET_IN_MESSAGE_WRITE`, and quarantines the
-  channel.
+- Update Tokio to 1.54.1, rustls-webpki to 0.103.16 and ctutils to 0.4.6
+  for RUSTSEC-2026-0384, RUSTSEC-2026-0382 and RUSTSEC-2026-0385.
+- Swagger UI 10.0.2 uses ZIP 9 for the RUSTSEC-2026-0367,
+  RUSTSEC-2026-0368 and RUSTSEC-2026-0369 fixes. The temporary utoipa git patches
+  and source-policy exception are removed; registry consumers receive the
+  published fix too.
 
 ## [1.12.0] - 2026-10-01
 

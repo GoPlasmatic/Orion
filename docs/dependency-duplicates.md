@@ -8,6 +8,11 @@ Compatible published updates for reqwest, SQLx, dashmap, metrics-util,
 OpenTelemetry SDK, sea-query, tabled and governor do not currently converge the
 remaining versions. Keep `deny.toml`'s duplicate warnings enabled.
 
+The v2 release follow-up adopts published utoipa 6.0.0, utoipa-gen 6.0.1 and
+utoipa-swagger-ui 10.0.2 (ZIP 9). It removes the temporary workspace git patches
+and git-source exception. This resolves the registry-publication prerequisite;
+the duplicate families below remain a separate #389 maintenance item.
+
 | Family | Locked versions | Why it remains |
 |---|---|---|
 | `hashbrown` | 0.12.3, 0.14.5, 0.16.1, 0.17.1 | indexmap 1, dashmap, SQLx/governor/metrics, and the Wasmtime/compiler/indexmap 2 branches require different versions. |

@@ -19,10 +19,11 @@ RUN cargo chef prepare --recipe-path recipe.json
 # Builder stage: cache dependencies, then build
 FROM chef AS builder
 
+# curl fetches Swagger UI assets during its build script.
 # cmake (and g++, which a CMake project may require even for C sources) is
 # kept for aws-lc-sys, the rustls crypto provider, which can build through
 # it; pkg-config for the -sys crates that probe with it.
-RUN apt-get update && apt-get install -y pkg-config cmake g++ && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y pkg-config cmake g++ curl && rm -rf /var/lib/apt/lists/*
 
 # Codegen knobs for the `dist` profile, defaulted to exactly what
 # [profile.dist] in the workspace Cargo.toml already says (release's

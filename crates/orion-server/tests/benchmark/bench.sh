@@ -5,14 +5,14 @@
 # concurrency behaviour across 8 scenarios.
 #
 # Usage:
-#   ./tests/benchmark/bench.sh                        # Run all local scenarios
-#   ./tests/benchmark/bench.sh baseline simple        # Run specific scenarios
-#   BENCH_RELEASE=1 BENCH_DURATION=30s ./tests/benchmark/bench.sh
-#   ./tests/benchmark/bench.sh cluster                # Opt-in: drive the HA compose
+#   ./crates/orion-server/tests/benchmark/bench.sh                        # Run all local scenarios
+#   ./crates/orion-server/tests/benchmark/bench.sh baseline simple        # Run specific scenarios
+#   BENCH_RELEASE=1 BENCH_DURATION=30s ./crates/orion-server/tests/benchmark/bench.sh
+#   ./crates/orion-server/tests/benchmark/bench.sh cluster                # Opt-in: drive the HA compose
 #                                                     # stack through its LB (needs
 #                                                     # docker-compose.ha.yml up)
 #
-# Dependencies: hey, jq, curl
+# Dependencies: hey, jq, curl, python3, matching orion-server and orion-cli
 # Install hey: brew install hey
 
 set -euo pipefail
@@ -22,22 +22,21 @@ set -euo pipefail
 # ═══════════════════════════════════════════════════════════════════
 
 BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$BENCH_DIR/../.." && pwd)"
+PROJECT_ROOT="$(cd "$BENCH_DIR/../../../.." && pwd)"
 FIXTURES_DIR="$BENCH_DIR/fixtures"
 
 BENCH_DURATION="${BENCH_DURATION:-10s}"
 BENCH_CONCURRENCY="${BENCH_CONCURRENCY:-50}"
 BENCH_OUTPUT_DIR="${BENCH_OUTPUT_DIR:-}"
 
-# Binary selection
+# Build both binaries from the same checkout. Overrides support candidate builds.
 if [[ -n "${BENCH_RELEASE:-}" ]]; then
-    ORION_BIN="$PROJECT_ROOT/../../target/release/orion-server"
     BUILD_PROFILE="release"
 else
-    # The crate builds into the workspace's target directory, two levels up.
-    ORION_BIN="$PROJECT_ROOT/../../target/debug/orion-server"
     BUILD_PROFILE="debug"
 fi
+ORION_BIN="${ORION_BIN:-$PROJECT_ROOT/target/$BUILD_PROFILE/orion-server}"
+ORION_CLI="${ORION_CLI:-$PROJECT_ROOT/target/$BUILD_PROFILE/orion-cli}"
 
 # ═══════════════════════════════════════════════════════════════════
 # COLORS (sourced pattern from e2e/helpers.sh)
@@ -56,13 +55,7 @@ else
     RED='' GREEN='' YELLOW='' BLUE='' CYAN='' BOLD='' DIM='' RESET=''
 fi
 
-# Logs go to stderr, not stdout.
-#
-# `create_workflow` returns the new id by echoing it, so callers read it with
-# `$(...)` — and command substitution captures stdout. A log line emitted
-# anywhere inside that call (a retry notice, a warning) would be captured as
-# part of the id, and the channel built from it then fails to activate with no
-# hint as to why. Keeping the two streams apart is what makes the id reliable.
+# Keep diagnostics separate from JSON returned by the deployment helpers.
 log_info()  { echo -e "${BLUE}[BENCH]${RESET} $*" >&2; }
 log_ok()    { echo -e "${GREEN}[BENCH]${RESET} $*" >&2; }
 log_warn()  { echo -e "${YELLOW}[BENCH]${RESET} $*" >&2; }
@@ -74,7 +67,7 @@ log_error() { echo -e "${RED}[BENCH]${RESET} $*" >&2; }
 
 check_dependencies() {
     local missing=()
-    for cmd in hey jq curl; do
+    for cmd in hey jq curl python3; do
         if ! command -v "$cmd" &>/dev/null; then
             missing+=("$cmd")
         fi
@@ -94,8 +87,8 @@ check_dependencies() {
 build_orion() {
     if [[ -n "${BENCH_SKIP_BUILD:-}" ]]; then
         log_info "Skipping build (BENCH_SKIP_BUILD set)"
-        if [[ ! -f "$ORION_BIN" ]]; then
-            log_error "Binary not found: $ORION_BIN"
+        if [[ ! -x "$ORION_BIN" || ! -x "$ORION_CLI" ]]; then
+            log_error "Build both binaries or set ORION_BIN and ORION_CLI"
             exit 1
         fi
         return 0
@@ -103,9 +96,9 @@ build_orion() {
 
     log_info "Building Orion ($BUILD_PROFILE)..."
     if [[ "$BUILD_PROFILE" == "release" ]]; then
-        cargo build --release --manifest-path "$PROJECT_ROOT/Cargo.toml" 2>&1 | tail -5
+        cargo build --locked -p orion-server -p orion-cli --release --manifest-path "$PROJECT_ROOT/Cargo.toml" 2>&1 | tail -5
     else
-        cargo build --manifest-path "$PROJECT_ROOT/Cargo.toml" 2>&1 | tail -5
+        cargo build --locked -p orion-server -p orion-cli --manifest-path "$PROJECT_ROOT/Cargo.toml" 2>&1 | tail -5
     fi
     log_ok "Build complete"
 }
@@ -117,11 +110,10 @@ build_orion() {
 BENCH_PID=""
 BENCH_PORT=""
 BENCH_URL=""
-# Extra curl args for the admin API. Empty for the local server (no auth);
-# the cluster scenario points BENCH_URL at a stack that enforces admin auth
-# and sets a Bearer header here. Expanded with the set -u-safe idiom because
-# macOS bash 3.2 treats an empty array as unbound.
-CURL_AUTH=()
+BENCH_ADMIN_KEY=""
+BENCH_HEY_PID=""
+BENCH_CLUSTER_BASE=""
+BENCH_CLUSTER_HEAD=""
 BENCH_TMP_DIR=""
 BENCH_DB_PATH=""
 BENCH_LOG_FILE=""
@@ -139,16 +131,15 @@ start_bench_server() {
     BENCH_PORT=$(find_free_port)
     BENCH_URL="http://127.0.0.1:${BENCH_PORT}"
 
-    # One private directory, named files inside it.
+    # The runner owns one private directory, named files inside it.
     #
-    # These were three `mktemp .../orion-bench-XXXXXX.db` calls, which is not
+    # Earlier versions used three `mktemp .../orion-bench-XXXXXX.db` calls, which is not
     # portable: BSD/macOS mktemp only substitutes X's at the *end* of the
     # template, so a suffixed template is taken literally and every run created
     # the same `orion-bench-XXXXXX.db`. That worked only as long as each run
     # reached its cleanup trap — the moment one was killed, the literal file
     # survived and every subsequent run died at startup with "mkstemp failed:
     # File exists", which reads like a full disk rather than a leftover file.
-    BENCH_TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/orion-bench-XXXXXX")
     BENCH_DB_PATH="$BENCH_TMP_DIR/bench.db"
     BENCH_LOG_FILE="$BENCH_TMP_DIR/bench.log"
     BENCH_CONFIG_FILE="$BENCH_TMP_DIR/bench.toml"
@@ -157,9 +148,10 @@ start_bench_server() {
 [server]
 host = "127.0.0.1"
 port = $BENCH_PORT
+shutdown_drain_secs = 0
 
 [storage]
-url = "sqlite:$BENCH_DB_PATH"
+url = "sqlite:$BENCH_DB_PATH?mode=rwc"
 max_connections = 10
 
 [trace_queue]
@@ -185,9 +177,9 @@ TOMLEOF
 
     # Wait for server to be ready
     local elapsed=0
-    while [[ $elapsed -lt 30 ]]; do
-        if curl -sf "${BENCH_URL}/health" >/dev/null 2>&1; then
-            log_ok "Server ready (${elapsed}s)"
+    while [[ $elapsed -lt 60 ]]; do
+        if curl -sf "${BENCH_URL}/readyz" >/dev/null 2>&1; then
+            log_ok "Server ready ($((elapsed / 2))s)"
             return 0
         fi
 
@@ -223,6 +215,7 @@ stop_bench_server() {
         fi
     fi
 
+    [[ -z "$BENCH_PID" ]] || wait "$BENCH_PID" 2>/dev/null || true
     BENCH_PID=""
     # The whole directory goes, so the WAL/SHM sidecars cannot be left behind.
     [[ -n "${BENCH_TMP_DIR:-}" ]] && rm -rf "$BENCH_TMP_DIR"
@@ -230,142 +223,106 @@ stop_bench_server() {
 }
 
 # ═══════════════════════════════════════════════════════════════════
-# WORKFLOW MANAGEMENT (curl-based, no orion-cli dependency)
+# DEPLOYMENT MANAGEMENT (compile + apply through the matching CLI)
 # ═══════════════════════════════════════════════════════════════════
 
-create_workflow() {
-    local workflow_file="$1"
-    local response
-    response=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v2/admin/workflows" \
-        -H "Content-Type: application/json" \
-        -d @"$workflow_file" 2>/dev/null) || {
-        log_error "Failed to create workflow from $workflow_file"
-        return 1
-    }
+cli() {
+    local auth=()
+    [[ -z "$BENCH_ADMIN_KEY" ]] || auth=(--api-key "$BENCH_ADMIN_KEY")
+    "$ORION_CLI" --server "$BENCH_URL" ${auth[@]+"${auth[@]}"} --output json --yes "$@"
+}
 
-    local workflow_id
-    workflow_id=$(echo "$response" | jq -r '.data.workflow_id // empty')
-    if [[ -z "$workflow_id" ]]; then
-        log_error "No workflow ID in response: $response"
-        return 1
+# A new set replaces the whole deployment head. Definitions are inert until apply.
+prepare_set() {
+    BENCH_SET=$(mktemp -d "$BENCH_TMP_DIR/set-XXXXXX")
+}
+
+add_workflow_channel() {
+    local fixture="$1" name="$2"
+    jq --arg id "$name" '.workflow_id = $id' "$fixture" > "$BENCH_SET/workflow-$name.json"
+    jq -n --arg id "$name" \
+        '{channel_id: $id, name: $id, channel_type: "sync", protocol: "http",
+          methods: ["POST"], route_pattern: ("/" + $id), workflow_id: $id}' \
+        > "$BENCH_SET/channel-$name.json"
+}
+
+compile_set() {
+    "$ORION_CLI" compile "$BENCH_SET" --format deployment -o "$1" >&2
+}
+
+apply_directory() {
+    local result
+    result=$(cli deployments apply -d "$1")
+    if [[ -z "$result" ]]; then
+        # The CLI emits no receipt for an unchanged directory. Verify its head
+        # is applied locally; scenario probes still check serving behavior.
+        result=$(cli deployments list)
+        echo "$result" | jq -e '.head_revision > 0 and .head_revision == .applied_revision' >/dev/null
+        BENCH_HEAD=$(echo "$result" | jq -er '.head_revision')
+    else
+        BENCH_HEAD=$(echo "$result" | jq -er '.committed_revision')
+        [[ -z "$BENCH_CLUSTER_BASE" ]] || BENCH_CLUSTER_HEAD="$BENCH_HEAD"
+        echo "$result" | jq -e '.evaluation.converged == true' >/dev/null || {
+            log_error "Deployment did not converge: $result"
+            return 1
+        }
     fi
-    echo "$workflow_id"
 }
 
-activate_workflow() {
-    local workflow_id="$1"
-    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X PATCH "${BENCH_URL}/api/v2/admin/workflows/${workflow_id}/status" \
-        -H "Content-Type: application/json" \
-        -d '{"status": "active"}' >/dev/null 2>&1 || {
-        log_error "Failed to activate workflow $workflow_id"
+deploy_set() {
+    compile_set "$BENCH_SET.dist"
+    apply_directory "$BENCH_SET.dist"
+}
+
+deploy_single() {
+    prepare_set
+    add_workflow_channel "$1" "$2"
+    deploy_set
+}
+
+# Probe real output before timing: a fast error or a skipped workflow is invalid.
+probe() {
+    local name="$1" body="$2" assertion="$3" response
+    response=$(curl --fail-with-body -sS -X POST "$BENCH_URL/api/v2/data/$name" \
+        -H 'Content-Type: application/json' --data-binary @"$body")
+    echo "$response" | jq -e "$assertion" >/dev/null || {
+        log_error "Unexpected response from $name: $response"
         return 1
     }
 }
 
-create_and_activate_workflow() {
-    local workflow_file="$1"
-    local workflow_id
-    workflow_id=$(create_workflow "$workflow_file") || return 1
-    activate_workflow "$workflow_id" || return 1
-    echo "$workflow_id"
-}
-
-import_workflows() {
-    local workflows_file="$1"
-    local response
-    response=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v2/admin/workflows/import" \
-        -H "Content-Type: application/json" \
-        -d @"$workflows_file" 2>/dev/null) || {
-        log_error "Failed to import workflows from $workflows_file"
+restore_cluster() {
+    [[ -n "$BENCH_CLUSTER_BASE" && -n "$BENCH_CLUSTER_HEAD" ]] || return 0
+    local now
+    now=$(cli deployments list | jq -er '.head_revision')
+    [[ "$now" == "$BENCH_CLUSTER_HEAD" ]] || {
+        log_error "Cluster head changed outside the benchmark; refusing to restore over revision $now"
         return 1
     }
-
-    local imported
-    # T41: the import response is enveloped — {"data":{"imported":N,...}}.
-    imported=$(echo "$response" | jq -r '.data.imported // 0')
-    log_info "Imported $imported workflows"
-
-    # Activate all imported (draft) workflows
-    local workflows_json
-    workflows_json=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "${BENCH_URL}/api/v2/admin/workflows?status=draft" 2>/dev/null) || return 0
-
-    local ids
-    ids=$(echo "$workflows_json" | jq -r '.data[]?.workflow_id // empty' 2>/dev/null) || return 0
-
-    while IFS= read -r id; do
-        [[ -z "$id" ]] && continue
-        activate_workflow "$id"
-    done <<< "$ids"
-}
-
-reload_engine() {
-    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v2/admin/engine/reload" >/dev/null 2>&1 || true
-}
-
-# Bind a channel to a workflow.
-#
-# 1.0 routes channel -> workflow (`channels.workflow_id`). Without a channel
-# the data plane answers 404 for an unregistered name, so every scenario below
-# measured error responses until this was added.
-create_and_activate_channel() {
-    local channel_name="$1"
-    local workflow_id="$2"
-
-    if [[ -z "$workflow_id" || "$workflow_id" == *" "* ]]; then
-        log_error "Refusing to create channel '$channel_name': bad workflow id '$workflow_id'"
-        return 1
+    if [[ "$BENCH_CLUSTER_BASE" -gt 0 ]]; then
+        cli deployments rollback --target-revision "$BENCH_CLUSTER_BASE" \
+            --expected-head-revision "$now" --idempotency-key "bench-restore-$now" \
+            --reason 'benchmark: restore prior head' >/dev/null
+    else
+        local manifest="$BENCH_TMP_DIR/empty.json" digest
+        echo '{"schema_version":2,"providers":[],"members":[]}' > "$manifest"
+        digest=$(cli deployments plan -f "$manifest" --base-revision "$now" | jq -er '.reviewed_manifest_digest')
+        cli deployments apply -f "$manifest" --base-revision "$now" --reviewed-digest "$digest" \
+            --idempotency-key "bench-empty-$now" --reason 'benchmark: restore empty head' >/dev/null
     fi
-
-    # `protocol: "http"` requires both `methods` and `route_pattern`; a channel
-    # missing either is refused at create.
-    local payload
-    payload=$(jq -n --arg n "$channel_name" --arg w "$workflow_id" \
-        '{channel_id: $n, name: $n, channel_type: "sync", protocol: "http",
-          methods: ["POST"], route_pattern: ("/" + $n), workflow_id: $w}')
-
-    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v2/admin/channels" \
-        -H "Content-Type: application/json" \
-        -d "$payload" >/dev/null 2>&1 || {
-        log_error "Failed to create channel $channel_name"
-        return 1
-    }
-    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X PATCH "${BENCH_URL}/api/v2/admin/channels/${channel_name}/status" \
-        -H "Content-Type: application/json" \
-        -d '{"status": "active"}' >/dev/null 2>&1 || {
-        log_error "Failed to activate channel $channel_name"
-        return 1
-    }
+    BENCH_CLUSTER_BASE=""
+    BENCH_CLUSTER_HEAD=""
 }
 
-# Remove every channel, so a scenario's channel does not outlive it.
-clear_channels() {
-    local channels_json
-    channels_json=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "${BENCH_URL}/api/v2/admin/channels" 2>/dev/null) || return 0
-
-    local ids
-    ids=$(echo "$channels_json" | jq -r '.data[]?.channel_id // empty' 2>/dev/null) || return 0
-
-    while IFS= read -r id; do
-        [[ -z "$id" ]] && continue
-        curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X DELETE "${BENCH_URL}/api/v2/admin/channels/${id}" >/dev/null 2>&1 || true
-    done <<< "$ids"
-}
-
-clear_workflows() {
-    clear_channels
-
-    local workflows_json
-    workflows_json=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "${BENCH_URL}/api/v2/admin/workflows" 2>/dev/null) || return 0
-
-    local ids
-    ids=$(echo "$workflows_json" | jq -r '.data[]?.workflow_id // empty' 2>/dev/null) || return 0
-
-    while IFS= read -r id; do
-        [[ -z "$id" ]] && continue
-        curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X DELETE "${BENCH_URL}/api/v2/admin/workflows/${id}" >/dev/null 2>&1 || true
-    done <<< "$ids"
-
-    reload_engine
+cleanup() {
+    local status=$?
+    if [[ -n "$BENCH_HEY_PID" ]] && kill -0 "$BENCH_HEY_PID" 2>/dev/null; then
+        kill "$BENCH_HEY_PID" 2>/dev/null || true
+        wait "$BENCH_HEY_PID" 2>/dev/null || true
+    fi
+    restore_cluster || status=1
+    stop_bench_server
+    exit "$status"
 }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -531,10 +488,8 @@ scenario_simple() {
     log_info "B: Simple workflow (1 log task)"
     CURRENT_SCENARIO="B_simple_workflow"
 
-    clear_workflows
-    local wf
-    wf=$(create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_simple_log.json")
-    create_and_activate_channel "bench" "$wf"
+    deploy_single "$FIXTURES_DIR/workflows/bench_simple_log.json" bench
+    probe bench "$FIXTURES_DIR/data/simple_payload.json" '.status == "ok" and .data != null and (.errors | length) == 0'
 
     run_hey POST "${BENCH_URL}/api/v2/data/bench" "$FIXTURES_DIR/data/simple_payload.json"
     record_result "B: Simple workflow (1 log task)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
@@ -542,78 +497,48 @@ scenario_simple() {
 
 # C: Complex workflow — 4-task ecommerce workflow
 scenario_complex() {
-    log_info "C: Complex workflow (4 tasks)"
+    log_info "C: Complex workflow (parse + 4 tasks)"
     CURRENT_SCENARIO="C_complex_workflow"
 
-    clear_workflows
-    local wf
-    wf=$(create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_complex_ecommerce.json")
-    create_and_activate_channel "orders" "$wf"
+    deploy_single "$FIXTURES_DIR/workflows/bench_complex_ecommerce.json" orders
+    probe orders "$FIXTURES_DIR/data/complex_payload.json" '.data.tier == "vip" and .data.label == "vip-US"'
 
     run_hey POST "${BENCH_URL}/api/v2/data/orders" "$FIXTURES_DIR/data/complex_payload.json"
-    record_result "C: Complex workflow (4 tasks)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
+    record_result "C: Complex workflow (parse + 4 tasks)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 }
 
-# D: Loaded estate — 12 workflows, each behind its own channel
-#
-# This scenario used to be "12 workflows on the same channel", which measured
-# the engine picking one of 12 candidates by condition. 1.0 has no such state to
-# construct: a channel names exactly one `workflow_id`, and `activate` archives
-# the versions it supersedes — a full rollout archives all of them, a partial
-# rollout keeps only the primary — so the candidate set for a channel is at most
-# two (primary + canary), never twelve.
-#
-# It imported the 12 anyway and pointed one channel at `.data[0]`, leaving the
-# other 11 referenced by nothing. `build_engine_workflows` iterates *channels*,
-# so those 11 were never converted, never loaded, and never evaluated: the
-# scenario was scenario B with a larger `workflows` table, and it scored like B
-# (81,063 vs 82,454 req/s) because it *was* B.
-#
-# What "many workflows" means in 1.0 is many channels, so that is what this
-# builds: 12 active channels over 12 active workflows, load against one of them.
-# It measures route resolution and registry lookup against a populated estate
-# rather than a single-entry one. Not comparable to the pre-1.0 D — the thing
-# that one measured no longer exists.
+# D: One head with 12 workflows and 12 channels. Each runs B's exact workload;
+# the measured route differs only in the size of the serving estate.
 scenario_multi() {
-    log_info "D: Loaded estate (12 workflows, 12 channels)"
+    log_info "D: Loaded estate (12 workflows, 12 channels in one deployment)"
     CURRENT_SCENARIO="D_multi_workflows"
-
-    clear_workflows
-    import_workflows "$FIXTURES_DIR/workflows/bench_multi_rules.json"
-
-    local ids
-    ids=$(curl -sf "${BENCH_URL}/api/v2/admin/workflows?status=active&limit=100" 2>/dev/null \
-        | jq -r '.data[]?.workflow_id // empty')
-
-    local n=0
-    while IFS= read -r wf; do
-        [[ -z "$wf" ]] && continue
-        # `bench` first, so the URL under load is the same one scenario B uses
-        # and the two differ only in how much else is registered.
-        local name="bench"
-        [[ $n -gt 0 ]] && name="bench-${n}"
-        create_and_activate_channel "$name" "$wf" || true
-        n=$((n + 1))
-    done <<< "$ids"
-
-    if [[ $n -lt 2 ]]; then
-        log_error "D: expected a multi-channel estate, built $n channel(s) — check the import"
-        return 1
-    fi
-    log_info "  Estate: $n active channels"
-
+    prepare_set
+    local n name
+    for ((n = 0; n < 12; n++)); do
+        name="bench"
+        [[ $n -eq 0 ]] || name="bench-$n"
+        add_workflow_channel "$FIXTURES_DIR/workflows/bench_simple_log.json" "$name"
+    done
+    compile_set "$BENCH_SET.dist"
+    jq -e '([.members[] | select(.kind == "channel")] | length) == 12 and
+           ([.members[] | select(.kind == "workflow")] | length) == 12' \
+        "$BENCH_SET.dist/deployment.json" >/dev/null
+    apply_directory "$BENCH_SET.dist"
+    for ((n = 0; n < 12; n++)); do
+        name="bench"
+        [[ $n -eq 0 ]] || name="bench-$n"
+        probe "$name" "$FIXTURES_DIR/data/simple_payload.json" '.status == "ok" and .data != null and (.errors | length) == 0'
+    done
     run_hey POST "${BENCH_URL}/api/v2/data/bench" "$FIXTURES_DIR/data/simple_payload.json"
-    record_result "D: Loaded estate (${n} channels)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
+    record_result "D: Loaded estate (12 channels)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 }
 
 # E: Concurrency scaling — c=1, 10, 50, 100
 scenario_concurrency() {
     log_info "E: Concurrency scaling"
 
-    clear_workflows
-    local wf
-    wf=$(create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_simple_log.json")
-    create_and_activate_channel "bench" "$wf"
+    deploy_single "$FIXTURES_DIR/workflows/bench_simple_log.json" bench
+    probe bench "$FIXTURES_DIR/data/simple_payload.json" '.status == "ok" and .data != null and (.errors | length) == 0'
 
     for c in 1 10 50 100; do
         CURRENT_SCENARIO="E_concurrency_${c}"
@@ -624,46 +549,51 @@ scenario_concurrency() {
     done
 }
 
-# F: Reload under load — hey in background + engine reload every 500ms
+# F: Commit alternating workflow definitions under load. An unchanged apply is
+# a no-op in v2, so compile both variants first and require every commit to move
+# the head. The request workload stays the same (one disabled debug log).
 scenario_reload() {
-    log_info "F: Reload under load"
+    log_info "F: Deployment replacement under load"
     CURRENT_SCENARIO="F_reload_under_load"
+    prepare_set
+    add_workflow_channel "$FIXTURES_DIR/workflows/bench_simple_log.json" bench
+    local first="$BENCH_SET.first" second="$BENCH_SET.second"
+    compile_set "$first"
+    jq '.name = "Bench Simple Log alternate"' "$BENCH_SET/workflow-bench.json" > "$BENCH_SET/alternate.tmp"
+    mv "$BENCH_SET/alternate.tmp" "$BENCH_SET/workflow-bench.json"
+    compile_set "$second"
+    apply_directory "$first"
+    probe bench "$FIXTURES_DIR/data/simple_payload.json" '.status == "ok" and .data != null and (.errors | length) == 0'
 
-    clear_workflows
-    local wf
-    wf=$(create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_simple_log.json")
-    create_and_activate_channel "bench" "$wf"
-
-    # Start hey in background
     local hey_output_file="$BENCH_TMP_DIR/hey-reload.txt"
+    hey -z "$BENCH_DURATION" -c "$BENCH_CONCURRENCY" -m POST -T application/json \
+        -D "$FIXTURES_DIR/data/simple_payload.json" "$BENCH_URL/api/v2/data/bench" \
+        > "$hey_output_file" 2>&1 &
+    BENCH_HEY_PID=$!
 
-    hey -z "$BENCH_DURATION" -c "$BENCH_CONCURRENCY" -m POST \
-        -T "application/json" \
-        -D "$FIXTURES_DIR/data/simple_payload.json" \
-        "${BENCH_URL}/api/v2/data/bench" > "$hey_output_file" 2>&1 &
-    local hey_pid=$!
-
-    # Reload engine every 500ms while hey runs
-    local reload_count=0
-    while kill -0 "$hey_pid" 2>/dev/null; do
+    local reload_count=0 previous target
+    while kill -0 "$BENCH_HEY_PID" 2>/dev/null; do
         sleep 0.5
-        curl -sf -X POST "${BENCH_URL}/api/v2/admin/engine/reload" >/dev/null 2>&1 || true
+        kill -0 "$BENCH_HEY_PID" 2>/dev/null || break
+        previous="$BENCH_HEAD"
+        target="$second"
+        [[ $((reload_count % 2)) -eq 0 ]] || target="$first"
+        apply_directory "$target"
+        [[ "$BENCH_HEAD" -gt "$previous" ]] || { log_error 'Replacement did not move the head'; return 1; }
         reload_count=$((reload_count + 1))
     done
-
-    wait "$hey_pid" 2>/dev/null || true
-
+    wait "$BENCH_HEY_PID"
+    BENCH_HEY_PID=""
+    [[ "$reload_count" -gt 0 ]] || { log_error 'Duration too short to exercise replacement'; return 1; }
     local hey_output
     hey_output=$(cat "$hey_output_file")
-    rm -f "$hey_output_file"
-
     parse_hey_output "$hey_output"
-    record_result "F: Reload under load (${reload_count}x)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
-
-    # Save raw output if requested
+    record_result "F: Deployment replacement (${reload_count}x)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
+    probe bench "$FIXTURES_DIR/data/simple_payload.json" '.status == "ok" and .data != null and (.errors | length) == 0'
     if [[ -n "$BENCH_OUTPUT_DIR" ]]; then
         mkdir -p "$BENCH_OUTPUT_DIR"
-        echo "$hey_output" > "${BENCH_OUTPUT_DIR}/${CURRENT_SCENARIO}.txt"
+        cp "$hey_output_file" "${BENCH_OUTPUT_DIR}/${CURRENT_SCENARIO}.txt"
+        echo "$reload_count" > "${BENCH_OUTPUT_DIR}/F_committed_replacements.txt"
     fi
 }
 
@@ -692,7 +622,7 @@ scenario_cluster() {
 
     if ! curl -sf "${cluster_url}/healthz" >/dev/null 2>&1; then
         log_error "Nothing healthy at ${cluster_url}. Start the stack first:"
-        log_error '  export ORION_ADMIN_API_KEYS="$(openssl rand -hex 32)"'
+        log_error '  Set ORION_ADMIN_API_KEYS to the disposable stack admin key.'
         log_error '  docker compose -f docker-compose.ha.yml up -d --wait'
         log_error "(or point BENCH_CLUSTER_URL at your load balancer)"
         return 1
@@ -702,91 +632,52 @@ scenario_cluster() {
         return 1
     fi
 
-    # Aim every admin helper at the cluster, authenticated. The data-plane
-    # load itself needs no credential. The stack is a benchmarking/drill
-    # topology, so clearing its estate is acceptable the same way it is on
-    # the throwaway local server.
+    # Use a disposable benchmark stack. Restore the prior head through CAS on exit.
     local saved_url="$BENCH_URL"
     BENCH_URL="$cluster_url"
-    CURL_AUTH=(-H "Authorization: Bearer ${admin_key}")
-
-    clear_workflows
-    local wf
-    wf=$(create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_simple_log.json")
-    create_and_activate_channel "bench-cluster" "$wf"
-    # Activation propagates over the config epoch (2s poll default). Wait it
-    # out, or the not-yet-synced replica answers 404s into the numbers.
-    sleep 3
-
+    BENCH_ADMIN_KEY="$admin_key"
+    BENCH_CLUSTER_BASE=$(cli deployments list | jq -er '.head_revision')
+    deploy_single "$FIXTURES_DIR/workflows/bench_simple_log.json" bench-cluster
+    # Local convergence is reported by apply; require repeated success through
+    # the LB before timing so peer catch-up is outside the measured window.
+    local attempt i ready=0
+    for ((attempt = 0; attempt < 30; attempt++)); do
+        ready=1
+        for ((i = 0; i < 30; i++)); do
+            if ! probe bench-cluster "$FIXTURES_DIR/data/simple_payload.json" '.status == "ok" and .data != null and (.errors | length) == 0'; then
+                ready=0
+                break
+            fi
+        done
+        [[ "$ready" -eq 0 ]] || break
+        sleep 1
+    done
+    [[ "$ready" -eq 1 ]] || { log_error 'Cluster did not converge through the LB'; return 1; }
     run_hey POST "${cluster_url}/api/v2/data/bench-cluster" "$FIXTURES_DIR/data/simple_payload.json"
     record_result "G: Cluster via LB (simple workflow)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
-
-    # Leave the stack as found.
-    clear_workflows
-    CURL_AUTH=()
+    restore_cluster
+    BENCH_ADMIN_KEY=""
     BENCH_URL="$saved_url"
 }
 
-# H: A plugin on the hot path — the fixture's `identity` (one sandboxed
-# call: fresh store, instantiate, JSON in, JSON out) against the same rewrite
-# as a JSONLogic `map`. Both workflows are `parse_json` + one task, so the
-# difference between the two rows is what a plugin invocation costs per
-# request over an in-engine expression. The component is the test fixture,
-# uploaded through the admin API exactly as `orion-cli plugins create` does.
-# One top-level string from a plugin manifest. Not `tomllib`: that is Python
-# 3.11+, and this script should run wherever `python3` does — 22.04 LTS still
-# ships 3.10. `name` and `component` are bare assignments above the first
-# `[[functions]]` table, so reading that much of the grammar is enough.
-manifest_field() {
-    python3 -c 'import re,sys
-path, want = sys.argv[1], sys.argv[2]
-for line in open(path, encoding="utf-8"):
-    line = line.strip()
-    if line.startswith("["):
-        break
-    m = re.match(r"([A-Za-z0-9_-]+)\s*=\s*\"([^\"]*)\"", line)
-    if m and m.group(1) == want:
-        print(m.group(2))
-        sys.exit(0)
-sys.exit(f"{path}: no top-level {want} = \"...\"")' "$1" "$2"
-}
-
-create_and_activate_plugin() {
-    local manifest="$1"
-    local component
-    component="$(dirname "$manifest")/$(manifest_field "$manifest" component)"
-    python3 -c 'import base64, json, sys
-manifest = open(sys.argv[1]).read()
-component = base64.b64encode(open(sys.argv[2], "rb").read()).decode()
-json.dump({"manifest": manifest, "component": component}, sys.stdout)' "$manifest" "$component" \
-        | curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v2/admin/plugins" \
-            -H "Content-Type: application/json" --data @- >/dev/null 2>&1 || true
-    local id
-    id=$(manifest_field "$manifest" name)
-    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X PATCH "${BENCH_URL}/api/v2/admin/plugins/${id}/status" \
-        -H "Content-Type: application/json" -d '{"status": "active"}' >/dev/null 2>&1 || true
-    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "${BENCH_URL}/api/v2/admin/functions" 2>/dev/null \
-        | jq -e --arg id "$id" '.data[] | select(.plugin.id == $id)' >/dev/null || {
-        log_error "Plugin '$id' is not served — is plugins.enabled on?"
-        return 1
-    }
-}
-
+# H: The same parse + echo through Wasm and through JSONLogic.
 scenario_plugin() {
     log_info "H: Plugin echo vs JSONLogic echo"
-
-    clear_workflows
-    create_and_activate_plugin "$PROJECT_ROOT/tests/fixtures/plugins/fixture-upload.toml" || return 1
-    local wf
-    wf=$(create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_plugin_echo.json")
-    create_and_activate_channel "bench-plugin" "$wf"
+    prepare_set
+    add_workflow_channel "$FIXTURES_DIR/workflows/bench_plugin_echo.json" bench-plugin
+    mkdir -p "$BENCH_SET/plugin"
+    cp "$PROJECT_ROOT/crates/orion-server/tests/fixtures/plugins/fixture-upload.toml" \
+        "$PROJECT_ROOT/crates/orion-server/tests/fixtures/plugins/fixture.wasm" "$BENCH_SET/plugin/"
+    deploy_set
+    probe bench-plugin "$FIXTURES_DIR/data/simple_payload.json" \
+        '.data.echo.message.customer_id == "cust-12345"'
     CURRENT_SCENARIO="H_plugin_echo"
     run_hey POST "${BENCH_URL}/api/v2/data/bench-plugin" "$FIXTURES_DIR/data/simple_payload.json"
     record_result "H: Plugin echo (test.fixture.identity)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 
-    clear_workflows
-    wf=$(create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_jsonlogic_echo.json")
-    create_and_activate_channel "bench-logic" "$wf"
+    deploy_single "$FIXTURES_DIR/workflows/bench_jsonlogic_echo.json" bench-logic
+    probe bench-logic "$FIXTURES_DIR/data/simple_payload.json" \
+        '.data.echo.message.customer_id == "cust-12345"'
     CURRENT_SCENARIO="H_jsonlogic_echo"
     run_hey POST "${BENCH_URL}/api/v2/data/bench-logic" "$FIXTURES_DIR/data/simple_payload.json"
     record_result "H: JSONLogic echo (map)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
@@ -849,14 +740,27 @@ main() {
     done
 
     check_dependencies
+    BENCH_TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/orion-bench-XXXXXX")
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     if [[ "$need_local" -eq 1 ]]; then
         build_orion
         start_bench_server
-
-        # Ensure cleanup on exit
-        trap stop_bench_server EXIT
     fi
 
+    if [[ -n "$BENCH_OUTPUT_DIR" ]]; then
+        mkdir -p "$BENCH_OUTPUT_DIR"
+        {
+            git -C "$PROJECT_ROOT" rev-parse HEAD
+            if git -C "$PROJECT_ROOT" diff --quiet; then echo 'tracked_tree=clean'; else echo 'tracked_tree=modified'; fi
+            "$ORION_CLI" --version
+            [[ "$need_local" -eq 0 ]] || "$ORION_BIN" --version
+            uname -sm
+            echo "profile=$BUILD_PROFILE duration=$BENCH_DURATION concurrency=$BENCH_CONCURRENCY"
+            echo "scenarios=${scenarios[*]}"
+        } > "$BENCH_OUTPUT_DIR/session.txt"
+    fi
     echo ""
     log_info "Running ${#scenarios[@]} scenario(s): ${scenarios[*]}"
     echo ""
@@ -869,6 +773,10 @@ main() {
     print_results_table
 
     local elapsed=$(( $(date +%s) - start_time ))
+    local errors
+    for errors in "${RESULT_ERR_LIST[@]}"; do
+        [[ "$errors" -eq 0 ]] || { log_error 'Benchmark recorded failed requests'; return 1; }
+    done
     log_ok "Benchmark complete in ${elapsed}s"
 }
 

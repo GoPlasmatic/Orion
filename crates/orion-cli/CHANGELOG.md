@@ -14,6 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Use the v2 deployment API with a compatible server. `compile` writes a
+  revision-free deployment directory; `deployments plan|apply -d` uploads its
+  definitions, assigns or reuses member revisions, and replaces the complete
+  head under compare-and-swap. An unchanged set applies nothing. Rollback
+  commits a new deployment revision.
+- Provider and connection commands replace the old entity CRUD/activation and
+  package-promotion flows. Community no longer ships model or Kafka commands.
+- Offline authoring, dry-run and workflow tests use dataflow-rs 4.0.3 and strict
+  definitions. Retired v3 spellings fail with replacement hints. The workflow
+  trace shape is `{initial, steps, truncated}`.
+
 - YAML output uses `serde-saphyr` 2 instead of the archived `serde_yaml` and
   `unsafe-libyaml` crates. YAML formatting and quoting follow the new serializer.
 

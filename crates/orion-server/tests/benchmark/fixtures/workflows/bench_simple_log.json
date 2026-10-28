@@ -1,6 +1,5 @@
 {
   "name": "Bench Simple Log",
-  "priority": 0,
   "condition": true,
   "tasks": [
     {
@@ -14,5 +13,6 @@
         }
       }
     }
-  ]
+  ],
+  "workflow_id": "bench-simple-log"
 }

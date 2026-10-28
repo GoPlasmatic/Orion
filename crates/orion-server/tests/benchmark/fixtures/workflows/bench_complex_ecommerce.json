@@ -1,15 +1,25 @@
 {
   "name": "Bench Complex Ecommerce",
-  "priority": 0,
   "condition": true,
   "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse Payload",
+      "function": {
+        "name": "parse_json",
+        "input": {
+          "source": "payload",
+          "target": "input"
+        }
+      }
+    },
     {
       "id": "vip_tier",
       "name": "VIP Classification",
       "condition": {
         ">=": [
           {
-            "var": "data.amount"
+            "var": "data.input.amount"
           },
           500
         ]
@@ -42,7 +52,7 @@
           {
             ">=": [
               {
-                "var": "data.amount"
+                "var": "data.input.amount"
               },
               100
             ]
@@ -50,7 +60,7 @@
           {
             "<": [
               {
-                "var": "data.amount"
+                "var": "data.input.amount"
               },
               500
             ]
@@ -83,7 +93,7 @@
       "condition": {
         "<": [
           {
-            "var": "data.amount"
+            "var": "data.input.amount"
           },
           100
         ]
@@ -130,7 +140,7 @@
                   },
                   "-",
                   {
-                    "var": "data.country"
+                    "var": "data.input.country"
                   }
                 ]
               }
@@ -142,7 +152,7 @@
                   {
                     "in": [
                       {
-                        "var": "data.country"
+                        "var": "data.input.country"
                       },
                       [
                         "US",
@@ -160,5 +170,6 @@
         }
       }
     }
-  ]
+  ],
+  "workflow_id": "bench-complex-ecommerce"
 }

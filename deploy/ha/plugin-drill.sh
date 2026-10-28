@@ -84,19 +84,36 @@ EOF
 # The plugin's member revision as one LB read sees it.
 served_revision() {
     curl -fsS "${auth[@]}" "$ADMIN/functions" |
-        jq -r '.data[] | select(.name == "test.fixture.wrap") | .plugin.version'
+        jq -er '.data[] | select(.name == "test.fixture.wrap") | .plugin.version | numbers'
 }
 
-# Every one of $CONSECUTIVE consecutive LB reads serves the plugin at the
-# given revision — the round-robin has visited every upstream by then.
+# Read the expected revision from the committed head, not from a replica that
+# may still serve the previous generation immediately after apply.
+deployed_plugin_revision() {
+    local head
+    head=$(head_revision)
+    cli deployments get "$head" | jq -er '.manifest.members[] |
+        select(.entity.kind == "plugin" and .entity.id == "test.fixture") | .entity.revision'
+}
+
+# Every one of $CONSECUTIVE consecutive LB reads serves the pinned revision.
+# Pause between failed windows so peers have time to reconcile.
 wait_converged_on() {
-    local want="$1" attempt i
+    local want="$1" attempt i actual matched
+    [[ "$want" =~ ^[1-9][0-9]*$ ]] || { echo "FAIL: no committed plugin revision"; exit 1; }
     for attempt in $(seq 1 30); do
+        matched=1
         for ((i = 0; i < CONSECUTIVE; i++)); do
-            [[ "$(served_revision)" == "$want" ]] || continue 2
+            if ! actual=$(served_revision) || [[ "$actual" != "$want" ]]; then
+                matched=0
+                break
+            fi
         done
-        echo "    converged after ${attempt} check(s)"
-        return 0
+        if [[ "$matched" -eq 1 ]]; then
+            echo "    converged after ${attempt} check(s)"
+            return 0
+        fi
+        sleep 1
     done
     echo "FAIL: plugin revision $want did not converge on every node"
     exit 1
@@ -104,7 +121,7 @@ wait_converged_on() {
 
 echo "==> Deploying the plugin, its workflow and channel (one node takes the write)"
 deploy_set "$set_dir"
-v1=$(served_revision)
+v1=$(deployed_plugin_revision)
 echo "    plugin revision: $v1"
 echo "==> Waiting for every node to serve test.fixture.wrap at revision $v1"
 wait_converged_on "$v1"
@@ -155,7 +172,8 @@ if [[ -s "$refusals_file" ]]; then
     sed 's/^/    refused: /' "$refusals_file"
 fi
 
-v2=$((v1 + 1))
+v2=$(deployed_plugin_revision)
+[[ "$v2" -gt "$v1" ]] || { echo "FAIL: plugin replacement did not advance its revision"; exit 1; }
 echo "==> Waiting for every node to serve revision $v2"
 wait_converged_on "$v2"
 
