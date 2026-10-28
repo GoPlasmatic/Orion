@@ -53,3 +53,6 @@ debug/
 !/crates/orion-server/tests/benchmark/results/v1.1.0/
 
 !/crates/orion-server/tests/benchmark/results/v2-run-view-2026-10-28/
+
+# Internal tracking and planning notes (local only; never published).
+/reference-docs/

@@ -2,7 +2,7 @@
 
 Cut releases from `main` after the workspace gate and the current release
 matrix pass. The v2 migration changes the API, deployment model and state
-schema; use the [v2 release evidence](docs/release-v2-evidence.md) to track the
+schema; use the [v2 release evidence](RELEASE-EVIDENCE/release-v2-evidence.md) to track the
 remaining gates and their owners. Historical 1.0 proof below does not validate
 an unbuilt v2 release candidate.
 
