@@ -129,3 +129,32 @@ checks; all three engine regressions pass. The full Rust gate passes: formatting
 strict workspace Clippy, 3,107 test executions (79 ignored), default-member
 doctests and warnings-as-errors workspace Rustdoc. Documentation structure/link
 lint passes. Container-gated tests were not run for this workload change.
+
+## Closure handoff
+
+On 2026-10-28 we reviewed the original reports and their follow-up comments;
+both issues remain open. We verified the dataset's four source hashes against
+commit `5b9e37d670ef44432093ab5f1095deb658203654`, the complete 36-case grid,
+108 samples and their medians, all 16 table rows above, and fan-out allocation
+agreement between concurrency ceilings 1 and 8. The original dataset records
+the preceding base commit and `dirty: true`; its source hashes identify the
+measured files now present in the evidence commit.
+
+A fresh three-round run completed all 36 cases with exact-output checks.
+Median allocation requests and allocated bytes matched the committed dataset
+in every case. The three yielding-host regressions also passed again.
+The five commands in `just check` passed again (3,107 test executions, 79 ignored),
+as did `bash docs/lint.sh`. This environment lacks `just`, so we ran its recipe
+commands in order. HTTP tests required local-listener access outside the sandbox.
+
+Ready-to-post comments:
+
+- [Issue #371 closure evidence](issue-371-closure.md)
+- [Issue #372 closure evidence](issue-372-closure.md)
+
+The comments link to the evidence commit. GitHub's commit API could not resolve
+that commit during this review, so publish it and verify those links before
+posting either comment. The repository's pending-work rules prohibit pushing
+until asked. Posting comments and closing issues also await explicit user
+authorization. This review changes neither issue state nor the release gate in
+#385.
