@@ -86,7 +86,10 @@ record_one() {   # <name> <seed-fn|""> <gif-destination>
   else
     local v3="$CAST_DIR/.$name.v3.cast" cast="$CAST_DIR/$name.cast"
     echo "▸ recording $name …"
-    asciinema rec "$v3" --window-size "$WINDOW" --overwrite -q -c "bash $HERE/demo-$name.sh"
+    (
+      cd "$ORION_DIR"
+      asciinema rec "$v3" --window-size "$WINDOW" --overwrite -q -c "bash docs/recordings/demo-$name.sh"
+    )
     asciinema convert -f asciicast-v2 "$v3" "$cast" --overwrite >/dev/null
     rm -f "$v3"
     agg --font-size 20 --theme "$AGG_THEME" --idle-time-limit 1.5 --last-frame-duration 3 "$cast" "$gif"

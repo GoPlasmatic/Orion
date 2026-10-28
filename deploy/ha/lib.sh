@@ -10,6 +10,10 @@
 #   docker compose -f docker-compose.ha.yml -f docker-compose.ha.build.yml up -d --wait
 
 COMPOSE=(docker compose -f docker-compose.ha.yml)
+# Published defaults still target v1. Use this checkout until a v2 image is selected.
+if [[ -z "${ORION_VERSION:-}" ]]; then
+    COMPOSE+=(-f docker-compose.ha.build.yml)
+fi
 LB_URL="${LB_URL:-http://localhost:8080}"
 NODES=(${NODES:-orion-a orion-b})
 HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS:-60}"

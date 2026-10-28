@@ -55,7 +55,14 @@ The palette is copied from `docs/css/plasmatic.css`'s dark theme: a static
 image cannot read a CSS variable, so those values are duplicated in the script
 and the comment there points back at their owner.
 
+Terminal recordings use the current v2 server and CLI. Build both binaries from
+this checkout before recording; `record.sh` only builds a missing binary.
+
 ## UI recordings (console GIF + screenshots)
+
+The current Orion-ui release still uses `/api/v1`. Its recording driver and the
+console guide stay on that contract until Orion-ui ships v2 API support; do not
+record this UI against the v2 server from this checkout.
 
 The README hero GIF and the console screenshots are also generated, not
 hand-captured: [`record-ui.sh`](record-ui.sh) boots a throwaway `orion-server`
