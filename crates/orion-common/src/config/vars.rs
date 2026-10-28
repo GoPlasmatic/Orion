@@ -354,9 +354,20 @@ pub struct VarsConfig(pub BTreeMap<String, toml::Value>);
 
 /// Secret references resolved once at startup and published to the engine,
 /// where `{"secret": "name"}` reaches them.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(transparent)]
 pub struct SecretsConfig(pub BTreeMap<String, String>);
+
+/// The values are secrets: `Debug` lists the names and hides every value.
+impl std::fmt::Debug for SecretsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut map = f.debug_map();
+        for name in self.0.keys() {
+            map.entry(name, &"<redacted>");
+        }
+        map.finish()
+    }
+}
 
 impl VarsConfig {
     pub fn is_empty(&self) -> bool {
@@ -737,5 +748,21 @@ mod parse_tests {
             err.contains("inner") && err.contains("var://inner"),
             "{err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod debug_tests {
+    use super::*;
+
+    #[test]
+    fn debug_lists_secret_names_and_never_values() {
+        let secrets = SecretsConfig(BTreeMap::from([(
+            "stripe".to_string(),
+            "sk_live_do_not_print".to_string(),
+        )]));
+        let shown = format!("{secrets:?}");
+        assert!(shown.contains("stripe"), "{shown}");
+        assert!(!shown.contains("sk_live"), "{shown}");
     }
 }

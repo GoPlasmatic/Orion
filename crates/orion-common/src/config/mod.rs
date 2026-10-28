@@ -22,7 +22,7 @@ pub mod vars;
 mod write;
 
 // Re-export all types so `use crate::config::Foo` keeps working.
-pub use admin_auth::{AdminAuthConfig, constant_time_eq};
+pub use admin_auth::{AdminAuthConfig, AdminKey, constant_time_eq};
 pub use cluster::ClusterConfig;
 pub use cron::CronConfig;
 pub use engine::{CircuitBreakerConfig, ConnectorBudgetLimits, EngineConfig, RunBudgetLimits};

@@ -65,7 +65,7 @@ pub struct OAuth2LoginConfig {
 /// (`issuer`) once that lands. `env://NAME` in `client_secret` (and the URL
 /// fields) resolves when the channel loads; `${VAR}` anywhere resolves before
 /// the file is parsed.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct InstanceProviderConfig {
     /// `oidc` or `oauth2`; absent derives from whether OIDC applies (an
@@ -98,4 +98,26 @@ pub struct InstanceProviderConfig {
     /// deployment provider uses the default OIDC identity mapping; a custom
     /// `identity` map is available only in the channel block.
     pub userinfo_url: Option<String>,
+}
+
+/// The client secret is a credential: `Debug` says whether one is set.
+impl std::fmt::Debug for InstanceProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InstanceProviderConfig")
+            .field("kind", &self.kind)
+            .field("issuer", &self.issuer)
+            .field("authorize_url", &self.authorize_url)
+            .field("token_url", &self.token_url)
+            .field("client_id", &self.client_id)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .field("client_auth", &self.client_auth)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("scopes", &self.scopes)
+            .field("extra_authorize_params", &self.extra_authorize_params)
+            .field("userinfo_url", &self.userinfo_url)
+            .finish()
+    }
 }

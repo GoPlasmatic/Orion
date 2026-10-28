@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use crate::errors::OrionError;
 
 /// Admin API authentication configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AdminAuthConfig {
     /// Enable authentication for admin API endpoints.
@@ -23,6 +23,25 @@ pub struct AdminAuthConfig {
     /// When "Authorization" (default), expects `Bearer <token>` format.
     /// For other values (e.g. "X-API-Key"), expects the raw key value.
     pub header: String,
+}
+
+/// The keys are credentials (or digests of them), so `Debug` reports how many
+/// there are and nothing else about them.
+impl std::fmt::Debug for AdminAuthConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdminAuthConfig")
+            .field("enabled", &self.enabled)
+            .field(
+                "api_keys",
+                &format_args!("<{} redacted>", self.api_keys.len()),
+            )
+            .field(
+                "read_only_api_keys",
+                &format_args!("<{} redacted>", self.read_only_api_keys.len()),
+            )
+            .field("header", &self.header)
+            .finish()
+    }
 }
 
 /// Minimum length for a *plaintext* `admin_auth.api_keys` entry. 32 characters
@@ -192,6 +211,19 @@ impl Default for AdminAuthConfig {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn debug_shows_how_many_keys_and_never_one() {
+        let config = AdminAuthConfig {
+            api_keys: vec!["super-secret-admin-key-0123456789abcdef".to_string()],
+            read_only_api_keys: vec!["sha256:".to_string() + &"0".repeat(64)],
+            ..AdminAuthConfig::default()
+        };
+        let shown = format!("{config:?}");
+        assert!(!shown.contains("super-secret"), "{shown}");
+        assert!(!shown.contains("sha256"), "{shown}");
+        assert!(shown.contains("<1 redacted>"), "{shown}");
+    }
+
     use super::*;
 
     fn config_with_keys(keys: &[&str]) -> AdminAuthConfig {

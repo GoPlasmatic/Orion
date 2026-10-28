@@ -12,13 +12,26 @@ use crate::error::ClientError;
 /// Paths are passed relative to the server root (see [`crate::paths`]);
 /// authentication, the optional `X-Orion-Change-Context` audit header, and
 /// timeout are configured once at construction.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OrionClient {
     base_url: String,
     http: reqwest::Client,
     api_key: Option<String>,
     api_key_header: Option<String>,
     change_context: Option<String>,
+}
+
+/// Never prints the credential: a `{:?}` of a client lands in logs and panic
+/// messages.
+impl std::fmt::Debug for OrionClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OrionClient")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("api_key_header", &self.api_key_header)
+            .field("change_context", &self.change_context)
+            .finish_non_exhaustive()
+    }
 }
 
 impl OrionClient {

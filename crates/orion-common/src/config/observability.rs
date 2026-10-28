@@ -310,7 +310,7 @@ pub struct CorsConfig {
     pub allowed_origins: Vec<String>,
     /// Request headers to admit **in addition to** the built-in set
     /// (`content-type`, `authorization`, `accept`, `x-api-key`,
-    /// `idempotency-key`, `x-request-id`).
+    /// `idempotency-key`, `x-request-id`, `x-orion-change-context`).
     ///
     /// Additive, not a replacement: a key that replaced the list would let an
     /// operator adding `deviceid` silently drop `authorization` and
@@ -467,9 +467,9 @@ impl CorsConfig {
 
     /// The request headers admitted on every configuration: what admin auth
     /// (`authorization`, `x-api-key`), the dedup guard (`idempotency-key`) and
-    /// the request-id layer (`x-request-id`) read, plus the two every JSON
-    /// call needs. Config may extend this list, never narrow it.
-    pub fn base_allowed_headers() -> [axum::http::HeaderName; 6] {
+    /// the request-id layer (`x-request-id`) and the audit trail
+    /// (`x-orion-change-context`) read, plus the two every JSON call needs. Config may extend this list, never narrow it.
+    pub fn base_allowed_headers() -> [axum::http::HeaderName; 7] {
         [
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,
@@ -477,6 +477,7 @@ impl CorsConfig {
             axum::http::HeaderName::from_static("x-api-key"),
             axum::http::HeaderName::from_static("idempotency-key"),
             axum::http::HeaderName::from_static("x-request-id"),
+            axum::http::HeaderName::from_static("x-orion-change-context"),
         ]
     }
 

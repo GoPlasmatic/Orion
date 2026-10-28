@@ -160,12 +160,7 @@ pub async fn admin_auth_middleware(
     // Compare SHA-256 digests instead of raw keys: fixed width, so timing
     // reveals neither key length nor content (S11).
     let presented: [u8; 32] = Sha256::digest(token.as_bytes()).into();
-    let matched_key = state
-        .config
-        .admin_auth
-        .admin_keys()
-        .into_iter()
-        .find(|key| constant_time_eq(&presented, &key.digest));
+    let matched_key = match_key(state.config.admin_auth.admin_keys(), &presented);
 
     let Some(matched_key) = matched_key else {
         metrics::record_admin_auth_failure("invalid_key");
@@ -207,6 +202,21 @@ pub async fn admin_auth_middleware(
         .insert(AdminPrincipal::from_digest(&matched_key.digest));
 
     Ok(next.run(req).await)
+}
+
+/// The configured key whose digest is `presented`, if any.
+///
+/// Every key is compared, whichever matches, so the time taken does not say
+/// which position in the list (or whether the read-only or full-access list) a
+/// valid key sat in. An early exit would leak exactly that.
+fn match_key(
+    keys: Vec<crate::config::AdminKey>,
+    presented: &[u8; 32],
+) -> Option<crate::config::AdminKey> {
+    keys.into_iter().fold(None, |found, key| {
+        let is_match = constant_time_eq(presented, &key.digest);
+        found.or(is_match.then_some(key))
+    })
 }
 
 /// The `POST` routes a read-only key may still call: the ones that compute an
@@ -290,6 +300,45 @@ fn extract_api_key(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn match_key_finds_a_key_in_either_list_wherever_it_sits() {
+        use crate::config::AdminKey;
+        let digest = |n: u8| -> [u8; 32] { [n; 32] };
+        let keys = || {
+            vec![
+                AdminKey {
+                    digest: digest(1),
+                    read_only: false,
+                },
+                AdminKey {
+                    digest: digest(2),
+                    read_only: false,
+                },
+                AdminKey {
+                    digest: digest(3),
+                    read_only: true,
+                },
+            ]
+        };
+        assert!(
+            !super::match_key(keys(), &digest(1))
+                .expect("first")
+                .read_only
+        );
+        assert!(
+            !super::match_key(keys(), &digest(2))
+                .expect("middle")
+                .read_only
+        );
+        assert!(
+            super::match_key(keys(), &digest(3))
+                .expect("last")
+                .read_only
+        );
+        assert!(super::match_key(keys(), &digest(9)).is_none());
+        assert!(super::match_key(Vec::new(), &digest(1)).is_none());
+    }
+
     #[test]
     fn a_read_only_key_may_post_only_to_the_side_effect_free_routes() {
         use super::read_only_may_call;

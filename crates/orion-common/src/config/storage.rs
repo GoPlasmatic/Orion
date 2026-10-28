@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::validation::{require_nonempty, require_nonzero};
 use crate::errors::OrionError;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StorageConfig {
     /// Database connection URL.
@@ -66,6 +66,50 @@ pub struct StorageConfig {
     /// revision is compacted: its artifacts become collectable and rolling
     /// back to it is refused. Must be >= 1.
     pub deployment_retain_revisions: u32,
+}
+
+/// The URL can carry a password and the encryption key is a key: `Debug` shows
+/// neither.
+impl std::fmt::Debug for StorageConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StorageConfig")
+            .field("url", &redact_url_credentials(&self.url))
+            .field("max_connections", &self.max_connections)
+            .field("min_connections", &self.min_connections)
+            .field("busy_timeout_ms", &self.busy_timeout_ms)
+            .field("acquire_timeout_secs", &self.acquire_timeout_secs)
+            .field("idle_timeout_secs", &self.idle_timeout_secs)
+            .field(
+                "connector_encryption_key",
+                &if self.connector_encryption_key.is_empty() {
+                    "<unset>"
+                } else {
+                    "<redacted>"
+                },
+            )
+            .field("backup_dir", &self.backup_dir)
+            .field("backup_retention_count", &self.backup_retention_count)
+            .field("auto_migrate", &self.auto_migrate)
+            .field("connect_retry_secs", &self.connect_retry_secs)
+            .field("artifact_gc_interval_secs", &self.artifact_gc_interval_secs)
+            .field("artifact_gc_grace_secs", &self.artifact_gc_grace_secs)
+            .field(
+                "deployment_retain_revisions",
+                &self.deployment_retain_revisions,
+            )
+            .finish()
+    }
+}
+
+/// `scheme://user:password@host/db` with the userinfo replaced, so a URL can be
+/// shown without its password. A URL with no userinfo is returned as is.
+fn redact_url_credentials(url: &str) -> String {
+    match (url.find("://"), url.rfind('@')) {
+        (Some(scheme_end), Some(at)) if at > scheme_end + 3 => {
+            format!("{}<redacted>{}", &url[..scheme_end + 3], &url[at..])
+        }
+        _ => url.to_string(),
+    }
 }
 
 impl Default for StorageConfig {
@@ -154,5 +198,27 @@ pub fn detect_backend(url: &str) -> Result<DbBackend, OrionError> {
                 "Unsupported database URL scheme: {url}. Expected sqlite:, postgres://, or mysql://"
             ),
         })
+    }
+}
+
+#[cfg(test)]
+mod debug_tests {
+    use super::*;
+
+    #[test]
+    fn debug_never_shows_a_password_or_the_key() {
+        let config = StorageConfig {
+            url: "postgres://orion:hunter2@db.internal/orion".to_string(),
+            connector_encryption_key: "a".repeat(64),
+            ..StorageConfig::default()
+        };
+        let shown = format!("{config:?}");
+        assert!(!shown.contains("hunter2"), "{shown}");
+        assert!(!shown.contains(&"a".repeat(64)), "{shown}");
+        assert!(
+            shown.contains("db.internal/orion"),
+            "the host stays: {shown}"
+        );
+        assert_eq!(redact_url_credentials("sqlite:orion.db"), "sqlite:orion.db");
     }
 }
