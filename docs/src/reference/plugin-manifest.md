@@ -89,6 +89,21 @@ one JSON value. One component may export many functions and dispatch on the
 name. A guest `code` must match `^[A-Z][A-Z0-9_]{0,63}$`. Its `message` is
 capped and prefixed with the function name before a client sees it.
 
+### Numeric values
+
+Workflow values use signed 64-bit integers and binary64 floating-point numbers.
+Integer inputs from `-9223372036854775808` through `9223372036854775807`
+retain their exact value on the way to the guest, including integers above
+`2^53`. Unsigned integers above that signed range become floating-point values
+and can round. For example, `9223372036854775809` reaches the guest as
+`9223372036854775808`, and `18446744073709551615` rounds to
+`18446744073709551616`. This applies to task literals and values read from the
+message. Expression arithmetic can also introduce floating-point rounding.
+
+Use JSON strings for exact identifiers or amounts outside the signed integer
+range. The ABI carries JSON text, but a raw ABI round trip does not establish
+precision through a workflow's value representation.
+
 ## Limits
 
 Every invocation runs in a fresh instance under the node's ceilings, each

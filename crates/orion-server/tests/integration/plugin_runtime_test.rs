@@ -643,6 +643,54 @@ async fn no_instance_outlives_its_call() {
 }
 
 #[tokio::test]
+async fn workflow_plugin_inputs_follow_the_v2_numeric_representation() {
+    let f = fixture(&config());
+    let identity = &f.handlers["test.fixture.identity"];
+    for (input, expected) in [
+        (json!(i64::MIN), json!(i64::MIN)),
+        (
+            json!(-9_007_199_254_740_993_i64),
+            json!(-9_007_199_254_740_993_i64),
+        ),
+        (
+            json!(9_007_199_254_740_993_i64),
+            json!(9_007_199_254_740_993_i64),
+        ),
+        (json!(i64::MAX), json!(i64::MAX)),
+        (
+            json!(9_223_372_036_854_775_808_u64),
+            json!(9_223_372_036_854_775_808.0),
+        ),
+        (
+            json!(9_223_372_036_854_775_809_u64),
+            json!(9_223_372_036_854_775_808.0),
+        ),
+        (json!(u64::MAX), json!(18_446_744_073_709_551_616.0)),
+        (json!(0.5), json!(0.5)),
+        (json!(u64::MAX.to_string()), json!(u64::MAX.to_string())),
+    ] {
+        for from_message in [false, true] {
+            let message = if from_message {
+                json!({"var": "data.value"})
+            } else {
+                input.clone()
+            };
+            let data = run(
+                identity,
+                json!({"message": message, "output": "data.result"}),
+                json!({"value": input}),
+            )
+            .await
+            .expect("the complete workflow invokes the identity guest");
+            assert_eq!(
+                data["result"]["message"], expected,
+                "input={input}, from_message={from_message}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn dropping_plugin_invocations_releases_each_live_instance() {
     let cfg = config();
     let runtime = WasmRuntime::new(&cfg).expect("engine");
