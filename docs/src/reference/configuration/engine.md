@@ -158,7 +158,12 @@ Sheds load to a failing dependency. After `failure_threshold` consecutive failur
 | `engine.circuit_breaker.enabled` | `false` | `ORION_ENGINE__CIRCUIT_BREAKER__ENABLED` | Enable in production whenever workflows reach anything over the network. |
 | `engine.circuit_breaker.failure_threshold` | `5` | `ORION_ENGINE__CIRCUIT_BREAKER__FAILURE_THRESHOLD` | Lower to trip sooner on a flaky dependency; raise to tolerate isolated errors. |
 | `engine.circuit_breaker.recovery_timeout_secs` | `30` | `ORION_ENGINE__CIRCUIT_BREAKER__RECOVERY_TIMEOUT_SECS` | How long the breaker stays open before probing. |
-| `engine.circuit_breaker.max_breakers` | `10000` | `ORION_ENGINE__CIRCUIT_BREAKER__MAX_BREAKERS` | Rarely — bounds the tracked `channel:connector` pairs before LRU eviction. |
+| `engine.circuit_breaker.max_breakers` | `10000` | `ORION_ENGINE__CIRCUIT_BREAKER__MAX_BREAKERS` | Bounds tracked `channel:connector` pairs. At capacity, evict the least recently used closed breaker first; fall back to a tripped breaker only when all are tripped. |
+
+Eviction scans the bounded map on a miss at capacity, with a second pass if all
+breakers are tripped. Cache hits do not scan. Preferring a closed breaker preserves open breakers' rejection of load
+to failing dependencies. When all breakers are tripped, eviction logs a warning
+because recreating that entry admits traffic again.
 
 ## Related
 
