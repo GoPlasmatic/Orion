@@ -693,7 +693,7 @@ async fn test_channel_rate_limit_ignores_a_spoofed_forwarded_header() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // Same untrusted peer, a different claimed client. The peer is the
-    // identity, so the bucket is the same one and is now empty.
+    // identity, so the bucket is the same one and is empty.
     let resp = app
         .clone()
         .oneshot(with_peer(

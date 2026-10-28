@@ -3,13 +3,11 @@
 //!
 //! `$from` and `use` are resolved when a definition set is compiled, and the
 //! admin API compiles nothing — `POST /definitions` takes one document with no
-//! set to resolve names against. That much is deliberate. What was not is how the refusal
-//! read: the reference reached the function-input validator as literal JSON
-//! and was refused for the fields it would have supplied, so an author went
-//! looking for a typo that was not there.
+//! set to resolve names against. The refusal must identify the compilation
+//! step instead of treating a reference as ordinary function-input JSON.
 //!
-//! Each test below is one of the shapes that was confirmed broken before the
-//! fix, with the message it produced then in the comment.
+//! Each shape must name its uncompiled reference instead of reporting the
+//! fields that reference would supply.
 
 use crate::common;
 use axum::http::StatusCode;
@@ -31,8 +29,7 @@ fn detail<'a>(body: &'a Value, path: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no detail at '{path}' in {body}"))
 }
 
-/// Before: `tasks[1].function.input.connector REQUIRED` — the field
-/// `constants.db` would have supplied, and nothing naming `$from`.
+/// Name `$from` instead of reporting a missing connector that `constants.db` supplies.
 #[tokio::test]
 async fn a_from_in_a_task_input_is_named_not_its_missing_fields() {
     let (status, body) = upload(json!({
@@ -69,8 +66,7 @@ async fn a_from_in_a_task_input_is_named_not_its_missing_fields() {
     assert_eq!(paths, vec!["definition.tasks[1].function.input"], "{body}");
 }
 
-/// Before: `tasks[0].name REQUIRED` and `tasks[0].function.name REQUIRED` — a
-/// fragment call site looks to the validator like a task missing both.
+/// Name the fragment call rather than treating it as a task missing its fields.
 #[tokio::test]
 async fn a_use_step_is_named_not_its_missing_task_fields() {
     let (status, body) = upload(json!({
@@ -93,9 +89,8 @@ async fn a_use_step_is_named_not_its_missing_task_fields() {
     assert!(message.contains("task-fragment reference"), "{message}");
 }
 
-/// The worst of the three, and the one that was not an error message problem
-/// at all: this was accepted with **201** and stored, and the workflow then
-/// wrote the literal `{"$from": …}` object into `data.out` at runtime.
+/// Refuse a nested uncompiled reference instead of storing its literal object
+/// as workflow data.
 #[tokio::test]
 async fn a_from_deep_in_a_payload_is_refused_rather_than_stored() {
     let (status, body) = upload(json!({
@@ -143,10 +138,8 @@ async fn condition_and_loop_are_checked_as_well_as_tasks() {
     );
 }
 
-/// Before: `unknown field '$from', expected one of rate_limit, timeout_ms, …`
-/// — which names the key but reads as a typo, and offers a list of spellings
-/// none of which is what the author meant. A channel definition upload runs
-/// the same channel validation, so it names the reference too.
+/// A channel config reference must name the compilation step that resolves it.
+/// Both channel uploads and channel definition uploads use this validation.
 #[tokio::test]
 async fn a_channel_config_says_what_the_key_is_rather_than_offering_spellings() {
     let app = common::test_app().await;

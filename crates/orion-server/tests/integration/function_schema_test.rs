@@ -132,32 +132,9 @@ async fn upload_reports_every_schema_error_at_once() {
     );
 }
 
-/// The endpoint is a catalogue of every name a workflow may use, not just the
-/// ones Orion input-validates. It served 18 of 27 until #288 — omitting `map`,
-/// `filter`, `parse_json` and the rest, which are the most-used functions
-/// there are, so anything completing from it offered the connector functions
-/// and none of the ones people type.
-/// The catalogue lists exactly what the serving engine will dispatch.
-///
-/// #288 was this drift: the endpoint served the schema registry, so it listed
-/// the 18 functions Orion input-validates and omitted `map`, `filter`,
-/// `parse_json` and the rest — the most-used names, missing from every
-/// completion source built on it. The fix added an `ENGINE_BUILTINS` table,
-/// which is a second list that can drift the same way.
-///
-/// dataflow-rs 3.7 makes the question answerable rather than mirrored:
-/// `dispatchable_functions()` reports what the *live engine* will actually run
-/// — self-contained built-ins, plus every name with a registered handler, with
-/// alternative spellings grouped as aliases. Asserting set equality against
-/// the running engine catches both directions: a new engine built-in Orion
-/// never catalogued, and a catalogued name nothing can dispatch.
-///
-/// Spellings are compared as one set — canonical names and aliases together —
-/// deliberately. Upstream's canonical spelling of the validation function is
-/// `validate` with `validation` as its alias; Orion's catalogue presents them
-/// the other way round, because that is the spelling its docs and stored
-/// workflows use. Which one is canonical is a presentation choice; that both
-/// are offered, and that nothing else is, is the contract.
+/// The catalogue and live engine must name the same functions, including
+/// engine built-ins and Orion handlers. Neither missing nor extra entries
+/// are valid completion choices for a workflow author.
 #[tokio::test]
 async fn the_catalogue_matches_what_the_engine_can_dispatch() {
     use std::collections::BTreeSet;

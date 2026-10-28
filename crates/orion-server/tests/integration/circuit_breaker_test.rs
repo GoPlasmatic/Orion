@@ -190,7 +190,7 @@ async fn test_breaker_reset_via_admin_api() {
     assert_eq!(body["data"]["reset"], json!(true));
     assert_eq!(body["data"]["key"], json!(breaker_key));
 
-    // Verify it is now closed
+    // Verify the reset closed the breaker
     let resp = app
         .clone()
         .oneshot(json_request(
