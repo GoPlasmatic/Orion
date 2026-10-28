@@ -229,6 +229,21 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
         "Claim 1: manifest channel orders-ch@1 must be serving on replica A"
     );
 
+    // Before replica B's reconciler ticks, reading the deployment head or the
+    // committed revision through replica B's router still answers what replica A
+    // committed (with applied_revision = 0 until B builds it).
+    let app_b = orion::server::build_router(state_b.clone());
+    let (status, page) =
+        crate::common::deploy::send(&app_b, "GET", "/api/v2/admin/deployments", None).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{page}");
+    assert_eq!(page["head_revision"], 1, "{page}");
+    assert_eq!(page["applied_revision"], 0, "{page}");
+    assert_eq!(page["data"][0]["revision"], 1, "{page}");
+    let (status, rev1) =
+        crate::common::deploy::send(&app_b, "GET", "/api/v2/admin/deployments/1", None).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{rev1}");
+    assert_eq!(rev1["revision"], 1, "{rev1}");
+
     // Claim 4: Replica B reconciles automatically from the shared DB
     assert!(orion::cluster::reconcile_v2_state_once(&state_b).await);
     assert_eq!(state_b.reconciler.local_status().applied_revision, 1);

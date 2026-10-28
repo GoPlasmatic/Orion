@@ -63,21 +63,12 @@ head_revision() {
     curl -fsS "${auth[@]}" "$ADMIN/deployments" | jq -r '.head_revision'
 }
 
-# The revision this drill's own last apply committed. A peer answers
-# `GET /deployments` from its catalog, which trails a commit made through
-# the other node by up to a reconciler tick, so what the drill wrote is the
-# head it knows best. Kept in a file: the plugin drill deploys from a
-# background subshell.
-COMMITTED_FILE="$(mktemp)"
-
 # deploy_set <set_dir> — compile into <set_dir>.dist and apply it.
 deploy_set() {
-    local dir="$1" committed
+    local dir="$1"
     rm -rf "$dir.dist"
     "$ORION_CLI" compile "$dir" -o "$dir.dist" >/dev/null
-    committed=$(cli deployments apply -d "$dir.dist" | jq -r '.committed_revision // empty')
-    [[ -n "$committed" ]] && echo "$committed" >"$COMMITTED_FILE"
-    return 0
+    cli deployments apply -d "$dir.dist" >/dev/null
 }
 
 # restore_head <revision> — put back the head a drill found: a rollback to
@@ -85,8 +76,7 @@ deploy_set() {
 # nothing.
 restore_head() {
     local found="$1" now manifest digest
-    now=$(cat "$COMMITTED_FILE")
-    rm -f "$COMMITTED_FILE"
+    now=$(head_revision)
     [[ -z "$now" || "$now" == "$found" ]] && return 0
     if [[ "$found" -gt 0 ]]; then
         cli deployments rollback --target-revision "$found" --expected-head-revision "$now" \

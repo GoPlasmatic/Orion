@@ -154,6 +154,15 @@ impl ImmutableDeploymentStore {
         }
     }
 
+    /// Refresh the catalog when the database's `(head_revision, epoch)` has
+    /// moved past what it holds: one row read when it is already current.
+    pub async fn catch_up(&self, pool: &DbPool) -> Result<(), DeploymentError> {
+        if Self::persisted_head(pool).await?.unwrap_or((0, 0)) != self.current_head() {
+            self.load_from_db_pool(pool).await?;
+        }
+        Ok(())
+    }
+
     /// Bring the catalog up to what the database holds (see the module
     /// documentation): the revisions above the newest one held, new packages
     /// and connection revisions, and every admission. A store whose tables

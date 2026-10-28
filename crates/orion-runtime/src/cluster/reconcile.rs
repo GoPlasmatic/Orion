@@ -124,14 +124,7 @@ pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
     // One row says whether anything committed has changed: every apply,
     // rollback and revocation moves the head or the epoch. The whole store
     // is re-read only when it did.
-    let hydrated = match crate::extensions::ImmutableDeploymentStore::persisted_head(&state.db_pool)
-        .await
-    {
-        Ok(persisted) if persisted.unwrap_or((0, 0)) == state.deployments.current_head() => Ok(()),
-        Ok(_) => state.deployments.load_from_db_pool(&state.db_pool).await,
-        Err(e) => Err(e),
-    };
-    if let Err(e) = hydrated {
+    if let Err(e) = state.deployments.catch_up(&state.db_pool).await {
         if !state.reconciler.is_security_lease_valid(now_ms) {
             state
                 .composition

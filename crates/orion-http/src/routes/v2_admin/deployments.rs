@@ -190,6 +190,7 @@ pub(crate) async fn list_deployments(
         })?),
     };
     let store = &state.deployments;
+    store.catch_up(&state.db_pool).await?;
     let (head_revision, epoch) = store.current_head();
     let mut revisions = store.list_revisions();
     revisions.retain(|r| before.is_none_or(|b| r.revision < b));
@@ -410,9 +411,8 @@ pub(crate) async fn get_deployment_revision(
 ) -> V2Result<Json<DeploymentRevisionResponse>> {
     let row = state
         .deployments
-        .list_revisions()
-        .into_iter()
-        .find(|r| r.revision == revision)
+        .revision(&state.db_pool, revision)
+        .await?
         .ok_or_else(|| {
             V2Error::new(
                 DeploymentErrorKind::RevisionNotFound,
