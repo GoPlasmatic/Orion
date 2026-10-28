@@ -1,0 +1,1172 @@
+{
+  "commit": "8244a842c61cefe9535dd8a5e6675b9473dcadda",
+  "dirty": true,
+  "source_sha256": {
+    "crates/orion-plugin-host/examples/run_view.rs": "1c566ba5840b91430f757cd381cfabdc5a8ddedadf8c2cc61adda372adbc5bce",
+    "crates/orion-plugin-host/examples/run_view_support/allocation.rs": "e4de6d6a03d366cedba3b7b257257a4fee23507eab4737ddc1f9d14862c85e99",
+    "Cargo.lock": "c0fef2de37c48959aaec5fd33a59baa3cfebf280c1bc60b163cde034a233cbf4",
+    "crates/orion-server/tests/benchmark/run-view.py": "600785cf061d51b8fb58c7189646e3c18cf3844169ec3bc967ff85cacfcd9716"
+  },
+  "toolchain": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: aarch64-apple-darwin\nrelease: 1.99.1\nLLVM version: 23.1.1",
+  "platform": "macOS-27.0.1-arm64-arm-64bit",
+  "machine": "arm64",
+  "logical_cpus": 10,
+  "profile": "dev",
+  "rounds": 3,
+  "cases": [
+    {
+      "kind": "loop",
+      "nodes": 0,
+      "steps": 10,
+      "concurrency": 1,
+      "trace": false,
+      "rounds": 3,
+      "input_json_bytes": 58,
+      "samples": [
+        {
+          "elapsed_ns": 902083,
+          "allocations": 439,
+          "allocated_bytes": 139635
+        },
+        {
+          "elapsed_ns": 896250,
+          "allocations": 438,
+          "allocated_bytes": 106883
+        },
+        {
+          "elapsed_ns": 859958,
+          "allocations": 438,
+          "allocated_bytes": 106883
+        }
+      ],
+      "process_peak_rss_bytes": 35995648,
+      "median": {
+        "elapsed_ns": 896250,
+        "allocations": 438,
+        "allocated_bytes": 106883
+      }
+    },
+    {
+      "kind": "loop",
+      "nodes": 0,
+      "steps": 10,
+      "concurrency": 1,
+      "trace": true,
+      "rounds": 3,
+      "input_json_bytes": 58,
+      "samples": [
+        {
+          "elapsed_ns": 959541,
+          "allocations": 853,
+          "allocated_bytes": 176855
+        },
+        {
+          "elapsed_ns": 951125,
+          "allocations": 852,
+          "allocated_bytes": 144103
+        },
+        {
+          "elapsed_ns": 942208,
+          "allocations": 852,
+          "allocated_bytes": 144103
+        }
+      ],
+      "process_peak_rss_bytes": 36306944,
+      "median": {
+        "elapsed_ns": 951125,
+        "allocations": 852,
+        "allocated_bytes": 144103
+      }
+    },
+    {
+      "kind": "loop",
+      "nodes": 1024,
+      "steps": 10,
+      "concurrency": 1,
+      "trace": false,
+      "rounds": 3,
+      "input_json_bytes": 87011,
+      "samples": [
+        {
+          "elapsed_ns": 1089125,
+          "allocations": 439,
+          "allocated_bytes": 336243
+        },
+        {
+          "elapsed_ns": 1033792,
+          "allocations": 438,
+          "allocated_bytes": 106883
+        },
+        {
+          "elapsed_ns": 1023750,
+          "allocations": 438,
+          "allocated_bytes": 106883
+        }
+      ],
+      "process_peak_rss_bytes": 37978112,
+      "median": {
+        "elapsed_ns": 1033792,
+        "allocations": 438,
+        "allocated_bytes": 106883
+      }
+    },
+    {
+      "kind": "loop",
+      "nodes": 1024,
+      "steps": 10,
+      "concurrency": 1,
+      "trace": true,
+      "rounds": 3,
+      "input_json_bytes": 87011,
+      "samples": [
+        {
+          "elapsed_ns": 1406458,
+          "allocations": 4950,
+          "allocated_bytes": 592599
+        },
+        {
+          "elapsed_ns": 1384417,
+          "allocations": 4949,
+          "allocated_bytes": 363239
+        },
+        {
+          "elapsed_ns": 1379250,
+          "allocations": 4949,
+          "allocated_bytes": 363239
+        }
+      ],
+      "process_peak_rss_bytes": 37650432,
+      "median": {
+        "elapsed_ns": 1384417,
+        "allocations": 4949,
+        "allocated_bytes": 363239
+      }
+    },
+    {
+      "kind": "loop",
+      "nodes": 16384,
+      "steps": 10,
+      "concurrency": 1,
+      "trace": false,
+      "rounds": 3,
+      "input_json_bytes": 1414355,
+      "samples": [
+        {
+          "elapsed_ns": 4110042,
+          "allocations": 439,
+          "allocated_bytes": 3285363
+        },
+        {
+          "elapsed_ns": 3610042,
+          "allocations": 438,
+          "allocated_bytes": 106883
+        },
+        {
+          "elapsed_ns": 3873583,
+          "allocations": 438,
+          "allocated_bytes": 106883
+        }
+      ],
+      "process_peak_rss_bytes": 62062592,
+      "median": {
+        "elapsed_ns": 3873583,
+        "allocations": 438,
+        "allocated_bytes": 106883
+      }
+    },
+    {
+      "kind": "loop",
+      "nodes": 16384,
+      "steps": 10,
+      "concurrency": 1,
+      "trace": true,
+      "rounds": 3,
+      "input_json_bytes": 1414355,
+      "samples": [
+        {
+          "elapsed_ns": 8190666,
+          "allocations": 66390,
+          "allocated_bytes": 6828759
+        },
+        {
+          "elapsed_ns": 8570083,
+          "allocations": 66389,
+          "allocated_bytes": 3650279
+        },
+        {
+          "elapsed_ns": 7946917,
+          "allocations": 66389,
+          "allocated_bytes": 3650279
+        }
+      ],
+      "process_peak_rss_bytes": 63733760,
+      "median": {
+        "elapsed_ns": 8190666,
+        "allocations": 66389,
+        "allocated_bytes": 3650279
+      }
+    },
+    {
+      "kind": "loop",
+      "nodes": 0,
+      "steps": 1000,
+      "concurrency": 1,
+      "trace": false,
+      "rounds": 3,
+      "input_json_bytes": 3928,
+      "samples": [
+        {
+          "elapsed_ns": 93486208,
+          "allocations": 42581,
+          "allocated_bytes": 10680371
+        },
+        {
+          "elapsed_ns": 94509958,
+          "allocations": 42581,
+          "allocated_bytes": 10680371
+        },
+        {
+          "elapsed_ns": 94401500,
+          "allocations": 42581,
+          "allocated_bytes": 10680371
+        }
+      ],
+      "process_peak_rss_bytes": 36421632,
+      "median": {
+        "elapsed_ns": 94401500,
+        "allocations": 42581,
+        "allocated_bytes": 10680371
+      }
+    },
+    {
+      "kind": "loop",
+      "nodes": 0,
+      "steps": 1000,
+      "concurrency": 1,
+      "trace": true,
+      "rounds": 3,
+      "input_json_bytes": 3928,
+      "samples": [
+        {
+          "elapsed_ns": 105537917,
+          "allocations": 82702,
+          "allocated_bytes": 14678023
+        },
+        {
+          "elapsed_ns": 101572125,
+          "allocations": 82702,
+          "allocated_bytes": 14678023
+        },
+        {
+          "elapsed_ns": 101556459,
+          "allocations": 82702,
+          "allocated_bytes": 14678023
+        }
+      ],
+      "process_peak_rss_bytes": 39157760,
+      "median": {
+        "elapsed_ns": 101572125,
+        "allocations": 82702,
+        "allocated_bytes": 14678023
+      }
+    },
+    {
+      "kind": "loop",
+      "nodes": 1024,
+      "steps": 1000,
+      "concurrency": 1,
+      "trace": false,
+      "rounds": 3,
+      "input_json_bytes": 90881,
+      "samples": [
+        {
+          "elapsed_ns": 104458667,
+          "allocations": 42284,
+          "allocated_bytes": 10724007
+        },
+        {
+          "elapsed_ns": 104505709,
+          "allocations": 42284,
+          "allocated_bytes": 10724007
+        },
+        {
+          "elapsed_ns": 105705625,
+          "allocations": 42284,
+          "allocated_bytes": 10724007
+        }
+      ],
+      "process_peak_rss_bytes": 38010880,
+      "median": {
+        "elapsed_ns": 104505709,
+        "allocations": 42284,
+        "allocated_bytes": 10724007
+      }
+    },
+    {
+      "kind": "loop",
+      "nodes": 1024,
+      "steps": 1000,
+      "concurrency": 1,
+      "trace": true,
+      "rounds": 3,
+      "input_json_bytes": 90881,
+      "samples": [
+        {
+          "elapsed_ns": 114241709,
+          "allocations": 86549,
+          "allocated_bytes": 14954491
+        },
+        {
+          "elapsed_ns": 113097958,
+          "allocations": 86549,
+          "allocated_bytes": 14954491
+        },
+        {
+          "elapsed_ns": 114106709,
+          "allocations": 86549,
+          "allocated_bytes": 14954491
+        }
+      ],
+      "process_peak_rss_bytes": 40550400,
+      "median": {
+        "elapsed_ns": 114106709,
+        "allocations": 86549,
+        "allocated_bytes": 14954491
+      }
+    },
+    {
+      "kind": "loop",
+      "nodes": 16384,
+      "steps": 1000,
+      "concurrency": 1,
+      "trace": false,
+      "rounds": 3,
+      "input_json_bytes": 1418225,
+      "samples": [
+        {
+          "elapsed_ns": 110121292,
+          "allocations": 42047,
+          "allocated_bytes": 22988371
+        },
+        {
+          "elapsed_ns": 110755625,
+          "allocations": 42047,
+          "allocated_bytes": 22988371
+        },
+        {
+          "elapsed_ns": 109272042,
+          "allocations": 42047,
+          "allocated_bytes": 22988371
+        }
+      ],
+      "process_peak_rss_bytes": 64913408,
+      "median": {
+        "elapsed_ns": 110121292,
+        "allocations": 42047,
+        "allocated_bytes": 22988371
+      }
+    },
+    {
+      "kind": "loop",
+      "nodes": 16384,
+      "steps": 1000,
+      "concurrency": 1,
+      "trace": true,
+      "rounds": 3,
+      "input_json_bytes": 1418225,
+      "samples": [
+        {
+          "elapsed_ns": 125981167,
+          "allocations": 147645,
+          "allocated_bytes": 30525351
+        },
+        {
+          "elapsed_ns": 122770792,
+          "allocations": 147645,
+          "allocated_bytes": 30525351
+        },
+        {
+          "elapsed_ns": 121808709,
+          "allocations": 147645,
+          "allocated_bytes": 30525351
+        }
+      ],
+      "process_peak_rss_bytes": 71483392,
+      "median": {
+        "elapsed_ns": 122770792,
+        "allocations": 147645,
+        "allocated_bytes": 30525351
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 0,
+      "steps": 10,
+      "concurrency": 1,
+      "trace": false,
+      "rounds": 3,
+      "input_json_bytes": 58,
+      "samples": [
+        {
+          "elapsed_ns": 882583,
+          "allocations": 445,
+          "allocated_bytes": 138878
+        },
+        {
+          "elapsed_ns": 828708,
+          "allocations": 444,
+          "allocated_bytes": 122510
+        },
+        {
+          "elapsed_ns": 805125,
+          "allocations": 444,
+          "allocated_bytes": 122510
+        }
+      ],
+      "process_peak_rss_bytes": 36454400,
+      "median": {
+        "elapsed_ns": 828708,
+        "allocations": 444,
+        "allocated_bytes": 122510
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 0,
+      "steps": 10,
+      "concurrency": 8,
+      "trace": false,
+      "rounds": 3,
+      "input_json_bytes": 58,
+      "samples": [
+        {
+          "elapsed_ns": 831375,
+          "allocations": 445,
+          "allocated_bytes": 138878
+        },
+        {
+          "elapsed_ns": 798750,
+          "allocations": 444,
+          "allocated_bytes": 122510
+        },
+        {
+          "elapsed_ns": 811959,
+          "allocations": 444,
+          "allocated_bytes": 122510
+        }
+      ],
+      "process_peak_rss_bytes": 35930112,
+      "median": {
+        "elapsed_ns": 811959,
+        "allocations": 444,
+        "allocated_bytes": 122510
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 0,
+      "steps": 10,
+      "concurrency": 1,
+      "trace": true,
+      "rounds": 3,
+      "input_json_bytes": 58,
+      "samples": [
+        {
+          "elapsed_ns": 893500,
+          "allocations": 629,
+          "allocated_bytes": 157096
+        },
+        {
+          "elapsed_ns": 845042,
+          "allocations": 628,
+          "allocated_bytes": 140728
+        },
+        {
+          "elapsed_ns": 846875,
+          "allocations": 628,
+          "allocated_bytes": 140728
+        }
+      ],
+      "process_peak_rss_bytes": 35618816,
+      "median": {
+        "elapsed_ns": 846875,
+        "allocations": 628,
+        "allocated_bytes": 140728
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 0,
+      "steps": 10,
+      "concurrency": 8,
+      "trace": true,
+      "rounds": 3,
+      "input_json_bytes": 58,
+      "samples": [
+        {
+          "elapsed_ns": 877709,
+          "allocations": 629,
+          "allocated_bytes": 157096
+        },
+        {
+          "elapsed_ns": 836666,
+          "allocations": 628,
+          "allocated_bytes": 140728
+        },
+        {
+          "elapsed_ns": 846833,
+          "allocations": 628,
+          "allocated_bytes": 140728
+        }
+      ],
+      "process_peak_rss_bytes": 35782656,
+      "median": {
+        "elapsed_ns": 846833,
+        "allocations": 628,
+        "allocated_bytes": 140728
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 1024,
+      "steps": 10,
+      "concurrency": 1,
+      "trace": false,
+      "rounds": 3,
+      "input_json_bytes": 87011,
+      "samples": [
+        {
+          "elapsed_ns": 1032333,
+          "allocations": 445,
+          "allocated_bytes": 351870
+        },
+        {
+          "elapsed_ns": 980084,
+          "allocations": 444,
+          "allocated_bytes": 122510
+        },
+        {
+          "elapsed_ns": 988833,
+          "allocations": 444,
+          "allocated_bytes": 122510
+        }
+      ],
+      "process_peak_rss_bytes": 37093376,
+      "median": {
+        "elapsed_ns": 988833,
+        "allocations": 444,
+        "allocated_bytes": 122510
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 1024,
+      "steps": 10,
+      "concurrency": 8,
+      "trace": false,
+      "rounds": 3,
+      "input_json_bytes": 87011,
+      "samples": [
+        {
+          "elapsed_ns": 1007791,
+          "allocations": 445,
+          "allocated_bytes": 351870
+        },
+        {
+          "elapsed_ns": 962625,
+          "allocations": 444,
+          "allocated_bytes": 122510
+        },
+        {
+          "elapsed_ns": 955458,
+          "allocations": 444,
+          "allocated_bytes": 122510
+        }
+      ],
+      "process_peak_rss_bytes": 37404672,
+      "median": {
+        "elapsed_ns": 962625,
+        "allocations": 444,
+        "allocated_bytes": 122510
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 1024,
+      "steps": 10,
+      "concurrency": 1,
+      "trace": true,
+      "rounds": 3,
+      "input_json_bytes": 87011,
+      "samples": [
+        {
+          "elapsed_ns": 1314750,
+          "allocations": 4726,
+          "allocated_bytes": 589224
+        },
+        {
+          "elapsed_ns": 1290250,
+          "allocations": 4725,
+          "allocated_bytes": 359864
+        },
+        {
+          "elapsed_ns": 1272667,
+          "allocations": 4725,
+          "allocated_bytes": 359864
+        }
+      ],
+      "process_peak_rss_bytes": 37699584,
+      "median": {
+        "elapsed_ns": 1290250,
+        "allocations": 4725,
+        "allocated_bytes": 359864
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 1024,
+      "steps": 10,
+      "concurrency": 8,
+      "trace": true,
+      "rounds": 3,
+      "input_json_bytes": 87011,
+      "samples": [
+        {
+          "elapsed_ns": 1349667,
+          "allocations": 4726,
+          "allocated_bytes": 589224
+        },
+        {
+          "elapsed_ns": 1302833,
+          "allocations": 4725,
+          "allocated_bytes": 359864
+        },
+        {
+          "elapsed_ns": 1262583,
+          "allocations": 4725,
+          "allocated_bytes": 359864
+        }
+      ],
+      "process_peak_rss_bytes": 37142528,
+      "median": {
+        "elapsed_ns": 1302833,
+        "allocations": 4725,
+        "allocated_bytes": 359864
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 16384,
+      "steps": 10,
+      "concurrency": 1,
+      "trace": false,
+      "rounds": 3,
+      "input_json_bytes": 1414355,
+      "samples": [
+        {
+          "elapsed_ns": 3473583,
+          "allocations": 445,
+          "allocated_bytes": 3300990
+        },
+        {
+          "elapsed_ns": 3692458,
+          "allocations": 444,
+          "allocated_bytes": 122510
+        },
+        {
+          "elapsed_ns": 3401541,
+          "allocations": 444,
+          "allocated_bytes": 122510
+        }
+      ],
+      "process_peak_rss_bytes": 59932672,
+      "median": {
+        "elapsed_ns": 3473583,
+        "allocations": 444,
+        "allocated_bytes": 122510
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 16384,
+      "steps": 10,
+      "concurrency": 8,
+      "trace": false,
+      "rounds": 3,
+      "input_json_bytes": 1414355,
+      "samples": [
+        {
+          "elapsed_ns": 4017750,
+          "allocations": 445,
+          "allocated_bytes": 3300990
+        },
+        {
+          "elapsed_ns": 3984125,
+          "allocations": 444,
+          "allocated_bytes": 122510
+        },
+        {
+          "elapsed_ns": 3510083,
+          "allocations": 444,
+          "allocated_bytes": 122510
+        }
+      ],
+      "process_peak_rss_bytes": 61014016,
+      "median": {
+        "elapsed_ns": 3984125,
+        "allocations": 444,
+        "allocated_bytes": 122510
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 16384,
+      "steps": 10,
+      "concurrency": 1,
+      "trace": true,
+      "rounds": 3,
+      "input_json_bytes": 1414355,
+      "samples": [
+        {
+          "elapsed_ns": 8453291,
+          "allocations": 66166,
+          "allocated_bytes": 6825384
+        },
+        {
+          "elapsed_ns": 8185416,
+          "allocations": 66165,
+          "allocated_bytes": 3646904
+        },
+        {
+          "elapsed_ns": 7643041,
+          "allocations": 66165,
+          "allocated_bytes": 3646904
+        }
+      ],
+      "process_peak_rss_bytes": 63291392,
+      "median": {
+        "elapsed_ns": 8185416,
+        "allocations": 66165,
+        "allocated_bytes": 3646904
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 16384,
+      "steps": 10,
+      "concurrency": 8,
+      "trace": true,
+      "rounds": 3,
+      "input_json_bytes": 1414355,
+      "samples": [
+        {
+          "elapsed_ns": 7940375,
+          "allocations": 66166,
+          "allocated_bytes": 6825384
+        },
+        {
+          "elapsed_ns": 7676833,
+          "allocations": 66165,
+          "allocated_bytes": 3646904
+        },
+        {
+          "elapsed_ns": 7855083,
+          "allocations": 66165,
+          "allocated_bytes": 3646904
+        }
+      ],
+      "process_peak_rss_bytes": 62980096,
+      "median": {
+        "elapsed_ns": 7855083,
+        "allocations": 66165,
+        "allocated_bytes": 3646904
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 0,
+      "steps": 1000,
+      "concurrency": 1,
+      "trace": false,
+      "rounds": 3,
+      "input_json_bytes": 3928,
+      "samples": [
+        {
+          "elapsed_ns": 75718416,
+          "allocations": 40044,
+          "allocated_bytes": 11903420
+        },
+        {
+          "elapsed_ns": 76919333,
+          "allocations": 40044,
+          "allocated_bytes": 11903420
+        },
+        {
+          "elapsed_ns": 74676000,
+          "allocations": 40044,
+          "allocated_bytes": 11903420
+        }
+      ],
+      "process_peak_rss_bytes": 36716544,
+      "median": {
+        "elapsed_ns": 75718416,
+        "allocations": 40044,
+        "allocated_bytes": 11903420
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 0,
+      "steps": 1000,
+      "concurrency": 8,
+      "trace": false,
+      "rounds": 3,
+      "input_json_bytes": 3928,
+      "samples": [
+        {
+          "elapsed_ns": 75060500,
+          "allocations": 40044,
+          "allocated_bytes": 11903420
+        },
+        {
+          "elapsed_ns": 74333791,
+          "allocations": 40044,
+          "allocated_bytes": 11903420
+        },
+        {
+          "elapsed_ns": 75070959,
+          "allocations": 40044,
+          "allocated_bytes": 11903420
+        }
+      ],
+      "process_peak_rss_bytes": 37421056,
+      "median": {
+        "elapsed_ns": 75060500,
+        "allocations": 40044,
+        "allocated_bytes": 11903420
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 0,
+      "steps": 1000,
+      "concurrency": 1,
+      "trace": true,
+      "rounds": 3,
+      "input_json_bytes": 3928,
+      "samples": [
+        {
+          "elapsed_ns": 78827417,
+          "allocations": 57064,
+          "allocated_bytes": 13534744
+        },
+        {
+          "elapsed_ns": 76880334,
+          "allocations": 57064,
+          "allocated_bytes": 13534744
+        },
+        {
+          "elapsed_ns": 78190083,
+          "allocations": 57064,
+          "allocated_bytes": 13534744
+        }
+      ],
+      "process_peak_rss_bytes": 37634048,
+      "median": {
+        "elapsed_ns": 78190083,
+        "allocations": 57064,
+        "allocated_bytes": 13534744
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 0,
+      "steps": 1000,
+      "concurrency": 8,
+      "trace": true,
+      "rounds": 3,
+      "input_json_bytes": 3928,
+      "samples": [
+        {
+          "elapsed_ns": 77927792,
+          "allocations": 57064,
+          "allocated_bytes": 13534744
+        },
+        {
+          "elapsed_ns": 77352666,
+          "allocations": 57064,
+          "allocated_bytes": 13534744
+        },
+        {
+          "elapsed_ns": 79293125,
+          "allocations": 57064,
+          "allocated_bytes": 13534744
+        }
+      ],
+      "process_peak_rss_bytes": 37912576,
+      "median": {
+        "elapsed_ns": 77927792,
+        "allocations": 57064,
+        "allocated_bytes": 13534744
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 1024,
+      "steps": 1000,
+      "concurrency": 1,
+      "trace": false,
+      "rounds": 3,
+      "input_json_bytes": 90881,
+      "samples": [
+        {
+          "elapsed_ns": 74922875,
+          "allocations": 40045,
+          "allocated_bytes": 12362156
+        },
+        {
+          "elapsed_ns": 74235083,
+          "allocations": 40044,
+          "allocated_bytes": 11903420
+        },
+        {
+          "elapsed_ns": 76207167,
+          "allocations": 40044,
+          "allocated_bytes": 11903420
+        }
+      ],
+      "process_peak_rss_bytes": 37994496,
+      "median": {
+        "elapsed_ns": 74922875,
+        "allocations": 40044,
+        "allocated_bytes": 11903420
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 1024,
+      "steps": 1000,
+      "concurrency": 8,
+      "trace": false,
+      "rounds": 3,
+      "input_json_bytes": 90881,
+      "samples": [
+        {
+          "elapsed_ns": 75023375,
+          "allocations": 40045,
+          "allocated_bytes": 12362156
+        },
+        {
+          "elapsed_ns": 76585458,
+          "allocations": 40044,
+          "allocated_bytes": 11903420
+        },
+        {
+          "elapsed_ns": 74674625,
+          "allocations": 40044,
+          "allocated_bytes": 11903420
+        }
+      ],
+      "process_peak_rss_bytes": 37470208,
+      "median": {
+        "elapsed_ns": 75023375,
+        "allocations": 40044,
+        "allocated_bytes": 11903420
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 1024,
+      "steps": 1000,
+      "concurrency": 1,
+      "trace": true,
+      "rounds": 3,
+      "input_json_bytes": 90881,
+      "samples": [
+        {
+          "elapsed_ns": 79760333,
+          "allocations": 61162,
+          "allocated_bytes": 14212616
+        },
+        {
+          "elapsed_ns": 77668958,
+          "allocations": 61161,
+          "allocated_bytes": 13753880
+        },
+        {
+          "elapsed_ns": 77628250,
+          "allocations": 61161,
+          "allocated_bytes": 13753880
+        }
+      ],
+      "process_peak_rss_bytes": 38764544,
+      "median": {
+        "elapsed_ns": 77668958,
+        "allocations": 61161,
+        "allocated_bytes": 13753880
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 1024,
+      "steps": 1000,
+      "concurrency": 8,
+      "trace": true,
+      "rounds": 3,
+      "input_json_bytes": 90881,
+      "samples": [
+        {
+          "elapsed_ns": 78039625,
+          "allocations": 61162,
+          "allocated_bytes": 14212616
+        },
+        {
+          "elapsed_ns": 78045625,
+          "allocations": 61161,
+          "allocated_bytes": 13753880
+        },
+        {
+          "elapsed_ns": 79721125,
+          "allocations": 61161,
+          "allocated_bytes": 13753880
+        }
+      ],
+      "process_peak_rss_bytes": 39288832,
+      "median": {
+        "elapsed_ns": 78045625,
+        "allocations": 61161,
+        "allocated_bytes": 13753880
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 16384,
+      "steps": 1000,
+      "concurrency": 1,
+      "trace": false,
+      "rounds": 3,
+      "input_json_bytes": 1418225,
+      "samples": [
+        {
+          "elapsed_ns": 80031958,
+          "allocations": 40045,
+          "allocated_bytes": 18260396
+        },
+        {
+          "elapsed_ns": 79326084,
+          "allocations": 40049,
+          "allocated_bytes": 17863532
+        },
+        {
+          "elapsed_ns": 78016833,
+          "allocations": 40045,
+          "allocated_bytes": 18260396
+        }
+      ],
+      "process_peak_rss_bytes": 64241664,
+      "median": {
+        "elapsed_ns": 79326084,
+        "allocations": 40045,
+        "allocated_bytes": 18260396
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 16384,
+      "steps": 1000,
+      "concurrency": 8,
+      "trace": false,
+      "rounds": 3,
+      "input_json_bytes": 1418225,
+      "samples": [
+        {
+          "elapsed_ns": 79833791,
+          "allocations": 40045,
+          "allocated_bytes": 18260396
+        },
+        {
+          "elapsed_ns": 78703500,
+          "allocations": 40049,
+          "allocated_bytes": 17863532
+        },
+        {
+          "elapsed_ns": 78958750,
+          "allocations": 40045,
+          "allocated_bytes": 18260396
+        }
+      ],
+      "process_peak_rss_bytes": 64749568,
+      "median": {
+        "elapsed_ns": 78958750,
+        "allocations": 40045,
+        "allocated_bytes": 18260396
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 16384,
+      "steps": 1000,
+      "concurrency": 1,
+      "trace": true,
+      "rounds": 3,
+      "input_json_bytes": 1418225,
+      "samples": [
+        {
+          "elapsed_ns": 85925959,
+          "allocations": 122602,
+          "allocated_bytes": 23397896
+        },
+        {
+          "elapsed_ns": 86166833,
+          "allocations": 122606,
+          "allocated_bytes": 23001032
+        },
+        {
+          "elapsed_ns": 85566125,
+          "allocations": 122602,
+          "allocated_bytes": 23397896
+        }
+      ],
+      "process_peak_rss_bytes": 64700416,
+      "median": {
+        "elapsed_ns": 85925959,
+        "allocations": 122602,
+        "allocated_bytes": 23397896
+      }
+    },
+    {
+      "kind": "fan",
+      "nodes": 16384,
+      "steps": 1000,
+      "concurrency": 8,
+      "trace": true,
+      "rounds": 3,
+      "input_json_bytes": 1418225,
+      "samples": [
+        {
+          "elapsed_ns": 85238458,
+          "allocations": 122602,
+          "allocated_bytes": 23397896
+        },
+        {
+          "elapsed_ns": 85057875,
+          "allocations": 122606,
+          "allocated_bytes": 23001032
+        },
+        {
+          "elapsed_ns": 87262667,
+          "allocations": 122602,
+          "allocated_bytes": 23397896
+        }
+      ],
+      "process_peak_rss_bytes": 65339392,
+      "median": {
+        "elapsed_ns": 85238458,
+        "allocations": 122602,
+        "allocated_bytes": 23397896
+      }
+    }
+  ],
+  "cpu": "Apple M2 Pro",
+  "memory_bytes": 17179869184
+}

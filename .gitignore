@@ -51,3 +51,5 @@ debug/
 !/crates/orion-server/tests/benchmark/results/v0.2.0/
 !/crates/orion-server/tests/benchmark/results/v1.0.0/
 !/crates/orion-server/tests/benchmark/results/v1.1.0/
+
+!/crates/orion-server/tests/benchmark/results/v2-run-view-2026-10-28/

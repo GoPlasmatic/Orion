@@ -250,6 +250,14 @@ onto compile + `deployments apply -d`, and its `multi` and `reload`
 scenarios redesigned for a node that serves one deployment head, the script
 does not run against this tree.
 
+For the v4 run-view and fan-out workloads, run
+`python3 crates/orion-server/tests/benchmark/run-view.py --profile dev --rounds 3`.
+It drives the real plugin host directly and records engine-window allocations,
+time and whole-process peak RSS. Methodology, measured results and limitations
+are in [the run-view report](crates/orion-server/tests/benchmark/RUN_VIEW.md).
+The behavioral regressions run in `orion-engine` with
+`cargo test -p orion-engine run_view_tests`; they assert no timing thresholds.
+
 ## CI at a glance
 
 Push/PR: `changes`, `fmt`, `lint`, `msrv`, `test`, `cli-e2e`, `examples`,
