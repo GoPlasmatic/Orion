@@ -31,7 +31,7 @@ orion-common.workspace = true
 orion-definitions.workspace = true
 orion-extension-api.workspace = true
 orion-storage.workspace = true
-dataflow-rs = { version = "4.0.1", features = ["datetime", "budget"] }
+dataflow-rs = { version = "4.0.3", features = ["datetime", "budget"] }
 argon2 = "0.6.0"
 arc-swap = "1"
 async-trait = "0.1"

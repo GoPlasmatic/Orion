@@ -29,7 +29,7 @@ orion-extension-api.workspace = true
 orion-plugin-host.workspace = true
 orion-runtime.workspace = true
 orion-storage.workspace = true
-dataflow-rs = { version = "4.0.1", features = ["datetime", "budget"] }
+dataflow-rs = { version = "4.0.3", features = ["datetime", "budget"] }
 axum = { version = "0.8", default-features = false, features = ["json"] }
 base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }

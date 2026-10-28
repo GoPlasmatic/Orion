@@ -1253,9 +1253,9 @@ checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
 name = "dataflow-rs"
-version = "4.0.1"
+version = "4.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "506b947f1d46e7a73ab9585ccd6d38aebb6ce9a9cbab26785c16a81462039188"
+checksum = "5881b5959106e69d9dc7ea7cc5618e77a9cc024b675645a8be258d4b6052eb3f"
 dependencies = [
  "bumpalo",
  "chrono",
@@ -1275,9 +1275,9 @@ dependencies = [
 
 [[package]]
 name = "dataflow-rs-derive"
-version = "4.0.1"
+version = "4.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6558632075e17e5a96b32e4bf35318c019075fe59217852e9d47f376098b6c6"
+checksum = "1a502c520644364aef9c16013ce9667edf669d5e88cfa0c4da366c492ddfb65c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5650,9 +5650,9 @@ dependencies = [
 
 [[package]]
 name = "uuid"
-version = "1.28.0"
+version = "1.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
+checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",

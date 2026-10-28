@@ -26,7 +26,7 @@ test-support = []
 # of each.
 [dependencies]
 orion-api = { workspace = true, features = ["utoipa"] }
-dataflow-rs = { version = "4.0.1", features = ["datetime", "budget"] }
+dataflow-rs = { version = "4.0.3", features = ["datetime", "budget"] }
 axum = { version = "0.8", default-features = false, features = ["json"] }
 sqlx = { version = "0.9", default-features = false }
 serde = { version = "1", features = ["derive"] }

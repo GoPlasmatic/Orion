@@ -347,7 +347,7 @@ impl Function for ChannelCallFunction {
                 }
             }
         }
-        ctx.set(&output, child.context().data().clone())?;
+        ctx.set(&output, child.context_mut().take_data())?;
         Ok(Outcome::Ok)
     }
 }

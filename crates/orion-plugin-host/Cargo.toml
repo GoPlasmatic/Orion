@@ -25,7 +25,7 @@ orion-api = { workspace = true, features = ["utoipa"] }
 orion-common.workspace = true
 orion-engine.workspace = true
 orion-storage.workspace = true
-dataflow-rs = { version = "4.0.1", features = ["datetime", "budget"] }
+dataflow-rs = { version = "4.0.3", features = ["datetime", "budget"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
