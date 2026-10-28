@@ -119,6 +119,22 @@ struct CacheEntry {
     seq: u64,
 }
 
+/// Counts an invocation until its store is dropped, including future cancellation.
+struct LiveInstance<'a>(&'a AtomicU64);
+
+impl<'a> LiveInstance<'a> {
+    fn new(live: &'a AtomicU64) -> Self {
+        live.fetch_add(1, Ordering::Relaxed);
+        Self(live)
+    }
+}
+
+impl Drop for LiveInstance<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// The engine, its linker, and the digest-keyed cache of loaded components.
 pub struct WasmRuntime {
     engine: Engine,
@@ -364,6 +380,8 @@ impl WasmRuntime {
         function: &str,
         input: &str,
     ) -> Result<String, Invocation> {
+        // Declare the guard first so the store drops before its count does.
+        let _live = LiveInstance::new(&self.live);
         let mut store = Store::new(&self.engine, HostState::new(limits));
         store.limiter(|state| &mut state.limiter);
         store.set_fuel(limits.fuel).map_err(|e| {
@@ -381,7 +399,6 @@ impl WasmRuntime {
         store.set_epoch_deadline(ticks);
         store.epoch_deadline_trap();
 
-        self.live.fetch_add(1, Ordering::Relaxed);
         let call = async {
             let plugin = loaded.pre.instantiate_async(&mut store).await?;
             plugin
@@ -393,7 +410,6 @@ impl WasmRuntime {
         // the cause precisely — wins when the ticker is running, and this
         // still fires when it is not.
         let outcome = tokio::time::timeout(limits.timeout + EPOCH_TICK * 2, call).await;
-        self.live.fetch_sub(1, Ordering::Relaxed);
 
         let memory_refused = store.data().limiter.refused;
         match outcome {

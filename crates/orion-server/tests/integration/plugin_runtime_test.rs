@@ -86,19 +86,7 @@ fn config() -> PluginsConfig {
 /// first task error's text.
 async fn run(function: &PluginFunction, input: Value, data: Value) -> Result<Value, String> {
     use dataflow_rs::datavalue::OwnedDataValue;
-    let name = function.name().to_string();
-    let exprs = orion::engine::operators::orion_exprs(&orion::engine::ResolvedSecrets::empty(), 0)
-        .map_err(|e| e.to_string())?;
-    let mut registry = dataflow_rs::Registry::new(exprs);
-    registry.register(&name, function.clone());
-    let engine = dataflow_rs::Engine::builder()
-        .registry(registry)
-        .workflow_json(&json!({
-            "id": "w",
-            "tasks": [{"id": "t", "function": {"name": name, "input": input}}]
-        }))
-        .build()
-        .map_err(|e| format!("{e:?}"))?;
+    let engine = plugin_engine(function, input)?;
     let data = OwnedDataValue::from(&if data.is_null() { json!({}) } else { data });
     let mut message = dataflow_rs::Message::from_parts(data.clone(), data, OwnedDataValue::Null);
     engine.run(&mut message).await;
@@ -106,6 +94,47 @@ async fn run(function: &PluginFunction, input: Value, data: Value) -> Result<Val
         return Err(format!("{err:?}"));
     }
     Ok(Value::from(message.context().data()))
+}
+
+fn plugin_engine(function: &PluginFunction, input: Value) -> Result<dataflow_rs::Engine, String> {
+    let name = function.name().to_string();
+    let exprs = orion::engine::operators::orion_exprs(&orion::engine::ResolvedSecrets::empty(), 0)
+        .map_err(|e| e.to_string())?;
+    let mut registry = dataflow_rs::Registry::new(exprs);
+    registry.register(&name, function.clone());
+    dataflow_rs::Engine::builder()
+        .registry(registry)
+        .workflow_json(&json!({
+            "id": "w",
+            "tasks": [{"id": "t", "function": {"name": name, "input": input}}]
+        }))
+        .build()
+        .map_err(|e| format!("{e:?}"))
+}
+
+/// Poll the call itself until it enters Wasm and yields. No spawned task or
+/// sleep is needed to establish that cancellation happens during invocation.
+async fn poll_until_live<F: std::future::Future>(
+    mut call: std::pin::Pin<&mut F>,
+    runtime: &WasmRuntime,
+    expected: u64,
+) {
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        std::future::poll_fn(|cx| {
+            assert!(
+                call.as_mut().poll(cx).is_pending(),
+                "the guest keeps spinning"
+            );
+            if runtime.live_instances() == expected {
+                std::task::Poll::Ready(())
+            } else {
+                std::task::Poll::Pending
+            }
+        }),
+    )
+    .await
+    .expect("the invocation enters Wasm");
 }
 
 /// A ticker for the tests that need the epoch clock, at the runtime's tick.
@@ -646,6 +675,67 @@ async fn no_instance_outlives_its_call() {
         0,
         "a trapped store is dropped like any other"
     );
+}
+
+#[tokio::test]
+async fn dropping_plugin_invocations_releases_each_live_instance() {
+    let cfg = config();
+    let runtime = WasmRuntime::new(&cfg).expect("engine");
+    let loaded = runtime.load_blocking(COMPONENT).expect("fixture loads");
+    let limits = Limits::effective(&cfg, "test.fixture");
+    let mut first = Box::pin(runtime.invoke(&loaded, &limits, "test.fixture.spin", "{}"));
+    let mut second = Box::pin(runtime.invoke(&loaded, &limits, "test.fixture.spin", "{}"));
+
+    poll_until_live(first.as_mut(), &runtime, 1).await;
+    poll_until_live(second.as_mut(), &runtime, 2).await;
+    drop(first);
+    assert_eq!(runtime.live_instances(), 1, "the other call remains live");
+    drop(second);
+    assert_eq!(runtime.live_instances(), 0, "both stores were dropped");
+
+    let result = runtime
+        .invoke(&loaded, &limits, "test.fixture.identity", "{\"message\":1}")
+        .await
+        .expect("another invocation succeeds");
+    assert_eq!(result, "{\"message\":1}");
+    assert_eq!(runtime.live_instances(), 0);
+}
+
+#[tokio::test]
+async fn cancelling_plugin_runs_releases_the_instance_and_function_permit() {
+    use dataflow_rs::datavalue::OwnedDataValue;
+    use dataflow_rs::run::{CancelToken, RunOptions, RunStatus};
+
+    let f = fixture(&PluginsConfig {
+        max_concurrency_per_function: 1,
+        ..config()
+    });
+    let engine = plugin_engine(
+        &f.handlers["test.fixture.spin"],
+        json!({"output": "data.x"}),
+    )
+    .expect("engine builds");
+
+    // A dropped run and a signalled cancellation both release the sole permit.
+    // Re-entering Wasm on the next iteration proves admission works again.
+    for drop_run in [true, false, false] {
+        let cancel = CancelToken::new();
+        let opts = RunOptions::default().cancel(&cancel);
+        let data = OwnedDataValue::from(&json!({}));
+        let mut message =
+            dataflow_rs::Message::from_parts(data.clone(), data, OwnedDataValue::Null);
+        let mut running = Box::pin(engine.run_with(&mut message, &opts));
+        poll_until_live(running.as_mut(), &f.runtime, 1).await;
+        if drop_run {
+            drop(running);
+        } else {
+            cancel.cancel();
+            let result = running.await;
+            assert!(matches!(result.status(), RunStatus::Cancelled));
+        }
+        assert_eq!(f.runtime.live_instances(), 0, "the run dropped its store");
+        assert_eq!(Value::from(message.context().data()), json!({}));
+    }
 }
 
 /// A compile is a job on the native work scheduler the runtime was given: it
