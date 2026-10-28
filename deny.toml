@@ -75,6 +75,7 @@ allow = [
 confidence-threshold = 0.8
 
 [bans]
+# Owners and remaining version constraints: docs/dependency-duplicates.md.
 # The ~600-crate tree inevitably carries duplicate minor versions; a hard
 # deny would be permanent noise. Wildcard requirements stay denied.
 multiple-versions = "warn"
