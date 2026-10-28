@@ -79,6 +79,7 @@ pub struct RuntimeGeneration {
         Option<Arc<std::collections::HashMap<String, Arc<crate::connector::ConnectorConfig>>>>,
     /// Run-wide resource budget ceilings configured for this generation (`TD-03`).
     pub run_budget_limits: crate::engine::budget::RunBudgetLimits,
+    pub connector_budget_limits: crate::config::ConnectorBudgetLimits,
     /// Which connections each workflow may call through `connector_call`.
     /// Empty unless the generation was built from a deployment manifest.
     pub connector_authority: Arc<super::authority::ConnectorAuthority>,
@@ -95,6 +96,7 @@ pub struct GenerationParts {
     pub connectors:
         Option<Arc<std::collections::HashMap<String, Arc<crate::connector::ConnectorConfig>>>>,
     pub run_budget_limits: crate::engine::budget::RunBudgetLimits,
+    pub connector_budget_limits: crate::config::ConnectorBudgetLimits,
     pub connector_authority: Arc<super::authority::ConnectorAuthority>,
 }
 
@@ -112,6 +114,7 @@ impl GenerationParts {
             plugins,
             connectors: None,
             run_budget_limits: Default::default(),
+            connector_budget_limits: Default::default(),
             connector_authority: Default::default(),
         }
     }
@@ -177,6 +180,7 @@ impl RuntimeHandle {
                 plugins: Arc::new(PluginSet::empty()),
                 connectors: None,
                 run_budget_limits: Default::default(),
+                connector_budget_limits: Default::default(),
                 connector_authority: Default::default(),
             }),
             published: AtomicU64::new(0),
@@ -227,6 +231,7 @@ impl RuntimeHandle {
             plugins,
             connectors,
             run_budget_limits,
+            connector_budget_limits,
             connector_authority,
         } = parts;
         let id = self.published.fetch_add(1, Ordering::Relaxed) + 1;
@@ -238,6 +243,7 @@ impl RuntimeHandle {
             plugins,
             connectors,
             run_budget_limits,
+            connector_budget_limits,
             connector_authority,
         }));
         id

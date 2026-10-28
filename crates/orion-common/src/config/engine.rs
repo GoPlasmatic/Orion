@@ -97,6 +97,8 @@ pub struct EngineConfig {
     /// Maximum concurrent in-flight task dispatches within one root run (`TD-03`).
     /// `0` (default) disables the ceiling.
     pub max_run_in_flight: u64,
+    /// Connector resource ceilings shared by one admitted run and its children.
+    pub connector_budget: ConnectorBudgetLimits,
     /// Blocking native jobs that may run at once on this node, each on a
     /// thread of its own: a plugin component compile, and any job an
     /// extension schedules on the node's native work scheduler. Beyond it a
@@ -128,6 +130,7 @@ impl Default for EngineConfig {
             max_run_expr_ops: 0,
             max_run_custom_units: 0,
             max_run_in_flight: 0,
+            connector_budget: ConnectorBudgetLimits::default(),
             native_work_max_in_flight: 4,
             native_work_timeout_ms: 300_000,
         }
@@ -146,6 +149,7 @@ impl EngineConfig {
     }
 
     pub(crate) fn validate(&self) -> Result<(), OrionError> {
+        self.connector_budget.validate()?;
         require_nonzero(
             u64::from(self.max_channel_call_depth),
             "engine.max_channel_call_depth",
@@ -211,5 +215,75 @@ impl RunBudgetLimits {
     /// refuse anything, so a run need not carry one at all.
     pub fn is_unbounded(&self) -> bool {
         *self == Self::default()
+    }
+}
+
+/// Typed connector ceilings. Each resource has its own units and counter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ConnectorBudgetLimits {
+    pub max_attempts: u64,
+    pub max_tasks: u64,
+    pub max_network_sends: u64,
+    pub max_bytes: u64,
+    pub max_active_jobs: u64,
+    pub max_depth: u32,
+}
+
+impl Default for ConnectorBudgetLimits {
+    fn default() -> Self {
+        Self {
+            max_attempts: 32,
+            max_tasks: 256,
+            max_network_sends: 64,
+            max_bytes: 16 * 1024 * 1024,
+            max_active_jobs: 16,
+            max_depth: 8,
+        }
+    }
+}
+
+impl ConnectorBudgetLimits {
+    fn validate(&self) -> Result<(), OrionError> {
+        for (name, value) in [
+            ("max_attempts", self.max_attempts),
+            ("max_tasks", self.max_tasks),
+            ("max_network_sends", self.max_network_sends),
+            ("max_bytes", self.max_bytes),
+            ("max_active_jobs", self.max_active_jobs),
+            ("max_depth", u64::from(self.max_depth)),
+        ] {
+            require_nonzero(value, &format!("engine.connector_budget.{name}"))?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod connector_budget_tests {
+    use super::*;
+    #[test]
+    fn connector_ceilings_must_be_positive() {
+        let limits = ConnectorBudgetLimits::default();
+        for name in [
+            "max_attempts",
+            "max_tasks",
+            "max_network_sends",
+            "max_bytes",
+            "max_active_jobs",
+            "max_depth",
+        ] {
+            let mut json = serde_json::to_value(limits).expect("limits serialize");
+            json[name] = serde_json::json!(0);
+            let invalid: ConnectorBudgetLimits =
+                serde_json::from_value(json).expect("a zero is a valid integer");
+            assert!(
+                invalid
+                    .validate()
+                    .expect_err("zero ceiling must be refused")
+                    .to_string()
+                    .contains(name)
+            );
+        }
     }
 }

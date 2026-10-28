@@ -323,6 +323,26 @@ mod tests {
     }
 
     #[test]
+    fn connector_budget_env_overrides_are_typed_and_validated() {
+        let mut config = AppConfig::default();
+        apply_env_overrides_with(&mut config, |key| match key {
+            "ORION_ENGINE__CONNECTOR_BUDGET__MAX_ATTEMPTS" => Ok("80".to_string()),
+            "ORION_ENGINE__CONNECTOR_BUDGET__MAX_BYTES" => Ok("33554432".to_string()),
+            _ => Err(std::env::VarError::NotPresent),
+        })
+        .expect("valid connector budget overrides");
+        assert_eq!(config.engine.connector_budget.max_attempts, 80);
+        assert_eq!(config.engine.connector_budget.max_bytes, 33554432);
+        assert_eq!(config.engine.connector_budget.max_depth, 8);
+        let error = apply_env_overrides_with(&mut config, |key| match key {
+            "ORION_ENGINE__CONNECTOR_BUDGET__MAX_DEPTH" => Ok("4294967296".to_string()),
+            _ => Err(std::env::VarError::NotPresent),
+        })
+        .expect_err("depth must fit u32");
+        assert!(error.to_string().contains("MAX_DEPTH"));
+    }
+
+    #[test]
     fn test_env_override_all_fields() {
         let mut env = HashMap::new();
         env.insert("ORION_SERVER__HOST", "localhost");

@@ -41,14 +41,24 @@ impl ConnectorCallHost for ProviderCalls {
     }
 
     async fn invoke(&self, call: ConnectorInvocation<'_>) -> Result<Value, HandlerError> {
-        execute_connector_call(
-            &self.providers,
-            call.workflow_id,
-            call.config,
-            call.input,
-            call.idempotency_key,
-        )
-        .await
+        let run = ACTIVE_RUN_CONTEXT.try_with(Clone::clone).map_err(|_| {
+            forbidden(
+                "CONNECTOR_CONNECTION_FORBIDDEN: connector_call runs only inside a served run"
+                    .to_string(),
+            )
+        })?;
+        ACTIVE_RUN_CONTEXT
+            .scope(
+                run.for_execution(call.deadline, call.cancel),
+                execute_connector_call(
+                    &self.providers,
+                    call.workflow_id,
+                    call.config,
+                    call.input,
+                    call.idempotency_key,
+                ),
+            )
+            .await
     }
 }
 

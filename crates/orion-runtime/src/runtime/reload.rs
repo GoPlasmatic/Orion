@@ -607,6 +607,7 @@ async fn build_and_publish(
             .publish_parts(super::generation::GenerationParts {
                 connectors: Some(state.connector_registry.snapshot_configs()),
                 run_budget_limits: state.config.engine.run_budget_limits(),
+                connector_budget_limits: state.config.engine.connector_budget,
                 connector_authority,
                 ..super::generation::GenerationParts::new(
                     new_engine,

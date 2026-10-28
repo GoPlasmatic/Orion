@@ -390,6 +390,7 @@ impl EngineComponents {
             .publish_parts(crate::runtime::generation::GenerationParts {
                 connectors: Some(serving.connector_registry.snapshot_configs()),
                 run_budget_limits: config.engine.run_budget_limits(),
+                connector_budget_limits: config.engine.connector_budget,
                 ..crate::runtime::generation::GenerationParts::new(
                     engine,
                     channels,

@@ -42,7 +42,26 @@ async fn execute_admitted_on_generation_inner(
     metadata: &Value,
     opts: ExecOpts<'_>,
 ) -> Execution {
-    let run = connector_run_context(generation, opts.timeout_ms);
+    let token = opts.cancel.map_or_else(
+        dataflow_rs::run::CancelToken::new,
+        dataflow_rs::run::CancelToken::child,
+    );
+    let _cancel_on_drop = CancelOnDrop(token.clone());
+    let accountant = (!generation.run_budget_limits.is_unbounded()).then(|| {
+        Arc::new(crate::engine::SharedRunAccountant::new(
+            generation.run_budget_limits,
+        ))
+    });
+    let run = connector_run_context(generation, opts.timeout_ms)
+        .with_execution(token.clone(), accountant.clone())
+        .context();
+    let opts = ExecOpts {
+        cancel: Some(&token),
+        accountant: accountant
+            .as_deref()
+            .map(|a| a as &dyn dataflow_rs::run::RunAccountant),
+        ..opts
+    };
     super::functions::ACTIVE_RUN_CONTEXT
         .scope(
             run,
@@ -58,6 +77,13 @@ async fn execute_admitted_on_generation_inner(
         .await
 }
 
+struct CancelOnDrop(dataflow_rs::run::CancelToken);
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
 /// How far out the deadline of a run with no timeout is put. The run itself
 /// has none; the context needs an instant, so it gets one that is never the
 /// bound that fires.
@@ -69,7 +95,7 @@ const UNBOUNDED_RUN_HORIZON: Duration = Duration::from_secs(24 * 60 * 60);
 fn connector_run_context(
     generation: &RuntimeGeneration,
     timeout_ms: Option<u64>,
-) -> crate::extensions::RunContext {
+) -> crate::extensions::AdmittedRun {
     let horizon = timeout_ms.map_or(UNBOUNDED_RUN_HORIZON, Duration::from_millis);
     let now = Instant::now();
     let deadline = now.checked_add(horizon).unwrap_or(now);
@@ -77,10 +103,9 @@ fn connector_run_context(
         uuid::Uuid::now_v7().to_string(),
         generation.id,
         deadline,
-        crate::extensions::context::BudgetLimits::default(),
+        generation.connector_budget_limits,
         generation.connector_authority.union(),
     )
-    .context()
 }
 
 #[cfg(test)]
@@ -90,6 +115,133 @@ mod tests {
     use crate::engine::TraceCapture;
 
     use crate::engine::execute::*;
+
+    #[tokio::test]
+    async fn admitted_engine_and_connector_context_share_cancellation_and_limits() {
+        struct WaitsForCancellation {
+            ready: Arc<tokio::sync::Notify>,
+            context: Arc<std::sync::Mutex<Option<crate::extensions::RunContext>>>,
+        }
+        impl dataflow_rs::Function for WaitsForCancellation {
+            type Config = ();
+            async fn call(
+                &self,
+                ctx: &mut dataflow_rs::Ctx<'_>,
+                _: &(),
+            ) -> dataflow_rs::Result<dataflow_rs::Outcome> {
+                assert!(ctx.cancel().is_some());
+                *self.context.lock().expect("execution fixture succeeds") =
+                    Some(super::super::functions::ACTIVE_RUN_CONTEXT.with(Clone::clone));
+                self.ready.notify_one();
+                std::future::pending().await
+            }
+        }
+        let ready = Arc::new(tokio::sync::Notify::new());
+        let context = Arc::new(std::sync::Mutex::new(None));
+        let engine = dataflow_rs::Engine::builder()
+            .register("wait", WaitsForCancellation { ready: ready.clone(), context: context.clone() })
+            .workflow_json(&serde_json::json!({"id":"wait","channel":"c","tasks":[{"id":"wait","function":{"name":"wait"}}]}))
+            .build().expect("execution fixture succeeds");
+        let handle = crate::runtime::generation::test_handle();
+        handle.publish_parts(crate::runtime::generation::GenerationParts {
+            connector_budget_limits: crate::config::ConnectorBudgetLimits {
+                max_attempts: 7,
+                ..Default::default()
+            },
+            run_budget_limits: crate::engine::RunBudgetLimits {
+                max_tasks: Some(10),
+                ..Default::default()
+            },
+            ..crate::runtime::generation::GenerationParts::new(
+                engine,
+                Arc::new(crate::channel::ChannelSnapshot::empty()),
+                crate::engine::FunctionRegistry::builtin().clone(),
+                Arc::new(crate::plugin::PluginSet::empty()),
+            )
+        });
+        let generation = handle.load();
+        let mut task = tokio::spawn(async move {
+            execute_admitted_on_generation(
+                &generation,
+                "c",
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+                ExecOpts::default(),
+            )
+            .await
+        });
+        ready.notified().await;
+        let run = context
+            .lock()
+            .expect("execution fixture succeeds")
+            .clone()
+            .expect("execution fixture succeeds");
+        assert_eq!(run.budget().limits().max_attempts, 7);
+        assert_eq!(
+            run.accountant()
+                .expect("execution fixture succeeds")
+                .snapshot()
+                .tasks_dispatched,
+            1
+        );
+        run.cancellation().cancel();
+        let execution = tokio::time::timeout(Duration::from_secs(2), &mut task).await;
+        if execution.is_err() {
+            task.abort();
+        }
+        assert!(
+            matches!(
+                execution
+                    .expect("execution fixture succeeds")
+                    .expect("execution fixture succeeds")
+                    .outcome,
+                RunOutcome::EngineError(_)
+            ),
+            "cancelling the connector context must stop the running engine"
+        );
+    }
+
+    #[tokio::test]
+    async fn nested_engine_executions_cannot_reset_the_root_accountant() {
+        let engine = dataflow_rs::Engine::builder()
+            .workflow_json(&serde_json::json!({"id":"one","channel":"c","tasks":[
+                {"id":"one","function":{"name":"map","input":{"mappings":[{"path":"data.done","logic":true}]}}}
+            ]})).build().expect("execution fixture succeeds");
+        let accountant = crate::engine::SharedRunAccountant::new(crate::engine::RunBudgetLimits {
+            max_tasks: Some(1),
+            ..Default::default()
+        });
+        let data = serde_json::json!({});
+        let first = execute_on(
+            &engine,
+            "c",
+            &data,
+            &data,
+            ExecOpts {
+                accountant: Some(&accountant),
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .await;
+        assert!(first.outcome.is_ok());
+        let second = execute_on(
+            &engine,
+            "c",
+            &data,
+            &data,
+            ExecOpts {
+                accountant: Some(&accountant),
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .await;
+        assert!(
+            matches!(second.outcome, RunOutcome::EngineError(ref e) if *e.kind() == dataflow_rs::ErrorKind::Budget)
+        );
+        assert!(second.message.context().data().get("done").is_none());
+    }
 
     #[test]
     fn the_status_label_is_one_derivation() {

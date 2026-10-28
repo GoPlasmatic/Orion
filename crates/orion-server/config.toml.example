@@ -227,6 +227,16 @@
                                            # production so a bad rollout fails at boot. Startup
                                            # only; a hot reload never takes the process down.
 
+# [engine.connector_budget]
+# Resource ceilings shared across one run's connector calls and dependencies.
+# Each value must be positive. Child scopes can tighten these ceilings.
+# max_attempts = 32
+# max_tasks = 256
+# max_network_sends = 64
+# max_bytes = 16777216
+# max_active_jobs = 16
+# max_depth = 8
+
 # [engine.circuit_breaker]
 # Sheds load to a failing dependency after `failure_threshold` consecutive
 # failures, returning 503 CIRCUIT_OPEN until the cooldown lets a probe through.

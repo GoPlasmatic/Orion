@@ -474,6 +474,8 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
         &msg.payload,
         &msg.metadata,
         crate::engine::ExecOpts {
+            cancel: None,
+            accountant: None,
             timeout_ms: Some(timeout_ms),
             capture,
             routing_bucket: Some(crate::engine::utils::rollout_bucket_for_identity(

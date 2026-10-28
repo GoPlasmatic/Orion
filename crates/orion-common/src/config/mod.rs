@@ -25,7 +25,7 @@ mod write;
 pub use admin_auth::{AdminAuthConfig, constant_time_eq};
 pub use cluster::ClusterConfig;
 pub use cron::CronConfig;
-pub use engine::{CircuitBreakerConfig, EngineConfig, RunBudgetLimits};
+pub use engine::{CircuitBreakerConfig, ConnectorBudgetLimits, EngineConfig, RunBudgetLimits};
 pub use env_overrides::known_env_override_keys;
 pub use jwt::JwtConfig;
 pub use logging::{LogFormat, LoggingConfig};

@@ -71,6 +71,8 @@ pub struct ConnectorInvocation<'a> {
     pub input: Value,
     /// `idempotency_key`, evaluated.
     pub idempotency_key: Option<String>,
+    pub deadline: Option<dataflow_rs::run::Instant>,
+    pub cancel: Option<dataflow_rs::run::CancelToken>,
 }
 
 #[derive(Clone)]
@@ -195,6 +197,8 @@ impl Function for ConnectorCallFunction {
             data = Some(
                 self.host
                     .invoke(ConnectorInvocation {
+                        deadline: ctx.deadline(),
+                        cancel: ctx.cancel().cloned(),
                         workflow_id,
                         config: cfg,
                         input: input_val,

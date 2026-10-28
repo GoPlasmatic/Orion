@@ -504,6 +504,26 @@ mod tests {
     /// What each call of a plan does: succeed, or fail with a class.
     type Plan<'p> = &'p [Option<ErrorClass>];
 
+    #[test]
+    fn retry_projection_preserves_the_host_safety_distinctions() {
+        use dataflow_rs::function::RetrySafety as EngineSafety;
+        for safety in [
+            schema::RetrySafety::Pure,
+            schema::RetrySafety::Read,
+            schema::RetrySafety::IdempotentWrite,
+        ] {
+            assert_eq!(retry(safety), EngineSafety::Idempotent);
+        }
+        assert_eq!(
+            retry(schema::RetrySafety::UnsafeWrite),
+            EngineSafety::NotIdempotent
+        );
+        assert_eq!(
+            retry(schema::RetrySafety::DependsOn { input: "operation" }),
+            EngineSafety::Unknown
+        );
+    }
+
     fn breakers(threshold: u32) -> ConnectorRegistry {
         ConnectorRegistry::new(CircuitBreakerConfig {
             enabled: true,

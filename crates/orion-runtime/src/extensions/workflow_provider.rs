@@ -827,6 +827,11 @@ impl ProviderBackend for WorkflowProviderBackend {
         })?;
         let remaining = ctx.deadline().saturating_duration_since(Instant::now());
         let opts = crate::engine::ExecOpts {
+            cancel: Some(invocation.context().cancellation()),
+            accountant: invocation
+                .context()
+                .accountant()
+                .map(|a| a.as_ref() as &dyn dataflow_rs::run::RunAccountant),
             timeout_ms: Some(
                 u64::try_from(remaining.as_millis())
                     .unwrap_or(u64::MAX)
@@ -836,7 +841,7 @@ impl ProviderBackend for WorkflowProviderBackend {
         };
         let execution = PACKAGE_INVOCATION
             .scope(
-                invocation,
+                invocation.clone(),
                 crate::engine::execute_on(
                     &engine,
                     operation,

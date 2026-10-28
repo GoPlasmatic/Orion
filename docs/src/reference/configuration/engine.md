@@ -29,6 +29,14 @@ max_run_in_flight = 0
 native_work_max_in_flight = 4
 native_work_timeout_ms = 300000
 
+[engine.connector_budget]
+max_attempts = 32
+max_tasks = 256
+max_network_sends = 64
+max_bytes = 16777216
+max_active_jobs = 16
+max_depth = 8
+
 [engine.circuit_breaker]
 enabled = false
 failure_threshold = 5
@@ -65,9 +73,28 @@ Breakers are keyed per channel and connector, so one noisy channel does not trip
 
 ### Run budgets
 
-The four `max_run_*` settings bound one *run*: everything a request or a cron occurrence starts, including the `channel_call` runs it makes, which share their caller's counters. A run that crosses a ceiling stops, and the caller gets `400` with code `VALIDATION_ERROR` and a message naming the budget, for example `run task budget exceeded (101 > 100 max tasks)`.
+The four `max_run_*` settings bound one *run*: everything a request or a cron occurrence starts. Nested `channel_call` runs share their caller's counters. A run that crosses a ceiling stops, and the caller gets `400` with code `VALIDATION_ERROR` and a message naming the budget, for example `run task budget exceeded (101 > 100 max tasks)`.
 
 They complement `ops_budget`, which bounds a single expression evaluation: a workflow can stay under `ops_budget` on every evaluation and still loop through millions of them.
+
+Connector work uses the `[engine.connector_budget]` ceilings below. Nested channel
+and provider calls share the root's usage. Child provider scopes can tighten their
+limits but cannot reset or exceed the parent budget. Each setting must be positive.
+
+| Setting | Default | Env var | When to change |
+|---|---|---|---|
+| `engine.connector_budget.max_attempts` | `32` | `ORION_ENGINE__CONNECTOR_BUDGET__MAX_ATTEMPTS` | Total connector attempts across the run, including retries and dependencies. |
+| `engine.connector_budget.max_tasks` | `256` | `ORION_ENGINE__CONNECTOR_BUDGET__MAX_TASKS` | Tasks charged by connector work; separate from engine task dispatches. |
+| `engine.connector_budget.max_network_sends` | `64` | `ORION_ENGINE__CONNECTOR_BUDGET__MAX_NETWORK_SENDS` | Sends charged by connector work across the run. |
+| `engine.connector_budget.max_bytes` | `16777216` | `ORION_ENGINE__CONNECTOR_BUDGET__MAX_BYTES` | Bytes charged by connector work; 16 MiB by default. |
+| `engine.connector_budget.max_active_jobs` | `16` | `ORION_ENGINE__CONNECTOR_BUDGET__MAX_ACTIVE_JOBS` | Concurrent jobs charged to the run; capacity returns when work finishes. |
+| `engine.connector_budget.max_depth` | `8` | `ORION_ENGINE__CONNECTOR_BUDGET__MAX_DEPTH` | Nested provider dependency depth. Channel calls also obey `max_channel_call_depth`. |
+
+The `max_run_*` settings and connector settings measure different resources.
+Setting a `max_run_*` value to `0` removes that engine ceiling and leaves the
+configured connector ceilings in place. Provider sub-workflows reuse the root's
+engine accountant, and provider attempts read the executing engine's cancellation
+signal and earliest deadline.
 
 ### SQLite filesystem boundary
 
@@ -85,9 +112,13 @@ database. See [SQLite paths](../connectors/db.md#sqlite-paths) for migration ste
 
 ### Native work
 
-A native job holds an OS thread for its whole length. On this node that is a plugin component compile, which runs Cranelift over the whole component, and any job an extension schedules on the node's native work scheduler. `native_work_max_in_flight` bounds how many run at once; a further job waits for a slot.
+A native job holds an OS thread for its whole length. Plugin component compilation
+runs Cranelift over the whole component. Extensions can also schedule jobs through
+the node's native work scheduler. `native_work_max_in_flight` bounds how many run at once; a further job waits for a slot.
 
-A caller waits at most `native_work_timeout_ms`, the wait for a slot included. When it gives up, the job does not give back its slot: the job keeps it until its thread finishes, so the bound counts the threads that are actually busy. A plugin upload that times out this way answers `503` with `Retry-After`, and a deployment build records the plugin as a `capacity` load issue. At shutdown the node waits up to `server.shutdown_force_timeout_secs` for running jobs and logs any still running.
+A caller waits at most `native_work_timeout_ms`, the wait for a slot included.
+After a caller times out, the job keeps its slot until its thread finishes.
+The bound counts threads that remain busy. A plugin upload that times out this way answers `503` with `Retry-After`, and a deployment build records the plugin as a `capacity` load issue. At shutdown the node waits up to `server.shutdown_force_timeout_secs` for running jobs and logs any still running.
 
 `GET /api/v2/admin/runtime-capabilities` reports `native_scheduler.in_flight` and `native_scheduler.max_in_flight`. The metrics are `orion_native_work_in_flight` and `orion_native_work_refusals_total`; see [Metrics](../metrics.md).
 

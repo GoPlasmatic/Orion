@@ -9,7 +9,7 @@
 //!   section (`CTX-02`, `CTX-03`, `CTX-04`, `CTX-10`).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -59,29 +59,7 @@ impl ChargeVector {
     }
 }
 
-/// Configured budget ceilings for a root run or a restricted child scope.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BudgetLimits {
-    pub max_attempts: u64,
-    pub max_tasks: u64,
-    pub max_network_sends: u64,
-    pub max_bytes: u64,
-    pub max_active_jobs: u64,
-    pub max_depth: u32,
-}
-
-impl Default for BudgetLimits {
-    fn default() -> Self {
-        Self {
-            max_attempts: 32,
-            max_tasks: 256,
-            max_network_sends: 64,
-            max_bytes: 16 * 1024 * 1024,
-            max_active_jobs: 16,
-            max_depth: 8,
-        }
-    }
-}
+pub use crate::config::ConnectorBudgetLimits as BudgetLimits;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BudgetCounters {
@@ -378,49 +356,6 @@ impl Drop for WorkLease {
     }
 }
 
-/// Hierarchical cooperative cancellation token (`V2-05.1`).
-///
-/// Root cancellation propagates to all children; cancelling a child does not
-/// cancel its parent or siblings.
-#[derive(Debug, Clone)]
-pub struct CancellationScope {
-    parent: Option<Arc<CancellationScope>>,
-    local_cancelled: Arc<AtomicBool>,
-}
-
-impl Default for CancellationScope {
-    fn default() -> Self {
-        Self::new_root()
-    }
-}
-
-impl CancellationScope {
-    pub fn new_root() -> Self {
-        Self {
-            parent: None,
-            local_cancelled: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
-    pub fn derive_child(&self) -> Self {
-        Self {
-            parent: Some(Arc::new(self.clone())),
-            local_cancelled: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
-    pub fn cancel(&self) {
-        self.local_cancelled.store(true, Ordering::SeqCst);
-    }
-
-    pub fn is_cancelled(&self) -> bool {
-        if self.local_cancelled.load(Ordering::SeqCst) {
-            return true;
-        }
-        self.parent.as_ref().is_some_and(|p| p.is_cancelled())
-    }
-}
-
 /// Authority projection carried by a `RunContext` (`V2-05.1`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AuthorityGrant {
@@ -512,13 +447,14 @@ impl AdmittedRun {
     ) -> Self {
         let run_id = run_id.into();
         let budget = BudgetScope::new_root(limits);
-        let cancellation = CancellationScope::new_root();
+        let cancellation = dataflow_rs::run::CancelToken::new();
         let context = RunContext {
             run_id: run_id.clone(),
             generation_id,
             deadline,
             depth: 0,
             cancellation,
+            accountant: None,
             budget,
             authority,
         };
@@ -527,6 +463,17 @@ impl AdmittedRun {
             generation_id,
             context,
         }
+    }
+
+    /// Attach the same cancellation signal and engine accounting used by the run.
+    pub fn with_execution(
+        mut self,
+        token: dataflow_rs::run::CancelToken,
+        accountant: Option<Arc<crate::engine::SharedRunAccountant>>,
+    ) -> Self {
+        self.context.cancellation = token;
+        self.context.accountant = accountant;
+        self
     }
 
     pub fn run_id(&self) -> &str {
@@ -543,18 +490,53 @@ impl AdmittedRun {
 }
 
 /// Generation-pinned execution context for root or child runs (`V2-05.1`).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RunContext {
     run_id: String,
     generation_id: u64,
     deadline: Instant,
     depth: u32,
-    cancellation: CancellationScope,
+    cancellation: dataflow_rs::run::CancelToken,
+    accountant: Option<Arc<crate::engine::SharedRunAccountant>>,
     budget: BudgetScope,
     authority: AuthorityGrant,
 }
 
+impl std::fmt::Debug for RunContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunContext")
+            .field("run_id", &self.run_id)
+            .field("generation_id", &self.generation_id)
+            .field("deadline", &self.deadline)
+            .field("depth", &self.depth)
+            .field("cancelled", &self.cancellation.is_cancelled())
+            .field("budget", &self.budget)
+            .finish_non_exhaustive()
+    }
+}
+
 impl RunContext {
+    /// Project the current engine call's narrower deadline and cancellation token.
+    /// Accounting stays shared with the admitted root.
+    pub fn for_execution(
+        &self,
+        deadline: Option<Instant>,
+        token: Option<dataflow_rs::run::CancelToken>,
+    ) -> Self {
+        let mut child = self.clone();
+        if let Some(deadline) = deadline {
+            child.deadline = child.deadline.min(deadline);
+        }
+        if let Some(token) = token {
+            child.cancellation = token;
+        }
+        child
+    }
+
+    pub fn accountant(&self) -> Option<&Arc<crate::engine::SharedRunAccountant>> {
+        self.accountant.as_ref()
+    }
+
     pub fn run_id(&self) -> &str {
         &self.run_id
     }
@@ -572,7 +554,7 @@ impl RunContext {
         self.depth
     }
 
-    pub fn cancellation(&self) -> &CancellationScope {
+    pub fn cancellation(&self) -> &dataflow_rs::run::CancelToken {
         &self.cancellation
     }
 
@@ -625,7 +607,8 @@ impl RunContext {
             generation_id: self.generation_id,
             deadline: self.deadline.min(requested_deadline),
             depth: next_depth,
-            cancellation: self.cancellation.derive_child(),
+            cancellation: self.cancellation.child(),
+            accountant: self.accountant.clone(),
             budget: self.budget.derive_child(requested_limits),
             authority: self.authority.intersect(requested_authority),
         })
@@ -878,7 +861,8 @@ impl Invocation {
             generation_id: self.context.generation_id,
             deadline: self.context.deadline.min(requested_deadline),
             depth: next_depth,
-            cancellation: self.context.cancellation.derive_child(),
+            cancellation: self.context.cancellation.child(),
+            accountant: self.context.accountant.clone(),
             budget: self.context.budget.derive_child(requested_limits),
             authority: child_authority,
         };

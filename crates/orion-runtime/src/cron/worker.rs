@@ -555,6 +555,8 @@ async fn execute(
         message.data(),
         message.metadata(),
         crate::engine::ExecOpts {
+            cancel: None,
+            accountant: None,
             timeout_ms: Some(timeout_ms),
             capture,
             routing_bucket: Some(bucket),

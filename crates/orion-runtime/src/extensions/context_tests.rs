@@ -1,6 +1,83 @@
 use super::*;
 use std::time::Duration;
 
+#[test]
+fn engine_cancellation_and_accounting_follow_execution_and_dependency_scopes() {
+    let token = dataflow_rs::run::CancelToken::new();
+    let accountant = Arc::new(crate::engine::SharedRunAccountant::unbounded());
+    let run = AdmittedRun::admit(
+        "engine-run",
+        1,
+        Instant::now() + Duration::from_secs(60),
+        BudgetLimits {
+            max_attempts: 2,
+            ..Default::default()
+        },
+        sample_authority(),
+    )
+    .with_execution(token.clone(), Some(accountant.clone()))
+    .context();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let engine_child = token.child();
+    let projected = run.for_execution(Some(deadline), Some(engine_child.clone()));
+    assert_eq!(projected.deadline(), deadline);
+    assert!(Arc::ptr_eq(
+        projected.accountant().expect("valid execution scope"),
+        &accountant
+    ));
+    let (connection, identity) = sample_connection();
+    let first = run
+        .start_invocation(connection.clone(), identity.clone(), "get", None, 2)
+        .expect("valid execution scope");
+    let attempt = first.next_attempt().expect("valid execution scope");
+    let second = projected
+        .start_invocation(connection.clone(), identity.clone(), "get", None, 2)
+        .expect("valid execution scope");
+    second.next_attempt().expect("valid execution scope");
+    assert_eq!(run.budget().snapshot().spent_attempts, 2);
+    assert_eq!(
+        first
+            .next_attempt()
+            .expect_err("the exhausted or cancelled run must refuse work")
+            .code,
+        codes::BUDGET_EXHAUSTED
+    );
+    let dependency = second
+        .derive_dependency(
+            "upstream_http",
+            identity,
+            "get",
+            Instant::now() + Duration::from_secs(30),
+            BudgetLimits::default(),
+            1,
+        )
+        .expect("valid execution scope");
+    assert_eq!(dependency.context().deadline(), deadline);
+    assert!(Arc::ptr_eq(
+        dependency
+            .context()
+            .accountant()
+            .expect("valid execution scope"),
+        &accountant
+    ));
+    engine_child.cancel();
+    assert!(projected.check_live(EffectStatus::NotStarted).is_err());
+    assert!(
+        !token.is_cancelled(),
+        "child cancellation must not cancel the root"
+    );
+    assert!(!attempt.is_cancelled());
+    token.cancel();
+    assert!(attempt.is_cancelled());
+    assert_eq!(
+        first
+            .next_attempt()
+            .expect_err("the exhausted or cancelled run must refuse work")
+            .code,
+        codes::CANCELLED
+    );
+}
+
 fn sample_connection() -> (ConnectionReference, EffectiveConnectionIdentity) {
     let provider = crate::extensions::ProviderRef {
         publisher: "org.orion".to_string(),

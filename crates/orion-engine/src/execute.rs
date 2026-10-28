@@ -81,6 +81,10 @@ fn cancelled() -> dataflow_rs::Error {
 pub struct ExecOpts<'a> {
     /// Deadline for the whole call. `None` runs untimed.
     pub timeout_ms: Option<u64>,
+    /// The caller-owned cancellation signal shared with connector attempts.
+    pub cancel: Option<&'a dataflow_rs::run::CancelToken>,
+    /// Reuse root accounting when executing a provider sub-workflow.
+    pub accountant: Option<&'a dyn dataflow_rs::run::RunAccountant>,
     /// Per-task trace capture, when the channel opted in via
     /// `config.tracing.task_details`. Also decides the message's
     /// `capture_changes`: only a traced run pays for the per-write value copies.
@@ -183,14 +187,21 @@ pub async fn execute_on(
     // engine skips the per-task and per-expression accounting calls. A
     // `channel_call` child inherits whatever its caller has, so a nested run
     // is unbounded exactly when its root is.
-    let accountant = (!budget_limits.is_unbounded())
+    let accountant = (opts.accountant.is_none() && !budget_limits.is_unbounded())
         .then(|| super::budget::SharedRunAccountant::new(budget_limits));
     let mut run_opts = RunOptions::default()
         .channel(channel)
         .capture_changes(false)
         .audit(AuditMode::Off);
-    if let Some(accountant) = &accountant {
-        run_opts = accountant.apply(run_opts);
+    if let Some(accountant) = opts.accountant.or_else(|| {
+        accountant
+            .as_ref()
+            .map(|a| a as &dyn dataflow_rs::run::RunAccountant)
+    }) {
+        run_opts = run_opts.accountant(accountant);
+    }
+    if let Some(token) = opts.cancel {
+        run_opts = run_opts.cancel(token);
     }
     if let Some(capture) = opts.capture {
         run_opts = run_opts.trace(v4_trace_options(capture.max_snapshot_bytes));

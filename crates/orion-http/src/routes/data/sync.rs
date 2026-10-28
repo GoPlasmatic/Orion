@@ -690,6 +690,8 @@ pub(super) async fn process_sync_for_channel(
             &data,
             &metadata,
             crate::engine::ExecOpts {
+                cancel: None,
+                accountant: None,
                 timeout_ms,
                 capture,
                 // The routing bucket rides beside the context rather than inside
