@@ -22,3 +22,8 @@ mod functions_docs_drift_test;
 mod mdbook_pin_drift_test;
 mod metrics_docs_drift_test;
 mod v2_error_codes_drift_test;
+
+mod docs_link_test;
+mod extension_api_test;
+mod module_layering_test;
+mod user_facing_ids_test;

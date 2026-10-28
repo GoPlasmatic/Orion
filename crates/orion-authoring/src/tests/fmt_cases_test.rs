@@ -9,9 +9,12 @@
 
 use std::path::Path;
 
-use orion::definitions::fmt::{Outcome, format_str};
+use crate::definitions::fmt::{Outcome, format_str};
 
-const CASES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fmt");
+const CASES: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../orion-server/tests/fixtures/fmt"
+);
 
 fn cases() -> Vec<(String, std::path::PathBuf)> {
     let mut out: Vec<(String, std::path::PathBuf)> = std::fs::read_dir(CASES)

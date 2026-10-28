@@ -46,11 +46,10 @@ fn crypto_sweep_workflow() -> serde_json::Value {
 /// Run `workflow` under `ops_budget` over 500 items, on Orion's expressions
 /// with `crypto` registered, and return the message it leaves.
 async fn run_workflow(workflow: serde_json::Value, ops_budget: u64) -> dataflow_rs::Message {
-    let exprs =
-        orion::engine::operators::orion_exprs(&orion::engine::ResolvedSecrets::empty(), ops_budget)
-            .expect("Orion's expressions build");
+    let exprs = crate::operators::orion_exprs(&crate::ResolvedSecrets::empty(), ops_budget)
+        .expect("Orion's expressions build");
     let mut registry = dataflow_rs::Registry::new(exprs);
-    registry.register("crypto", orion::engine::functions::crypto::CryptoFunction);
+    registry.register("crypto", crate::functions::crypto::CryptoFunction);
     let engine = dataflow_rs::Engine::builder()
         .registry(registry)
         .workflow_json(&workflow)

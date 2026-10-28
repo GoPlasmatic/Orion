@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use orion::definitions::fmt::{Outcome, format_str};
+use crate::definitions::fmt::{Outcome, format_str};
 
 const MANIFEST: &str = env!("CARGO_MANIFEST_DIR");
 
@@ -23,7 +23,7 @@ fn every_shipped_json_file_is_formatted() {
     let mut unformatted = Vec::new();
     for tree in TREES {
         let root = Path::new(MANIFEST).join(tree);
-        for path in orion::definitions::json_files(&root).unwrap() {
+        for path in crate::definitions::json_files(&root).unwrap() {
             let text = std::fs::read_to_string(&path).unwrap();
             match format_str(&text, &path.display().to_string()) {
                 Ok(Outcome::Unchanged) => {}

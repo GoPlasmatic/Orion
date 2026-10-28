@@ -75,6 +75,11 @@ subcommands, and OpenAPI are covered.
 `fmt`'s exit codes, diffs and atomic writes — are exit codes and streams, not
 HTTP responses.
 
+The parser, formatter and clippy corpus checks run as `orion-authoring` unit
+tests; their fixtures remain shared with the CLI under `orion-server/tests/fixtures`.
+Expression-budget cases run as `orion-engine` unit tests. Book links, layering
+and public-text guards run in `orion-docs-check`.
+
 The formatter has its own family: `json_front_end_test.rs` pins the
 order-preserving parser to `serde_json` over the repository's JSON and a
 hand-written conformance set (`tests/fixtures/json/`); `fmt_cases_test.rs`

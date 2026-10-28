@@ -11,23 +11,29 @@
 
 use std::path::{Path, PathBuf};
 
-use orion::definitions::Document;
-use orion::definitions::fmt::style::STYLE;
-use orion::definitions::fmt::{Outcome, format_document, format_str};
+use crate::definitions::Document;
+use crate::definitions::fmt::style::STYLE;
+use crate::definitions::fmt::{Outcome, format_document, format_str};
 
 const MANIFEST: &str = env!("CARGO_MANIFEST_DIR");
 
 fn corpus() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    for dir in ["../../examples", "../../tests/e2e", "tests/fixtures/fmt"] {
-        out.extend(orion::definitions::json_files(&Path::new(MANIFEST).join(dir)).unwrap());
+    for dir in [
+        "../../examples",
+        "../../tests/e2e",
+        "../orion-server/tests/fixtures/fmt",
+    ] {
+        out.extend(crate::definitions::json_files(&Path::new(MANIFEST).join(dir)).unwrap());
     }
     // Only the parseable half of the conformance set has a formatted form.
     out.extend(
-        orion::definitions::json_files(&Path::new(MANIFEST).join("tests/fixtures/json"))
-            .unwrap()
-            .into_iter()
-            .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("y_")),
+        crate::definitions::json_files(
+            &Path::new(MANIFEST).join("../orion-server/tests/fixtures/json"),
+        )
+        .unwrap()
+        .into_iter()
+        .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("y_")),
     );
     out
 }

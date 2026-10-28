@@ -17,3 +17,7 @@ pub(crate) use orion_storage as storage;
 
 pub mod definitions;
 pub mod validation;
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, clippy::panic)]
+mod tests;

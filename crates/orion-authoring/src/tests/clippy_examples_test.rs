@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use crate::clippy_cases_test::run_over;
+use super::clippy_cases_test::run_over;
 
 const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 

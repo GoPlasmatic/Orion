@@ -42,5 +42,6 @@ utoipa = { version = "6", features = ["axum_extras", "chrono"] }
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 
 [dev-dependencies]
+similar = "3"
 orion-engine = { workspace = true, features = ["test-support"] }
 tokio = { version = "1", features = ["test-util", "rt-multi-thread", "macros"] }

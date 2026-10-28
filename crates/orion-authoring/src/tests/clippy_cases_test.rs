@@ -10,11 +10,14 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use orion::definitions::analysis::Analysis;
-use orion::definitions::clippy::{self, Diagnostic};
-use orion::definitions::{Boundary, DefinitionSet};
+use crate::definitions::analysis::Analysis;
+use crate::definitions::clippy::{self, Diagnostic};
+use crate::definitions::{Boundary, DefinitionSet};
 
-const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/clippy");
+const FIXTURES: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../orion-server/tests/fixtures/clippy"
+);
 
 /// Run clippy in-process over a set directory: `lint`'s gate, then every
 /// rule. Panics on a lint error — a fixture must be a set the API accepts.
@@ -25,7 +28,7 @@ pub fn run_over(dir: &Path) -> Vec<Diagnostic> {
     // tree makes its functions known, exactly as `clippy <dir>` sees them.
     let registry = compiled.function_registry().expect("registry");
     let mut findings = report.findings;
-    findings.extend(orion::definitions::check(
+    findings.extend(crate::definitions::check(
         &compiled,
         &Boundary::default(),
         false,
@@ -41,7 +44,7 @@ pub fn run_over(dir: &Path) -> Vec<Diagnostic> {
     let config_path = dir.join("config.toml");
     let config = config_path
         .exists()
-        .then(|| orion::config::load_config(Some(config_path.to_str().unwrap())).expect("config"));
+        .then(|| crate::config::load_config(Some(config_path.to_str().unwrap())).expect("config"));
     let analysis = Analysis::new(&raw, &compiled, &report.shared, config.as_ref(), &registry);
     clippy::run(&analysis).diagnostics
 }

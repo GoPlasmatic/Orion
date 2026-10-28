@@ -15,7 +15,7 @@
 
 use std::path::{Path, PathBuf};
 
-use orion::definitions::Document;
+use crate::definitions::Document;
 
 const MANIFEST: &str = env!("CARGO_MANIFEST_DIR");
 
@@ -25,7 +25,7 @@ fn repo_json() -> Vec<PathBuf> {
     // purpose, and the formatter tests own them.
     for dir in ["../../examples", "../../tests/e2e", "../../docs"] {
         out.extend(
-            orion::definitions::json_files(&Path::new(MANIFEST).join(dir))
+            crate::definitions::json_files(&Path::new(MANIFEST).join(dir))
                 .unwrap_or_else(|e| panic!("{dir}: {e}")),
         );
     }
@@ -34,8 +34,10 @@ fn repo_json() -> Vec<PathBuf> {
 }
 
 fn conformance_set() -> Vec<PathBuf> {
-    let files = orion::definitions::json_files(&Path::new(MANIFEST).join("tests/fixtures/json"))
-        .expect("conformance fixtures");
+    let files = crate::definitions::json_files(
+        &Path::new(MANIFEST).join("../orion-server/tests/fixtures/json"),
+    )
+    .expect("conformance fixtures");
     assert!(files.len() >= 40, "conformance set is missing files");
     files
 }
@@ -78,7 +80,7 @@ fn the_conformance_set_agrees_with_serde_json_on_every_file() {
             // is one serde_json accepts — the repair is the point.
             let doc = ours.unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(theirs.is_err(), "{name}: serde_json accepts an i_ case");
-            let repaired = orion::definitions::fmt::format_document(&doc);
+            let repaired = crate::definitions::fmt::format_document(&doc);
             assert!(
                 serde_json::from_str::<serde_json::Value>(&repaired).is_ok(),
                 "{name}"

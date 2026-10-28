@@ -65,6 +65,11 @@ listener). Container-gated tests are `#[ignore]` and skipped.
 
 ### Layout
 
+Pure expression-budget tests live in `orion-engine` unit tests. Parser, formatter
+and clippy corpus tests live in `orion-authoring` unit tests. Book links, crate
+layering, extension dependencies and public-text guards live in `orion-docs-check`.
+Their shared corpus stays under `orion-server/tests/fixtures` for the CLI tests.
+
 All integration tests link into a **single binary**: each file under
 `tests/integration/` is a module declared in `tests/integration/main.rs`, so
 the suite links once instead of once per file (dozens of link steps). Shared helpers live in
