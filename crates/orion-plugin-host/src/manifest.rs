@@ -22,10 +22,41 @@ use crate::engine::functions::schema::{FieldKind, RetrySafety, Source, WriteShap
 use crate::engine::{FieldSpec, FunctionEntry, PluginBinding};
 use crate::errors::FieldError;
 
-/// The one WIT package version this binary speaks. A manifest names it as
-/// `abi`, so a component built against a later world is refused at upload
-/// rather than failing its self-test with a message about a missing export.
+/// The WIT package version this binary speaks. A manifest names the one it was
+/// built against as `abi`.
+///
+/// The compatibility rule is [`abi_supported`]: the same package and major
+/// version, and no newer than this. So a component built against an older
+/// minor of the world keeps loading, and one built against a later world is
+/// refused at upload rather than failing its self-test with a message about a
+/// missing export.
 pub const ABI: &str = "orion:plugin@1.0.0";
+
+/// `orion:plugin@MAJOR.MINOR.PATCH` as its three numbers.
+fn parse_abi(abi: &str) -> Option<(u64, u64, u64)> {
+    let version = abi.strip_prefix("orion:plugin@")?;
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    parts.next().is_none().then_some((major, minor, patch))
+}
+
+/// Whether this host can run a component built against `declared`.
+///
+/// Within a major version a change to the world is additive (a new function, a
+/// new optional capability import), so a component built against an earlier
+/// minor still links; a component built against a *later* one may import
+/// something this host does not provide, so it is refused. A different major is
+/// a different contract.
+pub fn abi_supported(declared: &str) -> bool {
+    match (parse_abi(declared), parse_abi(ABI)) {
+        (Some((major, minor, patch)), Some((host_major, host_minor, host_patch))) => {
+            major == host_major && (minor, patch) <= (host_minor, host_patch)
+        }
+        _ => false,
+    }
+}
 
 /// The name every plugin task may set and no manifest may declare: where the
 /// result is written. Implicit on every function because every function
@@ -166,11 +197,16 @@ impl Manifest {
     /// Every rule the parse cannot express through the type.
     fn problems(&self) -> Vec<FieldError> {
         let mut out = Vec::new();
-        if self.abi != ABI {
+        if !abi_supported(&self.abi) {
             out.push(FieldError::new(
                 "abi",
                 "INVALID",
-                format!("unsupported abi '{}': this server speaks '{ABI}'", self.abi),
+                format!(
+                    "unsupported abi '{}': this server speaks '{ABI}' and accepts any \
+                     'orion:plugin@{}.x.y' no newer than it",
+                    self.abi,
+                    parse_abi(ABI).map_or(1, |(major, _, _)| major)
+                ),
             ));
         }
         if let Err(reason) = check_plugin_name(&self.name) {
@@ -504,6 +540,27 @@ pub fn is_valid_error_code(code: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::abi_supported;
+
+    /// The ABI rule: same package and major, no newer than the host's.
+    #[test]
+    fn abi_compatibility_is_same_major_and_not_newer() {
+        assert!(abi_supported("orion:plugin@1.0.0"), "the host's own");
+        for refused in [
+            "orion:plugin@1.0.1",   // newer patch than the host speaks
+            "orion:plugin@1.1.0",   // a later minor may import what the host lacks
+            "orion:plugin@2.0.0",   // a different contract
+            "orion:plugin@0.9.0",   // another major
+            "orion:other@1.0.0",    // another package
+            "orion:plugin@1.0",     // not a full version
+            "orion:plugin@1.0.0.0", // too many parts
+            "orion:plugin@one.0.0",
+            "",
+        ] {
+            assert!(!abi_supported(refused), "{refused:?} must be refused");
+        }
+    }
+
     use super::*;
 
     const GOOD: &str = r#"
