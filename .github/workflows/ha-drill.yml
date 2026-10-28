@@ -19,19 +19,13 @@ on:
     branches: [main, "release/**", "v[0-9]+.[0-9]+.[0-9]+"]
     paths:
       - "deploy/ha/**"
-      - "docker-compose.ha.yml"
-      - "docker-compose.ha.build.yml"
-      - "docker-compose.ha.n3.yml"
-      - "docker-compose.ha.n3.build.yml"
+      - "deploy/compose/**"
       - "Dockerfile"
       - ".github/workflows/ha-drill.yml"
   pull_request:
     paths:
       - "deploy/ha/**"
-      - "docker-compose.ha.yml"
-      - "docker-compose.ha.build.yml"
-      - "docker-compose.ha.n3.yml"
-      - "docker-compose.ha.n3.build.yml"
+      - "deploy/compose/**"
       - "Dockerfile"
       - ".github/workflows/ha-drill.yml"
   schedule:
@@ -98,7 +92,7 @@ jobs:
         env:
           ORION_ADMIN_API_KEYS: drill-only-throwaway-admin-key-padded-past-32
         run: |
-          docker compose -f docker-compose.ha.yml -f docker-compose.ha.build.yml \
+          docker compose -f deploy/compose/ha.yml -f deploy/compose/ha.build.yml \
             up -d --wait --no-build
 
       - name: Run the drill
@@ -121,9 +115,9 @@ jobs:
       - name: Verify the plugin on three nodes
         env:
           ORION_ADMIN_API_KEYS: drill-only-throwaway-admin-key-padded-past-32
+          HA_NGINX: nginx.n3.conf
         run: |
-          docker compose -f docker-compose.ha.yml -f docker-compose.ha.n3.yml \
-            -f docker-compose.ha.build.yml -f docker-compose.ha.n3.build.yml \
+          docker compose --profile n3 -f deploy/compose/ha.yml -f deploy/compose/ha.build.yml \
             up -d --wait --no-build
           NODES="orion-a orion-b orion-c" CONSECUTIVE=30 deploy/ha/plugin-drill.sh
 
@@ -131,12 +125,14 @@ jobs:
         if: failure()
         env:
           ORION_ADMIN_API_KEYS: drill-only-throwaway-admin-key-padded-past-32
+          HA_NGINX: nginx.n3.conf
         run: |
-          docker compose -f docker-compose.ha.yml -f docker-compose.ha.n3.yml logs --tail 200
+          docker compose --profile n3 -f deploy/compose/ha.yml logs --tail 200
 
       - name: Tear down
         if: always()
         env:
           ORION_ADMIN_API_KEYS: drill-only-throwaway-admin-key-padded-past-32
+          HA_NGINX: nginx.n3.conf
         run: |
-          docker compose -f docker-compose.ha.yml -f docker-compose.ha.n3.yml down -v
+          docker compose --profile n3 -f deploy/compose/ha.yml down -v

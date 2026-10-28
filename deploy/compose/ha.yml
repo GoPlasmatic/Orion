@@ -2,7 +2,7 @@
 # nginx load balancer → 2× orion (cluster mode) → one shared Postgres.
 #
 #   export ORION_ADMIN_API_KEYS="$(openssl rand -hex 32)"
-#   docker compose -f docker-compose.ha.yml up -d --wait
+#   docker compose -f deploy/compose/ha.yml up -d --wait
 #   curl http://localhost:8080/health
 #
 # The stack is a production shape, so it boots with ORION_ENVIRONMENT=production:
@@ -26,7 +26,13 @@
 # The image is pinned for reproducibility (override with ORION_VERSION=…).
 # To run a locally built image instead, use the build override file — it
 # retags the local build so it never clobbers the pinned GHCR tag:
-#   docker compose -f docker-compose.ha.yml -f docker-compose.ha.build.yml up -d --wait
+#   docker compose -f deploy/compose/ha.yml -f deploy/compose/ha.build.yml up -d --wait
+#
+# A third node is behind the `n3` profile (it also swaps the load balancer to
+# nginx.n3.conf):
+#   HA_NGINX=nginx.n3.conf docker compose --profile n3 -f deploy/compose/ha.yml up -d --wait
+
+name: orion-ha
 
 x-orion-common: &orion-common
   image: ghcr.io/goplasmatic/orion:${ORION_VERSION:-1.12.0}
@@ -102,17 +108,28 @@ services:
       <<: *orion-env
       ORION_CLUSTER__INSTANCE_ID: "node-b"
 
+  # Third node; started only with `--profile n3`.
+  orion-c:
+    <<: *orion-common
+    profiles: ["n3"]
+    environment:
+      <<: *orion-env
+      ORION_CLUSTER__INSTANCE_ID: "node-c"
+
   lb:
     image: nginx:1.30-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c
     ports:
       - "8080:8080"
     volumes:
-      - ./deploy/ha/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./${HA_NGINX:-nginx.conf}:/etc/nginx/nginx.conf:ro
     depends_on:
       orion-a:
         condition: service_healthy
       orion-b:
         condition: service_healthy
+      orion-c:
+        condition: service_healthy
+        required: false
 
 volumes:
   orion-pg-data:

@@ -43,7 +43,7 @@ See [the release procedure](../../../../RELEASING.md) for dedicated measurements
 ## Cluster scenario
 
 Start the disposable HA topology with a v2 image and every upstream healthy.
-Until a published v2 image exists, add `docker-compose.ha.build.yml` to build
+Until a published v2 image exists, add `deploy/compose/ha.build.yml` to build
 this checkout. Supply its admin credential through `ORION_ADMIN_API_KEYS`:
 
 ```bash

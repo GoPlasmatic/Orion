@@ -219,9 +219,9 @@ const PROSE_FILES: &[&str] = &[
     "CONTRIBUTING.md",
     "CLAUDE.md",
     "crates/orion-server/config.toml.example",
-    "docker-compose.yml",
-    "docker-compose.ha.yml",
-    "docker-compose.ha.build.yml",
+    "deploy/compose/orion.yml",
+    "deploy/compose/ha.yml",
+    "deploy/compose/ha.build.yml",
     "Dockerfile",
 ];
 

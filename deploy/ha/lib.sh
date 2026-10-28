@@ -8,25 +8,20 @@
 # The CLI comes from $ORION_CLI, else this tree's release or debug build, else
 # PATH. The stack must run an image that speaks the v2 admin API — until a
 # release ships one, the locally built image:
-#   docker compose -f docker-compose.ha.yml -f docker-compose.ha.build.yml up -d --wait
+#   docker compose -f deploy/compose/ha.yml -f deploy/compose/ha.build.yml up -d --wait
 
 read -r -a NODES <<< "${NODES:-orion-a orion-b}"
-COMPOSE=(docker compose -f docker-compose.ha.yml)
+COMPOSE=(docker compose -f deploy/compose/ha.yml)
 for node in "${NODES[@]}"; do
     if [[ "$node" == "orion-c" ]]; then
-        COMPOSE+=(-f docker-compose.ha.n3.yml)
+        COMPOSE=(docker compose --profile n3 -f deploy/compose/ha.yml)
+        export HA_NGINX=nginx.n3.conf
         break
     fi
 done
 # Published defaults still target v1. Use this checkout until a v2 image is selected.
 if [[ -z "${ORION_VERSION:-}" ]]; then
-    COMPOSE+=(-f docker-compose.ha.build.yml)
-    for node in "${NODES[@]}"; do
-        if [[ "$node" == "orion-c" ]]; then
-            COMPOSE+=(-f docker-compose.ha.n3.build.yml)
-            break
-        fi
-    done
+    COMPOSE+=(-f deploy/compose/ha.build.yml)
 fi
 LB_URL="${LB_URL:-http://localhost:8080}"
 HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS:-60}"

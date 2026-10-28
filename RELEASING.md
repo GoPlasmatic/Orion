@@ -33,7 +33,7 @@ an unbuilt v2 release candidate.
 6. Capture the HTTP and run-view benchmark evidence below. Run current HA
    rolling, plugin and cron drills against the candidate image; record the
    image digest. Until a v2 image exists, the drill scripts use
-   `docker-compose.ha.build.yml` for a local v2 build. Verify the published
+   `deploy/compose/ha.build.yml` for a local v2 build. Verify the published
    candidate before removing that fallback or changing the v1 image pin.
 7. Confirm Console v2 support in Orion-ui before refreshing its recording and
    guide. Track that repository's release as an external dependency.
@@ -131,19 +131,18 @@ RSS have different measurement windows; follow [the report's methodology](crates
 The opt-in `cluster` scenario deploys to a disposable v2 HA stack through its
 load balancer and restores the prior head with compare-and-swap. Set
 `ORION_ADMIN_API_KEYS` and point `BENCH_CLUSTER_URL` at the LB. Start the stack
-with `docker-compose.ha.build.yml` while no published v2 image exists. For three
-local nodes, add both `docker-compose.ha.n3.yml` and
-`docker-compose.ha.n3.build.yml`:
+with `deploy/compose/ha.build.yml` while no published v2 image exists. For three
+local nodes, enable the `n3` profile and select the three-node load balancer config:
 
 ```bash
-docker compose -f docker-compose.ha.yml -f docker-compose.ha.n3.yml \
-  -f docker-compose.ha.build.yml -f docker-compose.ha.n3.build.yml up -d --wait
+HA_NGINX=nginx.n3.conf docker compose --profile n3 \
+  -f deploy/compose/ha.yml -f deploy/compose/ha.build.yml up -d --wait
 NODES="orion-a orion-b orion-c" CONSECUTIVE=30 deploy/ha/plugin-drill.sh
 ```
 
-The third node inherits the base node's runtime settings. The extra build
-override selects the same local image for it. For a published candidate, set
-`ORION_VERSION` and omit both build overrides. `NODES` makes the drill helpers
+The third node shares the base node's runtime settings, and the build override
+selects the same local image for it. For a published candidate, set
+`ORION_VERSION` and omit the build override. `NODES` makes the drill helpers
 load the matching topology and wait for all requested nodes. Capture N=2 and
 N=3, the rolling restart drill and the plugin/cron drill verdicts. Require all upstreams healthy
 before comparing per-node overhead or scaling efficiency.

@@ -1,0 +1,40 @@
+# A single Orion node on SQLite.
+#
+#   docker compose -f deploy/compose/orion.yml up -d
+#   docker compose -f deploy/compose/orion.yml --profile cli run --rm orion-cli health
+#
+# `orion-cli` sits behind the `cli` profile so `up` starts the server only: the
+# CLI is a one-shot command, not a long-running service.
+# Pinned for reproducibility; override with e.g. ORION_VERSION=1.0.0.
+name: orion
+
+services:
+  orion:
+    image: ghcr.io/goplasmatic/orion:${ORION_VERSION:-1.12.0}
+    ports:
+      - "8080:8080"
+    environment:
+      ORION_STORAGE__URL: "sqlite:/app/data/orion.db"
+      ORION_LOGGING__FORMAT: "pretty"
+    volumes:
+      - orion-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  orion-cli:
+    image: ghcr.io/goplasmatic/orion-cli:${ORION_CLI_VERSION:-latest}
+    profiles: ["cli"]
+    environment:
+      ORION_SERVER_URL: "http://orion:8080"
+      # ORION_API_KEY: "your-secret-key"   # if admin auth is enabled
+    depends_on:
+      orion:
+        condition: service_healthy
+
+volumes:
+  orion-data:

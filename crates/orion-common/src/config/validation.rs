@@ -89,7 +89,7 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     // the race it warns about is no guardrail. The correct shape exists
     // everywhere it is needed: the Helm chart runs a
     // pre-install/pre-upgrade `orion-server migrate` Job, and
-    // `docker-compose.ha.yml` a one-shot `migrate` service.
+    // `deploy/compose/ha.yml` a one-shot `migrate` service.
     //
     // Scoped to production for the same reason `admin_auth` and the CORS
     // wildcard are: a single-node install never trips it (cluster mode is off
@@ -104,7 +104,7 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
                       others. Set storage.auto_migrate = false \
                       (ORION_STORAGE__AUTO_MIGRATE=false) and run `orion-server \
                       migrate` as a deploy step — the Helm chart ships a pre-upgrade \
-                      Job and docker-compose.ha.yml a one-shot migrate service. \
+                      Job and deploy/compose/ha.yml a one-shot migrate service. \
                       Startup then fails fast on a pending migration instead of \
                       serving against a schema it does not understand."
                 .to_string(),
@@ -449,7 +449,7 @@ mod tests {
         assert!(message.contains("orion-server migrate"), "{message}");
     }
 
-    /// The shape the Helm chart and `docker-compose.ha.yml` already deploy.
+    /// The shape the Helm chart and `deploy/compose/ha.yml` already deploy.
     #[test]
     fn production_cluster_accepts_the_migrate_job_shape() {
         validate_config(&production_cluster_config(false))
