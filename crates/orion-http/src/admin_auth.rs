@@ -184,7 +184,10 @@ pub async fn admin_auth_middleware(
     // S13: a read-only key authenticates but does not authorize a mutation.
     // 403, not 401 — the credential is valid, its authority is not — and no
     // backoff: this is an authorization refusal, not a guessing attempt.
-    if matched_key.read_only && !matches!(*req.method(), Method::GET | Method::HEAD) {
+    if matched_key.read_only
+        && !matches!(*req.method(), Method::GET | Method::HEAD)
+        && !read_only_may_call(req.method(), req.uri().path())
+    {
         let principal = AdminPrincipal::from_digest(&matched_key.digest);
         metrics::record_admin_auth_failure("read_only_write");
         tracing::warn!(
@@ -204,6 +207,24 @@ pub async fn admin_auth_middleware(
         .insert(AdminPrincipal::from_digest(&matched_key.digest));
 
     Ok(next.run(req).await)
+}
+
+/// The `POST` routes a read-only key may still call: the ones that compute an
+/// answer and store, send and run nothing. A plan validates a candidate against
+/// the head and stores nothing; scaffold, lint and pack return files; the
+/// edition preflight is a dry check. Everything else that is not a `GET` changes
+/// state or reaches a backend — including `definitions/test`, which runs a
+/// workflow against live connectors, and a connection probe, which dials one —
+/// so it stays with a full-access key.
+pub(crate) fn read_only_may_call(method: &Method, path: &str) -> bool {
+    const SIDE_EFFECT_FREE_POSTS: [&str; 5] = [
+        "/api/v2/admin/deployment-plans",
+        "/api/v2/admin/edition-transition-preflight",
+        "/api/v2/admin/authoring/scaffold",
+        "/api/v2/admin/authoring/lint",
+        "/api/v2/admin/authoring/pack",
+    ];
+    *method == Method::POST && SIDE_EFFECT_FREE_POSTS.contains(&path.trim_end_matches('/'))
 }
 
 /// True when the request headers present a valid admin credential. For
@@ -269,6 +290,39 @@ fn extract_api_key(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_read_only_key_may_post_only_to_the_side_effect_free_routes() {
+        use super::read_only_may_call;
+        use axum::http::Method;
+        for allowed in [
+            "/api/v2/admin/deployment-plans",
+            "/api/v2/admin/authoring/lint",
+            "/api/v2/admin/authoring/pack/",
+            "/api/v2/admin/edition-transition-preflight",
+        ] {
+            assert!(read_only_may_call(&Method::POST, allowed), "{allowed}");
+        }
+        for refused in [
+            "/api/v2/admin/definitions",
+            // Runs the workflow against live connectors.
+            "/api/v2/admin/definitions/test",
+            "/api/v2/admin/deployments",
+            "/api/v2/admin/connections/db/revisions/1/probes",
+            "/api/v2/admin/channels/c/trigger",
+            "/api/v2/admin/deployment-plans/extra",
+        ] {
+            assert!(!read_only_may_call(&Method::POST, refused), "{refused}");
+        }
+        assert!(!read_only_may_call(
+            &Method::PUT,
+            "/api/v2/admin/deployment-plans"
+        ));
+        assert!(!read_only_may_call(
+            &Method::DELETE,
+            "/api/v2/admin/authoring/lint"
+        ));
+    }
+
     use super::*;
 
     fn digest(s: &str) -> [u8; 32] {
