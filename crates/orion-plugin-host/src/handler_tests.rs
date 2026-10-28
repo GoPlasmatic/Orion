@@ -572,7 +572,7 @@ async fn the_limits_refuse_as_they_did() {
 /// The permits are the function's: every clone holds its handler's
 /// semaphore, so a call waits for a permit another holds, and is refused
 /// with 1.12's text when none frees within the ceiling.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn every_clone_of_a_function_shares_one_permit() {
     let f = functions_of(
         MANIFEST,
@@ -592,7 +592,20 @@ async fn every_clone_of_a_function_shares_one_permit() {
         .acquire_owned()
         .await
         .expect("the permit is free");
-    let v4 = run(identity, input.clone(), json!({})).await;
+    let mut waiting = Box::pin(run(identity, input.clone(), json!({})));
+    std::future::poll_fn(|cx| {
+        assert!(waiting.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    tokio::time::advance(Duration::from_millis(99)).await;
+    std::future::poll_fn(|cx| {
+        assert!(waiting.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    tokio::time::advance(Duration::from_millis(1)).await;
+    let v4 = waiting.await;
     twin::pinned(&v4, "permit/held");
     let failure = v4.as_ref().expect_err("no permit frees");
     assert!(
@@ -601,7 +614,11 @@ async fn every_clone_of_a_function_shares_one_permit() {
             .contains("no concurrency permit within 100ms (1 already running)"),
         "{failure:?}"
     );
+    assert_eq!(identity.handler.permits.available_permits(), 0);
     drop(held);
+    assert_eq!(identity.handler.permits.available_permits(), 1);
+    // Real Wasm execution uses its own clock; only the permit wait is paused.
+    tokio::time::resume();
     let v4 = run(identity, input, json!({})).await;
     assert!(v4.is_ok(), "{v4:?}");
     twin::pinned(&v4, "permit/freed");

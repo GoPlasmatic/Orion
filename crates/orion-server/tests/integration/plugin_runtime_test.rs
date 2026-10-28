@@ -588,41 +588,6 @@ async fn an_oversized_input_never_enters_wasm() {
 }
 
 #[tokio::test]
-async fn a_function_at_its_concurrency_limit_refuses_a_permit_at_the_deadline() {
-    let f = fixture(&PluginsConfig {
-        max_concurrency_per_function: 1,
-        max_timeout_ms: 500,
-        ..config()
-    });
-    let ticker = tick(f.runtime.clone());
-    let spin = f.handlers["test.fixture.spin"].clone();
-    // Two spinners queue on one permit (FIFO), so the third caller's wait
-    // outlives its deadline: the first holds the permit for ~500 ms, the
-    // second takes it next.
-    let a = tokio::spawn({
-        let h = spin.clone();
-        async move { run(&h, json!({"output": "data.a"}), json!({})).await }
-    });
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    let b = tokio::spawn({
-        let h = spin.clone();
-        async move { run(&h, json!({"output": "data.b"}), json!({})).await }
-    });
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    let c = run(&spin, json!({"output": "data.c"}), json!({})).await;
-    let c = c.expect_err("the third caller finds no permit within its deadline");
-    assert!(c.contains("no concurrency permit"), "{c}");
-    for spinner in [a, b] {
-        let err = spinner
-            .await
-            .expect("joins")
-            .expect_err("each spinner times out");
-        assert!(err.contains("exceeded its deadline"), "{err}");
-    }
-    ticker.abort();
-}
-
-#[tokio::test]
 async fn the_self_test_accepts_a_guest_error_and_refuses_a_trap() {
     let f = fixture(&config());
     let loaded = f.runtime.load_blocking(COMPONENT).expect("cached");
