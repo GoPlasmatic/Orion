@@ -126,16 +126,16 @@ MySQL's `#` comments are not recognized, because `#` is an operator in PostgreSQ
 A set may declare what it is and which Orion it needs, in one shared document:
 
 ```json
-{ "package": { "name": "orders", "requires": { "orion": ">=1.8.2, <2" } } }
+{ "package": { "name": "orders", "requires": { "orion": ">=2.0.0, <3" } } }
 ```
 
-`requires.orion` is a version range in the usual comparator syntax: `>=1.8.2, <2`, `^1.8`, `1.8.*`. Every offline command checks the running binary against it **first**. `lint`, `clippy`, `compile`, `fmt`, and `dry-run` or `test` given `--definitions` stop with one line when the binary is outside the range:
+`requires.orion` is a version range in the usual comparator syntax: `>=2.0.0, <3`, `^2.0`, `2.0.*`. Every offline command checks the running binary against it **first**. `lint`, `clippy`, `compile`, `fmt`, and `dry-run` or `test` given `--definitions` stop with one line when the binary is outside the range:
 
 ```
-Error: the definition set (definitions/package.json) requires Orion >=1.9.0, <2; this is orion-server 1.8.2
+Error: the definition set (definitions/package.json) requires Orion >=2.1.0, <3; this is orion-server 2.0.0
 ```
 
-That line replaces the errors a set would otherwise draw from features the binary predates, such as an unknown channel protocol or function. `fmt` formats nothing in that case, because the style tables differ between versions. A pre-release binary is judged as its release, so `1.9.0-rc.1` satisfies `>=1.9.0`.
+That line replaces the errors a set would otherwise draw from features the binary predates, such as an unknown channel protocol or function. `fmt` formats nothing in that case, because the style tables differ between versions. A pre-release binary is judged as its release, so `2.0.0-rc.1` satisfies `>=2.0.0`.
 
 - **One per set.** A second `package` document is an error naming the first.
 - **A closed shape.** `name` and `requires` are the only fields, and `orion` the only requirement, so a typo such as `require` is an error rather than a gate silently switched off.

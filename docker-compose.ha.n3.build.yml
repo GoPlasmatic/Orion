@@ -1,0 +1,8 @@
+# Add with docker-compose.ha.n3.yml and docker-compose.ha.build.yml so all
+# three nodes use the same local v2 build. Omit both build overlays for a
+# published candidate selected with ORION_VERSION.
+services:
+  orion-c:
+    image: ${ORION_IMAGE:-orion:local}
+    build: .
+    pull_policy: build

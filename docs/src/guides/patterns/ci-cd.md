@@ -10,7 +10,7 @@ The definitions are the source of truth. [`orion-cli compile`](../../reference/c
 
 ## Before you start
 
-Tested with Orion 1.12.0. You need Git, `orion-cli`, a repository for the definitions, and a CI system that can run shell commands. Planning and applying also need network access to the target instance and an admin key from the CI secret store. The GitHub Actions YAML below is an example; adapt its secret names and installation policy for your provider.
+Tested with Orion 2.0.0-rc.1. You need Git, `orion-cli`, a repository for the definitions, and a CI system that can run shell commands. Planning and applying also need network access to the target instance and an admin key from the CI secret store. The GitHub Actions YAML below is an example; adapt its secret names and installation policy for your provider.
 
 ## Lay out the repository
 

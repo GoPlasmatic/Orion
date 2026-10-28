@@ -15,7 +15,7 @@ The repository ships ready-to-deploy services, each a *package*: one directory h
 
 ## Before you start
 
-Tested with Orion 1.12.0. You need:
+Tested with Orion 2.0.0-rc.1. You need:
 
 - Git, `curl`, `orion-server` and `orion-cli`
 - an Orion server on `http://localhost:8080`

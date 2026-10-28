@@ -2972,7 +2972,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "orion-api"
-version = "1.12.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "chrono",
  "serde",
@@ -2982,7 +2982,7 @@ dependencies = [
 
 [[package]]
 name = "orion-authoring"
-version = "1.12.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3009,7 +3009,7 @@ dependencies = [
 
 [[package]]
 name = "orion-cli"
-version = "1.12.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -3045,7 +3045,7 @@ dependencies = [
 
 [[package]]
 name = "orion-client"
-version = "1.12.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "bytes",
  "orion-api",
@@ -3059,7 +3059,7 @@ dependencies = [
 
 [[package]]
 name = "orion-common"
-version = "1.12.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "aes-gcm",
  "aws-lc-rs",
@@ -3098,7 +3098,7 @@ dependencies = [
 
 [[package]]
 name = "orion-definitions"
-version = "1.12.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -3106,7 +3106,7 @@ dependencies = [
 
 [[package]]
 name = "orion-docs-check"
-version = "1.12.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "orion-api",
  "orion-authoring",
@@ -3120,7 +3120,7 @@ dependencies = [
 
 [[package]]
 name = "orion-engine"
-version = "1.12.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "arc-swap",
  "argon2",
@@ -3169,7 +3169,7 @@ dependencies = [
 
 [[package]]
 name = "orion-extension-api"
-version = "1.12.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "async-trait",
  "orion-api",
@@ -3180,7 +3180,7 @@ dependencies = [
 
 [[package]]
 name = "orion-http"
-version = "1.12.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "axum",
  "axum-server",
@@ -3219,7 +3219,7 @@ dependencies = [
 
 [[package]]
 name = "orion-plugin-host"
-version = "1.12.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "dataflow-rs",
  "orion-api",
@@ -3236,7 +3236,7 @@ dependencies = [
 
 [[package]]
 name = "orion-plugin-sdk"
-version = "1.12.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -3245,7 +3245,7 @@ dependencies = [
 
 [[package]]
 name = "orion-runtime"
-version = "1.12.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3298,7 +3298,7 @@ dependencies = [
 
 [[package]]
 name = "orion-server"
-version = "1.12.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -3349,7 +3349,7 @@ dependencies = [
 
 [[package]]
 name = "orion-storage"
-version = "1.12.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "async-trait",
  "chrono",

@@ -8,7 +8,7 @@ Orion is a single binary with an embedded database. This guide installs it, star
 
 ## Before you start
 
-Tested with Orion 1.12.0. Choose one installation method. Every method produces the same binary.
+Tested with Orion 2.0.0-rc.1. Choose one installation method. Every method produces the same binary.
 
 | Method | Platforms | You need |
 |---|---|---|
@@ -19,6 +19,10 @@ Tested with Orion 1.12.0. Choose one installation method. Every method produces 
 | Source build | Anywhere Rust runs | Git and Rust 1.98 or newer |
 
 You also need `curl` for the verification step. In PowerShell, `Invoke-RestMethod http://localhost:8080/health` does the same job.
+
+The 2.0.0-rc.1 candidate is available from a local source checkout during
+validation. The installers and images below target published releases; use a
+checkout of the candidate for v2 testing until its artifacts are published.
 
 ## Install the server
 

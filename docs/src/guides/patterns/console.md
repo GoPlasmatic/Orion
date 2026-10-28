@@ -8,7 +8,8 @@
 
 ## Before you start
 
-Tested with Orion 1.12.0. You need Docker and a running Orion server on port 8080. The command below starts the console on port 8081. On Linux, `host.docker.internal` may need Docker's `host-gateway` mapping; the Orion UI repository documents the alternatives.
+Tested with Orion 2.0.0-rc.1. This version applies to the CLI alternatives below. The browser
+console instructions target Orion 1.12.0. You need Docker and a running Orion server on port 8080. The command below starts the console on port 8081. On Linux, `host.docker.internal` may need Docker's `host-gateway` mapping; the Orion UI repository documents the alternatives.
 
 The console calls the admin API under `/api/v1/admin/` and the data plane under `/api/v1/data/`. An Orion 2 node serves only `/api/v2/`, so every console call answers `404` there. The console also edits workflows, channels and connectors one at a time. An Orion 2 node accepts definitions only as a [deployment](../../concepts/deployments.md).
 

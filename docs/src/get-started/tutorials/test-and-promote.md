@@ -15,7 +15,7 @@ A service you can call is not yet a service you can ship. This tutorial takes a 
 
 ## Before you start
 
-Tested with Orion 1.12.0. You need:
+Tested with Orion 2.0.0-rc.1. You need:
 
 - `orion-server`, `orion-cli`, `curl`, `jq` and Git
 - one Orion instance on `http://localhost:8080` for the deployment steps

@@ -131,9 +131,21 @@ RSS have different measurement windows; follow [the report's methodology](crates
 The opt-in `cluster` scenario deploys to a disposable v2 HA stack through its
 load balancer and restores the prior head with compare-and-swap. Set
 `ORION_ADMIN_API_KEYS` and point `BENCH_CLUSTER_URL` at the LB. Start the stack
-with `docker-compose.ha.build.yml` while no published v2 image exists; use
-`docker-compose.ha.n3.yml` for three nodes. Capture N=2 and N=3, the rolling
-restart drill and the plugin/cron drill verdicts. Require all upstreams healthy
+with `docker-compose.ha.build.yml` while no published v2 image exists. For three
+local nodes, add both `docker-compose.ha.n3.yml` and
+`docker-compose.ha.n3.build.yml`:
+
+```bash
+docker compose -f docker-compose.ha.yml -f docker-compose.ha.n3.yml \
+  -f docker-compose.ha.build.yml -f docker-compose.ha.n3.build.yml up -d --wait
+NODES="orion-a orion-b orion-c" CONSECUTIVE=30 deploy/ha/plugin-drill.sh
+```
+
+The third node inherits the base node's runtime settings. The extra build
+override selects the same local image for it. For a published candidate, set
+`ORION_VERSION` and omit both build overrides. `NODES` makes the drill helpers
+load the matching topology and wait for all requested nodes. Capture N=2 and
+N=3, the rolling restart drill and the plugin/cron drill verdicts. Require all upstreams healthy
 before comparing per-node overhead or scaling efficiency.
 
 Commit raw outputs and a hardware/methodology `SUMMARY.md` under a new

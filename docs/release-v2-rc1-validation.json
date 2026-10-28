@@ -1,0 +1,650 @@
+{
+  "date": "2026-10-28",
+  "version": "2.0.0-rc.1",
+  "source_base_commit": "8d940cfb",
+  "source_sha256": {
+    "Cargo.toml": "4cde36aab0e418d3575b66cbf7fe73b353503727f6890a62b912d45b33a6e416",
+    "Cargo.lock": "77c859406cf7e08c9a08edb392877366572611a0d18d2dd04e9368ccc22f2687",
+    "Dockerfile": "d3d9452a91891dc09ca4fd6f5516cd704be3c9b6223d113fb5ababa0c7439c53",
+    "docker-compose.ha.yml": "c928b40d2da63fdd4f5cbf825eded0fb83c36017cc39b603a214cc74966f98fd",
+    "docker-compose.ha.build.yml": "b0db745b998de375058f0ae7bd4a13d04c6e6b57a097dac2c7d8303cb30428df",
+    "docker-compose.ha.n3.yml": "775c50c141b9e95fd73b7c1b926b0567450f4616c5d2b1bb14634b8c6b03151c",
+    "docker-compose.ha.n3.build.yml": "14a45a8f32a9c61dae5b99ca37a841ddb3997cb3f378ba778cfd255cbaa1614d",
+    ".github/workflows/ha-drill.yml": "03f65ba835896b6bfb677b26c2d0a1abb82e1a45e24dc3ce0a9a61ea4e520f6c",
+    "deploy/ha/lib.sh": "b6a87526cb50b302f5412243809e533805ae4f2b0f53a02e6b2011da467ec843",
+    "deploy/ha/rolling-drill.sh": "dc612bfbdac8dfdeb0d95e45c8c806296f4b14d33422fe4b864a73e1e28928a5",
+    "deploy/ha/plugin-drill.sh": "759d5252e381f9825683430183d23f6a68aee00822d7422ad971dbcac3e747c5",
+    "deploy/ha/cron-drill.sh": "6a2bc7be594ac17e501e682831ab6112bdc9795625ee538d0d01e1d4191840e6",
+    "docs/openapi.json": "195995ac561a184d48bec52ea9bd845b7d5f7040d81a5874d2d4d5d5996eb2c6",
+    "examples/packages/nightly-rollup/package.json": "47fee2b4f1c41e0655a3d9a404d1bc05ea79dc2567eb498f978fb037d783cdad",
+    "crates/orion-server/tests/fixtures/plugins/guest/Cargo.lock": "108af28ca6a775b2bdc80edf511d5d75ea04580143e2fc699e230a51906f0ce4",
+    "examples/plugins/fixed-width/guest/Cargo.lock": "03094e0fa5cfd10737bc2610ecc6ade656d9fb491b422b40004f446684e62ae5",
+    "examples/plugins/c4-rules/guest/Cargo.lock": "79396dd21cf5910deba620eabe7b97d6bf13295464d089f273f37171adac9feb",
+    "crates/orion-server/tests/fixtures/plugins/fixture.wasm": "bf664af6f7cee5ca725f35d68856d4cf896a6d0f7de43da82640d446256302a6",
+    "examples/packages/fixed-width-statement/fixed-width.wasm": "844b9c3a292d2cdfa4cec4dbb5cd370249278c9976151b0c02233ffddbcd4738",
+    "examples/packages/c4-referee/c4-rules.wasm": "051e583cb06ab3918747595be28df3546ba7d28ed1f219c0b8b66bafcc9b959c"
+  },
+  "environment": {
+    "os": "macOS 27.0.1",
+    "architecture": "arm64",
+    "rustc": "1.99.1",
+    "msrv_rustc": "1.98.1"
+  },
+  "checks": [
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 1.46
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 53.26
+    },
+    {
+      "name": "workspace",
+      "command": [
+        "cargo",
+        "test",
+        "--workspace"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 109.57
+    },
+    {
+      "name": "doctests",
+      "command": [
+        "cargo",
+        "test",
+        "--doc"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 38.81
+    },
+    {
+      "name": "rustdoc",
+      "command": [
+        "cargo",
+        "doc",
+        "--workspace",
+        "--no-deps",
+        "--lib"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 29.67,
+      "environment": {
+        "RUSTDOCFLAGS": "-D warnings"
+      }
+    },
+    {
+      "name": "msrv",
+      "command": [
+        "cargo",
+        "+1.98",
+        "check",
+        "--workspace",
+        "--all-targets",
+        "--locked"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 87.86,
+      "environment": {
+        "CARGO_INCREMENTAL": "0"
+      }
+    },
+    {
+      "name": "e2e",
+      "command": [
+        "bash",
+        "tests/e2e/run.sh"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 28.49
+    },
+    {
+      "name": "workflow-cases",
+      "command": [
+        "cargo",
+        "run",
+        "-p",
+        "orion-cli",
+        "--",
+        "test",
+        "examples/workflow-tests",
+        "--plugin-dir",
+        "examples/packages/fixed-width-statement",
+        "--plugin-dir",
+        "examples/packages/c4-referee"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 39.68
+    },
+    {
+      "name": "deny",
+      "command": [
+        "cargo",
+        "deny",
+        "check"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 1.62
+    },
+    {
+      "name": "docs-lint",
+      "command": [
+        "bash",
+        "docs/lint.sh"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 15.42
+    },
+    {
+      "name": "docs-build",
+      "command": [
+        "bash",
+        "docs/build.sh"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 2.86
+    },
+    {
+      "name": "vale",
+      "command": [
+        "vale",
+        "--config",
+        "docs/.vale.ini",
+        "--no-exit",
+        "--output=line",
+        "docs/src"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.99
+    },
+    {
+      "name": "data-sql",
+      "command": [
+        "cargo",
+        "test",
+        "--test",
+        "integration",
+        "--",
+        "--ignored",
+        "postgres_test",
+        "mysql_test",
+        "db_column_types_test",
+        "data_roundtrip_test",
+        "data_parity_test",
+        "integrity_errors_test"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 49.41
+    },
+    {
+      "name": "cli-sql",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "orion-cli",
+        "--test",
+        "authoring",
+        "--",
+        "--ignored",
+        "sql_check_test"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 43.23
+    },
+    {
+      "name": "vault",
+      "command": [
+        "cargo",
+        "test",
+        "--test",
+        "integration",
+        "--",
+        "--ignored",
+        "vault_test"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 19.05
+    },
+    {
+      "name": "storage-postgres",
+      "command": [
+        "cargo",
+        "test",
+        "--test",
+        "storage_postgres",
+        "--",
+        "--ignored"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 10.95
+    },
+    {
+      "name": "storage-mysql",
+      "command": [
+        "cargo",
+        "test",
+        "--test",
+        "storage_mysql",
+        "--",
+        "--ignored"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 18.15
+    },
+    {
+      "name": "schema-parity",
+      "command": [
+        "cargo",
+        "test",
+        "--test",
+        "schema_parity",
+        "--",
+        "--ignored"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 14.43
+    },
+    {
+      "name": "cluster",
+      "command": [
+        "cargo",
+        "test",
+        "--test",
+        "cluster",
+        "--",
+        "--ignored",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 68.38
+    }
+  ],
+  "workspace_tests": {
+    "passed": 3107,
+    "failed": 0,
+    "ignored": 79
+  },
+  "containers": [
+    {
+      "name": "data-sql",
+      "passed": 32,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "cli-sql",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "vault",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "storage-postgres",
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "storage-mysql",
+      "passed": 8,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "schema-parity",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "cluster",
+      "passed": 21,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "e2e": {
+    "suites": 11,
+    "passed": 87,
+    "failed": 0,
+    "skipped": 0
+  },
+  "offline_cases": 20,
+  "example_workflow_files": 14,
+  "live_examples": {
+    "packages": 13,
+    "runs_per_package": 2,
+    "quickstart_runs": 2,
+    "unchanged_second_apply": true,
+    "console_cli_alternatives_verified": true
+  },
+  "compose_checks": [
+    {
+      "name": "local-2",
+      "nodes": 2,
+      "image": "orion:local",
+      "passed": true
+    },
+    {
+      "name": "local-3",
+      "nodes": 3,
+      "image": "orion:local",
+      "passed": true
+    },
+    {
+      "name": "candidate-local-3",
+      "nodes": 3,
+      "image": "orion:2.0.0-rc.1-local",
+      "passed": true
+    },
+    {
+      "name": "published-3",
+      "nodes": 3,
+      "image": "ghcr.io/goplasmatic/orion:2.0.0-rc.1",
+      "passed": true
+    }
+  ],
+  "image": {
+    "tag": "orion:2.0.0-rc.1-local",
+    "image_id": "sha256:851b88885300e6e0598899761de5941eb1c4307da3029088b25a8eaf0b62d5b1",
+    "build_identity": "8d940cfb-rc1-working-tree",
+    "profile": "dist",
+    "codegen_units": 16,
+    "lto": false,
+    "published": false
+  },
+  "ha_checks": [
+    {
+      "name": "ha-n2-start",
+      "command": [
+        "docker",
+        "compose",
+        "-f",
+        "docker-compose.ha.yml",
+        "-f",
+        "docker-compose.ha.build.yml",
+        "-f",
+        "/private/tmp/orion-rc1-checks/ha-ports-2.yml",
+        "up",
+        "-d",
+        "--wait",
+        "--no-build"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 10.91
+    },
+    {
+      "name": "ha-n2-rolling",
+      "command": [
+        "bash",
+        "deploy/ha/rolling-drill.sh"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 31.87
+    },
+    {
+      "name": "ha-n2-plugin",
+      "command": [
+        "bash",
+        "deploy/ha/plugin-drill.sh"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 22.78
+    },
+    {
+      "name": "ha-n2-cron",
+      "command": [
+        "bash",
+        "deploy/ha/cron-drill.sh"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 46.92
+    },
+    {
+      "name": "ha-n2-http",
+      "command": [
+        "bash",
+        "crates/orion-server/tests/benchmark/bench.sh",
+        "cluster"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 3.73
+    },
+    {
+      "name": "ha-n3-start",
+      "command": [
+        "docker",
+        "compose",
+        "-f",
+        "docker-compose.ha.yml",
+        "-f",
+        "docker-compose.ha.n3.yml",
+        "-f",
+        "docker-compose.ha.build.yml",
+        "-f",
+        "docker-compose.ha.n3.build.yml",
+        "-f",
+        "/private/tmp/orion-rc1-checks/ha-ports-3.yml",
+        "up",
+        "-d",
+        "--wait",
+        "--no-build"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 10.61
+    },
+    {
+      "name": "ha-n3-rolling",
+      "command": [
+        "bash",
+        "deploy/ha/rolling-drill.sh"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 31.91
+    },
+    {
+      "name": "ha-n3-plugin",
+      "command": [
+        "bash",
+        "deploy/ha/plugin-drill.sh"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 25.59
+    },
+    {
+      "name": "ha-n3-cron",
+      "command": [
+        "bash",
+        "deploy/ha/cron-drill.sh"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 46.09
+    },
+    {
+      "name": "ha-n3-http",
+      "command": [
+        "bash",
+        "crates/orion-server/tests/benchmark/bench.sh",
+        "cluster"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 4.8
+    }
+  ],
+  "node_versions": {
+    "2": {
+      "orion-a": "2.0.0-rc.1",
+      "orion-b": "2.0.0-rc.1"
+    },
+    "3": {
+      "orion-a": "2.0.0-rc.1",
+      "orion-b": "2.0.0-rc.1",
+      "orion-c": "2.0.0-rc.1"
+    }
+  },
+  "ha_summary": {
+    "two_nodes": {
+      "rolling_requests": 2051,
+      "rolling_non_2xx": 0,
+      "plugin_requests": 916,
+      "plugin_non_2xx": 0,
+      "cron_instants": 44,
+      "cron_completed": 17,
+      "cron_skipped_singleton": 26,
+      "cron_other_states": 1,
+      "cron_max_sampled_running": 1,
+      "cron_overlap_samples": 0,
+      "http_errors": 0
+    },
+    "three_nodes": {
+      "rolling_requests": 2529,
+      "rolling_non_2xx": 0,
+      "plugin_requests": 2037,
+      "plugin_non_2xx": 0,
+      "cron_instants": 45,
+      "cron_completed": 20,
+      "cron_skipped_singleton": 25,
+      "cron_other_states": 0,
+      "cron_max_sampled_running": 1,
+      "cron_overlap_samples": 0,
+      "http_errors": 0
+    },
+    "isolated_stacks_removed": true
+  },
+  "package_verification": {
+    "command": [
+      "cargo",
+      "package",
+      "--locked",
+      "--workspace"
+    ],
+    "clean_source_export": true,
+    "incremental": false,
+    "dev_debug": 0,
+    "packages_verified": 15,
+    "exit_code": 0
+  },
+  "release_actions": {
+    "tag_created": false,
+    "pushed": false,
+    "published": false,
+    "remote_ci_run": false
+  },
+  "script_checks": {
+    "shellcheck": {
+      "image": "koalaman/shellcheck:v0.10.0",
+      "arguments": [
+        "-x",
+        "deploy/ha/lib.sh",
+        "deploy/ha/rolling-drill.sh",
+        "deploy/ha/plugin-drill.sh"
+      ],
+      "exit_code": 0
+    },
+    "topology_selection": [
+      {
+        "nodes": [
+          "orion-a",
+          "orion-b"
+        ],
+        "published": false,
+        "compose_files": [
+          "docker-compose.ha.yml",
+          "docker-compose.ha.build.yml"
+        ],
+        "passed": true
+      },
+      {
+        "nodes": [
+          "orion-a",
+          "orion-b"
+        ],
+        "published": true,
+        "compose_files": [
+          "docker-compose.ha.yml"
+        ],
+        "passed": true
+      },
+      {
+        "nodes": [
+          "orion-a",
+          "orion-b",
+          "orion-c"
+        ],
+        "published": false,
+        "compose_files": [
+          "docker-compose.ha.yml",
+          "docker-compose.ha.n3.yml",
+          "docker-compose.ha.build.yml",
+          "docker-compose.ha.n3.build.yml"
+        ],
+        "passed": true
+      },
+      {
+        "nodes": [
+          "orion-a",
+          "orion-b",
+          "orion-c"
+        ],
+        "published": true,
+        "compose_files": [
+          "docker-compose.ha.yml",
+          "docker-compose.ha.n3.yml"
+        ],
+        "passed": true
+      },
+      {
+        "nodes": [
+          "orion-a",
+          "orion-b",
+          "orion-c"
+        ],
+        "published": false,
+        "compose_files": [
+          "docker-compose.ha.yml",
+          "docker-compose.ha.n3.yml",
+          "docker-compose.ha.build.yml",
+          "docker-compose.ha.n3.build.yml"
+        ],
+        "passed": true
+      },
+      {
+        "nodes": [
+          "orion-a",
+          "orion-b",
+          "orion-c"
+        ],
+        "published": true,
+        "compose_files": [
+          "docker-compose.ha.yml",
+          "docker-compose.ha.n3.yml"
+        ],
+        "passed": true
+      }
+    ]
+  }
+}

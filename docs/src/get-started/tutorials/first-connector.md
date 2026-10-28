@@ -15,7 +15,7 @@
 
 ## Before you start
 
-Tested with Orion 1.12.0. You need:
+Tested with Orion 2.0.0-rc.1. You need:
 
 - an Orion server on `http://localhost:8080`, and [Build your first service](./first-service.md) behind you
 - `orion-server` and `orion-cli` on your `PATH`

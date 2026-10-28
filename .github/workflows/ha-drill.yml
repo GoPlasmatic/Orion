@@ -21,6 +21,8 @@ on:
       - "deploy/ha/**"
       - "docker-compose.ha.yml"
       - "docker-compose.ha.build.yml"
+      - "docker-compose.ha.n3.yml"
+      - "docker-compose.ha.n3.build.yml"
       - "Dockerfile"
       - ".github/workflows/ha-drill.yml"
   pull_request:
@@ -28,6 +30,8 @@ on:
       - "deploy/ha/**"
       - "docker-compose.ha.yml"
       - "docker-compose.ha.build.yml"
+      - "docker-compose.ha.n3.yml"
+      - "docker-compose.ha.n3.build.yml"
       - "Dockerfile"
       - ".github/workflows/ha-drill.yml"
   schedule:
@@ -114,16 +118,25 @@ jobs:
       - name: Run the cron drill
         run: deploy/ha/cron-drill.sh
 
+      - name: Verify the plugin on three nodes
+        env:
+          ORION_ADMIN_API_KEYS: drill-only-throwaway-admin-key-padded-past-32
+        run: |
+          docker compose -f docker-compose.ha.yml -f docker-compose.ha.n3.yml \
+            -f docker-compose.ha.build.yml -f docker-compose.ha.n3.build.yml \
+            up -d --wait --no-build
+          NODES="orion-a orion-b orion-c" CONSECUTIVE=30 deploy/ha/plugin-drill.sh
+
       - name: Stack logs on failure
         if: failure()
         env:
           ORION_ADMIN_API_KEYS: drill-only-throwaway-admin-key-padded-past-32
         run: |
-          docker compose -f docker-compose.ha.yml logs --tail 200
+          docker compose -f docker-compose.ha.yml -f docker-compose.ha.n3.yml logs --tail 200
 
       - name: Tear down
         if: always()
         env:
           ORION_ADMIN_API_KEYS: drill-only-throwaway-admin-key-padded-past-32
         run: |
-          docker compose -f docker-compose.ha.yml down -v
+          docker compose -f docker-compose.ha.yml -f docker-compose.ha.n3.yml down -v

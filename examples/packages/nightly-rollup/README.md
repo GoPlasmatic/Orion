@@ -24,8 +24,8 @@ summarise the wrong day.
 the whole cluster. If the rollup takes longer than a day, the next occurrence is
 recorded `skipped_singleton` rather than piling on.
 
-**`package.json` says which Orion the set needs.** Cron channels arrived in
-1.6.0, so the set declares `">=1.6.0, <2"`. `lint`, `compile` and `fmt` check
+**`package.json` says which Orion the set needs.** This definition set uses
+the v2 deployment format, so it declares `">=2.0.0, <3"`. `lint`, `compile` and `fmt` check
 the running binary against it first, so a set compiled by an older binary
 fails before it is deployed.
 

@@ -1,5 +1,8 @@
 # Community v2 release evidence
 
+This records the pre-candidate validation at `8d940cfb`. For the current local
+`2.0.0-rc.1` candidate, see [candidate evidence](release-v2-rc1.md).
+
 Status on 2026-10-28, branch `dataflow-4`, based on `12968e1b` plus the changes
 in the commit containing this record. This is the current checklist for
 [Orion #385](https://github.com/GoPlasmatic/Orion/issues/385). Keep that issue's

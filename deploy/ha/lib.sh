@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared by the HA drills; sourced, not run. The drills reach the nodes only
 # through the load balancer, and change what they serve the way an operator
 # does: a definition set compiled with `orion-cli compile` and applied with
@@ -9,13 +10,25 @@
 # release ships one, the locally built image:
 #   docker compose -f docker-compose.ha.yml -f docker-compose.ha.build.yml up -d --wait
 
+read -r -a NODES <<< "${NODES:-orion-a orion-b}"
 COMPOSE=(docker compose -f docker-compose.ha.yml)
+for node in "${NODES[@]}"; do
+    if [[ "$node" == "orion-c" ]]; then
+        COMPOSE+=(-f docker-compose.ha.n3.yml)
+        break
+    fi
+done
 # Published defaults still target v1. Use this checkout until a v2 image is selected.
 if [[ -z "${ORION_VERSION:-}" ]]; then
     COMPOSE+=(-f docker-compose.ha.build.yml)
+    for node in "${NODES[@]}"; do
+        if [[ "$node" == "orion-c" ]]; then
+            COMPOSE+=(-f docker-compose.ha.n3.build.yml)
+            break
+        fi
+    done
 fi
 LB_URL="${LB_URL:-http://localhost:8080}"
-NODES=(${NODES:-orion-a orion-b})
 HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS:-60}"
 
 # The HA compose enforces admin auth; the stack needs the key set for every

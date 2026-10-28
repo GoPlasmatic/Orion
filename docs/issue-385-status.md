@@ -6,7 +6,7 @@ under a historical-plan heading. No remote issue changes form part of this draft
 
 ## Current v2 scope (2026-10-28)
 
-The Community implementation now uses published dataflow-rs 4.0.3 for serving,
+The local candidate is `2.0.0-rc.1`. It uses published dataflow-rs 4.0.3 for serving,
 authoring and offline/test execution. O11b, O12, O13 and v3 removal are complete.
 The raw authored-JSON walker remains for invalid-definition diagnostics. The
 old local engine branch/merge procedure is superseded by the published release.
@@ -26,7 +26,8 @@ Swagger UI 10.0.2 supplies the published ZIP 9 security fix; temporary utoipa gi
 patches are gone. The release dependency check also updates Tokio,
 rustls-webpki and ctutils for the advisories it found.
 
-Use [the current validation and owner record](https://github.com/GoPlasmatic/Orion/blob/dataflow-4/docs/release-v2-evidence.md)
+Use [candidate validation](https://github.com/GoPlasmatic/Orion/blob/dataflow-4/docs/release-v2-rc1.md),
+[the earlier validation and owner record](https://github.com/GoPlasmatic/Orion/blob/dataflow-4/docs/release-v2-evidence.md)
 and [the release procedure](https://github.com/GoPlasmatic/Orion/blob/dataflow-4/RELEASING.md)
 for actual commands and results. Historical counts of 128 container tests,
 18 e2e suites and 23 workflow cases no longer describe this Community tree.
@@ -36,11 +37,13 @@ definitions, `/api/v2/`, the trace shape and matching server/CLI API versions.
 
 ## Remaining release work
 
-- [ ] Commit a v2 candidate bump and pass its clean packaging and required CI.
+- [ ] Pass required remote CI for the final candidate commit, then obtain the
+  release artifacts and signature/attestation evidence.
 - [ ] Capture dedicated release-build HTTP/cluster performance and comparable
   baseline evidence; debug smoke throughput does not satisfy this gate.
-- [ ] Run rolling, plugin and cron HA drills on the candidate and repeat on its
-  published image digest. Replace the v1 compose pin once a v2 image exists.
+- [ ] Repeat the passing local two- and three-node rolling, plugin and cron HA
+  drills on the published candidate image digest. Replace the v1 compose pin
+  once a v2 image exists.
 - [ ] Verify Console v2 compatibility in Orion-ui, then refresh its UI guide and
   recording.
 - [ ] Transfer or link Enterprise planning #378 to a runnable Orion-ext provider.
