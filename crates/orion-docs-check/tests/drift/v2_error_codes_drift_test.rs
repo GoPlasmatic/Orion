@@ -42,6 +42,8 @@ const PRODUCERS: &[&str] = &[
     "extensions/schema_profile.rs",
     "extensions/package_identity.rs",
     "extensions/admission.rs",
+    // The host's rejection codes are constants of the extension contract.
+    "../../orion-extension-api/src/admission.rs",
     "extensions/reconciler.rs",
     "extensions/deployment_store/rules.rs",
     "runtime/reload.rs",

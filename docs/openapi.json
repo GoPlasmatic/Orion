@@ -456,7 +456,7 @@
         ],
         "operationId": "create_backup",
         "responses": {
-          "200": {
+          "201": {
             "description": "Backup created (SQLite only — VACUUM INTO a timestamped file)",
             "content": {
               "application/json": {
@@ -4011,7 +4011,8 @@
         ],
         "properties": {
           "created_at": {
-            "type": "string"
+            "type": "string",
+            "description": "RFC 3339, UTC."
           },
           "filename": {
             "type": "string"
@@ -4029,17 +4030,18 @@
       },
       "BackupListItemResponse": {
         "type": "object",
-        "description": "One row of `GET /api/v2/admin/backups`. Deliberately not\n[`BackupFileResponse`]: the listing reads `mtime` off the directory entry\nand has no `path`.",
+        "description": "One row of `GET /api/v2/admin/backups`. Deliberately not\n[`BackupFileResponse`]: the listing reads `mtime` off the directory entry\nand so carries the file's modification time as `created_at`.",
         "required": [
           "filename",
           "size_bytes",
-          "modified_at"
+          "created_at"
         ],
         "properties": {
-          "filename": {
-            "type": "string"
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339, UTC: when the file was last written, which for a backup is when\nit was made."
           },
-          "modified_at": {
+          "filename": {
             "type": "string"
           },
           "size_bytes": {
@@ -4990,7 +4992,8 @@
             ],
             "properties": {
               "created_at": {
-                "type": "string"
+                "type": "string",
+                "description": "RFC 3339, UTC."
               },
               "filename": {
                 "type": "string"
@@ -5442,8 +5445,8 @@
               "id",
               "trace_id",
               "channel",
-              "payload_json",
-              "metadata_json",
+              "payload",
+              "metadata",
               "error_message",
               "retry_count",
               "max_retries",
@@ -5468,14 +5471,16 @@
                 "type": "integer",
                 "format": "int64"
               },
-              "metadata_json": {
-                "type": "string"
+              "metadata": {
+                "type": "object",
+                "description": "The submission's metadata, as a JSON document."
               },
               "next_retry_at": {
                 "type": "string"
               },
-              "payload_json": {
-                "type": "string"
+              "payload": {
+                "type": "object",
+                "description": "The failed message, as the JSON document it was."
               },
               "retry_count": {
                 "type": "integer",
@@ -5502,17 +5507,18 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "One row of `GET /api/v2/admin/backups`. Deliberately not\n[`BackupFileResponse`]: the listing reads `mtime` off the directory entry\nand has no `path`.",
+              "description": "One row of `GET /api/v2/admin/backups`. Deliberately not\n[`BackupFileResponse`]: the listing reads `mtime` off the directory entry\nand so carries the file's modification time as `created_at`.",
               "required": [
                 "filename",
                 "size_bytes",
-                "modified_at"
+                "created_at"
               ],
               "properties": {
-                "filename": {
-                  "type": "string"
+                "created_at": {
+                  "type": "string",
+                  "description": "RFC 3339, UTC: when the file was last written, which for a backup is when\nit was made."
                 },
-                "modified_at": {
+                "filename": {
                   "type": "string"
                 },
                 "size_bytes": {
@@ -5958,7 +5964,7 @@
           },
           "created_at": {
             "type": "string",
-            "description": "ISO 8601, on the database clock."
+            "description": "RFC 3339 in UTC (`Z`), on the database clock."
           },
           "epoch": {
             "type": "integer",
@@ -6022,7 +6028,7 @@
         "properties": {
           "created_at": {
             "type": "string",
-            "description": "ISO 8601, on the database clock."
+            "description": "RFC 3339 in UTC (`Z`), on the database clock."
           },
           "created_by": {
             "type": "string"
@@ -7653,8 +7659,8 @@
           "id",
           "trace_id",
           "channel",
-          "payload_json",
-          "metadata_json",
+          "payload",
+          "metadata",
           "error_message",
           "retry_count",
           "max_retries",
@@ -7679,14 +7685,16 @@
             "type": "integer",
             "format": "int64"
           },
-          "metadata_json": {
-            "type": "string"
+          "metadata": {
+            "type": "object",
+            "description": "The submission's metadata, as a JSON document."
           },
           "next_retry_at": {
             "type": "string"
           },
-          "payload_json": {
-            "type": "string"
+          "payload": {
+            "type": "object",
+            "description": "The failed message, as the JSON document it was."
           },
           "retry_count": {
             "type": "integer",

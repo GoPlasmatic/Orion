@@ -27,6 +27,77 @@ fn init_fmt_subscriber(level: &str, format: &LogFormat) {
     }
 }
 
+/// Why the node could not be assembled or run. Marked non-exhaustive so a
+/// variant can be added without breaking an edition that matches on it.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum BootstrapError {
+    /// A refusal the node reports to its operator: configuration, storage,
+    /// the listener.
+    Orion(crate::errors::OrionError),
+    /// The composition could not be built, e.g. two providers register the same
+    /// identity.
+    Composition(crate::extensions::CompositionError),
+    /// Anything else a boot phase can fail on, with its cause kept.
+    Other(Box<dyn std::error::Error + Send + Sync>),
+}
+
+impl std::fmt::Display for BootstrapError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Orion(e) => e.fmt(f),
+            Self::Composition(e) => e.fmt(f),
+            Self::Other(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for BootstrapError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Orion(e) => Some(e),
+            Self::Composition(e) => Some(e),
+            Self::Other(e) => Some(e.as_ref()),
+        }
+    }
+}
+
+impl From<crate::errors::OrionError> for BootstrapError {
+    fn from(e: crate::errors::OrionError) -> Self {
+        Self::Orion(e)
+    }
+}
+
+impl From<Box<dyn std::error::Error + Send + Sync>> for BootstrapError {
+    fn from(e: Box<dyn std::error::Error + Send + Sync>) -> Self {
+        Self::Other(e)
+    }
+}
+
+impl From<crate::extensions::CompositionError> for BootstrapError {
+    fn from(e: crate::extensions::CompositionError) -> Self {
+        Self::Composition(e)
+    }
+}
+
+impl From<Box<dyn std::error::Error>> for BootstrapError {
+    fn from(e: Box<dyn std::error::Error>) -> Self {
+        Self::Other(e.to_string().into())
+    }
+}
+
+impl From<String> for BootstrapError {
+    fn from(message: String) -> Self {
+        Self::Other(message.into())
+    }
+}
+
+impl From<&str> for BootstrapError {
+    fn from(message: &str) -> Self {
+        Self::Other(message.into())
+    }
+}
+
 /// Init tracing subscriber with optional OpenTelemetry layer.
 ///
 /// When `tracing.enabled = true`, an additional OpenTelemetry layer is added
@@ -35,7 +106,7 @@ fn init_fmt_subscriber(level: &str, format: &LogFormat) {
 /// Returns the OTel tracer provider (for the shutdown flush) when enabled.
 pub fn init_observability(
     config: &config::AppConfig,
-) -> Result<Option<opentelemetry_sdk::trace::SdkTracerProvider>, Box<dyn std::error::Error>> {
+) -> Result<Option<opentelemetry_sdk::trace::SdkTracerProvider>, BootstrapError> {
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
     if config.tracing.enabled {
@@ -171,7 +242,7 @@ pub async fn build_engine_components(
     config: &config::AppConfig,
     channel_loader: &Arc<crate::channel::ChannelLoader>,
     composition: crate::extensions::CompositionBuilder,
-) -> Result<EngineComponents, Box<dyn std::error::Error>> {
+) -> Result<EngineComponents, BootstrapError> {
     // `[vars]` before the connectors that may reference them. Pure config —
     // no resolution, no I/O — so it costs nothing to have it early, and the
     // registry then carries it into every reload rather than being handed it
@@ -413,7 +484,7 @@ impl EngineComponents {
 pub async fn run(
     mut config: config::AppConfig,
     composition: crate::extensions::CompositionBuilder,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), BootstrapError> {
     if config.cluster.instance_id.is_empty() {
         config.cluster.instance_id = config.cluster.effective_instance_id();
     }
@@ -505,7 +576,7 @@ pub async fn run(
             )
             .await
         } else {
-            let addr = format!("{}:{}", config.server.host, config.server.port);
+            let addr = crate::server::serve::listen_addr(&config.server.host, config.server.port);
             let listener = crate::server::serve::create_tcp_listener(&addr)?;
             crate::server::serve::serve_plain_http(
                 listener,
@@ -517,7 +588,18 @@ pub async fn run(
             .await
         }
     };
-    serve.await?;
+    // A serve error must not skip the shutdown sequence below: queued traces
+    // and audit rows would be lost and the pool left open. Run it either way
+    // and return the error afterwards.
+    let served = serve.await;
+
+    // One deadline for the stop-the-world steps, so their bounds do not add up
+    // past a pod's termination grace. The queue drains keep their own
+    // configured timeouts: those protect data, and a shorter bound would
+    // silently drop it.
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_secs(config.server.shutdown_force_timeout_secs);
+    let remaining = || deadline.saturating_duration_since(std::time::Instant::now());
 
     join_metrics_listener(metrics_server).await;
 
@@ -526,21 +608,12 @@ pub async fn run(
     // drain below cannot start until the last trace-queue sender is gone.
     // Cooperative, so a job in the middle of a DELETE finishes it rather than
     // being aborted mid-statement.
-    tasks
-        .shutdown(std::time::Duration::from_secs(
-            config.server.shutdown_force_timeout_secs,
-        ))
-        .await;
+    tasks.shutdown(remaining()).await;
 
     // Native jobs (a plugin compile in flight) own their threads; wait for
     // them on the same bound, and name any still running rather than
     // exiting as though the node drained.
-    let native = state
-        .native_scheduler
-        .graceful_shutdown(std::time::Duration::from_secs(
-            config.server.shutdown_force_timeout_secs,
-        ))
-        .await;
+    let native = state.native_scheduler.graceful_shutdown(remaining()).await;
     if !native.drained_cleanly {
         let jobs: Vec<&str> = native
             .residual_jobs
@@ -556,8 +629,12 @@ pub async fn run(
     // Release the state's trace-queue sender before draining the workers —
     // they exit when the last sender closes, and holding `state` here would
     // stall the drain until its timeout.
+    let db_pool = state.db_pool.clone();
     drop(state);
     task_handles.shutdown().await;
+
+    // Every writer is done: close the pool so its connections end cleanly.
+    db_pool.close().await;
 
     // Flush pending OTel spans before exit
     if let Some(provider) = _otel_provider {
@@ -567,6 +644,7 @@ pub async fn run(
         }
     }
 
+    served?;
     tracing::info!("Orion shut down cleanly");
     Ok(())
 }
@@ -951,7 +1029,7 @@ pub struct Assembled {
 pub async fn assemble(
     params: AssembleParams,
     composition: crate::extensions::CompositionBuilder,
-) -> Result<Assembled, Box<dyn std::error::Error>> {
+) -> Result<Assembled, BootstrapError> {
     let AssembleParams {
         config,
         pool,
@@ -1036,7 +1114,7 @@ pub struct Storage {
 pub async fn open_storage(
     config: Arc<config::AppConfig>,
     pool: crate::storage::DbPool,
-) -> Result<Storage, Box<dyn std::error::Error>> {
+) -> Result<Storage, BootstrapError> {
     let config = if config.cluster.instance_id.is_empty() {
         let mut resolved = (*config).clone();
         resolved.cluster.instance_id = config.cluster.effective_instance_id();
@@ -1078,7 +1156,7 @@ pub async fn open_storage(
 pub async fn build_serving_components(
     storage: &Storage,
     composition: crate::extensions::CompositionBuilder,
-) -> Result<EngineComponents, Box<dyn std::error::Error>> {
+) -> Result<EngineComponents, BootstrapError> {
     let config = &storage.config;
     let components = build_engine_components(config, &storage.channel_loader, composition).await?;
     components
@@ -1148,7 +1226,7 @@ pub fn start_background(storage: &Storage, components: &ServingComponents) -> Ba
 /// serving something else.
 pub async fn build_committed_head(
     state: &crate::runtime::state::AppState,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), BootstrapError> {
     state
         .deployments
         .load_from_db_pool(&state.db_pool)

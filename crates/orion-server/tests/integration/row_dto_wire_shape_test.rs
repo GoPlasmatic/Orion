@@ -112,9 +112,9 @@ async fn trace_dlq_responses_keep_every_field_the_rows_published() {
             "error_message",
             "id",
             "max_retries",
-            "metadata_json",
+            "metadata",
             "next_retry_at",
-            "payload_json",
+            "payload",
             "retry_count",
             "trace_id",
             "updated_at"

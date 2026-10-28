@@ -98,7 +98,7 @@ async fn a_well_formed_cron_channel_is_accepted_and_reads_back() {
 /// The protocol is case-insensitive on the wire, like every other enum Orion
 /// publishes, so a mixed-version client spelling it `"Cron"` still works.
 #[tokio::test]
-async fn the_protocol_is_case_insensitive() {
+async fn the_protocol_is_exact_lowercase() {
     let app = common::test_app().await;
     let wf =
         common::create_and_activate_workflow(&app, common::simple_log_workflow("Rollup")).await;
@@ -106,8 +106,10 @@ async fn the_protocol_is_case_insensitive() {
     let mut body = cron_channel("upper-cron", &wf);
     body["protocol"] = json!("CRON");
     let (status, body) = post_channel(&app, body).await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
-    assert_eq!(read_back(&app, &body).await["protocol"], "cron");
+    assert!(
+        status.is_client_error(),
+        "an upper-case protocol is not a registered one: {status} {body}"
+    );
 }
 
 // ============================================================

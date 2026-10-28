@@ -827,6 +827,9 @@ impl ContiguousCheckpointLedger {
                 // Retryable nack leaves the sequence unsettled so it blocks contiguous advancement.
                 return Ok(ledger.committed_checkpoint.clone());
             }
+            // A disposition added later is not an acknowledgement: leave the
+            // sequence unsettled, as for a retryable nack.
+            _ => return Ok(ledger.committed_checkpoint.clone()),
         }
 
         // How far the contiguous settled run reaches past the committed
@@ -1123,10 +1126,10 @@ mod tests {
             cursor: &Value,
             _max_items: u32,
         ) -> Result<SourcePollBatch, ConnectorError> {
-            Ok(SourcePollBatch {
-                items: Vec::new(),
-                next_checkpoint: cursor.get("checkpoint").cloned(),
-            })
+            Ok(SourcePollBatch::new(
+                Vec::new(),
+                cursor.get("checkpoint").cloned(),
+            ))
         }
 
         async fn settle(

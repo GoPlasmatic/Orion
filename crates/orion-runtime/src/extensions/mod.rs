@@ -52,7 +52,7 @@ pub use orion_extension_api::{
     Digest, EditionTier, EffectStatus, EffectiveConnectionIdentity, ErrorOrigin,
     ImplementationKind, PackageAdmissionRequest, PackageVerifier, PoolEntry, ProviderBackend,
     ProviderId, ProviderRef, Registrar, RetryAdvice, Revision, SourcePollBatch, SourceSettlement,
-    codes,
+    ValidateContext, codes,
 };
 
 pub use admission::{Admission, CommunityPackageVerifier, RevocationLedger};
@@ -472,18 +472,17 @@ mod tests {
         assert_eq!(pool.cached_count(), 0);
 
         // Verify CommunityPackageVerifier rejects enterprise-tier packages on Community root.
-        let ent_req = PackageAdmissionRequest {
-            provider: ProviderRef {
+        let ent_req = PackageAdmissionRequest::new(
+            ProviderRef {
                 publisher: "org.orion".to_string(),
                 provider_id: "org.orion.kafka".into(),
                 version: "2.0.0".to_string(),
                 digest: Digest::parse(&format!("sha256:{}", "44".repeat(32))).unwrap(),
             },
-            implementation: ImplementationKind::Rust,
-            target_id: "org.orion.kafka".to_string(),
-            tier: crate::extensions::EditionTier::Enterprise,
-            signature: None,
-        };
+            ImplementationKind::Rust,
+            "org.orion.kafka".to_string(),
+            crate::extensions::EditionTier::Enterprise,
+        );
         let err = comp
             .admission()
             .verify_package(&ent_req)
@@ -491,18 +490,17 @@ mod tests {
         assert_eq!(err.code, "ENTERPRISE_TIER_NOT_ENABLED");
 
         // Verify valid Community package passes admission.
-        let comm_req = PackageAdmissionRequest {
-            provider: ProviderRef {
+        let comm_req = PackageAdmissionRequest::new(
+            ProviderRef {
                 publisher: "org.orion".to_string(),
                 provider_id: "org.orion.http".into(),
                 version: "2.0.0".to_string(),
                 digest: Digest::parse(&format!("sha256:{}", "55".repeat(32))).unwrap(),
             },
-            implementation: ImplementationKind::Rust,
-            target_id: "org.orion.http".to_string(),
-            tier: crate::extensions::EditionTier::Community,
-            signature: None,
-        };
+            ImplementationKind::Rust,
+            "org.orion.http".to_string(),
+            crate::extensions::EditionTier::Community,
+        );
         let verdict = comp
             .admission()
             .verify_package(&comm_req)
@@ -534,11 +532,11 @@ mod tests {
             &self,
             request: &PackageAdmissionRequest,
         ) -> Result<AdmissionVerdict, AdmissionRejection> {
-            Ok(AdmissionVerdict {
-                provider: request.provider.clone(),
-                implementation: request.implementation,
-                policy_id: self.policy_id().to_string(),
-            })
+            Ok(AdmissionVerdict::new(
+                request.provider.clone(),
+                request.implementation,
+                self.policy_id(),
+            ))
         }
     }
 
@@ -551,18 +549,17 @@ mod tests {
             .expect("composes");
         assert_eq!(comp.edition(), EditionTier::Enterprise);
         assert_eq!(comp.admission().policy_id(), "test.admit-all/1");
-        let req = PackageAdmissionRequest {
-            provider: ProviderRef {
+        let req = PackageAdmissionRequest::new(
+            ProviderRef {
                 publisher: "com.example".to_string(),
                 provider_id: "com.example.premium".into(),
                 version: "1.0.0".to_string(),
                 digest: Digest::parse(&format!("sha256:{}", "ab".repeat(32))).unwrap(),
             },
-            implementation: ImplementationKind::Rust,
-            target_id: "com.example.premium".to_string(),
-            tier: EditionTier::Enterprise,
-            signature: None,
-        };
+            ImplementationKind::Rust,
+            "com.example.premium".to_string(),
+            EditionTier::Enterprise,
+        );
         assert!(comp.admission().verify_package(&req).is_ok());
         comp.admission()
             .ledger()

@@ -552,7 +552,7 @@ pub struct DeploymentReceiptResponse {
     pub epoch: u64,
     /// The node that took the write: what `?target=this-node` waits on.
     pub receiving_node_id: String,
-    /// ISO 8601, on the database clock.
+    /// RFC 3339 in UTC (`Z`), on the database clock.
     pub created_at: String,
 }
 
@@ -602,7 +602,7 @@ pub struct DeploymentRevisionSummary {
     /// The collector dropped this revision's members: it can no longer be
     /// rolled back to.
     pub members_compacted: bool,
-    /// ISO 8601, on the database clock.
+    /// RFC 3339 in UTC (`Z`), on the database clock.
     pub created_at: String,
 }
 

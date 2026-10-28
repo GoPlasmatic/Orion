@@ -23,7 +23,7 @@ Every Prometheus series Orion exports, one row per metric, asserted against the 
 | `orion_admin_auth_failures_total` | Counter | `reason` | Rejected admin requests: `missing_or_malformed`, `invalid_key`, `locked_out`, or `read_only_write` (a read-only key attempting a mutation — a 403, not a bad credential). |
 | `orion_trace_token_query_reads_total` | Counter | — | Trace reads authorised by the deprecated `?token=` query parameter. Counted only when the token was valid, so this is usage rather than guessing. A sustained zero means the parameter can be removed. |
 | `orion_http_requests_total` | Counter | `method`, `path`, `status` | HTTP requests served. `path` is the route template (`unmatched` for a request no route matched), and `method` is a standard method or `OTHER`, so neither can grow without bound. |
-| `orion_http_request_duration_seconds` | Histogram | `method`, `path`, `status` | HTTP request latency. |
+| `orion_http_request_duration_seconds` | Histogram | `method`, `path`, `status_class` | HTTP request latency. `status_class` is `2xx`, `4xx`, …; the exact code is on `orion_http_requests_total`. |
 | `orion_db_query_duration_seconds` | Histogram | `operation` | Database query latency. |
 | `orion_db_pool_size` | Gauge | — | Connections in the primary database pool. |
 | `orion_db_pool_idle` | Gauge | — | Idle connections in the primary pool. |

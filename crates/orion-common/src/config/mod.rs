@@ -143,6 +143,18 @@ impl AppConfig {
         self.environment.to_lowercase().starts_with("prod")
     }
 
+    /// Whether `environment` is a name this node knows how to treat. An
+    /// unrecognised one (`live`, `prd`, `eu-west`) would otherwise be read as
+    /// "not production" and switch off the production checks without a word.
+    pub fn environment_is_recognised(&self) -> bool {
+        let name = self.environment.to_lowercase();
+        name.starts_with("prod")
+            || matches!(
+                name.as_str(),
+                "development" | "dev" | "local" | "test" | "testing" | "staging" | "stage"
+            )
+    }
+
     /// Whether `/docs` and `/api/v2/openapi.json` are served (S17).
     ///
     /// `server.docs.enabled` when set; otherwise enabled exactly when the
@@ -304,7 +316,7 @@ mod tests {
     fn test_default_config() {
         let config = AppConfig::default();
         assert_eq!(config.server.port, 8080);
-        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.storage.url, "sqlite:orion.db");
         assert_eq!(config.storage.max_connections, 50);
         assert_eq!(config.storage.busy_timeout_ms, 5000);

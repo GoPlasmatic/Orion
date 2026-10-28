@@ -12,7 +12,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use orion_extension_api::{
     AdmissionRejection, AdmissionVerdict, ConnectionId, ConnectorError, Digest, EditionTier,
-    EffectStatus, PackageAdmissionRequest, PackageVerifier, ProviderId, codes,
+    EffectStatus, PackageAdmissionRequest, PackageVerifier, ProviderId, admission_codes, codes,
 };
 
 /// Community Edition package verifier (`V2-11.1`).
@@ -37,31 +37,31 @@ impl PackageVerifier for CommunityPackageVerifier {
         request: &PackageAdmissionRequest,
     ) -> Result<AdmissionVerdict, AdmissionRejection> {
         if request.provider.provider_id.trim().is_empty() {
-            return Err(AdmissionRejection {
-                code: "PACKAGE_INVALID_PROVIDER_ID".to_string(),
-                message: "Provider ID must not be empty".to_string(),
-            });
+            return Err(AdmissionRejection::new(
+                admission_codes::INVALID_PROVIDER_ID,
+                "Provider ID must not be empty",
+            ));
         }
         if request.target_id.trim().is_empty() {
-            return Err(AdmissionRejection {
-                code: "PACKAGE_INVALID_TARGET".to_string(),
-                message: "Implementation target_id must not be empty".to_string(),
-            });
+            return Err(AdmissionRejection::new(
+                admission_codes::INVALID_TARGET,
+                "Implementation target_id must not be empty",
+            ));
         }
         if request.tier == EditionTier::Enterprise {
-            return Err(AdmissionRejection {
-                code: "ENTERPRISE_TIER_NOT_ENABLED".to_string(),
-                message: format!(
+            return Err(AdmissionRejection::new(
+                admission_codes::TIER_NOT_ENABLED,
+                format!(
                     "Provider '{}' requires Enterprise admission policy",
                     request.provider.provider_id
                 ),
-            });
+            ));
         }
-        Ok(AdmissionVerdict {
-            provider: request.provider.clone(),
-            implementation: request.implementation,
-            policy_id: self.policy_id().to_string(),
-        })
+        Ok(AdmissionVerdict::new(
+            request.provider.clone(),
+            request.implementation,
+            self.policy_id(),
+        ))
     }
 }
 
@@ -217,7 +217,7 @@ impl Admission {
     }
 
     /// The verifier's policy identifier.
-    pub fn policy_id(&self) -> &'static str {
+    pub fn policy_id(&self) -> &str {
         self.verifier.policy_id()
     }
 
@@ -234,13 +234,13 @@ impl Admission {
     ) -> Result<AdmissionVerdict, AdmissionRejection> {
         let verdict = self.verifier.verify_package(request)?;
         if self.ledger.is_digest_revoked(&request.provider.digest) {
-            return Err(AdmissionRejection {
-                code: "PROVIDER_REVOKED".to_string(),
-                message: format!(
+            return Err(AdmissionRejection::new(
+                admission_codes::PROVIDER_REVOKED,
+                format!(
                     "Provider package '{}' ({}) has been revoked",
                     request.provider.provider_id, request.provider.digest
                 ),
-            });
+            ));
         }
         Ok(verdict)
     }

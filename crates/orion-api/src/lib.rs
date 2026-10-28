@@ -58,6 +58,7 @@ pub mod engine;
 pub mod enums;
 pub mod envelope;
 pub mod error;
+pub mod time;
 pub mod v2;
 
 pub use digest::{Digest, DigestError};

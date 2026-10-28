@@ -8,8 +8,17 @@ pub use orion_api::v2::EditionTier;
 use crate::contract::ImplementationKind;
 use crate::identity::ProviderRef;
 
+/// Rejection codes the host itself uses. A verifier may add codes of its own.
+pub mod admission_codes {
+    pub const INVALID_PROVIDER_ID: &str = "PACKAGE_INVALID_PROVIDER_ID";
+    pub const INVALID_TARGET: &str = "PACKAGE_INVALID_TARGET";
+    pub const TIER_NOT_ENABLED: &str = "ENTERPRISE_TIER_NOT_ENABLED";
+    pub const PROVIDER_REVOKED: &str = "PROVIDER_REVOKED";
+}
+
 /// Package admission request checked at install/deployment time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct PackageAdmissionRequest {
     pub provider: ProviderRef,
     pub implementation: ImplementationKind,
@@ -17,23 +26,75 @@ pub struct PackageAdmissionRequest {
     pub target_id: String,
     /// The distribution tier the package declares.
     pub tier: EditionTier,
-    /// Optional detached signature payload verified by Enterprise admission policies.
+    /// Optional detached signature payload, for a verifier that checks one.
     pub signature: Option<String>,
+}
+
+impl PackageAdmissionRequest {
+    /// A request to admit `provider`, unsigned.
+    pub fn new(
+        provider: ProviderRef,
+        implementation: ImplementationKind,
+        target_id: impl Into<String>,
+        tier: EditionTier,
+    ) -> Self {
+        Self {
+            provider,
+            implementation,
+            target_id: target_id.into(),
+            tier,
+            signature: None,
+        }
+    }
+
+    /// Carry a detached signature.
+    #[must_use]
+    pub fn with_signature(mut self, signature: impl Into<String>) -> Self {
+        self.signature = Some(signature.into());
+        self
+    }
 }
 
 /// Successful admission verdict returned by [`PackageVerifier::verify_package`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct AdmissionVerdict {
     pub provider: ProviderRef,
     pub implementation: ImplementationKind,
     pub policy_id: String,
 }
 
-/// Package admission rejection.
+impl AdmissionVerdict {
+    /// Admit `provider` under the policy `policy_id`.
+    pub fn new(
+        provider: ProviderRef,
+        implementation: ImplementationKind,
+        policy_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            provider,
+            implementation,
+            policy_id: policy_id.into(),
+        }
+    }
+}
+
+/// Package admission rejection. `code` is one of [`admission_codes`] or a code
+/// the verifier's own policy defines; the message is for a person.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct AdmissionRejection {
     pub code: String,
     pub message: String,
+}
+
+impl AdmissionRejection {
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+        }
+    }
 }
 
 impl std::fmt::Display for AdmissionRejection {
@@ -56,7 +117,7 @@ pub trait PackageVerifier: Send + Sync {
     /// Policy identifier for diagnostics, audit receipts and the admission
     /// fingerprint: an admission recorded under another policy is
     /// invalidated.
-    fn policy_id(&self) -> &'static str;
+    fn policy_id(&self) -> &str;
 
     /// Validate a provider package before admission into a deployment generation.
     fn verify_package(

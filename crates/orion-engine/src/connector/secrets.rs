@@ -268,6 +268,10 @@ fn vault_http_client() -> reqwest::Client {
                 // Separate for its SSRF policy, not to be anonymous (#356).
                 .user_agent(crate::version::USER_AGENT)
                 .timeout(std::time::Duration::from_secs(5))
+                // `X-Vault-Token` is a custom header, which reqwest does not strip
+                // on a cross-host redirect, so a redirecting `VAULT_ADDR` would
+                // receive the token. Vault answers directly; a redirect is a fault.
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .expect("reqwest client with static config")
         })

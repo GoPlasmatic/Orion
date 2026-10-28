@@ -362,13 +362,12 @@ pub(super) fn admit(
     };
 
     let verdict = policy
-        .verify_package(&PackageAdmissionRequest {
-            provider: pkg.provider_ref(),
-            implementation: pkg.implementation,
-            target_id: pkg.provider_id.to_string(),
+        .verify_package(&PackageAdmissionRequest::new(
+            pkg.provider_ref(),
+            pkg.implementation,
+            pkg.provider_id.to_string(),
             tier,
-            signature: None,
-        })
+        ))
         .map_err(|e| DeploymentError::passed(&e.code, e.message, Kind::AdmissionRejected))?;
 
     let fingerprint = sha256_digest(

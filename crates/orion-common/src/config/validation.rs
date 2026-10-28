@@ -49,6 +49,17 @@ pub(super) fn reduce_only(
 /// Orchestrate validation across config sub-structs. Each `validate()`
 /// method is defined next to its struct; this function only sequences them.
 pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
+    if !config.environment_is_recognised() {
+        return Err(OrionError::Config {
+            message: format!(
+                "environment '{}' is not recognised. Use development, staging or production \
+                 (any value starting with 'prod' is a production environment). An unknown name \
+                 is refused because it would be treated as not-production and skip the \
+                 production checks",
+                config.environment
+            ),
+        });
+    }
     let is_prod = config.is_production();
     config.server.validate(is_prod)?;
     config.ingest.validate()?;
@@ -465,6 +476,43 @@ mod tests {
         assert!(config.storage.auto_migrate, "default must stay true");
         assert!(!config.cluster.enabled, "default must stay single-node");
         validate_config(&config).expect("the default install is unaffected");
+    }
+
+    /// A misspelt environment must not read as "not production".
+    #[test]
+    fn an_unrecognised_environment_is_refused() {
+        for name in ["live", "prd", "eu-west", ""] {
+            let config = AppConfig {
+                environment: name.to_string(),
+                ..AppConfig::default()
+            };
+            let err = validate_config(&config).expect_err(name);
+            assert!(err.to_string().contains("not recognised"), "{name}: {err}");
+        }
+    }
+
+    #[test]
+    fn the_known_environments_are_accepted() {
+        for name in [
+            "development",
+            "Dev",
+            "staging",
+            "test",
+            "production",
+            "PROD",
+            "production-eu",
+        ] {
+            let config = AppConfig {
+                environment: name.to_string(),
+                ..AppConfig::default()
+            };
+            if config.is_production() {
+                // Production demands admin auth; the point here is the name.
+                assert!(config.environment_is_recognised(), "{name}");
+            } else {
+                validate_config(&config).expect(name);
+            }
+        }
     }
 
     /// Development clusters keep the warning: the Helm `devStack` install runs

@@ -127,6 +127,13 @@ impl DbPool {
         dispatch_pool!(self, p => p.size())
     }
 
+    /// Close the pool: refuse new checkouts and wait for borrowed connections
+    /// to return, so a clean shutdown leaves no connection (or SQLite WAL
+    /// handle) for the process exit to cut off.
+    pub async fn close(&self) {
+        dispatch_pool!(self, p => p.close().await)
+    }
+
     /// Database connectivity check: `SELECT 1` through the pool.
     ///
     /// D22: this lived on `WorkflowRepository` purely because the health

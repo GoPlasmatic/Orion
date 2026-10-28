@@ -3,9 +3,8 @@
 //!
 //! Verifies that:
 //!   - v0.1.1 lowercase wire values ("sync", "rest") upload
-//!   - the deserializer is case-insensitive (e.g. "SYNC", "Rest")
+//!   - the wire words are exact lowercase ("SYNC" and "Rest" are refused)
 //!   - bad enum values are refused, naming the allowed values
-//!   - the stored definition reads back in the canonical lowercase
 
 use crate::common::deploy;
 use crate::common::{body_json, json_request, test_app};
@@ -70,27 +69,27 @@ async fn v01_lowercase_wire_values_still_accepted() {
 }
 
 #[tokio::test]
-async fn channel_type_and_protocol_are_case_insensitive() {
+async fn channel_type_and_protocol_are_exact_lowercase() {
     let app = test_app().await;
-    // Mixed casing — would have failed under v0.1's strict lowercase string
-    // validation. Succeeds because A4's deserializer lowercases before
-    // matching variants.
-    let digest = deploy::upload(
-        &app,
-        json!({"kind": "channel", "definition": {
-            "name": "mixed-case",
-            "channel_type": "SYNC",
-            "protocol": "Rest",
-            "methods": ["POST"],
-            "route_pattern": "/mixed-case",
-        }}),
-    )
-    .await;
-    // Canonical lowercase is what is stored, so clients that compare `==`
-    // to "sync"/"rest" keep working.
-    let stored = read_definition(&app, &digest).await;
-    assert_eq!(stored["definition"]["channel_type"], "sync", "{stored}");
-    assert_eq!(stored["definition"]["protocol"], "rest", "{stored}");
+    // The wire words are lowercase; a differently-cased spelling is refused
+    // rather than silently normalised, so what is stored is what was written.
+    for (channel_type, protocol) in [("SYNC", "rest"), ("sync", "Rest")] {
+        let (status, text) = upload_text(
+            &app,
+            json!({
+                "name": "mixed-case",
+                "channel_type": channel_type,
+                "protocol": protocol,
+                "methods": ["POST"],
+                "route_pattern": "/mixed-case",
+            }),
+        )
+        .await;
+        assert!(
+            status.is_client_error(),
+            "{channel_type}/{protocol}: {status}: {text}"
+        );
+    }
 }
 
 #[tokio::test]

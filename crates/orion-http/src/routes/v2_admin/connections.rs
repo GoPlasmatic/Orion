@@ -20,7 +20,7 @@ use crate::extensions::deployment_store::{
 };
 use crate::extensions::{
     AdmittedRun, AuthorityGrant, BudgetLimits, ConnectionId, ConnectionReference,
-    EffectiveConnectionIdentity, ProviderRef, Revision,
+    EffectiveConnectionIdentity, ProviderRef, Revision, ValidateContext,
 };
 use crate::extract::OrionJson;
 use crate::runtime::state::AppState;
@@ -369,7 +369,10 @@ pub(crate) async fn probe_connection(
             .public_config
             .as_object()
             .is_none_or(|m| !m.is_empty())
-        && let Err(cfg_err) = backend.validate_config(&conn_row.public_config)
+        && let Err(cfg_err) = backend.validate_connection(
+            &ValidateContext::new(&conn_row.public_config)
+                .for_connection(&conn_row.connection_id, conn_row.revision),
+        )
     {
         return Ok(Json(probe_response(
             &conn_row,

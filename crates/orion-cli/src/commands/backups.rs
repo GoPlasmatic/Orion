@@ -114,7 +114,7 @@ async fn list(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Resul
         .map(|b| BackupRow {
             filename: b["filename"].as_str().unwrap_or("").to_string(),
             size: format_bytes(b["size_bytes"].as_u64().unwrap_or(0)),
-            modified: b["modified_at"].as_str().unwrap_or("").to_string(),
+            modified: b["created_at"].as_str().unwrap_or("").to_string(),
         })
         .collect();
 

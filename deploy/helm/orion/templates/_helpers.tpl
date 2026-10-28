@@ -140,6 +140,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
     fieldRef:
       fieldPath: metadata.name
 {{- end }}
+- name: ORION_SERVER__HOST
+  value: "0.0.0.0"
 - name: ORION_SERVER__PORT
   value: {{ .Values.server.port | quote }}
 - name: ORION_SERVER__SHUTDOWN_DRAIN_SECS

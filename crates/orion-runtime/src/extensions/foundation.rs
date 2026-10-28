@@ -1023,8 +1023,11 @@ impl ProviderBackend for PostgresProviderBackend {
         Ok(ConnectorOutput::with_metadata(data, metadata))
     }
 
-    fn literal_input_keys(&self, _operation: &str) -> &'static [&'static str] {
+    fn literal_input_keys(&self, _operation: &str) -> Vec<String> {
         SQL_STATEMENT_KEYS
+            .iter()
+            .map(|k| (*k).to_string())
+            .collect()
     }
 
     async fn dispose(&self, identity: &EffectiveConnectionIdentity) {
@@ -1280,8 +1283,11 @@ impl ProviderBackend for SqliteProviderBackend {
         Ok(ConnectorOutput::with_metadata(data, metadata))
     }
 
-    fn literal_input_keys(&self, _operation: &str) -> &'static [&'static str] {
+    fn literal_input_keys(&self, _operation: &str) -> Vec<String> {
         SQL_STATEMENT_KEYS
+            .iter()
+            .map(|k| (*k).to_string())
+            .collect()
     }
 
     async fn dispose(&self, identity: &EffectiveConnectionIdentity) {
@@ -1480,8 +1486,11 @@ impl ProviderBackend for MysqlProviderBackend {
         Ok(ConnectorOutput::with_metadata(data, metadata))
     }
 
-    fn literal_input_keys(&self, _operation: &str) -> &'static [&'static str] {
+    fn literal_input_keys(&self, _operation: &str) -> Vec<String> {
         SQL_STATEMENT_KEYS
+            .iter()
+            .map(|k| (*k).to_string())
+            .collect()
     }
 
     async fn dispose(&self, identity: &EffectiveConnectionIdentity) {

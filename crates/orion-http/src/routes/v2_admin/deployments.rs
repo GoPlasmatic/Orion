@@ -44,11 +44,14 @@ pub struct DeploymentsQuery {
     pub cursor: Option<String>,
 }
 
-/// A stored time as the wire carries it: ISO 8601, as every other admin
-/// timestamp serialises; empty for a value never read back.
+/// A stored time as the wire carries it: RFC 3339 in UTC with a `Z`, as every
+/// other admin timestamp serialises; empty for a value never read back.
 fn wire_time(at: Option<chrono::NaiveDateTime>) -> String {
-    at.map(|t| t.format("%Y-%m-%dT%H:%M:%S%.f").to_string())
-        .unwrap_or_default()
+    at.map(|t| {
+        t.and_utc()
+            .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+    })
+    .unwrap_or_default()
 }
 
 fn receipt_to_dto(receipt: &DeploymentReceipt) -> DeploymentReceiptResponse {

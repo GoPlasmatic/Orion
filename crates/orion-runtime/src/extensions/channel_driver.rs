@@ -48,12 +48,11 @@ impl ChannelDriver for RestChannelDriver {
     }
 
     fn capabilities(&self) -> ChannelDriverCapabilities {
-        ChannelDriverCapabilities {
-            supports_sync: true,
-            supports_async: true,
-            registers_http_routes: true,
-            supports_oauth2_login: true,
-        }
+        ChannelDriverCapabilities::none()
+            .sync()
+            .async_submit()
+            .http_routes()
+            .oauth2_login()
     }
 
     fn validate_fields(&self, fields: &ChannelProtocolFields<'_>) -> Vec<FieldError> {
@@ -70,12 +69,10 @@ impl ChannelDriver for HttpChannelDriver {
     }
 
     fn capabilities(&self) -> ChannelDriverCapabilities {
-        ChannelDriverCapabilities {
-            supports_sync: true,
-            supports_async: true,
-            registers_http_routes: true,
-            supports_oauth2_login: false,
-        }
+        ChannelDriverCapabilities::none()
+            .sync()
+            .async_submit()
+            .http_routes()
     }
 
     fn validate_fields(&self, fields: &ChannelProtocolFields<'_>) -> Vec<FieldError> {
@@ -130,12 +127,7 @@ impl ChannelDriver for CronChannelDriver {
     }
 
     fn capabilities(&self) -> ChannelDriverCapabilities {
-        ChannelDriverCapabilities {
-            supports_sync: false,
-            supports_async: true,
-            registers_http_routes: false,
-            supports_oauth2_login: false,
-        }
+        ChannelDriverCapabilities::none().async_submit()
     }
 
     fn validate_fields(&self, fields: &ChannelProtocolFields<'_>) -> Vec<FieldError> {
@@ -217,12 +209,11 @@ impl ChannelDriverRegistry {
             .unwrap_or_else(|_| unreachable!("distinct community protocols"))
     }
 
-    /// Look up a registered driver by case-insensitive protocol identifier.
+    /// Look up a registered driver by its protocol identifier, exactly as
+    /// written: a protocol is the lowercase word the driver declares, so
+    /// `REST` is not `rest`.
     pub fn get(&self, protocol_id: &str) -> Option<Arc<dyn ChannelDriver>> {
-        if let Some(driver) = self.drivers.get(protocol_id) {
-            return Some(driver.clone());
-        }
-        self.drivers.get(&protocol_id.to_ascii_lowercase()).cloned()
+        self.drivers.get(protocol_id).cloned()
     }
 
     /// List all registered protocol identifiers in sorted order.
@@ -325,12 +316,7 @@ mod tests {
         }
 
         fn capabilities(&self) -> ChannelDriverCapabilities {
-            ChannelDriverCapabilities {
-                supports_sync: true,
-                supports_async: false,
-                registers_http_routes: true,
-                supports_oauth2_login: false,
-            }
+            ChannelDriverCapabilities::none().sync().http_routes()
         }
 
         fn validate_fields(&self, fields: &ChannelProtocolFields<'_>) -> Vec<FieldError> {
@@ -374,14 +360,9 @@ mod tests {
     }
 
     fn fields<'a>(protocol: &'a str, channel_type: &'a str) -> ChannelProtocolFields<'a> {
-        ChannelProtocolFields {
-            protocol,
-            channel_type: Some(channel_type),
-            methods: None,
-            route_pattern: None,
-            topic: None,
-            consumer_group: None,
-        }
+        let mut fields = ChannelProtocolFields::new(protocol);
+        fields.channel_type = Some(channel_type);
+        fields
     }
 
     #[test]

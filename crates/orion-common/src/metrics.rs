@@ -324,6 +324,7 @@ pub fn record_http_request(method: &str, path: &str, status: u16, duration_secs:
         "OPTIONS" => "OPTIONS",
         _ => "OTHER",
     };
+    let class = status_class(status);
     let (path, status) = (static_label(path), status_label(status));
     counter!(
         "orion_http_requests_total",
@@ -332,11 +333,14 @@ pub fn record_http_request(method: &str, path: &str, status: u16, duration_secs:
         "status" => status
     )
     .increment(1);
+    // The histogram carries the status *class*: 15 buckets times every exact
+    // code times every route is the series count that hurts, and the counter
+    // above already has the exact status.
     histogram!(
         "orion_http_request_duration_seconds",
         "method" => method,
         "path" => path,
-        "status" => status
+        "status_class" => class
     )
     .record(duration_secs);
 }
@@ -358,6 +362,18 @@ fn static_label(label: &str) -> &'static str {
 }
 
 /// The status code as a label, from a table built once.
+/// `2xx`, `4xx`, … — `other` outside 100–599.
+fn status_class(status: u16) -> &'static str {
+    match status {
+        100..=199 => "1xx",
+        200..=299 => "2xx",
+        300..=399 => "3xx",
+        400..=499 => "4xx",
+        500..=599 => "5xx",
+        _ => "other",
+    }
+}
+
 fn status_label(status: u16) -> &'static str {
     static STATUSES: std::sync::LazyLock<Vec<String>> =
         std::sync::LazyLock::new(|| (0..1000).map(|code| code.to_string()).collect());

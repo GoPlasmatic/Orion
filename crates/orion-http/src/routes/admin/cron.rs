@@ -273,10 +273,11 @@ pub(crate) async fn trigger_channel(
              loaded can be triggered."
         )));
     };
-    let descriptor = runtime
-        .cron
-        .as_ref()
-        .expect("cron_by_channel_id only returns cron channels");
+    let descriptor = runtime.cron.as_ref().ok_or_else(|| {
+        OrionError::internal(format!(
+            "channel '{id}' resolved as cron without a schedule"
+        ))
+    })?;
 
     // The occurrence is stamped with *now*, so it takes its place in the ledger
     // beside the scheduled ones and is claimed by the same query. It is not a

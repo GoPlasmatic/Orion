@@ -64,12 +64,22 @@ pub struct Cli {
     )]
     api_key_header: Option<String>,
 
-    /// Output format
-    #[arg(long, global = true, default_value = "table", help_heading = "Output")]
+    /// Output format (default: `default_output` from the config file, else table)
+    #[arg(long = "output", global = true, help_heading = "Output")]
+    output_flag: Option<OutputFormat>,
+
+    /// The output format in force: the flag, else the config file's
+    /// `default_output`, else a table. Resolved once after parsing.
+    #[arg(skip = OutputFormat::Table)]
     output: OutputFormat,
 
     /// Suppress output, print only IDs or minimal info
-    #[arg(long, global = true, help_heading = "Output")]
+    #[arg(
+        long,
+        global = true,
+        conflicts_with = "verbose",
+        help_heading = "Output"
+    )]
     quiet: bool,
 
     /// Show full response bodies and extra details
@@ -100,15 +110,29 @@ pub struct Cli {
 
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    cli.output = resolve_output(cli.output_flag.clone());
 
     if cli.no_color || std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
         colored::control::set_override(false);
     }
 
+    let output = cli.output.clone();
     let result = run(cli).await;
     match result {
         Ok(code) => process::exit(code),
+        Err(e) if !matches!(output, OutputFormat::Table) => {
+            // A script asked for json/yaml: give it the error in that shape on
+            // stderr, with the server's code, request id and field errors, so
+            // it need not scrape prose.
+            let body = error_json(&e);
+            let rendered = match output {
+                OutputFormat::Yaml => serde_saphyr::to_string(&body).unwrap_or_default(),
+                _ => serde_json::to_string_pretty(&body).unwrap_or_default(),
+            };
+            eprintln!("{}", rendered.trim_end());
+            process::exit(1);
+        }
         Err(e) => {
             // `{:#}` prints the whole context chain, so a step that names
             // what it was doing ("uploading 'x'") still shows why it failed.
@@ -117,6 +141,36 @@ async fn main() {
                 eprintln!("  {}: {} {}", detail.path, detail.code, detail.message);
             }
             process::exit(1);
+        }
+    }
+}
+
+/// The format in force: the `--output` flag, else the config file's
+/// `default_output`, else a table. An unreadable config or an unknown saved
+/// value falls back to a table rather than failing a command that never
+/// asked for it.
+fn resolve_output(flag: Option<OutputFormat>) -> OutputFormat {
+    use clap::ValueEnum as _;
+    flag.or_else(|| {
+        let saved = config::OrionConfig::load().ok()?.default_output;
+        OutputFormat::from_str(&saved, true).ok()
+    })
+    .unwrap_or(OutputFormat::Table)
+}
+
+/// An error as structured output: `{"error": {"code", "message", "request_id",
+/// "details"}}`, the server's envelope when it sent one.
+fn error_json(e: &anyhow::Error) -> serde_json::Value {
+    let api = e.chain().find_map(
+        |cause| match cause.downcast_ref::<orion_client::ClientError>() {
+            Some(orion_client::ClientError::Api { error, .. }) => Some(error.clone()),
+            _ => None,
+        },
+    );
+    match api {
+        Some(body) => serde_json::json!({ "error": body }),
+        None => {
+            serde_json::json!({ "error": { "code": "CLI_ERROR", "message": format!("{e:#}") } })
         }
     }
 }
@@ -260,4 +314,42 @@ fn build_client(cli: &Cli) -> anyhow::Result<OrionClient> {
         );
     }
     Ok(client)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_api_error_keeps_its_code_request_id_and_field_errors() {
+        let api = orion_client::ClientError::Api {
+            status: orion_client::StatusCode::UNPROCESSABLE_ENTITY,
+            error: orion_api::ErrorBody {
+                code: "VALIDATION_ERROR".into(),
+                message: "bad".into(),
+                details: vec![orion_api::FieldError::new("a.b", "REQUIRED", "missing")],
+                request_id: Some("req-1".into()),
+            },
+        };
+        let err = anyhow::Error::new(api).context("uploading 'x'");
+        let body = error_json(&err);
+        assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+        assert_eq!(body["error"]["request_id"], "req-1");
+        assert_eq!(body["error"]["details"][0]["path"], "a.b");
+    }
+
+    #[test]
+    fn any_other_error_is_a_cli_error() {
+        let body = error_json(&anyhow::anyhow!("no such file"));
+        assert_eq!(body["error"]["code"], "CLI_ERROR");
+        assert_eq!(body["error"]["message"], "no such file");
+    }
+
+    #[test]
+    fn the_flag_wins_over_the_saved_default() {
+        assert!(matches!(
+            resolve_output(Some(OutputFormat::Json)),
+            OutputFormat::Json
+        ));
+    }
 }

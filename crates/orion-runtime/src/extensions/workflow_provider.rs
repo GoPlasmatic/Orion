@@ -41,7 +41,6 @@
 //! sub-channels. Shared logic belongs in the package's authoring, as
 //! compile-time fragments.
 
-use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -62,7 +61,7 @@ use super::deployment_store::{
 use super::provider_backend::ProviderRegistry;
 use super::{
     ConnectionReference, ConnectorError, ConnectorErrorClass, ConnectorOutput, EffectStatus,
-    ErrorOrigin, ImplementationKind, ProviderRef, RetryAdvice, codes,
+    ErrorOrigin, ImplementationKind, ProviderRef, codes,
 };
 
 /// The Orion functions a package workflow may name. `crypto`, `jwt_sign` and
@@ -753,16 +752,13 @@ fn plugin_named_by(document: &Value, step_id: Option<&str>) -> bool {
 
 /// A package workflow's failure, as the caller's `connector_call` reports it.
 fn workflow_failed(message: String, effect: EffectStatus) -> ConnectorError {
-    ConnectorError {
-        code: Cow::Borrowed(codes::WORKFLOW_FAILED),
-        class: ConnectorErrorClass::ProviderFailure,
+    ConnectorError::new(
+        codes::WORKFLOW_FAILED,
+        ConnectorErrorClass::ProviderFailure,
         message,
-        effect_status: effect,
-        retry_advice: RetryAdvice::Never,
-        origin: ErrorOrigin::provider("workflow"),
-        retry_after_ms: None,
-        details: None,
-    }
+        effect,
+    )
+    .with_origin(ErrorOrigin::provider("workflow"))
 }
 
 #[async_trait::async_trait]

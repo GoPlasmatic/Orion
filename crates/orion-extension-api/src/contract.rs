@@ -18,6 +18,7 @@ use serde_json::Value;
 /// Normalized retry advice (`V2-10.1`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum RetryAdvice {
     Never,
     Transient,
@@ -79,6 +80,7 @@ pub mod codes {
 /// stage are borrowed (every host code is a [`codes`] constant), and the
 /// rarely-set `details` are boxed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ConnectorError {
     pub code: Cow<'static, str>,
     pub class: ConnectorErrorClass,
@@ -93,6 +95,55 @@ pub struct ConnectorError {
 }
 
 impl ConnectorError {
+    /// A failure a provider reports: `code` names it, `class` says what kind of
+    /// fault it is. Defaults to a provider-origin error that is not retried;
+    /// refine it with the `with_*` methods.
+    pub fn new(
+        code: impl Into<Cow<'static, str>>,
+        class: ConnectorErrorClass,
+        message: impl Into<String>,
+        effect_status: EffectStatus,
+    ) -> Self {
+        Self {
+            code: code.into(),
+            class,
+            message: message.into(),
+            effect_status,
+            retry_advice: RetryAdvice::Never,
+            origin: ErrorOrigin::provider("invoke"),
+            retry_after_ms: None,
+            details: None,
+        }
+    }
+
+    /// Advise the caller whether the attempt may be retried.
+    #[must_use]
+    pub fn with_retry_advice(mut self, advice: RetryAdvice) -> Self {
+        self.retry_advice = advice;
+        self
+    }
+
+    /// Say where the failure arose.
+    #[must_use]
+    pub fn with_origin(mut self, origin: ErrorOrigin) -> Self {
+        self.origin = origin;
+        self
+    }
+
+    /// Ask the caller to wait at least `ms` before retrying.
+    #[must_use]
+    pub fn with_retry_after_ms(mut self, ms: u64) -> Self {
+        self.retry_after_ms = Some(ms);
+        self
+    }
+
+    /// Attach structured detail for the caller.
+    #[must_use]
+    pub fn with_details(mut self, details: Value) -> Self {
+        self.details = Some(Box::new(details));
+        self
+    }
+
     pub fn capability_invalid(message: impl Into<String>, prior_effect: EffectStatus) -> Self {
         Self {
             code: Cow::Borrowed(codes::CAPABILITY_INVALID),

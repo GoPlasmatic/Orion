@@ -149,7 +149,7 @@ fn insert_statement(
     resource_id: &str,
     details: Option<&str>,
 ) -> sea_query::InsertStatement {
-    let id = uuid::Uuid::new_v4().to_string();
+    let id = uuid::Uuid::now_v7().to_string();
 
     // `columns()` REPLACES the column list and `values_panic()` appends
     // a whole new row — so the optional `details` column has to be folded

@@ -69,13 +69,11 @@ impl std::fmt::Display for ChannelType {
     }
 }
 
-// Custom case-insensitive deserialize so v0.1 lowercase wire values still
-// parse while broader inputs like "SYNC" or "Async" now succeed too —
-// strictly additive on the v0.1 acceptance set.
+// Strict: the wire value is the lowercase word the type serializes to.
 impl<'de> Deserialize<'de> for ChannelType {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
-        match s.to_ascii_lowercase().as_str() {
+        match s.as_str() {
             CHANNEL_TYPE_SYNC => Ok(Self::Sync),
             CHANNEL_TYPE_ASYNC => Ok(Self::Async),
             other => Err(serde::de::Error::unknown_variant(
@@ -86,15 +84,15 @@ impl<'de> Deserialize<'de> for ChannelType {
     }
 }
 
-/// A channel's `protocol`, lowercased: the name of the channel driver that
-/// serves it. Deliberately a string rather than an enum — the set of
-/// protocols is whatever drivers the node's composition registers, so
-/// an unknown one is refused by validation, by field, naming the registered
-/// ones, not by this parse.
+/// A channel's `protocol`: the name of the channel driver that serves it, taken
+/// exactly as written. Deliberately a string rather than an enum — the set of
+/// protocols is whatever drivers the node's composition registers, so an
+/// unknown one (including a differently-cased `REST`) is refused by
+/// validation, by field, naming the registered ones, not by this parse.
 pub fn deserialize_protocol<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<String, D::Error> {
-    Ok(String::deserialize(deserializer)?.to_ascii_lowercase())
+    String::deserialize(deserializer)
 }
 
 // -- Trace status constants --
@@ -160,11 +158,11 @@ mod tests {
     }
 
     #[test]
-    fn test_channel_type_case_insensitive() {
-        let upper: ChannelType = serde_json::from_str(r#""SYNC""#).expect("test");
-        assert_eq!(upper, ChannelType::Sync);
-        let mixed: ChannelType = serde_json::from_str(r#""Async""#).expect("test");
-        assert_eq!(mixed, ChannelType::Async);
+    fn test_channel_type_is_exact_lowercase() {
+        let lower: ChannelType = serde_json::from_str(r#""sync""#).expect("test");
+        assert_eq!(lower, ChannelType::Sync);
+        assert!(serde_json::from_str::<ChannelType>(r#""SYNC""#).is_err());
+        assert!(serde_json::from_str::<ChannelType>(r#""Async""#).is_err());
     }
 
     #[test]

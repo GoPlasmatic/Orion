@@ -3,8 +3,10 @@
 //! jittered backoff, convergence wait (`this-node` / `observed`), and
 //! fail-closed DB-time security lease.
 
+use orion_common::sync::LockExt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +19,13 @@ use crate::storage::repositories::runtime_nodes::RuntimeNodeRepository;
 pub const MIN_BACKOFF_MS: u64 = 250;
 pub const MAX_BACKOFF_MS: u64 = 30_000;
 pub const DEFAULT_SECURITY_LEASE_MS: u64 = 5_000;
+
+/// The lease a node holds after one successful catch-up. It must outlast
+/// several polls, or a single slow poll would expire it, so it is never shorter
+/// than three poll intervals.
+pub fn security_lease_ms(poll_interval_ms: u64) -> u64 {
+    DEFAULT_SECURITY_LEASE_MS.max(poll_interval_ms.saturating_mul(3))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeIdentity {
@@ -98,6 +107,11 @@ pub struct NodeReconciler {
     store: ImmutableDeploymentStore,
     nodes: Arc<Mutex<BTreeMap<String, RuntimeNodeStatus>>>,
     local_identity: NodeIdentity,
+    /// When the local lease lapses, on the monotonic clock. The wall-clock
+    /// `security_lease_expires_at_ms` is what peers and the API report; validity
+    /// is judged here so a clock step cannot extend or revoke it. `None` until
+    /// the first successful catch-up.
+    lease_deadline: Arc<Mutex<Option<Instant>>>,
 }
 
 impl NodeReconciler {
@@ -125,7 +139,7 @@ impl NodeReconciler {
                 last_error: None,
                 backoff_attempt: 0,
                 backoff_delay_ms: 0,
-                security_lease_expires_at_ms: DEFAULT_SECURITY_LEASE_MS,
+                security_lease_expires_at_ms: 0,
                 retained_revisions: BTreeSet::new(),
             },
         );
@@ -133,21 +147,22 @@ impl NodeReconciler {
             store,
             nodes: Arc::new(Mutex::new(map)),
             local_identity: identity,
+            lease_deadline: Arc::default(),
         }
     }
 
     pub fn local_status(&self) -> RuntimeNodeStatus {
-        let g = self.nodes.lock().expect("nodes lock");
+        let g = self.nodes.lock_unpoisoned();
         g[&self.local_identity.node_id].clone()
     }
 
     pub fn observed_node_ids(&self) -> BTreeSet<String> {
-        let g = self.nodes.lock().expect("nodes lock");
+        let g = self.nodes.lock_unpoisoned();
         g.keys().cloned().collect()
     }
 
     pub fn register_peer_node(&self, node_id: &str, boot_id: &str) {
-        let mut g = self.nodes.lock().expect("nodes lock");
+        let mut g = self.nodes.lock_unpoisoned();
         g.insert(
             node_id.to_string(),
             RuntimeNodeStatus {
@@ -163,7 +178,7 @@ impl NodeReconciler {
                 last_error: None,
                 backoff_attempt: 0,
                 backoff_delay_ms: 0,
-                security_lease_expires_at_ms: DEFAULT_SECURITY_LEASE_MS,
+                security_lease_expires_at_ms: 0,
                 retained_revisions: BTreeSet::new(),
             },
         );
@@ -173,7 +188,7 @@ impl NodeReconciler {
     /// desired revision is observed, reset any prior failure backoff.
     pub fn observe_desired_head(&self) -> u64 {
         let (head_rev, _) = self.store.current_head();
-        let mut g = self.nodes.lock().expect("nodes lock");
+        let mut g = self.nodes.lock_unpoisoned();
         if let Some(node) = g.get_mut(&self.local_identity.node_id)
             && head_rev > node.desired_revision
         {
@@ -204,7 +219,7 @@ impl NodeReconciler {
         for issue in issues {
             match issue {
                 CandidateBuildIssue::WholeBuildIntegrity { code, message } => {
-                    let mut g = self.nodes.lock().expect("nodes lock");
+                    let mut g = self.nodes.lock_unpoisoned();
                     let node = g
                         .get_mut(&self.local_identity.node_id)
                         .expect("local node registered");
@@ -226,7 +241,7 @@ impl NodeReconciler {
 
         // 3. Publication barrier: verify candidate is not superseded by desired or applied revision
         let (latest_head, _) = self.store.current_head();
-        let mut g = self.nodes.lock().expect("nodes lock");
+        let mut g = self.nodes.lock_unpoisoned();
         let node = g
             .get_mut(&self.local_identity.node_id)
             .expect("local node registered");
@@ -265,7 +280,7 @@ impl NodeReconciler {
 
     /// Release an old drained generation from this node's retained set.
     pub fn release_retained_revision(&self, revision: u64) {
-        let mut g = self.nodes.lock().expect("nodes lock");
+        let mut g = self.nodes.lock_unpoisoned();
         if let Some(node) = g.get_mut(&self.local_identity.node_id) {
             if node.applied_revision != revision {
                 node.retained_revisions.remove(&revision);
@@ -283,7 +298,7 @@ impl NodeReconciler {
         target_revision: u64,
         target: &ConvergenceTarget,
     ) -> ConvergenceReport {
-        let g = self.nodes.lock().expect("nodes lock");
+        let g = self.nodes.lock_unpoisoned();
         let target_ids: Vec<String> = match target {
             ConvergenceTarget::ThisNode(id) => vec![id.clone()],
             ConvergenceTarget::ObservedNodes(ids) => ids.iter().cloned().collect(),
@@ -314,16 +329,27 @@ impl NodeReconciler {
         }
     }
 
-    /// V2-06.5: Renew the node's DB-time security lease and check validity.
+    /// V2-06.5: Renew the node's security lease. `now_ms` is the wall clock and
+    /// feeds only the reported expiry; see [`Self::is_security_lease_current`].
     pub fn renew_security_lease(&self, now_ms: u64, lease_duration_ms: u64) {
-        let mut g = self.nodes.lock().expect("nodes lock");
+        let mut g = self.nodes.lock_unpoisoned();
         if let Some(node) = g.get_mut(&self.local_identity.node_id) {
             node.security_lease_expires_at_ms = now_ms.saturating_add(lease_duration_ms);
         }
+        *self.lease_deadline.lock_unpoisoned() =
+            Some(Instant::now() + Duration::from_millis(lease_duration_ms));
+    }
+
+    /// Whether the local lease is still held, judged on the monotonic clock.
+    /// False before the first successful renewal.
+    pub fn is_security_lease_current(&self) -> bool {
+        self.lease_deadline
+            .lock_unpoisoned()
+            .is_some_and(|deadline| Instant::now() <= deadline)
     }
 
     pub fn is_security_lease_valid(&self, now_ms: u64) -> bool {
-        let g = self.nodes.lock().expect("nodes lock");
+        let g = self.nodes.lock_unpoisoned();
         g.get(&self.local_identity.node_id)
             .is_some_and(|node| now_ms <= node.security_lease_expires_at_ms)
     }
@@ -365,7 +391,7 @@ impl NodeReconciler {
 
         let mut retained_updates = Vec::new();
         {
-            let mut g = self.nodes.lock().expect("nodes lock");
+            let mut g = self.nodes.lock_unpoisoned();
             for RuntimeNodeRow {
                 node_id,
                 boot_id,
@@ -397,7 +423,7 @@ impl NodeReconciler {
                         last_error: None,
                         backoff_attempt: 0,
                         backoff_delay_ms: 0,
-                        security_lease_expires_at_ms: DEFAULT_SECURITY_LEASE_MS,
+                        security_lease_expires_at_ms: 0,
                         retained_revisions: retained,
                     },
                 );
@@ -520,6 +546,23 @@ mod tests {
         reconciler.renew_security_lease(1_000, 5_000);
         assert!(reconciler.is_security_lease_valid(5_500));
         assert!(!reconciler.is_security_lease_valid(6_500));
+        assert!(reconciler.is_security_lease_current());
+    }
+
+    #[test]
+    fn a_node_holds_no_lease_until_it_renews() {
+        let reconciler =
+            NodeReconciler::new(ImmutableDeploymentStore::new("node-a"), "node-a", "boot-1");
+        assert!(!reconciler.is_security_lease_current());
+        assert!(!reconciler.is_security_lease_valid(1));
+        assert_eq!(reconciler.local_status().security_lease_expires_at_ms, 0);
+    }
+
+    #[test]
+    fn the_lease_outlasts_several_polls() {
+        assert_eq!(security_lease_ms(1_000), DEFAULT_SECURITY_LEASE_MS);
+        assert_eq!(security_lease_ms(2_000), 6_000);
+        assert_eq!(security_lease_ms(10_000), 30_000);
     }
 
     #[tokio::test]

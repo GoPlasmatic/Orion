@@ -70,10 +70,10 @@ async fn list_paginates_and_omits_payloads() {
         assert!(row["channel"].is_string());
         assert!(row["retry_count"].is_number());
         assert!(
-            row.get("payload_json").is_none(),
+            row.get("payload").is_none(),
             "the list view must not carry payloads: {row}"
         );
-        assert!(row.get("metadata_json").is_none());
+        assert!(row.get("metadata").is_none());
     }
 }
 
@@ -122,7 +122,10 @@ async fn get_by_id_returns_the_payload() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = common::body_json(resp).await;
-    assert_eq!(body["data"]["payload_json"], PAYLOAD);
+    assert_eq!(
+        body["data"]["payload"],
+        serde_json::from_str::<serde_json::Value>(PAYLOAD).unwrap()
+    );
     assert_eq!(body["data"]["error_message"], "boom");
 
     let resp = app

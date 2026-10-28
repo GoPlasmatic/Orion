@@ -193,14 +193,12 @@ fn check_protocol_fields(
     config: &serde_json::Value,
     channel_id: Option<&str>,
 ) -> Result<(), OrionError> {
-    let driver_fields = crate::extensions::ChannelProtocolFields {
-        protocol: fields.protocol,
-        channel_type: fields.channel_type,
-        methods: fields.methods,
-        route_pattern: fields.route_pattern,
-        topic: fields.topic,
-        consumer_group: fields.consumer_group,
-    };
+    let mut driver_fields = crate::extensions::ChannelProtocolFields::new(fields.protocol);
+    driver_fields.channel_type = fields.channel_type;
+    driver_fields.methods = fields.methods;
+    driver_fields.route_pattern = fields.route_pattern;
+    driver_fields.topic = fields.topic;
+    driver_fields.consumer_group = fields.consumer_group;
     let mut out = drivers.validate_channel(&driver_fields, transport_config, config, channel_id);
     // The caps are deliberately outside the driver: all three fields are
     // optional and kept whatever the protocol says, so an over-long `topic` on
@@ -921,12 +919,7 @@ mod tests {
                 "kafka"
             }
             fn capabilities(&self) -> orion_extension_api::ChannelDriverCapabilities {
-                orion_extension_api::ChannelDriverCapabilities {
-                    supports_sync: false,
-                    supports_async: true,
-                    registers_http_routes: false,
-                    supports_oauth2_login: false,
-                }
+                orion_extension_api::ChannelDriverCapabilities::none().async_submit()
             }
             fn validate_fields(
                 &self,
@@ -950,7 +943,7 @@ mod tests {
         with_kafka.push(std::sync::Arc::new(Kafka));
         let drivers =
             crate::extensions::ChannelDriverRegistry::new(with_kafka).expect("distinct protocols");
-        let err = validate_create_channel(&req("KAFKA"), &drivers).expect_err("no topic");
+        let err = validate_create_channel(&req("kafka"), &drivers).expect_err("no topic");
         assert_eq!(err.field_errors()[0].path, "channel.topic");
         let mut with_topic = req("kafka");
         with_topic.topic = Some("orders".to_string());

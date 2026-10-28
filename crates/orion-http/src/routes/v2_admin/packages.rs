@@ -85,20 +85,19 @@ fn package_row_to_summary(
 )]
 pub(crate) async fn list_connector_packages(
     State(state): State<AppState>,
-) -> Json<ConnectorPackagesListResponse> {
+) -> V2Result<Json<ConnectorPackagesListResponse>> {
     let raw_packages = state.deployments.list_packages();
     let raw_admissions = state.deployments.list_admissions();
     let digests: Vec<String> = raw_packages
         .iter()
         .map(|p| p.package_digest.to_string())
         .collect();
-    // One read for every package's artifact state; a failed read answers
-    // each as active, as a package with no artifact row does.
+    // One read for every package's artifact state. A failed read is an error,
+    // never "all active": that would show a revoked package as usable.
     let states = state
         .deployments
         .artifact_states(&state.db_pool, &digests)
-        .await
-        .unwrap_or_default();
+        .await?;
     let admissions: Vec<ProviderAdmissionDto> =
         raw_admissions.iter().map(|a| admission_dto(a)).collect();
     let packages: Vec<ConnectorPackageSummary> = raw_packages
@@ -113,11 +112,11 @@ pub(crate) async fn list_connector_packages(
             package_row_to_summary(p, admitted, revoked, artifact_state)
         })
         .collect();
-    Json(ConnectorPackagesListResponse {
+    Ok(Json(ConnectorPackagesListResponse {
         count: packages.len(),
         packages,
         admissions,
-    })
+    }))
 }
 
 /// `GET /api/v2/admin/connector-packages/{digest}`.

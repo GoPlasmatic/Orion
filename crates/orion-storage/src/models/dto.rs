@@ -66,8 +66,8 @@ impl From<&TraceDlqEntry> for TraceDlqEntryResponse {
             id: entry.id.clone(),
             trace_id: entry.trace_id.clone(),
             channel: entry.channel.clone(),
-            payload_json: entry.payload_json.clone(),
-            metadata_json: entry.metadata_json.clone(),
+            payload: json_or_string(&entry.payload_json),
+            metadata: json_or_string(&entry.metadata_json),
             error_message: entry.error_message.clone(),
             retry_count: entry.retry_count,
             max_retries: entry.max_retries,
@@ -76,6 +76,12 @@ impl From<&TraceDlqEntry> for TraceDlqEntryResponse {
             updated_at: entry.updated_at,
         }
     }
+}
+
+/// A stored JSON column as the document it holds, or, for text that is not JSON
+/// (it never is, for a row Orion wrote), as the string itself so nothing is lost.
+fn json_or_string(text: &str) -> serde_json::Value {
+    serde_json::from_str(text).unwrap_or_else(|_| serde_json::Value::String(text.to_string()))
 }
 
 impl From<&TraceDlqSummary> for TraceDlqSummaryResponse {
@@ -203,8 +209,8 @@ mod tests {
                 "id",
                 "trace_id",
                 "channel",
-                "payload_json",
-                "metadata_json",
+                "payload",
+                "metadata",
                 "error_message",
                 "retry_count",
                 "max_retries",

@@ -57,7 +57,30 @@ impl OrionConfig {
             })?;
         }
         let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
-        fs::write(&path, content)
-            .with_context(|| format!("Failed to write config to {}", path.display()))
+        // The file can hold the API key, so create it owner-only (0600) as the
+        // signing-key file is.
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let write = |mut file: fs::File| {
+            use std::io::Write as _;
+            file.write_all(content.as_bytes())
+        };
+        options
+            .open(&path)
+            .and_then(write)
+            .with_context(|| format!("Failed to write config to {}", path.display()))?;
+        #[cfg(unix)]
+        {
+            // `mode` applies only on creation; tighten a file an older CLI wrote.
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("Failed to restrict {}", path.display()))?;
+        }
+        Ok(())
     }
 }

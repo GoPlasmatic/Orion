@@ -11,6 +11,7 @@
 //! their catalog refreshes in commit order. Planning takes neither: it reads
 //! in one read-only snapshot.
 
+use orion_common::sync::RwLockExt;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -184,7 +185,7 @@ impl ImmutableDeploymentStore {
     /// ([`Self::load_for_manifest`]).
     async fn advance_head(&self, pool: &DbPool, observed: Option<(u64, u64)>, next: (u64, u64)) {
         let advanced = {
-            let mut c = self.catalog.write().expect("catalog lock");
+            let mut c = self.catalog.write_unpoisoned();
             let observed = observed.unwrap_or((0, 0));
             let at_observed = c.head == observed && c.revisions_through >= observed.0;
             if at_observed {
@@ -253,8 +254,7 @@ impl ImmutableDeploymentStore {
         commit(tx).await?;
 
         self.catalog
-            .write()
-            .expect("catalog lock")
+            .write_unpoisoned()
             .insert_package(prepared.row.clone(), Ok(Arc::new(prepared.bundle)));
         self.catch_up_locked(pool).await;
         Ok(prepared.row)
@@ -307,8 +307,7 @@ impl ImmutableDeploymentStore {
         commit(tx).await?;
 
         self.catalog
-            .write()
-            .expect("catalog lock")
+            .write_unpoisoned()
             .insert_admission(admission.clone());
         self.catch_up_locked(pool).await;
         Ok(admission)
@@ -342,10 +341,7 @@ impl ImmutableDeploymentStore {
 
         let mut revoked = ProviderAdmissionRow::try_from(admission)?;
         revoked.revoked = true;
-        self.catalog
-            .write()
-            .expect("catalog lock")
-            .insert_admission(revoked);
+        self.catalog.write_unpoisoned().insert_admission(revoked);
         self.advance_head(pool, observed, next).await;
         Ok(())
     }
@@ -443,8 +439,7 @@ impl ImmutableDeploymentStore {
             }
             drop(tx);
             self.catalog
-                .write()
-                .expect("catalog lock")
+                .write_unpoisoned()
                 .insert_connection(existing.clone());
             return Ok(existing);
         }
@@ -462,8 +457,7 @@ impl ImmutableDeploymentStore {
         commit(tx).await?;
 
         self.catalog
-            .write()
-            .expect("catalog lock")
+            .write_unpoisoned()
             .insert_connection(row.clone());
         self.catch_up_locked(pool).await;
         Ok(row)
@@ -710,8 +704,7 @@ impl ImmutableDeploymentStore {
         commit(tx).await?;
 
         self.catalog
-            .write()
-            .expect("catalog lock")
+            .write_unpoisoned()
             .revisions
             .insert(revision.revision, Arc::new(revision));
         self.advance_head(pool, observed, next).await;
@@ -820,7 +813,7 @@ impl ImmutableDeploymentStore {
         commit(tx).await?;
 
         {
-            let mut c = self.catalog.write().expect("catalog lock");
+            let mut c = self.catalog.write_unpoisoned();
             for revision in &out.compacted {
                 if let Some(row) = c.revisions.get_mut(revision) {
                     Arc::make_mut(row).members_compacted = true;

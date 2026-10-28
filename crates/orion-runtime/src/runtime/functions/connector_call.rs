@@ -34,10 +34,10 @@ impl ConnectorCallHost for ProviderCalls {
         kind: ImplementationKind,
         target: &str,
         operation: &str,
-    ) -> &'static [&'static str] {
+    ) -> Vec<String> {
         self.providers
             .get(kind, target)
-            .map_or(&[], |backend| backend.literal_input_keys(operation))
+            .map_or_else(Vec::new, |backend| backend.literal_input_keys(operation))
     }
 
     async fn invoke(&self, call: ConnectorInvocation<'_>) -> Result<Value, HandlerError> {

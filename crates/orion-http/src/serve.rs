@@ -18,10 +18,30 @@ use crate::errors::OrionError;
 
 /// Create a bound TCP listener with `TCP_NODELAY` enabled (avoids Nagle's
 /// 40 ms latency on small responses) and `SO_REUSEADDR` set.
+/// Render `host` and `port` as a bindable address. An IPv6 literal is
+/// bracketed, because `format!("{host}:{port}")` turns `::` into `:::8080`.
+pub fn listen_addr(host: &str, port: u16) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+/// A socket address, or a `host:port` name resolved to its first address.
+fn resolve_listen_addr(addr: &str) -> Result<std::net::SocketAddr, OrionError> {
+    use std::net::ToSocketAddrs as _;
+    if let Ok(socket_addr) = addr.parse::<std::net::SocketAddr>() {
+        return Ok(socket_addr);
+    }
+    addr.to_socket_addrs()
+        .map_err(|e| OrionError::internal_from(format!("Invalid address '{addr}'"), e))?
+        .next()
+        .ok_or_else(|| OrionError::internal(format!("Address '{addr}' resolved to nothing")))
+}
+
 pub fn create_tcp_listener(addr: &str) -> Result<tokio::net::TcpListener, OrionError> {
-    let socket_addr = addr
-        .parse::<std::net::SocketAddr>()
-        .map_err(|e| OrionError::internal_from(format!("Invalid address '{addr}'"), e))?;
+    let socket_addr = resolve_listen_addr(addr)?;
     let domain = if socket_addr.is_ipv4() {
         socket2::Domain::IPV4
     } else {
@@ -60,10 +80,8 @@ pub async fn serve_tls(
         super::tls::load_rustls_config(&config.server.tls.cert_path, &config.server.tls.key_path)
             .await?;
 
-    let addr = format!("{}:{}", config.server.host, config.server.port);
-    let bind_addr: std::net::SocketAddr = addr
-        .parse()
-        .map_err(|e| OrionError::internal_from(format!("Invalid address '{addr}'"), e))?;
+    let addr = listen_addr(&config.server.host, config.server.port);
+    let bind_addr = resolve_listen_addr(&addr)?;
     let shutdown_handle = handle.clone();
     let drain_secs = config.server.shutdown_drain_secs;
     let force_timeout_secs = config.server.shutdown_force_timeout_secs;
@@ -198,4 +216,27 @@ pub async fn serve_plain_http(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod listen_addr_tests {
+    use super::*;
+
+    #[test]
+    fn ipv6_literals_are_bracketed() {
+        assert_eq!(listen_addr("::", 8080), "[::]:8080");
+        assert_eq!(listen_addr("::1", 80), "[::1]:80");
+        assert_eq!(listen_addr("0.0.0.0", 8080), "0.0.0.0:8080");
+        assert!(
+            resolve_listen_addr(&listen_addr("::", 8080))
+                .expect("test")
+                .is_ipv6()
+        );
+    }
+
+    #[test]
+    fn a_hostname_resolves() {
+        assert!(resolve_listen_addr("localhost:8080").is_ok());
+        assert!(resolve_listen_addr("not a host").is_err());
+    }
 }

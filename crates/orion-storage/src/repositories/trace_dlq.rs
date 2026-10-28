@@ -328,7 +328,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
             max_retries,
         } = row;
         orion_common::metrics::timed_db_op("trace_dlq.enqueue", async {
-            let id = uuid::Uuid::new_v4().to_string();
+            let id = uuid::Uuid::now_v7().to_string();
 
             // First retry after 1 second. Bind chrono values, not strings:
             // postgres rejects TEXT parameters against timestamp columns.

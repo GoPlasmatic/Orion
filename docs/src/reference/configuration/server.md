@@ -10,7 +10,7 @@ The `[server]` section: the HTTP listener, shutdown timing, the admin body limit
 
 ```toml
 [server]
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 8080
 shutdown_drain_secs = 30
 shutdown_force_timeout_secs = 30
@@ -37,7 +37,7 @@ Both endpoints are unauthenticated, and the spec publishes the complete admin AP
 
 | Setting | Default | Env var | When to change |
 |---|---|---|---|
-| `server.host` | `"0.0.0.0"` | `ORION_SERVER__HOST` | Bind to `127.0.0.1` when a local proxy is the only intended client. |
+| `server.host` | `"127.0.0.1"` | `ORION_SERVER__HOST` | Set to `0.0.0.0` (or an interface address) to accept connections from other hosts. The container image and the Helm chart already do. |
 | `server.port` | `8080` | `ORION_SERVER__PORT` | To fit an existing port convention. |
 | `server.shutdown_drain_secs` | `30` | `ORION_SERVER__SHUTDOWN_DRAIN_SECS` | Raise it if your slowest request legitimately outlives 30 s, so rolling deploys stop cutting them off. |
 | `server.shutdown_force_timeout_secs` | `30` | `ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS` | Hard cap on waiting after the drain window. `0` waits forever — only with an orchestrator that will eventually SIGKILL. |

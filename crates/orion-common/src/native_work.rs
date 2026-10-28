@@ -13,6 +13,7 @@
 //! `GET /api/v2/admin/runtime-capabilities` reports both numbers under
 //! `native_scheduler`.
 
+use crate::sync::LockExt;
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -80,7 +81,7 @@ impl OwnedPermit {
     }
 
     pub fn mark_running(&self) {
-        let mut g = self.scheduler.jobs.lock().expect("jobs lock");
+        let mut g = self.scheduler.jobs.lock_unpoisoned();
         if let Some(info) = g.get_mut(&self.job_id) {
             info.state = NativeJobState::Running;
         }
@@ -90,7 +91,7 @@ impl OwnedPermit {
 impl Drop for OwnedPermit {
     fn drop(&mut self) {
         {
-            let mut g = self.scheduler.jobs.lock().expect("jobs lock");
+            let mut g = self.scheduler.jobs.lock_unpoisoned();
             g.remove(&self.job_id);
         }
         let now = self.scheduler.in_flight.fetch_sub(1, Ordering::AcqRel) - 1;
@@ -158,7 +159,7 @@ impl NativeWorkScheduler {
             {
                 crate::metrics::set_native_work_in_flight(cur + 1);
                 let job_id = self.inner.next_job_id.fetch_add(1, Ordering::Relaxed);
-                let mut g = self.inner.jobs.lock().expect("jobs lock");
+                let mut g = self.inner.jobs.lock_unpoisoned();
                 g.insert(
                     job_id,
                     NativeJobInfo {
@@ -262,7 +263,7 @@ impl NativeWorkScheduler {
                 self.inner
                     .abandoned_waiters_total
                     .fetch_add(1, Ordering::AcqRel);
-                if let Some(info) = self.inner.jobs.lock().expect("jobs lock").get_mut(&job_id) {
+                if let Some(info) = self.inner.jobs.lock_unpoisoned().get_mut(&job_id) {
                     info.caller_abandoned = true;
                 }
                 Err(NativeWorkError {
@@ -294,8 +295,7 @@ impl NativeWorkScheduler {
         let residual_jobs: Vec<NativeJobInfo> = self
             .inner
             .jobs
-            .lock()
-            .expect("jobs lock")
+            .lock_unpoisoned()
             .values()
             .cloned()
             .collect();

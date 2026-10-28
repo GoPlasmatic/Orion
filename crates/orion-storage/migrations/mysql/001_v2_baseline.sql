@@ -17,15 +17,15 @@ CREATE TABLE `traces` (
   `channel_id` varchar(255) DEFAULT NULL,
   `mode` varchar(16) NOT NULL DEFAULT 'sync',
   `status` varchar(32) NOT NULL DEFAULT 'pending',
-  `input_json` text,
-  `result_json` text,
-  `error_message` text,
+  `input_json` mediumtext,
+  `result_json` mediumtext,
+  `error_message` mediumtext,
   `duration_ms` double DEFAULT NULL,
-  `started_at` datetime DEFAULT NULL,
-  `completed_at` datetime DEFAULT NULL,
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `task_trace_json` text,
+  `started_at` datetime(6) DEFAULT NULL,
+  `completed_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `task_trace_json` mediumtext,
   `access_token_hash` char(64) DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_traces_channel` (`channel`),
@@ -45,16 +45,16 @@ CREATE TABLE `trace_dlq` (
   `id` varchar(36) NOT NULL,
   `trace_id` varchar(36) NOT NULL,
   `channel` varchar(255) NOT NULL,
-  `payload_json` text NOT NULL,
-  `metadata_json` text NOT NULL,
-  `error_message` text NOT NULL,
+  `payload_json` mediumtext NOT NULL,
+  `metadata_json` mediumtext NOT NULL,
+  `error_message` mediumtext NOT NULL,
   `retry_count` bigint NOT NULL DEFAULT '0',
   `max_retries` bigint NOT NULL DEFAULT '5',
-  `next_retry_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `next_retry_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   `claimed_by` varchar(64) DEFAULT NULL,
-  `claimed_until` datetime DEFAULT NULL,
+  `claimed_until` datetime(6) DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_trace_dlq_next_retry` (`next_retry_at`,`retry_count`),
   KEY `idx_trace_dlq_claimed_until` (`claimed_until`),
@@ -77,8 +77,8 @@ CREATE TABLE `audit_logs` (
   `action` varchar(64) NOT NULL,
   `resource_type` varchar(64) NOT NULL,
   `resource_id` varchar(255) NOT NULL,
-  `details` text,
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `details` mediumtext,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`id`),
   KEY `idx_audit_logs_created_at` (`created_at`),
   KEY `idx_audit_logs_resource` (`resource_type`,`resource_id`),
@@ -94,9 +94,9 @@ CREATE TABLE `cron_schedule_state` (
   `channel_id` varchar(255) NOT NULL,
   `channel_version` bigint NOT NULL,
   `config_hash` varchar(80) NOT NULL,
-  `next_fire_at` datetime NOT NULL,
-  `paused_at` datetime DEFAULT NULL,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `next_fire_at` datetime(6) NOT NULL,
+  `paused_at` datetime(6) DEFAULT NULL,
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`channel_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -113,19 +113,19 @@ CREATE TABLE `cron_occurrences` (
   `executing_version` bigint DEFAULT NULL,
   `workflow_id` varchar(255) DEFAULT NULL,
   `trigger` varchar(16) NOT NULL DEFAULT 'cron',
-  `scheduled_for` datetime NOT NULL,
+  `scheduled_for` datetime(6) NOT NULL,
   `status` varchar(24) NOT NULL DEFAULT 'pending',
   `attempt` bigint NOT NULL DEFAULT '0',
   `claimed_by` varchar(64) DEFAULT NULL,
-  `claimed_until` datetime DEFAULT NULL,
+  `claimed_until` datetime(6) DEFAULT NULL,
   `singleton_key` varchar(128) DEFAULT NULL,
   `fencing_token` bigint DEFAULT NULL,
   `trace_id` varchar(64) DEFAULT NULL,
-  `error_message` text,
-  `started_at` datetime DEFAULT NULL,
-  `completed_at` datetime DEFAULT NULL,
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `error_message` mediumtext,
+  `started_at` datetime(6) DEFAULT NULL,
+  `completed_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   `singleton_slot` bigint DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `idx_cron_occurrences_identity` (`channel_id`,`scheduled_for`),
@@ -145,8 +145,8 @@ CREATE TABLE `cron_singletons` (
   `occurrence_id` varchar(64) NOT NULL,
   `holder` varchar(64) NOT NULL,
   `fencing_token` bigint NOT NULL,
-  `lease_until` datetime NOT NULL,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `lease_until` datetime(6) NOT NULL,
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`singleton_key`),
   KEY `idx_cron_singletons_lease_until` (`lease_until`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -162,8 +162,8 @@ CREATE TABLE `cron_singleton_slots` (
   `occurrence_id` varchar(64) NOT NULL,
   `holder` varchar(64) NOT NULL,
   `fencing_token` bigint NOT NULL,
-  `lease_until` datetime NOT NULL,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `lease_until` datetime(6) NOT NULL,
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`singleton_key`,`slot`),
   KEY `idx_cron_singleton_slots_lease_until` (`lease_until`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -181,7 +181,7 @@ CREATE TABLE `config_epoch` (
   `id` int NOT NULL,
   `breaker_epoch` bigint NOT NULL DEFAULT '0',
   `breaker_key` varchar(255) NOT NULL DEFAULT '',
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`id`),
   CONSTRAINT `config_epoch_chk_1` CHECK ((`id` = 1))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -191,22 +191,22 @@ INSERT INTO `config_epoch` (`id`) VALUES (1);
 CREATE TABLE `job_leases` (
   `job_name` varchar(128) NOT NULL,
   `holder` varchar(64) NOT NULL,
-  `expires_at` datetime NOT NULL,
+  `expires_at` datetime(6) NOT NULL,
   PRIMARY KEY (`job_name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE `connector_oauth_state` (
   `connector_name` varchar(255) NOT NULL,
   `fingerprint` varchar(64) NOT NULL,
-  `state_json` text NOT NULL,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `state_json` mediumtext NOT NULL,
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`connector_name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE `cluster_kv` (
   `key_hash` char(64) NOT NULL,
   `value` longtext NOT NULL,
-  `expires_at` datetime DEFAULT NULL,
+  `expires_at` datetime(6) DEFAULT NULL,
   PRIMARY KEY (`key_hash`),
   KEY `idx_cluster_kv_expires_at` (`expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -227,9 +227,9 @@ CREATE TABLE `artifact_objects` (
   `size_bytes` bigint NOT NULL,
   `state` varchar(32) NOT NULL DEFAULT 'active',
   `drain_epoch` bigint DEFAULT NULL,
-  `draining_since` datetime DEFAULT NULL,
+  `draining_since` datetime(6) DEFAULT NULL,
   `payload_bytes` longblob,
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`digest`),
   KEY `idx_artifact_objects_state` (`state`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -241,9 +241,9 @@ CREATE TABLE `provider_packages` (
   `version` varchar(64) NOT NULL,
   `implementation` varchar(32) NOT NULL,
   `tier` varchar(32) NOT NULL,
-  `manifest_json` text NOT NULL,
-  `inventory_json` text NOT NULL,
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `manifest_json` mediumtext NOT NULL,
+  `inventory_json` mediumtext NOT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`digest`),
   KEY `idx_provider_packages_identity` (`publisher`,`provider_id`,`version`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -253,9 +253,9 @@ CREATE TABLE `provider_admissions` (
   `policy_id` varchar(128) NOT NULL,
   `admission_fingerprint` varchar(128) NOT NULL,
   `revoked` tinyint(1) NOT NULL DEFAULT '0',
-  `revoked_reason` text,
-  `admitted_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `revoked_reason` mediumtext,
+  `admitted_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`package_digest`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -263,9 +263,9 @@ CREATE TABLE `connection_revisions` (
   `connection_id` varchar(128) NOT NULL,
   `revision` bigint NOT NULL,
   `provider_digest` varchar(128) NOT NULL,
-  `public_config_json` text NOT NULL,
-  `secret_locators_json` text,
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `public_config_json` mediumtext NOT NULL,
+  `secret_locators_json` mediumtext,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`connection_id`,`revision`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -273,11 +273,11 @@ CREATE TABLE `deployment_revisions` (
   `revision` bigint NOT NULL,
   `parent_revision` bigint DEFAULT NULL,
   `manifest_digest` varchar(128) NOT NULL,
-  `manifest_json` text NOT NULL,
+  `manifest_json` mediumtext NOT NULL,
   `principal` varchar(128) NOT NULL,
-  `reason` text NOT NULL,
+  `reason` mediumtext NOT NULL,
   `members_compacted` tinyint(1) NOT NULL DEFAULT '0',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`revision`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -295,7 +295,7 @@ CREATE TABLE `deployment_head` (
   `singleton_id` bigint NOT NULL,
   `head_revision` bigint NOT NULL,
   `epoch` bigint NOT NULL,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`singleton_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -305,7 +305,7 @@ CREATE TABLE `deployment_operations` (
   `request_hash` varchar(128) NOT NULL,
   `committed_revision` bigint NOT NULL,
   `manifest_digest` varchar(128) NOT NULL,
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   `operation_id` varchar(128) DEFAULT NULL,
   `epoch` bigint DEFAULT NULL,
   `receiving_node_id` varchar(255) DEFAULT NULL,
@@ -319,9 +319,9 @@ CREATE TABLE `runtime_nodes` (
   `applied_revision` bigint NOT NULL,
   `applied_manifest_digest` varchar(128) DEFAULT NULL,
   `configuration_degraded` tinyint(1) NOT NULL DEFAULT '0',
-  `retained_revisions_json` text NOT NULL,
-  `security_lease_until` datetime NOT NULL,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `retained_revisions_json` mediumtext NOT NULL,
+  `security_lease_until` datetime(6) NOT NULL,
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`node_id`),
   KEY `idx_runtime_nodes_security_lease` (`security_lease_until`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -337,8 +337,8 @@ CREATE TABLE `source_claims` (
   `revision` bigint NOT NULL,
   `checkpoint_namespace` varchar(128) NOT NULL,
   `fence_token` bigint NOT NULL,
-  `lease_until` datetime NOT NULL,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `lease_until` datetime(6) NOT NULL,
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`channel_id`,`partition_id`),
   KEY `idx_source_claims_lease_until` (`lease_until`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -349,7 +349,7 @@ CREATE TABLE `source_checkpoints` (
   `checkpoint_namespace` varchar(128) NOT NULL,
   `fence_token` bigint NOT NULL,
   `contiguous_offset` bigint NOT NULL,
-  `cursor_json` text NOT NULL,
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `cursor_json` mediumtext NOT NULL,
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`channel_id`,`partition_id`,`checkpoint_namespace`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

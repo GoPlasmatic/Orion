@@ -260,12 +260,7 @@ async fn a_registered_driver_that_registers_routes_is_routed() {
             "graphql"
         }
         fn capabilities(&self) -> ChannelDriverCapabilities {
-            ChannelDriverCapabilities {
-                supports_sync: true,
-                supports_async: false,
-                registers_http_routes: true,
-                supports_oauth2_login: false,
-            }
+            ChannelDriverCapabilities::none().sync().http_routes()
         }
         fn validate_fields(&self, _: &ChannelProtocolFields<'_>) -> Vec<crate::errors::FieldError> {
             Vec::new()

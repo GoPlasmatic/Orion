@@ -53,7 +53,7 @@
 # environment = "development"
 
 [server]
-# host = "0.0.0.0"
+# host = "127.0.0.1"
 # port = 8080
 # shutdown_drain_secs = 30           # Grace period for in-flight requests on SIGTERM/SIGINT
 # shutdown_force_timeout_secs = 30   # Hard cap on waiting after the drain window; 0 = wait forever

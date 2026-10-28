@@ -1,4 +1,5 @@
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::{Extension, Json};
 
 use crate::admin_auth::AdminPrincipal;
@@ -34,7 +35,7 @@ fn reject_in_cluster_mode(state: &AppState) -> Result<(), OrionError> {
     path = "/api/v2/admin/backups",
     tag = "Backups",
     responses(
-        (status = 200, description = "Backup created (SQLite only — VACUUM INTO a timestamped file)", body = Data<BackupFileResponse>),
+        (status = 201, description = "Backup created (SQLite only — VACUUM INTO a timestamped file)", body = Data<BackupFileResponse>),
         (status = 400, description = "Backup unavailable (non-SQLite backend, or cluster mode — use managed-DB snapshots/PITR)"),
     )
 )]
@@ -42,7 +43,7 @@ fn reject_in_cluster_mode(state: &AppState) -> Result<(), OrionError> {
 pub(crate) async fn create_backup(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-) -> Result<Json<Data<BackupFileResponse>>, OrionError> {
+) -> Result<(StatusCode, Json<Data<BackupFileResponse>>), OrionError> {
     reject_in_cluster_mode(&state)?;
     let backup_dir = state.config.storage.backup_dir.clone();
 
@@ -126,12 +127,15 @@ pub(crate) async fn create_backup(
         &filename,
     );
 
-    Ok(data_response(BackupFileResponse {
-        filename,
-        path: backup_path_str,
-        size_bytes: metadata.len(),
-        created_at: chrono::Utc::now().to_rfc3339(),
-    }))
+    Ok((
+        StatusCode::CREATED,
+        data_response(BackupFileResponse {
+            filename,
+            path: backup_path_str,
+            size_bytes: metadata.len(),
+            created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
+        }),
+    ))
 }
 
 /// A backup destination in `dir` that does not already exist, and its
@@ -292,7 +296,7 @@ pub(crate) async fn list_backups(
                         .ok()
                         .map(|t| {
                             let dt: chrono::DateTime<chrono::Utc> = t.into();
-                            dt.to_rfc3339()
+                            dt.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
                         })
                         .unwrap_or_default();
                     backups.push(BackupListItemResponse {
@@ -302,7 +306,7 @@ pub(crate) async fn list_backups(
                             .to_string_lossy()
                             .into_owned(),
                         size_bytes: meta.len(),
-                        modified_at: modified,
+                        created_at: modified,
                     });
                 }
             }

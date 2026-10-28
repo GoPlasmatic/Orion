@@ -50,6 +50,7 @@ mod provider;
 
 pub use admission::{
     AdmissionRejection, AdmissionVerdict, EditionTier, PackageAdmissionRequest, PackageVerifier,
+    admission_codes,
 };
 pub use attempt::{AttemptContext, AttemptScope};
 pub use channel::{ChannelDriver, ChannelDriverCapabilities, ChannelProtocolFields};
@@ -65,6 +66,7 @@ pub use identity::{
 pub use pool::{ConnectionPoolCache, PoolEntry};
 pub use provider::{
     ProviderBackend, SourceBatchItem, SourceConnectorFacet, SourcePollBatch, SourceSettlement,
+    ValidateContext,
 };
 
 /// The wire types a contract shares with `orion-api`. The vocabularies

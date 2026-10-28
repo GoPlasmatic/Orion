@@ -109,6 +109,10 @@ USER 10001:10001
 # on the same volume as the main database file.
 VOLUME /app/data
 
+# A container is reached from outside its own loopback, so the image listens on
+# every interface; the server's own default is 127.0.0.1.
+ENV ORION_SERVER__HOST=0.0.0.0
+
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

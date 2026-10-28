@@ -137,5 +137,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Serve, with Community's composition: the channel drivers, connector
     // providers and package verifier this edition ships.
-    orion::run(config, orion::extensions::CompositionRoot::community()).await
+    orion::run(config, orion::extensions::CompositionRoot::community())
+        .await
+        .map_err(Into::into)
 }

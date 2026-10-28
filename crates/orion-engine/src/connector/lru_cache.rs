@@ -13,6 +13,7 @@
 //! the smallest. Every critical section is synchronous — no `.await` while
 //! the map is locked — so a plain mutex serves.
 
+use orion_common::sync::LockExt;
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -248,7 +249,7 @@ impl<V: Clone> LruCache<V> {
         // one flight mutex while unrelated connectors proceed independently.
         let owned_key = key.into_owned();
         let flight = {
-            let mut flights = self.flights.lock().expect("flights lock");
+            let mut flights = self.flights.lock_unpoisoned();
             flights
                 .entry(owned_key.clone())
                 .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))

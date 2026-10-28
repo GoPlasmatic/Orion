@@ -125,7 +125,7 @@ pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
     // rollback and revocation moves the head or the epoch. The whole store
     // is re-read only when it did.
     if let Err(e) = state.deployments.catch_up(&state.db_pool).await {
-        if !state.reconciler.is_security_lease_valid(now_ms) {
+        if !state.reconciler.is_security_lease_current() {
             state
                 .composition
                 .admission()
@@ -142,7 +142,9 @@ pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
 
     state.reconciler.renew_security_lease(
         now_ms,
-        crate::extensions::reconciler::DEFAULT_SECURITY_LEASE_MS,
+        crate::extensions::reconciler::security_lease_ms(
+            state.config.cluster.epoch_poll_interval_ms,
+        ),
     );
     state.composition.admission().ledger().set_lease_valid(true);
 

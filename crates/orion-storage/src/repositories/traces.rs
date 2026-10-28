@@ -495,7 +495,7 @@ impl TraceSink for SqlTraceRepository {
         access_token_hash: Option<&str>,
     ) -> Result<Trace, OrionError> {
         orion_common::metrics::timed_db_op("traces.create_pending", async {
-            let id = uuid::Uuid::new_v4().to_string();
+            let id = uuid::Uuid::now_v7().to_string();
 
             let input_val = super::helpers::optional_string_value(input_json);
             let channel_id_val = super::helpers::optional_string_value(channel_id);
@@ -601,7 +601,7 @@ impl TraceSink for SqlTraceRepository {
 
     async fn store_completed(&self, row: TraceCompletedRef<'_>) -> Result<String, OrionError> {
         orion_common::metrics::timed_db_op("traces.store_completed", async {
-            let id = uuid::Uuid::new_v4().to_string();
+            let id = uuid::Uuid::now_v7().to_string();
             let now = chrono::Utc::now().naive_utc();
 
             let (sql, values) = build_sqlx(
@@ -634,7 +634,7 @@ impl TraceSink for SqlTraceRepository {
                 .into_table(Traces::Table)
                 .columns(completed_columns());
             for row in rows {
-                let id = uuid::Uuid::new_v4().to_string();
+                let id = uuid::Uuid::now_v7().to_string();
                 insert.values_panic(completed_values(row.as_view(), &id, now));
                 ids.push(id);
             }

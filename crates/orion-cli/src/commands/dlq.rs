@@ -182,15 +182,9 @@ async fn get(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &str)
         entry["error_message"].as_str().unwrap_or("").red()
     );
 
-    if let Some(payload) = entry.get("payload_json").filter(|p| !p.is_null()) {
-        let parsed = match payload.as_str() {
-            Some(s) => serde_json::from_str::<Value>(s).ok(),
-            None => Some(payload.clone()),
-        };
-        if let Some(parsed) = parsed {
-            println!("\n{}", "Payload:".bold());
-            println!("{}", serde_json::to_string_pretty(&parsed)?);
-        }
+    if let Some(payload) = entry.get("payload").filter(|p| !p.is_null()) {
+        println!("\n{}", "Payload:".bold());
+        println!("{}", serde_json::to_string_pretty(payload)?);
     }
 
     Ok(0)

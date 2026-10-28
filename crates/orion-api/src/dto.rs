@@ -18,11 +18,10 @@
 //! added in a 1.x minor would be a hard parse error in every older client —
 //! which is exactly the skew this crate exists to absorb.
 //!
-//! Timestamps are `NaiveDateTime` and serialize in chrono's default form
-//! (`2026-01-01T00:00:00`) — UTC with no zone designator. That is deliberate
-//! and pinned by `row_dto_wire_shape_test`, so the fields are published as a
-//! plain `string`: claiming `format: date-time` would promise a zone the wire
-//! does not carry, and generated clients would fail to parse it.
+//! Timestamps are held as `NaiveDateTime` (every stored instant is UTC) and
+//! serialize as RFC 3339 with a `Z` (`2026-01-01T00:00:00Z`) through
+//! [`crate::time`], pinned by `row_dto_wire_shape_test`. Reading also accepts
+//! the zone-less form older servers sent.
 
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
@@ -40,12 +39,14 @@ pub struct TraceDlqEntryResponse {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub channel: String,
+    /// The failed message, as the JSON document it was.
     #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub payload_json: String,
+    #[cfg_attr(feature = "utoipa", schema(required, value_type = Object))]
+    pub payload: serde_json::Value,
+    /// The submission's metadata, as a JSON document.
     #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub metadata_json: String,
+    #[cfg_attr(feature = "utoipa", schema(required, value_type = Object))]
+    pub metadata: serde_json::Value,
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub error_message: String,
@@ -55,13 +56,13 @@ pub struct TraceDlqEntryResponse {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub max_retries: i64,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339")]
     #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
     pub next_retry_at: NaiveDateTime,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339")]
     #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
     pub created_at: NaiveDateTime,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339")]
     #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
     pub updated_at: NaiveDateTime,
 }
@@ -91,13 +92,13 @@ pub struct TraceDlqSummaryResponse {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub max_retries: i64,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339")]
     #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
     pub next_retry_at: NaiveDateTime,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339")]
     #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
     pub created_at: NaiveDateTime,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339")]
     #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
     pub updated_at: NaiveDateTime,
 }
@@ -128,7 +129,7 @@ pub struct CronOccurrenceSummaryResponse {
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub trigger: String,
     /// The immutable UTC instant this occurrence was due.
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339")]
     #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
     pub scheduled_for: NaiveDateTime,
     /// `pending`, `claimed`, `running`, `completed`, `failed`,
@@ -140,11 +141,11 @@ pub struct CronOccurrenceSummaryResponse {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub attempt: i64,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339_opt")]
     pub started_at: Option<NaiveDateTime>,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339_opt")]
     pub completed_at: Option<NaiveDateTime>,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339")]
     #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
     pub created_at: NaiveDateTime,
 }
@@ -181,7 +182,7 @@ pub struct CronOccurrenceResponse {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub trigger: String,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339")]
     #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
     pub scheduled_for: NaiveDateTime,
     #[serde(default)]
@@ -194,7 +195,7 @@ pub struct CronOccurrenceResponse {
     /// an attempt is in flight.
     #[serde(default)]
     pub claimed_by: Option<String>,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339_opt")]
     pub claimed_until: Option<NaiveDateTime>,
     #[serde(default)]
     pub singleton_key: Option<String>,
@@ -217,14 +218,14 @@ pub struct CronOccurrenceResponse {
     pub trace_id: Option<String>,
     #[serde(default)]
     pub error_message: Option<String>,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339_opt")]
     pub started_at: Option<NaiveDateTime>,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339_opt")]
     pub completed_at: Option<NaiveDateTime>,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339")]
     #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
     pub created_at: NaiveDateTime,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339")]
     #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
     pub updated_at: NaiveDateTime,
 }
@@ -256,19 +257,19 @@ pub struct CronScheduleStatusResponse {
     /// The next UTC instant this schedule will materialise. `null` when the
     /// reconciler has not yet seen the channel — it appears within one poll
     /// interval of activation.
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339_opt")]
     pub next_fire_at: Option<NaiveDateTime>,
     /// Set when the channel has left the active set. Its history is kept; it
     /// simply stops producing occurrences.
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339_opt")]
     pub paused_at: Option<NaiveDateTime>,
     /// The most recent occurrence's status and instant, so one read answers
     /// "is this schedule healthy?".
     #[serde(default)]
     pub last_status: Option<String>,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339_opt")]
     pub last_scheduled_for: Option<NaiveDateTime>,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339_opt")]
     pub last_completed_at: Option<NaiveDateTime>,
     /// Occurrences waiting for a worker. A number that only grows is the signal
     /// that this schedule is producing work faster than the instance runs it.
@@ -329,16 +330,16 @@ pub struct TraceListItemResponse {
     pub error_message: Option<String>,
     #[serde(default)]
     pub duration_ms: Option<f64>,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339_opt")]
     #[cfg_attr(feature = "utoipa", schema(value_type = String))]
     pub started_at: Option<NaiveDateTime>,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339_opt")]
     #[cfg_attr(feature = "utoipa", schema(value_type = String))]
     pub completed_at: Option<NaiveDateTime>,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339")]
     #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
     pub created_at: NaiveDateTime,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339")]
     #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
     pub updated_at: NaiveDateTime,
 }
@@ -364,7 +365,7 @@ pub struct AuditLogEntryResponse {
     pub resource_id: String,
     #[serde(default)]
     pub details: Option<String>,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339")]
     #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
     pub created_at: NaiveDateTime,
 }
@@ -442,6 +443,7 @@ pub struct BackupFileResponse {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub size_bytes: u64,
+    /// RFC 3339, UTC.
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub created_at: String,
@@ -449,7 +451,7 @@ pub struct BackupFileResponse {
 
 /// One row of `GET /api/v2/admin/backups`. Deliberately not
 /// [`BackupFileResponse`]: the listing reads `mtime` off the directory entry
-/// and has no `path`.
+/// and so carries the file's modification time as `created_at`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct BackupListItemResponse {
@@ -459,9 +461,11 @@ pub struct BackupListItemResponse {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub size_bytes: u64,
+    /// RFC 3339, UTC: when the file was last written, which for a backup is when
+    /// it was made.
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
-    pub modified_at: String,
+    pub created_at: String,
 }
 
 /// `GET /api/v2/admin/traces/{id}` — the list row plus the payloads.
@@ -482,7 +486,7 @@ pub struct TraceDetailResponse {
     pub channel: String,
     #[serde(default)]
     pub channel_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, with = "crate::time::rfc3339")]
     #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
     pub created_at: NaiveDateTime,
     /// The full engine message. Present only when `status = "completed"`.
@@ -600,8 +604,7 @@ pub struct HealthResponse {
 mod tests {
     use super::*;
 
-    /// The datetime wire format is chrono's NaiveDateTime serde default —
-    /// `2025-01-01T00:00:00` — which is what the server has always sent.
+    /// The zone-less form older servers sent still parses.
     #[test]
     fn datetimes_parse_the_server_wire_format() {
         let entry: AuditLogEntryResponse = serde_json::from_str(

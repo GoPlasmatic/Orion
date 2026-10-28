@@ -104,7 +104,7 @@ async fn test_create_backup() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::CREATED);
     let body = body_json(resp).await;
     let data = &body["data"];
 
@@ -156,7 +156,7 @@ async fn test_list_backups() {
         .oneshot(json_request("POST", "/api/v2/admin/backups", None))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::CREATED);
 
     // Small delay so the second backup gets a different timestamp in its filename
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -167,7 +167,7 @@ async fn test_list_backups() {
         .oneshot(json_request("POST", "/api/v2/admin/backups", None))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::CREATED);
 
     // List backups
     let resp = app
@@ -195,7 +195,7 @@ async fn test_list_backups() {
     for backup in backups {
         assert!(backup["filename"].as_str().is_some());
         assert!(backup["size_bytes"].as_u64().is_some());
-        assert!(backup["modified_at"].as_str().is_some());
+        assert!(backup["created_at"].as_str().is_some());
     }
 }
 
@@ -226,7 +226,7 @@ async fn test_backup_retention_prunes_oldest_backups() {
         .oneshot(json_request("POST", "/api/v2/admin/backups", None))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::CREATED);
     let body = body_json(resp).await;
     let new_backup = body["data"]["filename"]
         .as_str()
@@ -295,7 +295,7 @@ async fn test_backup_contains_data() {
         .oneshot(json_request("POST", "/api/v2/admin/backups", None))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::CREATED);
     let body = body_json(resp).await;
     let data = &body["data"];
 
@@ -368,7 +368,7 @@ async fn concurrent_backups_all_succeed_with_distinct_files() {
         let (status, body) = request.await.unwrap();
         assert_eq!(
             status,
-            StatusCode::OK,
+            StatusCode::CREATED,
             "every concurrent backup must succeed, got {status}: {body}"
         );
         let filename = body["data"]["filename"]
@@ -419,7 +419,7 @@ async fn concurrent_backups_respect_the_retention_count() {
         }));
     }
     for request in requests {
-        assert_eq!(request.await.unwrap(), StatusCode::OK);
+        assert_eq!(request.await.unwrap(), StatusCode::CREATED);
     }
 
     let remaining: Vec<String> = std::fs::read_dir(&backup_dir)

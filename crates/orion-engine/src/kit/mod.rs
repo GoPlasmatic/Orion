@@ -457,8 +457,8 @@ impl ConnectorCallHost for NoProviders {
         _kind: orion_extension_api::ImplementationKind,
         _target: &str,
         _operation: &str,
-    ) -> &'static [&'static str] {
-        &[]
+    ) -> Vec<String> {
+        Vec::new()
     }
 
     async fn invoke(

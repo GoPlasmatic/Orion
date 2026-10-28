@@ -17,6 +17,7 @@ mod rules;
 mod sql;
 mod writes;
 
+use orion_common::sync::RwLockExt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -614,15 +615,15 @@ impl ImmutableDeploymentStore {
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, catalog::Catalog> {
-        self.catalog.read().expect("catalog lock")
+        self.catalog.read_unpoisoned()
     }
 
     pub fn node_id(&self) -> String {
-        self.node_id.read().expect("node id lock").clone()
+        self.node_id.read_unpoisoned().clone()
     }
 
     pub fn set_node_id(&self, node_id: impl Into<String>) {
-        *self.node_id.write().expect("node id lock") = node_id.into();
+        *self.node_id.write_unpoisoned() = node_id.into();
     }
 
     /// `(head_revision, epoch)` as the catalog last read them.

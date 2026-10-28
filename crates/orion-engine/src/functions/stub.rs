@@ -36,6 +36,7 @@
 //! plugin function always runs for real too — its component is loaded from a
 //! `--plugin-dir` — and is refused by name when the component is absent.
 
+use orion_common::sync::LockExt;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -98,7 +99,7 @@ impl CallLog {
         stub_target: Option<String>,
         input: Value,
     ) {
-        let mut calls = self.0.lock().expect("call log mutex poisoned");
+        let mut calls = self.0.lock_unpoisoned();
         let seq = calls.len();
         calls.push(RecordedCall {
             seq,
@@ -111,7 +112,7 @@ impl CallLog {
 
     /// Every recorded call, in execution order.
     pub fn calls(&self) -> Vec<RecordedCall> {
-        self.0.lock().expect("call log mutex poisoned").clone()
+        self.0.lock_unpoisoned().clone()
     }
 
     /// The log grouped by function name, in execution order within each group —
@@ -119,7 +120,7 @@ impl CallLog {
     /// block both read.
     pub fn grouped(&self) -> serde_json::Map<String, Value> {
         let mut grouped: serde_json::Map<String, Value> = serde_json::Map::new();
-        for call in self.0.lock().expect("call log mutex poisoned").iter() {
+        for call in self.0.lock_unpoisoned().iter() {
             let entry = grouped
                 .entry(call.function.to_string())
                 .or_insert_with(|| Value::Array(Vec::new()));

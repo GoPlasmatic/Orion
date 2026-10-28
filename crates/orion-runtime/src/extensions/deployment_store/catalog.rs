@@ -23,6 +23,7 @@
 //! on its next refresh; what this node commits is judged against the
 //! database, never against the catalog.
 
+use orion_common::sync::RwLockExt;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -189,7 +190,7 @@ impl ImmutableDeploymentStore {
         manifest: &super::CanonicalManifest,
     ) -> Result<(), DeploymentError> {
         let missing = {
-            let c = self.catalog.read().expect("catalog lock");
+            let c = self.catalog.read_unpoisoned();
             manifest.providers.iter().any(|p| {
                 !c.packages.contains_key(&p.digest) || !c.admissions.contains_key(&p.digest)
             }) || manifest.members.iter().any(|m| {
@@ -209,7 +210,7 @@ impl ImmutableDeploymentStore {
     /// lock.
     pub(super) async fn refresh_locked(&self, pool: &DbPool) -> Result<(), DeploymentError> {
         let (through, known_packages, known_connections) = {
-            let c = self.catalog.read().expect("catalog lock");
+            let c = self.catalog.read_unpoisoned();
             let packages: BTreeSet<String> = c
                 .packages
                 .keys()
@@ -283,7 +284,7 @@ impl ImmutableDeploymentStore {
     }
 
     fn apply_delta(&self, delta: Delta) -> Result<(), DeploymentError> {
-        let mut c = self.catalog.write().expect("catalog lock");
+        let mut c = self.catalog.write_unpoisoned();
         let (head_revision, _) = delta.head;
         if head_revision > 0
             && !c.revisions.contains_key(&head_revision)

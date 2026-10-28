@@ -203,12 +203,7 @@ mod tests {
         }
 
         fn capabilities(&self) -> orion_extension_api::ChannelDriverCapabilities {
-            orion_extension_api::ChannelDriverCapabilities {
-                supports_sync: false,
-                supports_async: true,
-                registers_http_routes: false,
-                supports_oauth2_login: false,
-            }
+            orion_extension_api::ChannelDriverCapabilities::none().async_submit()
         }
 
         fn validate_fields(

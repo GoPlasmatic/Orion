@@ -54,7 +54,7 @@ pub trait ConnectorCallHost: Send + Sync {
         kind: ImplementationKind,
         target: &str,
         operation: &str,
-    ) -> &'static [&'static str];
+    ) -> Vec<String>;
 
     /// Run the call: authority, the connection's deployed revision, its
     /// provider, and the dispatch.
@@ -147,11 +147,16 @@ impl Function for ConnectorCallFunction {
             .host
             .literal_input_keys(kind, target, &cfg.operation)
             .iter()
-            .filter(|key| input.raw().get(**key).is_some_and(|v| !v.is_string()))
+            .filter(|key| {
+                input
+                    .raw()
+                    .get(key.as_str())
+                    .is_some_and(|v| !v.is_string())
+            })
             .map(|key| {
                 let mut at = AuthoredPath::root();
                 at.push("input");
-                at.push(*key);
+                at.push(key.as_str());
                 Issue::new(
                     IssueCode::InputParse,
                     at,

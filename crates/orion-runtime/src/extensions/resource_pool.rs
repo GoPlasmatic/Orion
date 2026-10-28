@@ -182,7 +182,32 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
                     && k.connection_id == identity.connection_id
                     && k.revision < min_rev)
             });
+            // An explicit fence below the new minimum is redundant: `is_fenced`
+            // already refuses every revision under it. Keeping them would grow
+            // the set by one entry per rotation, forever.
+            guard.invalidated.retain(|k| {
+                !(k.provider_digest == identity.provider_digest
+                    && k.connection_id == identity.connection_id
+                    && k.revision < min_rev)
+            });
         }
+        Self::retire_idle_capacity(&mut guard);
+    }
+
+    /// Drop the capacity semaphore of every connection that has no outstanding
+    /// permit and no cached session. A permit holds a clone of the `Arc`, so a
+    /// count of one means only this map refers to it; the next acquire recreates
+    /// it at full capacity, which is what an idle connection has anyway.
+    fn retire_idle_capacity(state: &mut SessionPoolState<S>) {
+        let SessionPoolState {
+            capacity, sessions, ..
+        } = state;
+        capacity.retain(|(digest, connection), semaphore| {
+            Arc::strong_count(semaphore) > 1
+                || sessions
+                    .keys()
+                    .any(|k| &k.provider_digest == digest && &k.connection_id == connection)
+        });
     }
 
     fn is_fenced(state: &SessionPoolState<S>, identity: &EffectiveConnectionIdentity) -> bool {
@@ -299,6 +324,13 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
     pub fn cached_count(&self) -> usize {
         self.state.lock().map(|g| g.sessions.len()).unwrap_or(0)
     }
+
+    /// Entries held by the fencing and capacity tables, `(fences, capacities)`.
+    /// Exposed so growth is observable and testable.
+    pub fn bookkeeping_len(&self) -> (usize, usize) {
+        let guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        (guard.invalidated.len(), guard.capacity.len())
+    }
 }
 
 #[async_trait]
@@ -338,6 +370,49 @@ mod tests {
             revision: Revision::new(revision).expect("a revision"),
             secret_hash: secret_hash.to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn rotation_does_not_grow_the_fence_or_capacity_tables() {
+        let pool = VersionedSessionPool::<String>::new("org.orion.postgresql", 2);
+        for revision in 1..=50 {
+            let id = sample_id(revision, "sha256:s");
+            let handle = pool
+                .acquire(&id, || async { Ok(format!("s{revision}")) })
+                .await
+                .expect("acquired");
+            drop(handle);
+            // Each rotation fences the previous revision and moves the minimum.
+            pool.invalidate(&id, Revision::new(revision + 1));
+        }
+        let (fences, capacities) = pool.bookkeeping_len();
+        assert!(fences <= 1, "fences grew to {fences}");
+        assert_eq!(capacities, 0, "idle capacity must be retired");
+        assert_eq!(pool.cached_count(), 0);
+
+        // A retired semaphore is recreated at full capacity.
+        let id = sample_id(51, "sha256:s");
+        pool.acquire(&id, || async { Ok("again".to_string()) })
+            .await
+            .expect("acquires after retirement");
+    }
+
+    #[tokio::test]
+    async fn capacity_in_use_is_not_retired() {
+        let pool = VersionedSessionPool::<String>::new("org.orion.postgresql", 1);
+        let id = sample_id(1, "sha256:s");
+        let held = pool
+            .acquire(&id, || async { Ok("s".to_string()) })
+            .await
+            .expect("acquired");
+        pool.invalidate(&sample_id(1, "sha256:other"), None);
+        assert_eq!(pool.bookkeeping_len().1, 1);
+        let err = pool
+            .acquire(&id, || async { Ok("t".to_string()) })
+            .await
+            .expect_err("the single permit is still held");
+        assert_eq!(err.code, crate::extensions::codes::BUDGET_EXHAUSTED);
+        drop(held);
     }
 
     #[tokio::test]

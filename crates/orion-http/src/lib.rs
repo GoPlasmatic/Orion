@@ -362,6 +362,37 @@ pub async fn shutdown_signal() {
     }
 
     tracing::info!("Shutdown signal received, starting graceful shutdown");
+    force_exit_on_second_signal();
+}
+
+/// A second Ctrl-C / SIGTERM during a graceful shutdown ends the process at
+/// once, so an operator is never stuck behind a drain that will not finish.
+/// Armed once however many listeners call [`shutdown_signal`].
+fn force_exit_on_second_signal() {
+    static ARMED: std::sync::Once = std::sync::Once::new();
+    ARMED.call_once(|| {
+        tokio::spawn(async {
+            let ctrl_c = async {
+                let _ = tokio::signal::ctrl_c().await;
+            };
+            #[cfg(unix)]
+            let terminate = async {
+                if let Ok(mut signal) =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                {
+                    signal.recv().await;
+                }
+            };
+            #[cfg(not(unix))]
+            let terminate = std::future::pending::<()>();
+            tokio::select! {
+                _ = ctrl_c => {},
+                _ = terminate => {},
+            }
+            tracing::warn!("Second shutdown signal received, exiting immediately");
+            std::process::exit(130);
+        });
+    });
 }
 
 /// Extract a query-free URI path for HTTP request tracing spans (`TD-11`).

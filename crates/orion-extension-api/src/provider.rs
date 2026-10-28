@@ -15,10 +15,11 @@ use serde_json::Value;
 
 use crate::attempt::AttemptContext;
 use crate::contract::{ConnectorError, ConnectorOutput, ImplementationKind};
-use crate::identity::EffectiveConnectionIdentity;
+use crate::identity::{EffectiveConnectionIdentity, Revision};
 
 /// Source batch item emitted by [`SourceConnectorFacet::poll`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SourceBatchItem {
     pub delivery_id: String,
     pub payload: Value,
@@ -26,17 +27,44 @@ pub struct SourceBatchItem {
     pub metadata: BTreeMap<String, Value>,
 }
 
+impl SourceBatchItem {
+    pub fn new(delivery_id: impl Into<String>, payload: Value) -> Self {
+        Self {
+            delivery_id: delivery_id.into(),
+            payload,
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: BTreeMap<String, Value>) -> Self {
+        self.metadata = metadata;
+        self
+    }
+}
+
 /// Source poll batch returned by [`SourceConnectorFacet::poll`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SourcePollBatch {
     pub items: Vec<SourceBatchItem>,
     pub next_checkpoint: Option<Value>,
+}
+
+impl SourcePollBatch {
+    pub fn new(items: Vec<SourceBatchItem>, next_checkpoint: Option<Value>) -> Self {
+        Self {
+            items,
+            next_checkpoint,
+        }
+    }
 }
 
 /// Settlement disposition reported by the native Rust `source` channel runner
 /// back to [`SourceConnectorFacet::settle`] after workflow execution completes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SourceSettlement {
     Ack,
     NackRetryable,
@@ -75,6 +103,47 @@ pub trait SourceConnectorFacet: Send + Sync {
     async fn close(&self, ctx: &AttemptContext, cursor: Value) -> Result<(), ConnectorError>;
 }
 
+/// What a provider is asked to validate: a connection's configuration and,
+/// when it belongs to a stored connection, which one.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct ValidateContext<'a> {
+    config: &'a Value,
+    connection_id: Option<&'a str>,
+    revision: Option<Revision>,
+}
+
+impl<'a> ValidateContext<'a> {
+    /// A bare configuration, not yet tied to a connection.
+    pub fn new(config: &'a Value) -> Self {
+        Self {
+            config,
+            connection_id: None,
+            revision: None,
+        }
+    }
+
+    /// Tie the configuration to a connection revision.
+    #[must_use]
+    pub fn for_connection(mut self, connection_id: &'a str, revision: Revision) -> Self {
+        self.connection_id = Some(connection_id);
+        self.revision = Some(revision);
+        self
+    }
+
+    pub fn config(&self) -> &'a Value {
+        self.config
+    }
+
+    pub fn connection_id(&self) -> Option<&'a str> {
+        self.connection_id
+    }
+
+    pub fn revision(&self) -> Option<Revision> {
+        self.revision
+    }
+}
+
 /// Unified connector provider backend trait.
 ///
 /// External Community and Enterprise providers register implementations of this
@@ -92,6 +161,14 @@ pub trait ProviderBackend: Send + Sync {
 
     /// Validate resolved connection configuration against provider-specific invariants.
     fn validate_config(&self, config: &Value) -> Result<(), ConnectorError>;
+
+    /// Validate a connection's configuration with the connection around it.
+    /// The host calls this one; the default defers to
+    /// [`validate_config`](Self::validate_config), so a provider that needs the
+    /// connection's identity or revision overrides it instead.
+    fn validate_connection(&self, ctx: &ValidateContext<'_>) -> Result<(), ConnectorError> {
+        self.validate_config(ctx.config())
+    }
 
     /// Execute one attempt of `operation` with validated `input`.
     async fn invoke(
@@ -116,8 +193,8 @@ pub trait ProviderBackend: Send + Sync {
     /// `connector_call` refuses a task whose `input` builds one from the
     /// message, at load. A SQL provider names its statement keys, so a
     /// caller's values reach the database only as bind parameters.
-    fn literal_input_keys(&self, _operation: &str) -> &'static [&'static str] {
-        &[]
+    fn literal_input_keys(&self, _operation: &str) -> Vec<String> {
+        Vec::new()
     }
 
     /// Return the optional [`SourceConnectorFacet`] if this provider supports
