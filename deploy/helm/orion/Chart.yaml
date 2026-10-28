@@ -5,8 +5,8 @@ description: >-
   against one shared Postgres/MySQL, with a pre-upgrade migration Job,
   graceful rolling deploys, HPA, and PDB.
 type: application
-version: 1.0.0
-appVersion: "1.0.0"
+version: 2.0.0-rc.1
+appVersion: "2.0.0-rc.1"
 home: https://goplasmatic.io/orion
 sources:
   - https://github.com/GoPlasmatic/Orion

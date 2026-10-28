@@ -1,10 +1,10 @@
-<!-- description: What supported means for Orion 1.x: which versions receive fixes, what an upgrade guarantees, and which toolchains, databases and platforms are tested. -->
+<!-- description: What supported means for Orion 2.x: which versions receive fixes, what an upgrade guarantees, and which toolchains, databases and platforms are tested. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-14 -->
 
 # Versioning and support policy
 
-What "supported" means for Orion 1.x. Which versions receive fixes, what an upgrade guarantees, and which toolchains, databases and platforms each release is tested against.
+What "supported" means for Orion 2.x. Which versions receive fixes, what an upgrade guarantees, and which toolchains, databases and platforms each release is tested against.
 
 ## Supported versions
 
@@ -14,8 +14,9 @@ This is a deliberate consequence of how Orion ships: a single binary with embedd
 
 | Version            | Status                                     |
 |--------------------|--------------------------------------------|
-| Latest 1.x release | Supported — receives all fixes             |
-| Older 1.x releases | Upgrade to the latest release for fixes    |
+| Latest 2.x release | Supported — receives all fixes             |
+| Older 2.x releases | Upgrade to the latest release for fixes    |
+| 1.x releases       | Not back-patched — [upgrade to 2.x](./upgrade-to-2.0.md); there is no in-place path, so plan the move |
 | 0.x releases       | End of life                                |
 
 Security vulnerabilities should be reported privately. See the [security policy](https://github.com/GoPlasmatic/Orion/blob/main/SECURITY.md).
@@ -24,54 +25,52 @@ Security vulnerabilities should be reported privately. See the [security policy]
 
 Orion follows [semantic versioning](https://semver.org):
 
-- **Patch** (`1.0.x`) — bug and security fixes. No config, API, or database
+- **Patch** (`2.0.x`) — bug and security fixes. No config, API, or database
   schema changes beyond what the fix requires; always safe to roll forward.
-- **Minor** (`1.x.0`) — new capabilities, new configuration keys (with
+- **Minor** (`2.x.0`) — new capabilities, new configuration keys (with
   defaults that preserve existing behaviour), additive database migrations,
   and possibly an MSRV bump (see [Rust toolchain](#rust-toolchain-and-the-msrv)).
-- **Major** (`2.0.0`) — reserved for breaking changes to the Admin/Data APIs,
-  configuration semantics, or workflow/channel definitions.
+- **Major** (`3.0.0`) — reserved for breaking changes to the Admin/Data APIs,
+  configuration semantics, or workflow/channel definitions. A major release
+  may start the state database over, as 2.0.0 did; there is no promise of an
+  in-place upgrade between majors.
 
-The versioned API prefix (`/api/v2/`) is independent of the crate version: `v1` endpoints keep their request/response contracts for the life of the 1.x line. Endpoint additions and new optional fields are not considered breaking.
+The versioned API prefix (`/api/v2/`) names the contract generation, and the crate version tracks it. `/api/v2/` endpoints keep their request and response contracts for the life of the 2.x line. Endpoint additions and new optional fields are not considered breaking.
 
-### What the 1.0 promise covers
+The v2 admin contract also reports an `api_version`, and `orion-cli` refuses a server reporting another. It moves whenever a change could make the previous client misread an answer or send a refused request, which can be inside a 2.x minor. Upgrade the server and the CLI together.
+
+### What the 2.x promise covers
 
 | Surface | Covered? |
 |---|---|
 | HTTP Admin and Data APIs under `/api/v2/` | **Yes** — the contract above |
 | Configuration keys and their semantics | **Yes** — a minor may add keys with behaviour-preserving defaults, never repurpose one |
-| Workflow, channel and connector JSON | **Yes** — a document that validates on 1.0 validates for the 1.x line |
+| Workflow, channel and connection definitions | **Yes** — a document that validates on 2.0 validates for the 2.x line |
 | Prometheus metric names and labels | **Yes** — renames wait for a major |
 | The `orion-api` / `orion-client` **Rust** APIs | **No** — see [What an upgrade guarantees](#upgrade-guarantees) |
 | The **database schema** | **No** — internal |
 
 **The client crates share the server's version.** `orion-api` and
-`orion-client` are published so `orion-cli` and third-party tools can share the server's exact wire types. Every crate in the workspace carries the same version number — `orion-api` 1.4.0 is the contract `orion-server` 1.4.0 serializes. Their *Rust* surface is still outside the support contract. A version bump is not a promise about it: pin an exact version if you build against these crates directly. What *is* promised, whichever crate version you read it with, is the **wire format** they describe — that is the HTTP contract above.
+`orion-client` are published so `orion-cli` and third-party tools can share the server's exact wire types. Every crate in the workspace carries the same version number — `orion-api` 2.1.0 is the contract `orion-server` 2.1.0 serializes. Their *Rust* surface is still outside the support contract. A version bump is not a promise about it: pin an exact version if you build against these crates directly. What *is* promised, whichever crate version you read it with, is the **wire format** they describe — that is the HTTP contract above.
 
 Releases up to and including 1.3.1 predate this rule. The two crates were versioned independently until then, and `orion-api` 1.0.4 / `orion-client` 1.0.5 are the last published under the old scheme. An existing pin on one of those keeps resolving; it no longer matches its server's number.
 
 **The database schema is internal.** Tables, views, triggers and column
-spellings may change in any minor through a migration. Read Orion's data through the HTTP API. If you query the tables directly, for dashboards, ETL or reporting, pin what you read to a specific server version. Re-check it on every upgrade: 1.0 already renamed two JSON columns, and a 1.x minor may rename more.
+spellings may change in any minor through a migration. Read Orion's data through the HTTP API. If you query the tables directly, for dashboards, ETL or reporting, pin what you read to a specific server version. Re-check it on every upgrade: a 2.x minor may rename a column.
 
 ## Deprecations
 
-**1.0.0 accepts no pre-1.0 spellings.** Where 1.0 renamed a key, the old name is refused rather than silently accepted. There is no compatibility window, and nothing is scheduled for removal in a 1.x minor. Deprecations introduced
-*after* 1.0 are announced in a minor release with the old spelling still
-working, and removed no earlier than the next major.
+**2.0.0 accepts no 1.x spellings.** Where 2.0 renamed or removed a key, the old name is refused rather than silently accepted. Nothing is scheduled for removal in a 2.x minor. Deprecations introduced *after* 2.0 are announced in a minor release with the old spelling still working, and removed no earlier than the next major.
 
-How a refused name fails differs by surface. The config file and environment give a startup error. Stored channels and workflows are refused at create or update, and quarantined at load. [Upgrade to 1.0.0](./upgrade-to-1.0/index.md) covers both, along with `orion-server preflight`, which names every affected entity before a rollout.
-
-### Accepted alternate spellings
-
-One alias exists: **`response_path`**, the pre-1.0 name of the `output` field on [`http_call`](../reference/functions/http_call.md) and [`channel_call`](../reference/functions/channel_call.md). It is not a deprecation with a removal date; supplying both spellings in one input is a duplicate-field error.
+How a refused name fails differs by surface. The config file and environment give a startup error. A definition is refused when it is uploaded and when a node loads it. [Upgrade to 2.0.0](./upgrade-to-2.0.md) lists what 2.0 refused.
 
 ## Upgrade guarantees
 
-- Each release documents its upgrade path from the previous release
-  ([Upgrading to 1.1.0](./upgrade-to-1.1.md),
-  [Upgrading to 1.0.0](./upgrade-to-1.0/index.md)). Upgrades are
+- Each release that changes behaviour documents its upgrade path from the
+  previous one ([Upgrading to 2.0.0](./upgrade-to-2.0.md)). Upgrades are
   supported **release to release**; when skipping releases, read each
-  intermediate upgrade page.
+  intermediate upgrade page. Orion 2.0.0 starts the state database over, so
+  nothing upgrades a 1.x database in place.
 - Database migrations are embedded in the binary for all three backends and
   run at boot (`storage.auto_migrate`, default `true`) or explicitly through
   `orion-server migrate`. Shipped migrations are frozen — a released
@@ -94,7 +93,7 @@ The storage backend is selected at runtime from the `storage.url` scheme. All th
 |------------|-------|
 | SQLite     | Default; embedded, zero-configuration. The reference backend. Not usable in [cluster mode](../operate/deploy/cluster.md). |
 | PostgreSQL | Supports cluster mode. Project deployment artifacts and examples use PostgreSQL 16. |
-| MySQL      | MySQL 8+; supports cluster mode. New in 1.0.0 — no 0.x MySQL deployment can exist to upgrade ([why](./upgrade-to-1.0/index.md#which-backend-were-you-actually-on)). |
+| MySQL      | MySQL 8+; supports cluster mode. |
 
 ## Platforms
 
@@ -117,7 +116,7 @@ Orion is open source under the Apache-2.0 license. "Supported" here describes wh
 
 - [Upgrades](../operate/maintain/upgrades.md): the standing procedure, and how a
   renamed key fails on each surface.
-- [Upgrading to 1.1.0](./upgrade-to-1.1.md): the per-version guide
+- [Upgrading to 2.0.0](./upgrade-to-2.0.md): the per-version guide
   for the current release.
 - [Configuration Reference](../reference/configuration/index.md): the settings this policy
   freezes.

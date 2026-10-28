@@ -22,8 +22,9 @@ in the release notes unless you prefer otherwise.
 
 | Version            | Supported                                  |
 |--------------------|--------------------------------------------|
-| Latest 1.x release | ✅ Receives all fixes, including security   |
-| Older 1.x releases | ⬆️ Upgrade to the latest release for fixes  |
+| Latest 2.x release | ✅ Receives all fixes, including security   |
+| Older 2.x releases | ⬆️ Upgrade to the latest release for fixes  |
+| 1.x releases       | ⬆️ Not back-patched; upgrade to 2.x (see the [2.0 upgrade guide](https://docs.goplasmatic.io/releases/upgrade-to-2.0.html)) |
 | 0.x releases       | ❌ End of life                              |
 
 Security fixes land on `main` and ship as a **patch release of the current

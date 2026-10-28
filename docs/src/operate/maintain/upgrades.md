@@ -33,7 +33,7 @@ Error: Configuration error: the state database at storage.url holds 1 migration(
 The count and the version list depend on how far the 1.x database was migrated. To move:
 
 1. **Keep the 1.x database.** Leave the old instance serving until the new one is proven. Nothing in Orion 2 writes to it.
-2. **Get the definitions as files.** Orion 2 reads workflows, channels and connectors only from a definition set. If yours exist only in the 1.x database, export them with the 1.x tooling while it still runs.
+2. **Get the definitions as files.** Orion 2 reads workflows, channels and connectors only from a definition set. If yours exist only in the 1.x database, read each one from the running 1.x instance's admin API (its workflow, channel and connector collections, each listable and readable by id) and save it as a file. Connectors come back with their secrets masked, so replace each credential with an `env://` or `vault://` reference. There is no import tool, and nothing in Orion 2 reads the 1.x database.
 3. **Lint and compile them with the Orion 2 binary.** `orion-cli lint ./definitions`, then `orion-cli compile ./definitions -o dist/deployment`. Every `db` connector must name its [`driver`](../../reference/connectors/db.md#the-driver-field), and a literal credential is refused. Replace it with an `env://` or `vault://` reference.
 4. **Point `storage.url` at a new, empty database.** Start Orion 2 against it. The baseline migration creates the schema.
 5. **Deploy.** `orion-cli deployments apply -d dist/deployment` commits revision 1. The node builds it and serves it.

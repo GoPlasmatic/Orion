@@ -18,7 +18,7 @@ environment = "development"
 |---|---|---|---|
 | `environment` | `"development"` | `ORION_ENVIRONMENT` | Set to `"production"` before exposing an instance to anything you care about. |
 
-Recognised values are `development`, `staging`, `test` and `production` (plus the short forms `dev`, `local`, `testing`, `stage`); any value starting with `prod` (case-insensitive) is a production environment. Any other name is refused at startup, because it would otherwise be treated as not-production and skip the checks below. A production environment turns three warnings into startup errors:
+Recognised values are `development`, `staging`, `test` and `production`, plus the short forms `dev`, `local`, `testing` and `stage`. Any value starting with `prod` (case-insensitive) is a production environment. Any other name is refused at startup, because it would otherwise be treated as not-production and skip the checks below. A production environment turns three warnings into startup errors:
 
 - **Admin auth must be enabled.** `admin_auth.enabled = false` becomes a fatal config error instead of a log line nobody reads.
 - **CORS may not be `["*"]`.** The wildcard is rejected; list explicit origins.

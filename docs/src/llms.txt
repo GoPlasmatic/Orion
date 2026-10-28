@@ -254,6 +254,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; definitions are tes
 
 - [Releases](https://docs.goplasmatic.io/releases/index.html): every 1.x release with a Breaking flag and what it added, plus the support policy and the upgrade guides
 - [Versioning and support policy](https://docs.goplasmatic.io/releases/versioning-policy.html): versioning policy, what 1.0 freezes, MSRV, platform matrix
+- [Upgrade to 2.0.0](https://docs.goplasmatic.io/releases/upgrade-to-2.0.html): the 1.x → 2.0 breaking changes — a fresh state database, the `/api/v2` routes, immutable deployments, cursor-paged lists, strict definitions and tightened defaults.
 - [Upgrade to 1.8.0](https://docs.goplasmatic.io/releases/upgrade-to-1.8.html): the 1.7.x → 1.8.0 behaviour changes — the JSONLogic tensor operators are on and seven of their names collide with ordinary keys, `engine.ops_budget` is new and off
 - [Upgrade to 1.6.0](https://docs.goplasmatic.io/releases/upgrade-to-1.6.html): the 1.5.x → 1.6.0 behaviour changes — plugins off by default, the cron scheduler on by default, nine migrations, a stricter `db_read` and `validate-config`, a deprecated trace token parameter
 - [Upgrade to 1.2.0](https://docs.goplasmatic.io/releases/upgrade-to-1.2.html): the six 1.1.x → 1.2.0 behaviour changes, including the breaking `expect` path root and the two that can turn a green CI gate red

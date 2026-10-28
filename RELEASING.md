@@ -47,7 +47,9 @@ member manifest by hand.
 For a candidate, rehearse `cargo release version --workspace <candidate-version>`
 and run it with `--execute` after reviewing the plan. This version-only subcommand
 leaves the commit and tag until the generated changes are ready. Every bump also
-needs a regenerated `docs/openapi.json` (`cargo run -- dump-openapi`) and the
+needs a regenerated `docs/openapi.json` (`cargo run -- dump-openapi`), the
+Helm chart's `version` and `appVersion` and the README's "current workspace
+release" line (`release_stamps_drift_test` fails until they match), and the
 new `Tested with Orion <version>.` tutorial stamps. Move a tutorial's
 `last_verified` date only after rerunning its documented path. Run the gate
 again, commit the version/generated changes, and tag that final commit.

@@ -1,13 +1,14 @@
-<!-- description: What changed in each Orion release, what breaks, and how to move: every 1.x version with a Breaking flag, the support policy and the upgrade guides. -->
+<!-- description: What changed in each Orion release, what breaks, and how to move: every version with a Breaking flag, the support policy and the upgrade guides. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-14 -->
 
 # Releases
 
-Every 1.x release, what it added, and whether it breaks anything you have. A release with a guide is one that changes behaviour you may be relying on.
+Every release, what it added, and whether it breaks anything you have. A release with a guide is one that changes behaviour you may be relying on.
 
 | Version | Date | Breaking | What it added |
 |---|---|:---:|---|
+| [2.0.0](./upgrade-to-2.0.md) | release candidate | Yes | The `/api/v2` contract, a fresh state database, immutable deployments, cursor-paged lists and strict definitions. Coming from 1.x? Start here. |
 | [1.8.0](./upgrade-to-1.8.md) | 2026-09-13 | Yes | ONNX models as a governed entity and the fifth package member, the JSONLogic tensor operators, and `engine.ops_budget`. |
 | 1.7.0 | 2026-09-06 | No | PostgreSQL binds parameters to the declared type, and `oauth2_login` takes per-environment values. |
 | [1.6.0](./upgrade-to-1.6.md) | 2026-09-05 | Yes | The WebAssembly plugin sandbox (off by default) and cron channels (the scheduler is on). |

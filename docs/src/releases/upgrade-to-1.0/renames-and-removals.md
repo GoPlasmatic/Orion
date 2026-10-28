@@ -54,8 +54,8 @@ orion-server preflight
 **What changed.** Eight of the ten connector functions named their destination
 path `output`; `http_call` and `channel_call` named it `response_path`. All ten now take `output`.
 
-**How you'll notice.** You won't — `response_path` is still accepted, so
-existing workflows keep running. Unlike the other 1.0 renames it carries no removal date. On `http_call` the alias belongs to the `HttpCallConfig` struct in `dataflow-rs`, which Orion does not own and cannot remove on its own. It is listed under [accepted alternate spellings](../versioning-policy.md#accepted-alternate-spellings) rather than as a deprecation. Supplying both keys is a duplicate-field error, not a precedence rule.
+**How you'll notice.** You won't — in 1.x `response_path` is still accepted, so
+existing workflows keep running. Unlike the other 1.0 renames it carried no removal date. On `http_call` the alias belonged to the `HttpCallConfig` struct in `dataflow-rs`. Orion 2 reads definitions strictly, so `response_path` is an unknown key there: write `output`. Supplying both keys in 1.x was a duplicate-field error, not a precedence rule.
 
 **What to do.** Rename the key at your leisure:
 

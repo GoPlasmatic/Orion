@@ -213,7 +213,7 @@ engines, and embedded `dataflow-rs`.
 
 ## Install
 
-The current workspace release is **1.12.0** and requires Rust **1.98** when built
+The current workspace release is **2.0.0-rc.1** and requires Rust **1.98** when built
 from source. The server and CLI are released in lockstep; use matching versions.
 
 ```bash
@@ -254,12 +254,9 @@ all commands and flags.
 
 ### Upgrading from v1 to v2 (Breaking Changes)
 
-Orion v2 moves all HTTP endpoints from `/api/v1/*` to `/api/v2/*` and introduces content-addressed connector provider packages, versioned connections, and atomic deployment revisions:
+Orion 2 moves every route from `/api/v1/*` to `/api/v2/*`, replaces per-entity writes with immutable deployments of content-addressed definitions, pages every list by cursor, and starts from a fresh state database: a 1.x database is refused at startup and nothing converts one. Recompile your definition set with `orion-cli compile`, deploy it with `orion-cli deployments apply -d`, and move the clients.
 
-- **Route prefixes:** Update callers from `/api/v1/data/*`, `/api/v1/admin/*`, and `/api/v1/openapi.json` to `/api/v2/data/*`, `/api/v2/admin/*`, and `/api/v2/openapi.json`. The `/api/v1/*` prefix is no longer mounted.
-- **Provider packages & `connector_call`:** External integrations are packaged as verified provider bundles (`/api/v2/admin/connector-packages`), bound to versioned connections (`/api/v2/admin/connections/{id}/revisions`), and invoked via `connector_call`.
-- **Immutable deployments:** Candidate manifests are planned via `POST /api/v2/admin/deployment-plans`, applied atomically under compare-and-swap via `POST /api/v2/admin/deployments` with the reviewed digest (a rollback is the same call with `rollback_to`), and tracked to convergence via `GET /api/v2/admin/deployments/{revision}/convergence`.
-- **A fresh state database:** Orion 2 refuses a 1.x state database at startup, and nothing migrates one. Point `storage.url` at a new database, recompile your definition set with `orion-cli compile ./definitions -o dist/deployment`, and deploy it with `orion-cli deployments apply -d dist/deployment`. `orion-cli deployments edition-preflight` checks a revision against the Community edition. See the [Upgrade Guide](docs/src/operate/maintain/upgrades.md).
+The [Upgrade to 2.0.0](https://docs.goplasmatic.io/releases/upgrade-to-2.0.html) guide lists every change; [Move from Orion 1.x](docs/src/operate/maintain/upgrades.md#move-from-orion-1x) is the procedure.
 
 ## Performance
 

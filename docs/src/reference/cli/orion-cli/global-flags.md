@@ -28,9 +28,7 @@ orion-cli [global flags] <command> [subcommand] [args] [flags]
 
 ### Paging
 
-Every `list` pages: 50 rows by default, 1000 at most. When more rows follow, the
-line under the table names the flag that fetches them (`next page: --cursor …`),
-so a truncated listing never reads as a complete one.
+Every `list` pages: 50 rows by default, 1000 at most. When more rows follow, the line under the table names the flag that fetches them (`next page: --cursor …`). A truncated listing never reads as a complete one.
 
 | Flag | Applies to | Description |
 |------|-----------|-------------|

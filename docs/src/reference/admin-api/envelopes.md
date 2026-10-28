@@ -29,7 +29,7 @@ There is no `offset`. Pre-1.0 responses differed for ten handlers — the [upgra
 
 ## Paging by endpoint
 
-Every list pages by cursor. The lists are ledgers read newest-first, so a cursor resumes at an exact position in constant time, where an offset would skip or repeat rows as new ones arrive and cost a scan of everything it skips. The cursor encodes the pair `(created_at, id)`, so a page boundary inside a shared timestamp neither skips nor repeats rows. `total` is opt-in because the count is a full scan of the filtered set on PostgreSQL and InnoDB.
+Every list pages by cursor. The lists are ledgers read newest-first. A cursor resumes at an exact position in constant time. An offset would skip or repeat rows as new ones arrive, and cost a scan of everything it skips. The cursor encodes the pair `(created_at, id)`, so a page boundary inside a shared timestamp neither skips nor repeats rows. `total` is opt-in because the count is a full scan of the filtered set on PostgreSQL and InnoDB.
 
 | Endpoints | Order | Parameters |
 |---|---|---|
@@ -37,7 +37,7 @@ Every list pages by cursor. The lists are ledgers read newest-first, so a cursor
 | `/connections`, `/connections/{id}/revisions`, `/connector-packages` | By key (connection then revision; package digest) | `?limit=`, `?cursor=`, `?include_total=true` |
 | `/deployments` | Newest revision first | `?limit=`, `?cursor=`; the page also carries `head_revision`, `epoch` and `applied_revision` |
 
-A `limit` of `0` is clamped to 1 on the ledgers and refused with `400` on the catalogues, and a cursor an endpoint did not issue is a `400` everywhere. The remaining collections (`/backups`, `/cron/status`, `/functions`) are small, complete catalogues and answer `{ "data": [ ... ] }` with no cursor.
+A `limit` of `0` is clamped to 1 on the ledgers and refused with `400` on the catalogues. A cursor an endpoint did not issue is a `400` everywhere. The remaining collections (`/backups`, `/cron/status`, `/functions`) are small, complete catalogues and answer `{ "data": [ ... ] }` with no cursor.
 
 Errors follow one structure across both planes. See [Errors & Response Envelopes](../errors.md#the-error-envelope).
 

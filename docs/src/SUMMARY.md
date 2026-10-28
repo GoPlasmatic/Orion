@@ -250,6 +250,7 @@
 
 - [Releases](./releases/index.md)
   - [Versioning and support policy](./releases/versioning-policy.md)
+  - [Upgrade to 2.0.0](./releases/upgrade-to-2.0.md)
   - [Upgrade to 1.8.0](./releases/upgrade-to-1.8.md)
   - [Upgrade to 1.6.0](./releases/upgrade-to-1.6.md)
   - [Upgrade to 1.2.0](./releases/upgrade-to-1.2.md)
