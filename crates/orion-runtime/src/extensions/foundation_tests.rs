@@ -141,7 +141,11 @@ fn a_builtin_driver_has_one_stable_digest() {
 
 #[test]
 fn sqlite_provider_enforces_approved_root_and_rejects_traversal_and_orion_db() {
-    let sqlite = SqliteProviderBackend::new("/var/lib/orion/sqlite", 4);
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .expect("temporary directory exists")
+        .join("orion_sqlite_boundaries");
+    let sqlite = SqliteProviderBackend::new(&root, 4);
 
     // In-memory is allowed.
     assert!(
@@ -154,7 +158,7 @@ fn sqlite_provider_enforces_approved_root_and_rejects_traversal_and_orion_db() {
     let resolved = sqlite
         .resolve_sandboxed_target("sqlite://tenant_a/app.db")
         .expect("valid relative path");
-    assert_eq!(resolved, "sqlite:///var/lib/orion/sqlite/tenant_a/app.db");
+    assert_eq!(resolved.get_filename(), root.join("tenant_a/app.db"));
 
     // Path traversal `..` is rejected.
     let err = sqlite

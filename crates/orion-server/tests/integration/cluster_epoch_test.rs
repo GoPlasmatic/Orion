@@ -14,11 +14,16 @@ use crate::common;
 #[tokio::test]
 async fn a_definitions_deployment_leaves_cached_pools_open() {
     let db = common::ScratchDir::new("epoch_scope_pools");
-    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let mut config = orion::config::AppConfig::default();
+    config.engine.sqlite_connector_root = db.path().display().to_string();
+    let state = common::test_state_with_config(config).await;
     let app = orion::server::build_router(state.clone());
     common::create_connector(
         &app,
-        common::db_connector_sqlite("pool-conn", &format!("{}?mode=rwc", db.url())),
+        common::db_connector_sqlite(
+            "pool-conn",
+            &format!("sqlite:{}/app.db?mode=rwc", db.path().display()),
+        ),
     )
     .await;
 

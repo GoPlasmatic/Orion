@@ -14,11 +14,11 @@ async fn sql_pool_identity_includes_the_connection_settings() {
     let b = common::ScratchDir::new("pool_revision_b");
     let settings = |dir: &common::ScratchDir| {
         serde_json::from_value(
-            serde_json::json!({"connection_string": format!("{}?mode=rwc", dir.url())}),
+            serde_json::json!({"connection_string": format!("sqlite:{}/app.db?mode=rwc", dir.path().display())}),
         )
         .expect("settings")
     };
-    let cache = SqlPoolCache::new(8);
+    let cache = SqlPoolCache::with_sqlite_root(8, std::env::temp_dir());
     let SqlPool::Sqlite(old) = cache
         .get_pool("orders", &settings(&a))
         .await

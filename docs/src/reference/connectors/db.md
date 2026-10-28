@@ -40,9 +40,37 @@ There is no `retry` field: a statement that timed out may already have been appl
 
 ## The `driver` field
 
-`driver` names the backend the connection string selects. It does not select it: the scheme still does. Where the scheme is visible, the two must agree. `"driver": "mysql"` with a `postgres://` URL is refused at upload and by `lint`. A connection string that is a secret reference (`env://…`) or a `${VAR}` placeholder shows no scheme until the serving node resolves it, so there is nothing to compare, and the field is the only statement of the backend. Any value other than the three names is refused.
+`driver` names the backend the connection string selects. It does not select it: the scheme still does. Where the scheme is visible, the two must agree. `"driver": "mysql"` with a `postgres://` URL is refused at upload and by `lint`.
+A secret reference (`env://…`) or `${VAR}` placeholder hides the scheme until the
+serving node resolves it. Until then, `driver` is the only statement of the backend.
+Any value other than the three names is refused.
 
 A [definition set](../cli/orion-cli/lint.md) requires it: `lint <dir>` and `compile` refuse a `db` connector without one with `[connector.db_driver]`, whether its connection string is a reference or not. A set is what `orion-cli compile` reads, and a deployed connection's provider is its driver (`org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite`), which a hidden scheme cannot name. The field becomes the provider and is not carried in the connection's `public_config`.
+
+## SQLite paths
+
+For SQLite, `allow_private_urls` does not control filesystem access.
+`engine.sqlite_connector_root` confines both `db` connections and the
+`org.orion.sqlite` provider used by `connector_call`. Relative file paths resolve
+beneath the root; absolute paths must resolve inside it. Orion checks decoded
+filenames and symlinks and refuses traversal and reserved state-database names.
+URL options such as `mode=rwc`, `mode=ro` and `cache=shared` retain their meaning.
+In-memory connections, including named databases with `mode=memory`, remain supported.
+
+To migrate a connection that points outside the root:
+
+1. Back up the application database and stop its writers before relocating it.
+2. Move the database beneath the configured root, or configure a root that contains
+   the application databases. Keep Orion's state database outside this directory.
+3. Update the URL in the connection configuration or its secret reference. For
+   example, `sqlite:orders.db?mode=rwc` opens `orders.db` beneath the root. An absolute
+   URL to that same file also works. Use an application filename other than
+   `orion.db`, `orion.sqlite` or `orion-state.db`.
+4. Create the parent directories, mount the root in containers and grant Orion
+   filesystem access. Deploy the new connection revision and verify a query.
+
+See [SQLite filesystem boundary](../configuration/engine.md#sqlite-filesystem-boundary)
+for the configuration contract.
 
 ## Dialect guards
 

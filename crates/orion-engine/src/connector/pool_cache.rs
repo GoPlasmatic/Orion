@@ -124,11 +124,17 @@ impl SqlPool {
 /// Bounded by `max_entries` with LRU eviction.
 pub struct SqlPoolCache {
     cache: LruCache<SqlPool>,
+    sqlite_root: std::path::PathBuf,
 }
 
 impl SqlPoolCache {
     pub fn new(max_entries: usize) -> Self {
+        Self::with_sqlite_root(max_entries, "./data/connectors/sqlite")
+    }
+
+    pub fn with_sqlite_root(max_entries: usize, root: impl Into<std::path::PathBuf>) -> Self {
         Self {
+            sqlite_root: root.into(),
             // F17: close evicted pools on a detached task — new acquires on
             // the closed pool fail fast, in-flight queries finish, and the
             // TCP connections are returned instead of counting against the
@@ -182,7 +188,13 @@ impl SqlPoolCache {
                         SqlitePoolOptions::new()
                             .max_connections(max_conns)
                             .acquire_timeout(timeout)
-                            .connect(&conn_str)
+                            .connect_with(
+                                super::sqlite_target::confined_options(
+                                    &self.sqlite_root,
+                                    &conn_str,
+                                )
+                                .map_err(|e| OrionError::validation(e.to_string()))?,
+                            )
                             .await
                             .map_err(|e| connect_failed(connector_name, e))?,
                     ),

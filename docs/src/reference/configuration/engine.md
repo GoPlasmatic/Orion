@@ -1,4 +1,4 @@
-<!-- description: The [engine] settings: channel_call depth and timeout, loop and cache bounds, sticky rollouts, connector load failures, the ops and run budgets, native work and the circuit breaker. -->
+<!-- description: The [engine] settings: SQLite paths, channel-call bounds, connector pools, expression and run budgets, native work and circuit breakers. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-10-01 -->
 
@@ -50,7 +50,7 @@ Breakers are keyed per channel and connector, so one noisy channel does not trip
 | `engine.max_loop_iterations` | `10000` | `ORION_ENGINE__MAX_LOOP_ITERATIONS` | Ceiling on a workflow [`loop`](../workflows.md#loop)'s `max`, refused at write time. Raise it for a workload that genuinely needs more sweeps; `0` removes the ceiling. |
 | `engine.global_http_timeout_secs` | `30` | `ORION_ENGINE__GLOBAL_HTTP_TIMEOUT_SECS` | Safety net for every outbound HTTP request; shorter connector or task timeouts still win. |
 | `engine.max_pool_cache_entries` | `100` | `ORION_ENGINE__MAX_POOL_CACHE_ENTRIES` | Raise only with more than ~100 distinct external connectors. LRU-evicted. |
-| `engine.sqlite_connector_root` | `"./data/connectors/sqlite"` | `ORION_ENGINE__SQLITE_CONNECTOR_ROOT` | The directory the `org.orion.sqlite` provider (`connector_call`) resolves a connection's database file beneath. The connection names a path relative to it; an absolute path, or a `..` that leaves it, is refused. Point it at a mounted volume in a container. |
+| `engine.sqlite_connector_root` | `"./data/connectors/sqlite"` | `ORION_ENGINE__SQLITE_CONNECTOR_ROOT` | Filesystem root for SQLite providers and `db` connections. Relative paths resolve beneath it; absolute paths must stay inside it. Traversal, symlink escapes and reserved state-database filenames are refused. See [SQLite filesystem boundary](#sqlite-filesystem-boundary). |
 | `engine.cache_cleanup_interval_secs` | `60` | `ORION_ENGINE__CACHE_CLEANUP_INTERVAL_SECS` | Sweep interval for expired in-memory cache entries. |
 | `engine.max_memory_cache_entries` | `100000` | `ORION_ENGINE__MAX_MEMORY_CACHE_ENTRIES` | Per-namespace bound; see [`max_memory_cache_entries`](#max_memory_cache_entries). Lower it on a memory-constrained host. `0` removes the bound. |
 | `engine.rollout_sticky_header` | `""` | `ORION_ENGINE__ROLLOUT_STICKY_HEADER` | Set to the header that identifies a caller (for example `"x-user-id"`) so canary rollouts are stable per caller; see [`rollout_sticky_header`](#rollout_sticky_header). |
@@ -68,6 +68,20 @@ Breakers are keyed per channel and connector, so one noisy channel does not trip
 The four `max_run_*` settings bound one *run*: everything a request or a cron occurrence starts, including the `channel_call` runs it makes, which share their caller's counters. A run that crosses a ceiling stops, and the caller gets `400` with code `VALIDATION_ERROR` and a message naming the budget, for example `run task budget exceeded (101 > 100 max tasks)`.
 
 They complement `ops_budget`, which bounds a single expression evaluation: a workflow can stay under `ops_budget` on every evaluation and still loop through millions of them.
+
+### SQLite filesystem boundary
+
+`sqlite_connector_root` confines the `org.orion.sqlite` provider and `db`
+connections used by `db_read`, `db_write`, `data_query` and `data_write`. Relative
+paths resolve beneath the root. Absolute paths must resolve inside it. Orion
+checks decoded filenames and existing symlinks before opening a pool, including
+when the database file does not exist yet.
+
+Orion refuses `..` traversal, symlink escapes and reserved state-database filenames
+(`orion.db`, `orion.sqlite`, `orion-state.db`). In-memory databases remain supported.
+Create the parent directories and give Orion access to the root before opening a
+file-backed connection. Keep application databases separate from Orion's state
+database. See [SQLite paths](../connectors/db.md#sqlite-paths) for migration steps.
 
 ### Native work
 

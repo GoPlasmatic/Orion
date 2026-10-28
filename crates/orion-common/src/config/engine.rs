@@ -31,10 +31,9 @@ pub struct EngineConfig {
     /// Maximum entries in each external connector pool cache.
     /// LRU eviction removes the least-recently-used pool when exceeded.
     pub max_pool_cache_entries: usize,
-    /// The directory the `org.orion.sqlite` provider (`connector_call`)
-    /// resolves a connection's database file beneath. A connection names a
-    /// path relative to it; an absolute path, or a `..` that leaves it, is
-    /// refused.
+    /// The filesystem root for SQLite providers and `db` connections. Relative
+    /// paths resolve beneath it; absolute paths must stay inside it. Traversal,
+    /// symlink escapes and reserved Orion state database names are refused.
     pub sqlite_connector_root: String,
     /// Interval in seconds between cache cleanup sweeps that evict expired entries.
     pub cache_cleanup_interval_secs: u64,

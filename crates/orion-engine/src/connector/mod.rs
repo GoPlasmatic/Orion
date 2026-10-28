@@ -12,6 +12,7 @@ mod registry;
 pub mod secrets;
 pub mod sql_decode;
 pub mod sql_encode;
+pub mod sqlite_target;
 
 pub use config::{
     AuthConfig, CacheConnectorConfig, CacheOperationGates, ConnectorConfig, ConnectorType,

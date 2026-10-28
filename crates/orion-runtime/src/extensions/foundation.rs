@@ -12,7 +12,7 @@
 //!   TTL-aware, connection-partitioned in-memory cache (`V2-14.4`)
 
 use std::collections::BTreeMap;
-use std::path::{Component, Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -1036,16 +1036,12 @@ impl ProviderBackend for PostgresProviderBackend {
 // 3. org.orion.sqlite (V2-14.3)
 // ============================================================================
 
-/// Reserved filenames that a connector is never allowed to open, preventing
-/// any workflow from querying or mutating Orion's own configuration database (`V2-14.3`).
-const RESERVED_ORION_DB_NAMES: &[&str] = &["orion.db", "orion.sqlite", "orion-state.db"];
-
 /// Community foundation scoped SQLite connector provider (`org.orion.sqlite`, `V2-14.3`).
 ///
 /// Enforces strict root-directory sandboxing:
 /// - `sqlite::memory:` is always permitted (isolated per connection identity).
-/// - File-backed SQLite URLs (`sqlite://...` or `sqlite:...`) must be relative paths
-///   resolved beneath `approved_root`, containing no `..` traversal components,
+/// - File-backed SQLite URLs (`sqlite://...` or `sqlite:...`) must resolve beneath
+///   `approved_root`, containing no `..` traversal components or symlink escapes,
 ///   and must not target Orion's own state database filenames.
 pub struct SqliteProviderBackend {
     approved_root: PathBuf,
@@ -1110,75 +1106,24 @@ impl SqliteProviderBackend {
         self.sessions.clone()
     }
 
-    /// Validate and resolve a SQLite `connection_string` within `approved_root` (`V2-14.3`).
-    pub fn resolve_sandboxed_target(&self, conn_str: &str) -> Result<String, ConnectorError> {
-        let trimmed = conn_str.trim();
-        if trimmed.eq_ignore_ascii_case("sqlite::memory:")
-            || trimmed.eq_ignore_ascii_case("sqlite://:memory:")
-        {
-            return Ok("sqlite::memory:".to_string());
-        }
-
-        let Some(raw_path) = trimmed
-            .strip_prefix("sqlite://")
-            .or_else(|| trimmed.strip_prefix("sqlite:"))
-        else {
-            return Err(ConnectorError::invalid_input(
-                "org.orion.sqlite requires a sqlite: or sqlite:// connection_string",
-                Some(json!({"pointer": "/connection_string"})),
-            ));
-        };
-
-        // Strip query parameters (e.g. ?mode=rwc) before checking path safety.
-        let path_part = raw_path.split('?').next().unwrap_or(raw_path).trim();
-        if path_part.is_empty() {
-            return Err(ConnectorError::invalid_input(
-                "SQLite file path must not be empty",
-                Some(json!({"pointer": "/connection_string"})),
-            ));
-        }
-
-        let candidate = Path::new(path_part);
-        if candidate.is_absolute() {
-            return Err(ConnectorError::forbidden(
+    /// Resolve a confined filename without serializing and parsing another URL.
+    pub fn resolve_sandboxed_target(
+        &self,
+        conn_str: &str,
+    ) -> Result<sqlx::sqlite::SqliteConnectOptions, ConnectorError> {
+        use crate::connector::sqlite_target::{SqliteTargetError, confined_options};
+        confined_options(&self.approved_root, conn_str).map_err(|e| match e {
+            SqliteTargetError::Boundary(_) => ConnectorError::forbidden(
                 codes::CAPABILITY_INVALID,
                 "validation",
-                "SQLite connector path must be relative to the approved data root, not absolute",
+                e.to_string(),
                 EffectStatus::NotStarted,
-            ));
-        }
-
-        for comp in candidate.components() {
-            match comp {
-                Component::Normal(_) | Component::CurDir => {}
-                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                    return Err(ConnectorError::forbidden(
-                        codes::CAPABILITY_INVALID,
-                        "validation",
-                        "SQLite connector path must not contain '..' traversal segments",
-                        EffectStatus::NotStarted,
-                    ));
-                }
-            }
-        }
-
-        if let Some(file_name) = candidate.file_name().and_then(|f| f.to_str())
-            && RESERVED_ORION_DB_NAMES
-                .iter()
-                .any(|reserved| reserved.eq_ignore_ascii_case(file_name))
-        {
-            return Err(ConnectorError::forbidden(
-                codes::CAPABILITY_INVALID,
-                "validation",
-                format!(
-                    "SQLite filename '{file_name}' is reserved for Orion's configuration database"
-                ),
-                EffectStatus::NotStarted,
-            ));
-        }
-
-        let resolved = self.approved_root.join(candidate);
-        Ok(format!("sqlite://{}", resolved.display()))
+            ),
+            _ => ConnectorError::invalid_input(
+                e.to_string(),
+                Some(json!({"pointer": "/connection_string"})),
+            ),
+        })
     }
 
     /// Execute a real SQL statement against a sandboxed SQLite target (`V2-14.3`).
@@ -1213,9 +1158,17 @@ impl SqliteProviderBackend {
                 EffectStatus::NotStarted,
             ));
         };
-        let target = self.resolve_sandboxed_target(conn_str)?;
+        let options = self.resolve_sandboxed_target(conn_str)?;
+        let in_memory = crate::connector::sqlite_target::is_memory_url(conn_str);
+        // Include the original URL options and avoid re-encoding filenames for
+        // identity: a literal percent escape and a decoded character differ.
+        let target = if in_memory {
+            conn_str.trim().to_string()
+        } else {
+            format!("{:?}", (options.get_filename(), conn_str.trim()))
+        };
         let cache_key = match connection_key {
-            Some(key) if target == "sqlite::memory:" => format!("{key}::{target}"),
+            Some(key) if in_memory => format!("{key}::{target}"),
             _ => target.clone(),
         };
         let pool = self
@@ -1223,12 +1176,12 @@ impl SqliteProviderBackend {
             .get_or_create(&cache_key, || {
                 let target_url = target.clone();
                 async move {
-                    let builder = if target_url == "sqlite::memory:" {
+                    let builder = if in_memory {
                         sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
                     } else {
                         sqlx::sqlite::SqlitePoolOptions::new().max_connections(4)
                     };
-                    builder.connect(&target_url).await.map_err(|e| {
+                    builder.connect_with(options).await.map_err(|e| {
                         ConnectorError::invalid_input(
                             format!(
                                 "Failed to connect to sandboxed SQLite target '{target_url}': {e}"

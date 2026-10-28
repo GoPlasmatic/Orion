@@ -67,6 +67,7 @@ utoipa = { version = "6", features = ["axum_extras", "chrono"] }
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 
 [dev-dependencies]
+tempfile = "3"
 orion-common = { workspace = true, features = ["test-support"] }
 orion-storage = { workspace = true, features = ["test-support"] }
 tokio = { version = "1", features = ["test-util"] }

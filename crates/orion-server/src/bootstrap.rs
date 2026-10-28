@@ -265,9 +265,12 @@ pub async fn build_engine_components(
     ));
 
     // Create external connector pool caches (shared with AppState for eviction on update/delete)
-    let sql_pool_cache = Arc::new(crate::connector::pool_cache::SqlPoolCache::new(
-        config.engine.max_pool_cache_entries,
-    ));
+    let sql_pool_cache = Arc::new(
+        crate::connector::pool_cache::SqlPoolCache::with_sqlite_root(
+            config.engine.max_pool_cache_entries,
+            &config.engine.sqlite_connector_root,
+        ),
+    );
 
     let foundation = crate::extensions::FoundationOptions {
         http_client: http_client.clone(),
