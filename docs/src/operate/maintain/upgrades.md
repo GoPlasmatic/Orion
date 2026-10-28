@@ -62,6 +62,15 @@ Names change between versions. Orion never accepts a retired spelling silently. 
 
 Nobody edits deployed definitions during an upgrade, so that surface cannot rely on a startup error. Quarantine is the equivalent: loud, fail-closed, and visible on `/health`.
 
+Orion keeps replacement hints for refused dataflow v3 workflow spellings and
+retired environment-variable errors through the v2 upgrade window. These
+diagnostics do not enable the old syntax. Use the replacement the error names,
+then run `lint` or `validate-config` again.
+
+Safety-relevant environment checks remain after that window. For example,
+`ORION_ENV` is refused with a hint to use `ORION_ENVIRONMENT`; ignoring the old
+name could otherwise leave an intended production node in development mode.
+
 <details><summary>Why are old spellings refused rather than accepted?</summary>
 
 The cost of a silently accepted old name decides this. `cors` → `origin_allow_list` is the clearest case. Had the old key parsed and been dropped, every channel using it would serve with no origin allow-list. That is indistinguishable from a channel that deliberately checks nothing. The same argument applies to `backpressure.max_concurrent`, whose replacement is per node rather than per cluster. Accepting it under the new field would admit N times the intended concurrency.

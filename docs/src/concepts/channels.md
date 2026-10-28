@@ -29,11 +29,18 @@ A channel names exactly one workflow. That is what makes the channel the unit of
 
 ## Protocols
 
-A channel's `protocol` names the channel driver that serves it. The driver decides which fields a channel of that protocol needs, whether it claims an HTTP route, and which `channel_type` it accepts; a protocol with no driver on the node is refused at upload. A Community node has three, one per channel:
+A channel's `protocol` names the channel driver that serves it. The driver declares
+the required fields, HTTP routing support and accepted `channel_type`. The node
+refuses a protocol with no driver at upload. A Community node supports three protocols:
 
 - **`rest`**: a method and a path pattern, such as `POST /orders` or `GET /orders/{id}`. Path parameters reach the workflow as request metadata.
 - **`http`**: routes identically to `rest`. Both also stay reachable by channel name at `/api/v2/data/{name}`.
 - **`cron`**: the channel declares a schedule and a fixed payload. Orion materializes a durable occurrence per scheduled instant and runs it. It is the one protocol with no caller, so it registers no route and is not reachable by name.
+
+Community does not register a `source` protocol. A source channel remains refused
+until a working source provider and its runner ship together. Lease and checkpoint
+support alone does not start an ingress. An edition can register an additional
+protocol when its driver implements the required execution lifecycle.
 
 ## Sync or async
 

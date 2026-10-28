@@ -4,7 +4,7 @@
 
 # Rate limit settings
 
-Platform-level limits, applied per client identity. Per-channel limits are separate and live in the channel's `config_json` in the database.
+Platform-level limits, applied per client IP on each node. Per-channel limits are separate and live in the channel's `config_json` in the database.
 
 ## Synopsis
 
@@ -30,6 +30,28 @@ admin_rps = 20
 | `rate_limit.trusted_proxies` | `[]` | `ORION_RATE_LIMIT__TRUSTED_PROXIES` | **Set this if Orion sits behind a load balancer**, whether or not `rate_limit.enabled` is on; see [`trusted_proxies`](#trusted_proxies). |
 | `rate_limit.endpoints.admin_rps` | `20` | `ORION_RATE_LIMIT__ENDPOINTS__ADMIN_RPS` | Separate limit for the admin API. Set the variable to an empty string to clear it, which makes the admin plane use `default_rps`. |
 | `rate_limit.endpoints.data_rps` | — | `ORION_RATE_LIMIT__ENDPOINTS__DATA_RPS` | Separate limit for the data plane; unset means it uses `default_rps`. Set the variable to an empty string to clear it. |
+
+### Limit scopes and combined enforcement
+
+The platform default, admin, data, per-channel and per-principal controls remain
+supported. They cover different traffic scopes:
+
+| Control | Scope |
+|---|---|
+| `default_rps` | Per client IP on one node; operational routes and route groups without a separate limit share this limiter. |
+| `endpoints.admin_rps` | Per client IP across admin routes on one node; unset uses the default limiter. |
+| `endpoints.data_rps` | Per client IP across data routes on one node, including `server.data_mounts`; unset uses the default limiter. |
+| Channel `rate_limit` | Optional per-channel buckets keyed by caller identity or `key_logic`; applies at the channel's ingresses. |
+| Channel `principal_rate_limit` | Optional quota keyed by the verified principal after authentication. |
+
+A data request must pass each applicable limit. For example, a caller can remain
+within each channel's limit and still exhaust its platform data budget by calling
+several channels. A channel without a `rate_limit` block still uses the platform
+data limiter when `rate_limit.enabled = true`.
+
+Platform limits stay local to each node. In cluster mode, channel limits use the
+shared database; see [channel rate limits](../channel-config/rate_limit.md) and
+[principal quotas](../channel-config/principal_rate_limit.md) for their semantics.
 
 ### `trusted_proxies`
 
