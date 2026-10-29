@@ -44,6 +44,10 @@ pub enum ClientError {
         #[source]
         source: reqwest::Error,
     },
+
+    /// The server sent a response body larger than the client's safety cap.
+    #[error("Response from {url} exceeded the {max_bytes}-byte client limit")]
+    ResponseTooLarge { url: String, max_bytes: usize },
 }
 
 impl From<serde_json::Error> for ClientError {

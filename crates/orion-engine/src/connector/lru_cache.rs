@@ -496,7 +496,7 @@ mod tests {
         assert_eq!(closed.load(AtomicOrdering::SeqCst), 4);
     }
 
-    /// TD-08: Concurrent callers for the same key coalesce into a single
+    /// Concurrent callers for the same key coalesce into a single
     /// creation, so no duplicate pool is opened or disposed on a cold-start burst.
     #[tokio::test]
     async fn single_flight_coalesces_concurrent_misses_and_cleans_up_flights() {

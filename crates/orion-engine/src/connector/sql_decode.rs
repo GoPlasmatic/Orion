@@ -142,7 +142,7 @@ impl DecodeError {
 type Decoded<T> = Result<T, DecodeError>;
 
 /// Approximate in-memory byte footprint of a decoded JSON value, used to
-/// enforce `query.max_result_bytes` (`TD-09`) while streaming SQL rows
+/// enforce `query.max_result_bytes` while streaming SQL rows
 /// so wide columns (`TEXT`, `JSONB`, `BYTEA`) cannot exhaust process memory.
 pub fn approx_json_value_bytes(v: &Value) -> usize {
     match v {

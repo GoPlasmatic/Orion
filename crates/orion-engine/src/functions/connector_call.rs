@@ -1,5 +1,4 @@
-//! `connector_call` — the unified v2 connector invocation function (`V2-10.1`,
-//! `V2-11.1`, `V2-14`).
+//! `connector_call` — the unified v2 connector invocation function.
 //!
 //! Dispatches to a registered provider backend (`rust`, `workflow`, or `wasm`)
 //! through a [`ConnectorCallHost`], which the serving runtime implements over

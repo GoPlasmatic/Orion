@@ -68,17 +68,17 @@ const ARGON2_PARALLELISM_RANGE: std::ops::RangeInclusive<u64> = 1..=4;
 const BCRYPT_DEFAULT_COST: u32 = 12;
 const BCRYPT_COST_RANGE: std::ops::RangeInclusive<u64> = 10..=14;
 
-/// Default maximum concurrent password KDF operations (`TD-04`).
+/// Default maximum concurrent password KDF operations.
 const DEFAULT_KDF_MAX_CONCURRENCY: usize = 16;
-/// Default maximum aggregate Argon2/bcrypt memory in flight (512 MiB in KiB) (`TD-04`).
+/// Default maximum aggregate Argon2/bcrypt memory in flight (512 MiB in KiB).
 const DEFAULT_KDF_MAX_MEMORY_KIB: u32 = 524_288;
-/// Default maximum queue wait time before rejecting a KDF request under load (`TD-04`).
+/// Default maximum queue wait time before rejecting a KDF request under load.
 const DEFAULT_KDF_QUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Nominal memory footprint attributed to one bcrypt operation (4 KiB).
 const BCRYPT_MEMORY_KIB: u32 = 4;
 
 /// Process-wide KDF admission controller bounding concurrent blocking-pool
-/// threads and aggregate memory-hard KDF allocation (`TD-04`).
+/// threads and aggregate memory-hard KDF allocation.
 struct KdfAdmission {
     concurrency: std::sync::Arc<tokio::sync::Semaphore>,
     memory_kib: std::sync::Arc<tokio::sync::Semaphore>,
@@ -458,7 +458,7 @@ async fn hash_password(params: PasswordParams, password: String) -> Result<Value
 }
 
 /// Validate the scheme and encoded cost parameters of a stored password hash
-/// *before* acquiring KDF admission or spawning onto the blocking pool (`TD-04`).
+/// *before* acquiring KDF admission or spawning onto the blocking pool.
 /// Returns the memory footprint in KiB to charge against [`KdfAdmission`].
 fn preflight_verify_hash(hash: &str) -> Result<u32, HandlerError> {
     if hash.starts_with("$argon2") {

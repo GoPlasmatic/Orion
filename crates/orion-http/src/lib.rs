@@ -383,7 +383,7 @@ fn force_exit_on_second_signal() {
     });
 }
 
-/// Extract a query-free URI path for HTTP request tracing spans (`TD-11`).
+/// Extract a query-free URI path for HTTP request tracing spans.
 ///
 /// Prefers the matched route template (`MatchedPath`) when available and falls
 /// back to `req.uri().path()`, ensuring query parameters such as `?token=` on

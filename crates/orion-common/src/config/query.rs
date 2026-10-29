@@ -21,7 +21,7 @@ pub struct QueryConfig {
     /// Hard maximum `skip` offset. A query skipping more is rejected.
     pub max_skip: u64,
     /// Hard maximum decoded result-set size in bytes across `db_read` and
-    /// `data_query` (`0` = unlimited). Defaults to 16 MiB (`TD-09`).
+    /// `data_query` (`0` = unlimited). Defaults to 16 MiB.
     pub max_result_bytes: usize,
 }
 

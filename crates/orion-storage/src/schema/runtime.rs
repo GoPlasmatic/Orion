@@ -1,4 +1,4 @@
-//! Column identifiers for operational runtime, scheduling, and cluster tables (`MOD-05`).
+//! Column identifiers for operational runtime, scheduling, and cluster tables.
 
 use sea_query::Iden;
 

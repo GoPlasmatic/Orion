@@ -188,6 +188,9 @@ fn render(err: ClientError) -> anyhow::Error {
         ClientError::Transport { source } => {
             anyhow::anyhow!(source).context("Failed to read response body")
         }
+        ClientError::ResponseTooLarge { url, max_bytes } => {
+            anyhow::anyhow!("Response from {url} exceeded the {max_bytes}-byte client limit")
+        }
     }
 }
 

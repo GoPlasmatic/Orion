@@ -85,16 +85,16 @@ pub struct EngineConfig {
     /// smallest.
     pub ops_budget: u64,
     /// Cumulative task-dispatch ceiling for one root run (including loops,
-    /// fan-out branches, and nested `channel_call` invocations) (`TD-03`).
+    /// fan-out branches, and nested `channel_call` invocations).
     /// `0` (default) disables the ceiling.
     pub max_run_tasks: u64,
-    /// Cumulative expression-operation ceiling across one root run (`TD-03`).
+    /// Cumulative expression-operation ceiling across one root run.
     /// `0` (default) disables the ceiling.
     pub max_run_expr_ops: u64,
-    /// Cumulative custom host-unit ceiling across one root run (`TD-03`).
+    /// Cumulative custom host-unit ceiling across one root run.
     /// `0` (default) disables the ceiling.
     pub max_run_custom_units: u64,
-    /// Maximum concurrent in-flight task dispatches within one root run (`TD-03`).
+    /// Maximum concurrent in-flight task dispatches within one root run.
     /// `0` (default) disables the ceiling.
     pub max_run_in_flight: u64,
     /// Connector resource ceilings shared by one admitted run and its children.

@@ -19,8 +19,20 @@
 //! - `get`/`post`/`put`/`patch`/… return the **full response body** — for
 //!   passthrough tools (the CLI prints many responses verbatim).
 //! - `get_data`/`post_data`/… **unwrap the `{"data": …}` envelope** every
-//!   admin 2xx carries, tolerating the bare pre-1.0 shape — for callers that
-//!   consume the payload.
+//!   admin 2xx carries — for callers that consume the payload.
+//!
+//! ## Timeouts, size bounds, and retry/idempotency policy
+//!
+//! - [`OrionClient::new`] sets a 30-second per-request timeout and a 64 MiB
+//!   streaming response-body ceiling ([`OrionClient::with_timeout`] and
+//!   [`OrionClient::with_max_response_bytes`] override either).
+//! - Requests are executed at most once by the transport: automatic retries
+//!   are deliberately omitted so callers control backoff and so mutating
+//!   operations are never re-sent implicitly. Deployment mutations
+//!   (`POST /api/v2/admin/deployments`) carry an explicit `idempotency_key` in
+//!   their request payload ([`orion_api::v2::CreateDeploymentRequest`]),
+//!   allowing callers to safely retry an interrupted apply or rollback with
+//!   the same key.
 //!
 //! Presentation stays out: hints, colors, and message wording belong to the
 //! binaries. This crate reports *what happened*; the CLI decides how to say

@@ -152,6 +152,17 @@ pub struct FoundationOptions {
     pub sql: SqlLimits,
     /// The directory file-backed SQLite connections resolve beneath.
     pub sqlite_root: PathBuf,
+    /// Maximum concurrent session pools retained per remote SQL provider
+    /// (`org.orion.postgresql`, `org.orion.mysql`).
+    pub max_pool_sessions: usize,
+    /// Maximum concurrent session pools retained by `org.orion.sqlite`.
+    pub sqlite_max_sessions: usize,
+    /// Maximum entries per connection partition in `org.orion.memory-cache`.
+    pub memory_cache_max_entries_per_partition: usize,
+    /// Maximum connection partitions in `org.orion.memory-cache`.
+    pub memory_cache_max_partitions: usize,
+    /// Maximum serialized byte size of a single value in `org.orion.memory-cache`.
+    pub memory_cache_max_value_bytes: usize,
 }
 
 impl Default for FoundationOptions {
@@ -161,6 +172,11 @@ impl Default for FoundationOptions {
             http_max_response_bytes: 10 * 1024 * 1024,
             sql: SqlLimits::default(),
             sqlite_root: PathBuf::from("./data/connectors/sqlite"),
+            max_pool_sessions: 16,
+            sqlite_max_sessions: 8,
+            memory_cache_max_entries_per_partition: 1024,
+            memory_cache_max_partitions: 256,
+            memory_cache_max_value_bytes: 1024 * 1024,
         }
     }
 }
@@ -276,16 +292,26 @@ pub fn register_community_foundation(r: &mut super::ProviderRegistrar<'_>) {
     let http =
         Arc::new(HttpProviderBackend::with_deployment_store(store.clone()).with_options(&options));
     let pg = Arc::new(
-        PostgresProviderBackend::with_deployment_store(16, store.clone()).with_limits(options.sql),
-    );
-    let mysql = Arc::new(
-        MysqlProviderBackend::with_deployment_store(16, store.clone()).with_limits(options.sql),
-    );
-    let sqlite = Arc::new(
-        SqliteProviderBackend::with_deployment_store(options.sqlite_root.clone(), 8, store)
+        PostgresProviderBackend::with_deployment_store(options.max_pool_sessions, store.clone())
             .with_limits(options.sql),
     );
-    let mem_cache = Arc::new(MemoryCacheProviderBackend::default());
+    let mysql = Arc::new(
+        MysqlProviderBackend::with_deployment_store(options.max_pool_sessions, store.clone())
+            .with_limits(options.sql),
+    );
+    let sqlite = Arc::new(
+        SqliteProviderBackend::with_deployment_store(
+            options.sqlite_root.clone(),
+            options.sqlite_max_sessions,
+            store,
+        )
+        .with_limits(options.sql),
+    );
+    let mem_cache = Arc::new(MemoryCacheProviderBackend::with_limits(
+        options.memory_cache_max_entries_per_partition,
+        options.memory_cache_max_partitions,
+        options.memory_cache_max_value_bytes,
+    ));
 
     r.pool(pg.session_pool());
     r.pool(mysql.session_pool());

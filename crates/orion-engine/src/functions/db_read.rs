@@ -258,7 +258,7 @@ pub struct DbReadFunction {
     /// Hard row cap, from `query.max_limit` (F10).
     pub max_rows: usize,
     /// Hard decoded byte cap across the result set, from
-    /// `query.max_result_bytes` (`0` = unlimited, `TD-09`).
+    /// `query.max_result_bytes` (`0` = unlimited).
     pub max_result_bytes: usize,
 }
 

@@ -1,4 +1,4 @@
-//! Strict bounded JSON intake for Orion v2 host boundaries (`OR-02`, `DEC-007`).
+//! Strict bounded JSON intake for Orion v2 host boundaries.
 //!
 //! Wraps `datavalue-rs` 0.3.3's single-pass [`DataValue::from_str_with_options`]
 //! and [`OwnedDataValue::from_json_with_options`] with Orion's schema-profile

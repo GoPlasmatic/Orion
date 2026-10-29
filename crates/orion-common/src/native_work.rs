@@ -65,7 +65,7 @@ struct SchedulerInner {
     notify: Notify,
 }
 
-/// Permit moved into the actual native work closure (`V2-08.1`).
+/// Permit moved into the actual native work closure.
 ///
 /// Capacity is released only when this permit is dropped at the end of the
 /// native closure (including on panic/unwind), never when a waiting caller
@@ -178,7 +178,7 @@ impl NativeWorkScheduler {
     }
 
     /// Acquire an [`OwnedPermit`] before `deadline`, consuming queue wait time
-    /// from the caller's original deadline (`V2-08.2`).
+    /// from the caller's original deadline.
     pub async fn acquire_until(
         &self,
         label: impl Into<String>,
@@ -213,7 +213,7 @@ impl NativeWorkScheduler {
         }
     }
 
-    /// V2-08.1 & V2-08.5: Spawn a blocking native job that owns its [`OwnedPermit`]
+    /// Spawn a blocking native job that owns its [`OwnedPermit`]
     /// inside the thread closure. If the caller times out at `caller_deadline`,
     /// the caller receives `NATIVE_CALLER_DEADLINE_EXCEEDED` while the blocking
     /// job keeps its permit until the native thread actually finishes or unwinds.
@@ -274,7 +274,7 @@ impl NativeWorkScheduler {
         }
     }
 
-    /// V2-08.5: Initiate graceful shutdown and wait up to `drain_timeout` for
+    /// Initiate graceful shutdown and wait up to `drain_timeout` for
     /// owned native jobs to complete, reporting any residual jobs still running.
     pub async fn graceful_shutdown(&self, drain_timeout: Duration) -> ShutdownDrainReport {
         self.inner.shutting_down.store(true, Ordering::Release);

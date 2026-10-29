@@ -350,6 +350,12 @@ pub async fn build_engine_components(
             max_result_bytes: config.query.max_result_bytes,
         },
         sqlite_root: std::path::PathBuf::from(&config.engine.sqlite_connector_root),
+        max_pool_sessions: config.engine.max_pool_cache_entries.max(1),
+        memory_cache_max_entries_per_partition: if config.engine.max_memory_cache_entries == 0 {
+            1024
+        } else {
+            config.engine.max_memory_cache_entries
+        },
         ..Default::default()
     };
     // The node's services, created once with its identity, then the

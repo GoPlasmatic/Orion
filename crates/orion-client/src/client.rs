@@ -7,11 +7,14 @@ use std::time::Duration;
 
 use crate::error::ClientError;
 
+/// Default upper bound on a single response body (64 MiB).
+pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+
 /// HTTP client for an Orion server's admin and data APIs.
 ///
 /// Paths are passed relative to the server root (see [`crate::paths`]);
-/// authentication, the optional `X-Orion-Change-Context` audit header, and
-/// timeout are configured once at construction.
+/// authentication, the optional `X-Orion-Change-Context` audit header,
+/// timeout, and response size cap are configured once at construction.
 #[derive(Clone)]
 pub struct OrionClient {
     base_url: String,
@@ -19,6 +22,7 @@ pub struct OrionClient {
     api_key: Option<String>,
     api_key_header: Option<String>,
     change_context: Option<String>,
+    max_response_bytes: usize,
 }
 
 /// Never prints the credential: a `{:?}` of a client lands in logs and panic
@@ -30,12 +34,13 @@ impl std::fmt::Debug for OrionClient {
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("api_key_header", &self.api_key_header)
             .field("change_context", &self.change_context)
+            .field("max_response_bytes", &self.max_response_bytes)
             .finish_non_exhaustive()
     }
 }
 
 impl OrionClient {
-    /// A client with the default 30-second request timeout.
+    /// A client with the default 30-second request timeout and 64 MiB response cap.
     pub fn new(base_url: &str) -> Result<Self, ClientError> {
         Self::with_timeout(base_url, Some(Duration::from_secs(30)))
     }
@@ -62,7 +67,14 @@ impl OrionClient {
             api_key: None,
             api_key_header: None,
             change_context: None,
+            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
         })
+    }
+
+    /// Override the maximum response body size in bytes (`0` disables the cap).
+    pub fn with_max_response_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_response_bytes = max_bytes;
+        self
     }
 
     pub fn base_url(&self) -> &str {
@@ -249,21 +261,39 @@ impl OrionClient {
         if let Some(body) = body {
             req = req.json(body);
         }
-        let resp = req.send().await.map_err(|source| ClientError::Connect {
+        let mut resp = req.send().await.map_err(|source| ClientError::Connect {
             url: url.clone(),
             source,
         })?;
         let status = resp.status();
-        let bytes = resp
-            .bytes()
+        let cap = self.max_response_bytes;
+        if cap > 0
+            && let Some(len) = resp.content_length()
+            && len > cap as u64
+        {
+            return Err(ClientError::ResponseTooLarge {
+                url,
+                max_bytes: cap,
+            });
+        }
+        let mut buf = bytes::BytesMut::new();
+        while let Some(chunk) = resp
+            .chunk()
             .await
-            .map_err(|source| ClientError::Transport { source })?;
+            .map_err(|source| ClientError::Transport { source })?
+        {
+            if cap > 0 && buf.len().saturating_add(chunk.len()) > cap {
+                return Err(ClientError::ResponseTooLarge {
+                    url,
+                    max_bytes: cap,
+                });
+            }
+            buf.extend_from_slice(&chunk);
+        }
+        let bytes = buf.freeze();
         if !status.is_success() {
             return Err(ClientError::from_response(status, &bytes));
         }
-        // `Bytes`, not `Vec<u8>`: the status is resolved here (no caller ever
-        // read it back out of the tuple), and `to_vec` copied every response
-        // body on the heap purely to fit the return shape.
         Ok(bytes)
     }
 }

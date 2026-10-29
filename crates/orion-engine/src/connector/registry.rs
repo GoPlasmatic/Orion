@@ -13,7 +13,7 @@ use super::config::ConnectorConfig;
 pub type ConnectorSnapshot = Arc<HashMap<String, Arc<ConnectorConfig>>>;
 
 tokio::task_local! {
-    /// The connector estate of the generation a run executes on (`TD-07`).
+    /// The connector estate of the generation a run executes on.
     /// The runtime scopes it around an admitted run whose generation carries
     /// a snapshot; [`ConnectorRegistry::get`] reads it before the live map.
     pub static PINNED_CONNECTORS: ConnectorSnapshot;
@@ -490,7 +490,7 @@ impl ConnectorRegistry {
     /// Get a connector config by name.
     ///
     /// When executing inside a run pinned to a connector snapshot
-    /// ([`PINNED_CONNECTORS`], `TD-07`), resolves from that snapshot so
+    /// ([`PINNED_CONNECTORS`]), resolves from that snapshot so
     /// connector tasks within one run observe a consistent connector estate
     /// across concurrent reloads.
     pub async fn get(&self, name: &str) -> Option<Arc<ConnectorConfig>> {
@@ -501,13 +501,13 @@ impl ConnectorRegistry {
     }
 
     /// Snapshot the current immutable connector map for attachment to a
-    /// `orion_server::runtime::RuntimeGeneration` (`TD-07`).
+    /// `orion_server::runtime::RuntimeGeneration`.
     pub fn snapshot_configs(&self) -> Arc<HashMap<String, Arc<ConnectorConfig>>> {
         self.configs.load_full()
     }
 
     /// Restore a previously captured connector map, generation token, and load
-    /// issues after an aborted generation reload (`TD-07`).
+    /// issues after an aborted generation reload.
     pub async fn restore_snapshot(
         &self,
         configs: Arc<HashMap<String, Arc<ConnectorConfig>>>,

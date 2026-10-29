@@ -1,5 +1,5 @@
 //! Host-owned cumulative run budget and occupancy accounting for Dataflow v4
-//! runs (`OR-01`, `UP-03`, `V2-05.1`).
+//! runs.
 //!
 //! `dataflow-rs` 4.0.1 separates per-expression operation ceilings
 //! (`ExprEngineBuilder::ops_budget`) from run-wide cumulative accounting

@@ -247,7 +247,7 @@ impl OrionError {
         )
     }
 
-    /// 426 `UPGRADE_REQUIRED`: a pre-v2 write refused once v2 deployments are active (V2-07.5).
+    /// 426 `UPGRADE_REQUIRED`: a pre-v2 write refused once v2 deployments are active.
     pub fn upgrade_required(message: impl Into<String>) -> Self {
         Self::http(
             StatusCode::UPGRADE_REQUIRED,

@@ -196,6 +196,20 @@ impl MemoryCacheProviderBackend {
         }
     }
 
+    pub fn with_limits(
+        max_entries_per_partition: usize,
+        max_partitions: usize,
+        max_value_bytes: usize,
+    ) -> Self {
+        Self {
+            store: Arc::new(PartitionedMemoryCache::with_limits(
+                max_entries_per_partition,
+                max_partitions,
+                max_value_bytes,
+            )),
+        }
+    }
+
     pub fn store(&self) -> Arc<PartitionedMemoryCache> {
         self.store.clone()
     }

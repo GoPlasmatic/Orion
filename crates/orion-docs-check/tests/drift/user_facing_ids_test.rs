@@ -109,7 +109,6 @@ fn public_sdk_and_api_docs_name_no_tracker_ids() {
         workspace().join("crates/orion-definitions/src"),
         workspace().join("crates/orion-extension-api/src"),
         workspace().join("crates/orion-plugin-sdk/src"),
-        workspace().join("crates/orion-runtime/src/extensions"),
     ];
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(&dir).unwrap().flatten() {
@@ -135,6 +134,50 @@ fn public_sdk_and_api_docs_name_no_tracker_ids() {
     assert!(
         found.is_empty(),
         "public SDK/API rustdoc carries tracker IDs: {found:?}"
+    );
+}
+
+#[test]
+fn library_rustdoc_names_no_v2_tracker_ids() {
+    let mut found = Vec::new();
+    let mut stack = vec![
+        workspace().join("crates/orion-common/src"),
+        workspace().join("crates/orion-engine/src"),
+        workspace().join("crates/orion-http/src"),
+        workspace().join("crates/orion-runtime/src"),
+        workspace().join("crates/orion-storage/src"),
+    ];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (n, line) in text.lines().enumerate() {
+                let t = line.trim_start();
+                if !(t.starts_with("///") || t.starts_with("//!")) {
+                    continue;
+                }
+                for prefix in ["V2-", "TD-", "MOD-", "DEC-"] {
+                    if let Some(pos) = t.find(prefix)
+                        && t.as_bytes()
+                            .get(pos + prefix.len())
+                            .is_some_and(u8::is_ascii_digit)
+                    {
+                        found.push(format!("{}:{}: {prefix}*", path.display(), n + 1));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "library rustdoc carries v2 tracker IDs: {found:?}"
     );
 }
 
