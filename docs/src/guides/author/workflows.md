@@ -93,7 +93,7 @@ The condition is evaluated once, on entry. A false result skips the whole span w
 Groups nest up to 8 deep and share one id namespace with tasks. A group id colliding with a task id is refused at create. The field-by-field contract for both shapes is in [Workflow definition](../../reference/workflows.md#task-groups).
 
 > [!NOTE]
-> Task groups need dataflow-rs 3.6, which Orion 1.2.0 ships. A definition using one fails to load on an older engine, loudly. A bare `terminal: true` is silently ignored there and every later task runs. Gate on the server version if you deploy definitions to instances you do not control.
+> Task groups and `terminal: true` are built into the dataflow-rs 4 engine that Orion 2 ships.
 
 ## Say a thing once
 

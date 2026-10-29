@@ -24,6 +24,10 @@ book/
 # Wrangler local dev state (`just docs-preview`).
 .wrangler/
 
+# UI recording scripts (`docs/recordings/ui`).
+node_modules/
+recordings/ui/node_modules/
+
 # Vale's third-party style packages, fetched by `vale sync` (.vale.ini names
 # them under Packages). Not vendored: the Google style guide has its own
 # release cadence, and a committed copy would be one more thing to maintain.

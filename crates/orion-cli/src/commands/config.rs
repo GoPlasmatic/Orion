@@ -99,7 +99,12 @@ impl ConfigCmd {
                     ),
                 }
                 config.save()?;
-                println!("{} {} = {}", "OK".green().bold(), key.cyan(), value);
+                let displayed = if key == "api_key" {
+                    mask_secret(value)
+                } else {
+                    value.clone()
+                };
+                println!("{} {} = {}", "OK".green().bold(), key.cyan(), displayed);
             }
         }
         Ok(())

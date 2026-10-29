@@ -37,7 +37,7 @@ Two families of verbs, matching the two things a caller can want:
 | Verbs | Return |
 |---|---|
 | `get` / `post` / `put` / `patch` / `delete` | the **full response body**, for passthrough tools that print responses verbatim |
-| `get_data` / `post_data` / … | the payload with the **`{"data": …}` envelope unwrapped**, tolerating the bare pre-1.0 shape |
+| `get_data` / `post_data` / … | the payload with the **`{"data": …}` envelope unwrapped** |
 
 Presentation stays out of scope: hints, colours and message wording belong to
 the calling binary. This crate reports *what happened*; the caller decides how

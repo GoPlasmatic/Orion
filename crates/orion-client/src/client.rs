@@ -272,16 +272,9 @@ fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, ClientError> {
     serde_json::from_slice(bytes).map_err(|source| ClientError::Decode { source })
 }
 
-/// Unwrap the `{"data": …}` envelope, tolerating the bare pre-1.0 shape.
+/// Unwrap the `{"data": …}` envelope.
 fn decode_data<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, ClientError> {
-    let value: Value = decode(bytes)?;
-    let payload = match value {
-        Value::Object(mut map) if map.contains_key("data") => {
-            map.remove("data").unwrap_or(Value::Null)
-        }
-        other => other,
-    };
-    serde_json::from_value(payload).map_err(|source| ClientError::Decode { source })
+    decode::<orion_api::Data<T>>(bytes).map(|env| env.data)
 }
 
 #[cfg(test)]
@@ -289,11 +282,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decode_data_unwraps_the_envelope_and_tolerates_bare() {
+    fn decode_data_unwraps_the_envelope_and_refuses_bare() {
         let enveloped: Value = decode_data(br#"{"data": {"id": "wf-1"}}"#).expect("test");
         assert_eq!(enveloped["id"], "wf-1");
-        let bare: Value = decode_data(br#"{"id": "wf-1"}"#).expect("test");
-        assert_eq!(bare["id"], "wf-1");
+        assert!(decode_data::<Value>(br#"{"id": "wf-1"}"#).is_err());
     }
 
     #[test]

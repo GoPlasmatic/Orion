@@ -22,6 +22,9 @@ done
 # Published defaults still target v1. Use this checkout until a v2 image is selected.
 if [[ -z "${ORION_VERSION:-}" ]]; then
     COMPOSE+=(-f deploy/compose/ha.build.yml)
+    echo "ha-drill: ORION_VERSION unset; testing local build via deploy/compose/ha.build.yml" >&2
+else
+    echo "ha-drill: testing image tag ORION_VERSION=${ORION_VERSION}" >&2
 fi
 LB_URL="${LB_URL:-http://localhost:8080}"
 HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS:-60}"

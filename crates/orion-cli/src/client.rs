@@ -125,18 +125,6 @@ impl OrionClient {
         }
         self.inner.post_empty(path).await.map_err(render)
     }
-
-    pub async fn put<T: DeserializeOwned>(&self, path: &str, body: &Value) -> Result<T> {
-        self.inner.put(path, body).await.map_err(render)
-    }
-
-    pub async fn patch<T: DeserializeOwned>(&self, path: &str, body: &Value) -> Result<T> {
-        self.inner.patch(path, body).await.map_err(render)
-    }
-
-    pub async fn delete_request(&self, path: &str) -> Result<()> {
-        self.inner.delete(path).await.map_err(render)
-    }
 }
 
 /// The typed v2 admin calls (`orion_client::V2Admin`), over this client:

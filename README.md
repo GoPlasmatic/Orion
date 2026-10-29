@@ -260,11 +260,11 @@ The [Upgrade to 2.0.0](https://docs.goplasmatic.io/releases/upgrade-to-2.0.html)
 
 ## Performance
 
-The published Orion 1.0.0 benchmark measured **5.1K–5.7K workflow requests per
-second** on one Apple M2 Pro instance, with single-digit-millisecond average
-latency across the recorded workflow scenarios. These are release- and
-workload-specific results, not capacity guarantees. Review the
-[benchmark record](crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md)
+In the historical Orion 1.0.0 baseline benchmark, a single Apple M2 Pro instance
+measured **5.1K–5.7K workflow requests per second** with single-digit-millisecond
+average latency across the recorded workflow scenarios. These are historical
+release- and workload-specific results, not capacity guarantees for 2.x. Review
+the [benchmark record](crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md)
 for hardware, scenarios, tail latency, cluster results, and reproduction steps.
 
 ## Documentation

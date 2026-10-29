@@ -41,6 +41,12 @@ Migrations run as a `pre-install`/`pre-upgrade` Job; replicas boot with
 Keep migrations expand/contract compatible across one release (see
 CONTRIBUTING.md).
 
+> **Upgrading from Orion 1.x:** Orion 2.x starts from a fresh state database
+> and refuses a 1.x schema by name. Running `helm upgrade` against an existing
+> 1.x database will fail in the pre-upgrade migration Job rather than altering
+> 1.x tables. Point the 2.x release at a new database and deploy your compiled
+> definition set with `orion-cli deployments apply -d`.
+
 Setting `storage.autoMigrate=true` on a production cluster install is refused
 at startup — replicas would race each other at boot. The dev/demo install
 below is exempt: it runs as `development` and has no migrate Job, because its
