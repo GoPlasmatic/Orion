@@ -1,14 +1,14 @@
-//! Community Edition boundary verifier (`V2-11.3`, `DEC-005`), compiled for tests only.
+//! Community Edition boundary verifier, compiled for tests only.
 //!
 //! The tests below assert that the public Community Edition assembly
 //! ([`super::CompositionRoot::community`], built):
 //!
 //! 1. Registers **only** the 3 foundational native Rust channel drivers
-//!    (`cron`, `http`, `rest`) and zero Enterprise-only channel
+//!    (`cron`, `http`, `rest`) and zero non-Community channel
 //!    drivers (`graphql`, `kafka`, `sse`).
 //! 2. Registers **only** the 5 foundational Direct Rust connector providers
 //!    (`org.orion.http`, `org.orion.memory-cache`, `org.orion.mysql`,
-//!    `org.orion.postgresql`, `org.orion.sqlite`) and zero Enterprise-only
+//!    `org.orion.postgresql`, `org.orion.sqlite`) and zero non-Community
 //!    Direct Rust providers.
 //! 3. Uses [`CommunityPackageVerifier`](super::admission::CommunityPackageVerifier)
 //!    (`orion.community.admission/1`) which rejects `tier: "enterprise"` packages
@@ -22,11 +22,11 @@ use super::Composition;
 use super::ImplementationKind;
 use super::foundation::COMMUNITY_RUST_DRIVERS;
 
-/// Canonical Community Edition native Rust channel driver protocol IDs (`DEC-003`).
+/// Canonical Community Edition native Rust channel driver protocol IDs.
 pub const COMMUNITY_CHANNEL_PROTOCOLS: [&str; 3] = ["cron", "http", "rest"];
 
 /// Boundary violation discovered while auditing a [`Composition`] against the
-/// Community Edition contract (`V2-11.3`).
+/// Community Edition contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BoundaryViolation {
     pub code: &'static str,
@@ -34,7 +34,7 @@ pub struct BoundaryViolation {
     pub message: String,
 }
 
-/// Structured audit report produced by [`verify_community_assembly`] (`V2-11.3`).
+/// Structured audit report produced by [`verify_community_assembly`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CommunityAssemblyReport {
     pub admission_policy_id: String,
@@ -52,7 +52,7 @@ impl CommunityAssemblyReport {
     }
 }
 
-/// Verify that `root` satisfies the strict Community Edition boundary (`V2-11.3`, `DEC-005`).
+/// Verify that `root` satisfies the strict Community Edition boundary.
 ///
 /// - Checks that all 3 Community channel protocols (`cron`, `http`, `rest`) are
 ///   present and no Enterprise channel protocols (`graphql`, `kafka`, `sse`) are registered.
@@ -193,11 +193,10 @@ mod tests {
         assert_eq!(report.resource_pool_count, 4);
     }
 
-    /// An Enterprise-only protocol, standing in for the native driver the
-    /// Enterprise composition root registers.
-    struct EnterpriseKafkaDriver;
+    /// A custom channel protocol outside the Community foundation set.
+    struct CustomKafkaDriver;
 
-    impl crate::extensions::ChannelDriver for EnterpriseKafkaDriver {
+    impl crate::extensions::ChannelDriver for CustomKafkaDriver {
         fn protocol_id(&self) -> &'static str {
             "kafka"
         }
@@ -217,7 +216,7 @@ mod tests {
     #[test]
     fn detects_enterprise_channel_leak_in_community_audit() {
         let root = crate::extensions::CompositionRoot::community()
-            .with_channel_driver(Arc::new(EnterpriseKafkaDriver))
+            .with_channel_driver(Arc::new(CustomKafkaDriver))
             .build_in_memory()
             .unwrap();
         let report = verify_community_assembly(&root);

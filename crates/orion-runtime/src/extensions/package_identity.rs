@@ -1,4 +1,4 @@
-//! V2-10.3 Content identity, canonical inventory encoder/verifier, signature
+//! Content identity, canonical inventory encoder/verifier, signature
 //! statement framing, and complete typed dependency lock verifier.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};

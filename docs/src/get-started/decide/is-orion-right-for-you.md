@@ -15,7 +15,6 @@ Orion is the service itself. It is not a proxy in front of one and not a coordin
 | Building it yourself | Spring Boot, FastAPI, Express, Go | A service you compile, deploy and own end to end | **Replaces**, for services that fit a pipeline |
 | [Durable execution engines](./vs-durable-execution.md) | Temporal, Restate, Step Functions, Airflow | Work that must survive a restart, or wait hours for a human | **Pairs with**. Orion retries a run from the start, never from where it stopped |
 | [API gateways](./vs-api-gateways.md) | Kong, Envoy, APISIX, KrakenD | Policing and routing traffic to the services behind them | **Pairs with**. The services behind it run inside Orion's runtime |
-| MCP tool servers | Hand-written MCP servers, FastMCP, LangChain tools | Exposing your systems to an LLM as callable tools | **Replaces**, and adds reviewed deployments and rollback |
 | [Automation platforms](./vs-automation-platforms.md) | n8n, Zapier, Make, Node-RED | Wiring SaaS apps together in minutes, at low volume | **Different job**. Orion carries production request traffic |
 | Stream and integration tools | Camel, NiFi, Redpanda Connect, Flink | Moving and reshaping data between systems continuously | **Overlaps**. Orion handles each request on its own and consumes no stream; windowing and engine-managed state are theirs |
 | [Rule engines](./vs-rule-engines.md) | Drools, OPA, GoRules | Evaluating many rules over an accumulating fact base | **Overlaps**. In Orion each step feeds the next in the order you wrote; re-firing rules until they settle is theirs |

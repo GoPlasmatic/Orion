@@ -194,7 +194,7 @@ pub struct QueueMessage {
 /// enforceable (Q3).
 ///
 /// `dlq_entry_id` and `dlq_max_retries` identify the durable `trace_dlq` row
-/// whose claim lease backs a retry attempt (`TD-05`). The row is kept under
+/// whose claim lease backs a retry attempt. The row is kept under
 /// lease while the item is queued and executing, and settled (`remove`,
 /// `record_retry`, or `mark_exhausted`) only after execution finishes.
 pub(crate) struct QueuedItem {
@@ -298,7 +298,7 @@ impl TraceQueue {
         .await
     }
 
-    /// Fast pre-persistence admission check (`PERF-03`).
+    /// Fast pre-persistence admission check.
     ///
     /// Rejects submissions when the queue is closed, all shards are full, or
     /// the payload + metadata would exceed `max_memory_bytes` before callers
@@ -352,7 +352,7 @@ impl TraceQueue {
     /// Re-submit a message claimed from the DLQ, carrying the retry count its
     /// lineage has already spent and the durable DLQ entry ID/max-retries so
     /// post-execution settlement updates or removes the leased DLQ row only
-    /// after processing completes (Q3, `TD-05`).
+    /// after processing completes (Q3).
     pub(crate) async fn submit_dlq_retry(
         &self,
         msg: QueueMessage,

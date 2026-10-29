@@ -199,7 +199,7 @@ impl ImmutableDeploymentStore {
         }
     }
 
-    /// V2-04.1: ingest a bounded archive, refusing symlinks, path traversal,
+    /// Ingest a bounded archive, refusing symlinks, path traversal,
     /// decompression ratio bombs (> 20x), duplicate entries and inventory
     /// mismatches. Upload creates no serving routes or active generations.
     pub async fn ingest_verified_archive_in_db(
@@ -260,7 +260,7 @@ impl ImmutableDeploymentStore {
         Ok(prepared.row)
     }
 
-    /// V2-04.2: admit and install a stored package under `policy`, after
+    /// Admit and install a stored package under `policy`, after
     /// checking `lock` against every stored package, recording its admission
     /// fingerprint over runtime, profile, package and policy.
     pub async fn admit_package_in_db(
@@ -347,7 +347,7 @@ impl ImmutableDeploymentStore {
     }
 
     /// Store an immutable definition (a workflow, channel or plugin
-    /// document) as an `ACTIVE` content-addressed artifact (`TD-19`).
+    /// document) as an `ACTIVE` content-addressed artifact.
     /// Storing bytes already stored is a no-op; storing bytes the collector
     /// drained or deleted revives them, with a fresh grace window.
     pub async fn store_definition_artifact_in_db(
@@ -375,8 +375,8 @@ impl ImmutableDeploymentStore {
         })
     }
 
-    /// V2-03.2: store an immutable connection revision with its secret
-    /// locators and its public configuration digest (`TD-20`).
+    /// Store an immutable connection revision with its secret
+    /// locators and its public configuration digest.
     pub async fn store_connection_revision_in_db(
         &self,
         pool: &DbPool,
@@ -463,7 +463,7 @@ impl ImmutableDeploymentStore {
         Ok(row)
     }
 
-    /// V2-04.3: plan `candidate_manifest` on `base_revision` — its closure
+    /// Plan `candidate_manifest` on `base_revision` — its closure
     /// over what is stored and its diff against the base — in one read-only
     /// snapshot, outside any write transaction.
     pub async fn plan_candidate_in_db(
@@ -480,7 +480,7 @@ impl ImmutableDeploymentStore {
         Ok(plan)
     }
 
-    /// V2-04.4: commit `plan` as the next revision under compare-and-swap on
+    /// Commit `plan` as the next revision under compare-and-swap on
     /// its base, idempotently on `(principal, idempotency_key)`.
     pub async fn apply_candidate_in_db(
         &self,
@@ -516,7 +516,7 @@ impl ImmutableDeploymentStore {
             .await
     }
 
-    /// V2-04.5: re-deploy `target_revision`'s manifest as a NEW revision on
+    /// Re-deploy `target_revision`'s manifest as a NEW revision on
     /// top of `expected_head_revision`, re-verifying admissions, revocations
     /// and what is stored as of now.
     pub async fn rollback_to_revision_in_db(

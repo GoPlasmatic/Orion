@@ -54,7 +54,7 @@ async fn run_shared_state_sweeper(
     }
 }
 
-/// Register the supervised v2 state reconciliation loop (`V2-06`, `TD-18`).
+/// Register the supervised v2 state reconciliation loop.
 ///
 /// Continuously hydrates `ImmutableDeploymentStore` from the state database,
 /// refreshes provider/package revocations into the node's `RevocationLedger`,
@@ -85,7 +85,7 @@ fn unix_now_ms() -> u64 {
 }
 
 /// Synchronize revoked provider packages from the deployment store into the
-/// node's `RevocationLedger` deny-set (`CTX-09`).
+/// node's `RevocationLedger` deny-set.
 pub fn sync_v2_revocations(state: &AppState) {
     let packages = state.deployments.list_packages();
     let connections = state.deployments.list_connections();
@@ -118,7 +118,7 @@ pub fn sync_v2_revocations(state: &AppState) {
     }
 }
 
-/// Execute one pass of the v2 state reconciliation loop (`V2-06`, `TD-18`).
+/// Execute one pass of the v2 state reconciliation loop.
 pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
     let now_ms = unix_now_ms();
     // One row says whether anything committed has changed: every apply,
@@ -132,7 +132,7 @@ pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
                 .ledger()
                 .set_lease_valid(false);
         }
-        crate::metrics::record_error("v2_reconciler");
+        crate::metrics::record_error("v2_reconciler_catch_up");
         tracing::warn!(error = %e, "V2 reconciler: failed to hydrate deployment store from DB");
         return false;
     }
@@ -156,7 +156,7 @@ pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
         && local.applied_revision != desired_rev
         && let Err(e) = crate::runtime::reconcile_deployment_revision(state, desired_rev).await
     {
-        crate::metrics::record_error("v2_reconciler");
+        crate::metrics::record_error("v2_reconciler_apply");
         tracing::warn!(
             error = %e,
             desired_rev,
@@ -175,6 +175,7 @@ pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
         .persist_local_status(state.repos.runtime_nodes.as_ref())
         .await
     {
+        crate::metrics::record_error("v2_reconciler_heartbeat");
         tracing::warn!(error = %e, "V2 reconciler: failed to persist local status heartbeat");
         tick_ok = false;
     }
@@ -200,6 +201,7 @@ pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
         .refresh_observed_nodes(state.repos.runtime_nodes.as_ref())
         .await
     {
+        crate::metrics::record_error("v2_reconciler_heartbeat");
         tracing::warn!(error = %e, "V2 reconciler: failed to refresh observed cluster nodes");
         tick_ok = false;
     }
@@ -231,7 +233,7 @@ async fn apply_breaker_resets(state: &AppState) -> bool {
     let row = match state.cluster.repo.get_epoch().await {
         Ok(row) => row,
         Err(e) => {
-            crate::metrics::record_error("v2_reconciler");
+            crate::metrics::record_error("v2_reconciler_breaker");
             tracing::warn!(error = %e, "V2 reconciler: failed to read the breaker epoch");
             return false;
         }

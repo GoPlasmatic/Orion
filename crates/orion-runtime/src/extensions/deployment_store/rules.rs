@@ -39,7 +39,7 @@ pub(super) struct PreparedPackage {
     pub bundle: CompiledSchemaBundle,
 }
 
-/// V2-04.1: refuse symlinks, path traversal, decompression ratio bombs
+/// Refuse symlinks, path traversal, decompression ratio bombs
 /// (> 20x), duplicate entries and inventory mismatches; read the package's
 /// identity from its manifest and distribution.
 pub(super) fn prepare_archive(
@@ -316,7 +316,7 @@ pub(super) fn verified_metadata(
     verified
 }
 
-/// V2-04.2: admit `pkg` under `policy`, after checking `lock` (when given)
+/// Admit `pkg` under `policy`, after checking `lock` (when given)
 /// against `all_packages`: the admission row, with its fingerprint over the
 /// runtime, schema profile, package and policy.
 pub(super) fn admit(
@@ -432,7 +432,7 @@ impl ClosureFacts {
     }
 }
 
-/// V2-03 / TD-19: every provider a manifest declares is admitted, not
+/// Verify that every provider a manifest declares is admitted, not
 /// revoked, stored with the identity the manifest gives it, and active; every
 /// member names a stored, active definition (in its owning package's
 /// inventory, when it has one); every connection member names a stored
@@ -581,7 +581,7 @@ pub(super) fn verify_closure(
     Ok(())
 }
 
-/// V2-04.3: the plan of `candidate` on `base` (`None` for the empty base
+/// The plan of `candidate` on `base` (`None` for the empty base
 /// before revision 1): its canonical bytes and digest, its closure over
 /// `facts`, and the members it adds and removes.
 ///
@@ -685,8 +685,8 @@ pub(super) fn retained_revisions(
     retained
 }
 
-/// V2-04.6: one pass of two-phase, epoch-fenced collection (`ACTIVE ->
-/// DRAINING -> DELETED`) and member compaction (`TD-22`, `TD-23`).
+/// One pass of two-phase, epoch-fenced collection (`ACTIVE ->
+/// DRAINING -> DELETED`) and member compaction.
 ///
 /// **Never collected** — an artifact that is any of:
 /// - referenced by a *retained* revision: its provider lock, each provider

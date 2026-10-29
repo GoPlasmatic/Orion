@@ -17,7 +17,7 @@ use crate::extensions::{ImplementationKind, ProviderRef, ProviderRegistry, RunCo
 
 tokio::task_local! {
     /// Active v2 `RunContext` for the current engine execution, when started
-    /// under a pinned v2 generation (`V2-05.3`).
+    /// under a pinned v2 generation.
     pub static ACTIVE_RUN_CONTEXT: RunContext;
 }
 

@@ -1,4 +1,4 @@
-//! Typed entity references, disjoint rollout partitions, and canonical deployment manifests (`V2-03.1`, `MOD-02`).
+//! Typed entity references, disjoint rollout partitions, and canonical deployment manifests.
 
 use std::collections::{HashMap, HashSet};
 
@@ -13,7 +13,7 @@ use crate::extensions::{Digest, Revision};
 /// The kind of a deployment member: the wire's vocabulary.
 pub use orion_api::v2::EntityKind;
 
-/// Tagged integer-revision reference to an immutable deployment entity (`V2-03.1`).
+/// Tagged integer-revision reference to an immutable deployment entity.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct EntityRef {
     pub kind: EntityKind,
@@ -52,7 +52,7 @@ pub fn validate_provider_ref(provider: &ProviderRef) -> Result<(), DeploymentErr
     Ok(())
 }
 
-/// Disjoint half-open rollout bucket interval `[start_bucket, end_bucket)` within `0..100` (`V2-03.1`).
+/// Disjoint half-open rollout bucket interval `[start_bucket, end_bucket)` within `0..100`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct RolloutInterval {
     pub workflow_revision: u64,
@@ -120,7 +120,7 @@ pub struct ManifestMember {
     pub rollouts: Vec<RolloutInterval>,
 }
 
-/// Versioned canonical deployment manifest (`V2-03.1`).
+/// Versioned canonical deployment manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanonicalManifest {
     pub schema_version: u64,

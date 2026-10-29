@@ -1,16 +1,16 @@
-//! Native Rust `source` channel runner, fenced partition leases and contiguous checkpoint ledger (`V2-15.1`–`V2-15.4`).
+//! Native Rust `source` channel runner, fenced partition leases and contiguous checkpoint ledger.
 //!
-//! Implements the host-owned `source` channel execution lifecycle (`V2-15`):
-//! - **Bounded Privileged Source Dispatch (`V2-15.1`)**: Only [`SourceChannelRunner`]
+//! Implements the host-owned `source` channel execution lifecycle:
+//! - **Bounded Privileged Source Dispatch**: Only [`SourceChannelRunner`]
 //!   can mint `orion.internal.source.*` invocations (`open`, `poll`, `settle`,
 //!   `close`), enforcing batch-size and cursor-byte ceilings across all three
 //!   connector backend kinds (`rust`, `workflow`, `wasm`).
-//! - **Fenced Partition Ownership (`V2-15.2`)**: [`SourceLeaseCoordinator`]
+//! - **Fenced Partition Ownership**: [`SourceLeaseCoordinator`]
 //!   assigns monotonically increasing fence tokens per `(channel_id, partition_id)`
 //!   in the `source_claims` table, with leases judged on the database clock on
 //!   every backend. Stale owners after lease expiry or revision takeover cannot
 //!   renew, acknowledge, or commit checkpoints.
-//! - **Settlement Intent & Contiguous Checkpoints (`V2-15.3`)**:
+//! - **Settlement Intent & Contiguous Checkpoints**:
 //!   [`ContiguousCheckpointLedger`] records durable settlement intent before
 //!   external ack/DLQ persistence, blocks checkpoint advancement across gaps or
 //!   unpersisted DLQ items, and commits only contiguous settled offsets under
@@ -20,7 +20,7 @@
 //! Kafka one moved to Orion Enterprise), so a `source` protocol would accept
 //! channels nothing runs. An edition with a source provider registers the
 //! channel driver.
-//! - **Revision Handoff (`V2-15.4`)**: Transfers partition ownership to a new
+//! - **Revision Handoff**: Transfers partition ownership to a new
 //!   deployment revision with a higher fence token while enforcing checkpoint
 //!   namespace compatibility.
 
@@ -38,7 +38,7 @@ use super::{
 };
 use super::{SourcePollBatch, SourceSettlement};
 
-/// Stable source partition key across revisions (`V2-15.2`).
+/// Stable source partition key across revisions.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SourcePartitionKey {
     pub channel_id: String,
@@ -54,7 +54,7 @@ impl SourcePartitionKey {
     }
 }
 
-/// Active fenced ownership claim for a source partition (`V2-15.2`).
+/// Active fenced ownership claim for a source partition.
 ///
 /// Carries no expiry: the lease's end is a `source_claims.lease_until`
 /// timestamp on the database clock, and every check against it is made there.
@@ -67,7 +67,7 @@ pub struct SourcePartitionClaim {
     pub fence_token: u64,
 }
 
-/// Error returned when a source lease, fence, or checkpoint invariant is violated (`V2-15`).
+/// Error returned when a source lease, fence, or checkpoint invariant is violated.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SourceCoordinationError {
     pub code: &'static str,
@@ -110,8 +110,7 @@ fn not_found(message: &str) -> SourceCoordinationError {
 type ClaimRow = (String, i64, String, i64);
 
 /// Fenced partition leases and their checkpoints, held in the `source_claims`
-/// and `source_checkpoints` tables and judged on the **database clock**
-/// (`V2-15.2`, `V2-15.4`).
+/// and `source_checkpoints` tables and judged on the **database clock**.
 ///
 /// Every node sharing the state database contends on the same rows, so
 /// ownership is a property of the database, not of a process: a claim is an
@@ -209,7 +208,7 @@ impl SourceLeaseCoordinator {
 
     /// Acquire an unclaimed partition, renew this owner's own claim, or take
     /// over one whose lease has expired on the database clock — each issuing
-    /// a strictly greater `fence_token` (`V2-15.2`).
+    /// a strictly greater `fence_token`.
     pub async fn acquire_or_takeover(
         &self,
         key: SourcePartitionKey,
@@ -366,7 +365,7 @@ impl SourceLeaseCoordinator {
 
     /// Extend a live lease, only for the owner holding the current fence; a
     /// lease already over on the database clock is not renewed — the owner
-    /// must claim again, and gets a new fence (`V2-15.2`).
+    /// must claim again, and gets a new fence.
     pub async fn renew(
         &self,
         key: &SourcePartitionKey,
@@ -420,7 +419,7 @@ impl SourceLeaseCoordinator {
         Ok(current)
     }
 
-    /// Hand off a source partition to a new revision (`V2-15.4`).
+    /// Hand off a source partition to a new revision.
     ///
     /// Increments the fence token so the old revision's runner cannot settle
     /// in-flight items or overwrite checkpoints after the handoff. Rejects a
@@ -487,7 +486,7 @@ impl SourceLeaseCoordinator {
     }
 
     /// Verify that `fence_token` is the active fence for `key` and its lease
-    /// is live on the database clock (`V2-15.2`).
+    /// is live on the database clock.
     pub async fn validate_fence(
         &self,
         key: &SourcePartitionKey,
@@ -548,7 +547,7 @@ impl SourceLeaseCoordinator {
 
     /// Commit a contiguous checkpoint for `key` under `fence_token`, in one
     /// transaction with the fence check: a checkpoint lands only while its
-    /// writer holds the current fence on a live lease (`V2-15.3`).
+    /// writer holds the current fence on a live lease.
     pub async fn commit_checkpoint(
         &self,
         key: &SourcePartitionKey,
@@ -645,7 +644,7 @@ impl SourceLeaseCoordinator {
     }
 }
 
-/// Lifecycle state of a single polled source item in [`ContiguousCheckpointLedger`] (`V2-15.3`).
+/// Lifecycle state of a single polled source item in [`ContiguousCheckpointLedger`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ItemSettlementState {
     /// Item was polled and is awaiting settlement intent.
@@ -672,7 +671,7 @@ struct PartitionLedger {
     items: BTreeMap<u64, TrackedItem>,
 }
 
-/// Crash-sensitive settlement and contiguous checkpoint ledger (`V2-15.3`).
+/// Crash-sensitive settlement and contiguous checkpoint ledger.
 ///
 /// The in-flight items are the owning runner's own (they belong to the
 /// process that polled them); the fence they are settled under and the
@@ -747,7 +746,7 @@ impl ContiguousCheckpointLedger {
         Ok(seq)
     }
 
-    /// Step 1 of settlement (`V2-15.3`): record settlement intent under the
+    /// Step 1 of settlement: record settlement intent under the
     /// active fence before sending external `settle` or writing to DLQ.
     pub async fn record_settlement_intent(
         &self,
@@ -774,7 +773,7 @@ impl ContiguousCheckpointLedger {
         Ok(item.delivery_id.clone())
     }
 
-    /// Step 2 of settlement (`V2-15.3`): confirm external settlement/DLQ
+    /// Step 2 of settlement: confirm external settlement/DLQ
     /// completion and advance the committed checkpoint only across contiguous
     /// settled sequence numbers, committing it under the fence first.
     pub async fn confirm_settled_and_advance(
@@ -872,7 +871,7 @@ impl ContiguousCheckpointLedger {
     }
 }
 
-/// Bounds enforced by [`SourceChannelRunner`] on every source facet call (`V2-15.1`).
+/// Bounds enforced by [`SourceChannelRunner`] on every source facet call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceRunnerLimits {
     pub max_batch_items: u32,
@@ -888,7 +887,7 @@ impl Default for SourceRunnerLimits {
     }
 }
 
-/// Host-owned native Rust `source` channel runner (`V2-15.1`–`V2-15.4`).
+/// Host-owned native Rust `source` channel runner.
 ///
 /// Drives any registered connector (`rust`, `workflow`, or `wasm`) that exposes
 /// `super::SourceConnectorFacet`.
@@ -968,7 +967,7 @@ impl SourceChannelRunner {
         })
     }
 
-    /// Authorize and execute `source.open` on a source-capable connector (`V2-15.1`).
+    /// Authorize and execute `source.open` on a source-capable connector.
     pub async fn open_cursor(
         &self,
         run_ctx: &RunContext,
@@ -981,7 +980,7 @@ impl SourceChannelRunner {
         Ok(cursor)
     }
 
-    /// Authorize and execute `source.poll`, enforcing `max_batch_items` and cursor bounds (`V2-15.1`).
+    /// Authorize and execute `source.poll`, enforcing `max_batch_items` and cursor bounds.
     pub async fn poll_batch(
         &self,
         run_ctx: &RunContext,
@@ -1012,7 +1011,7 @@ impl SourceChannelRunner {
         Ok(batch)
     }
 
-    /// Authorize and execute `source.settle` for a single delivery ID (`V2-15.1`, `V2-15.3`).
+    /// Authorize and execute `source.settle` for a single delivery ID.
     pub async fn settle_item(
         &self,
         run_ctx: &RunContext,

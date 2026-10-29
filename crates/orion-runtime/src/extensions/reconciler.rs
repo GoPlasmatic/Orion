@@ -1,4 +1,4 @@
-//! V2-06 & V2-05.2 Node reconciler, candidate builder with whole-build vs
+//! Node reconciler, candidate builder with whole-build vs
 //! per-entity quarantine semantics, non-superseded atomic publication,
 //! jittered backoff, convergence wait (`this-node` / `observed`), and
 //! fail-closed DB-time security lease.
@@ -91,7 +91,7 @@ pub struct ConvergenceReport {
     pub degraded_nodes: Vec<String>,
 }
 
-/// Compute exponential backoff in `[250ms, 30_000ms]` with deterministic jitter (`V2-06.4`).
+/// Compute exponential backoff in `[250ms, 30_000ms]` with deterministic jitter.
 pub fn compute_reconcile_backoff_ms(attempt: u32, jitter_seed: u64) -> u64 {
     if attempt == 0 {
         return 0;
@@ -161,7 +161,7 @@ impl NodeReconciler {
         g.keys().cloned().collect()
     }
 
-    /// V2-06.1: Poll the durable `deployment_head` from the store. When a new
+    /// Poll the durable `deployment_head` from the store. When a new
     /// desired revision is observed, reset any prior failure backoff.
     pub fn observe_desired_head(&self) -> u64 {
         let (head_rev, _) = self.store.current_head();
@@ -176,7 +176,7 @@ impl NodeReconciler {
         head_rev
     }
 
-    /// V2-06.2 & V2-06.3: Build a candidate outside write locks and publish only
+    /// Build a candidate outside write locks and publish only
     /// if not superseded by a newer desired or applied revision.
     pub fn build_and_publish_candidate(
         &self,
@@ -269,7 +269,7 @@ impl NodeReconciler {
         }
     }
 
-    /// V2-06.4: Evaluate convergence against `ThisNode` or a fixed `ObservedNodes` set.
+    /// Evaluate convergence against `ThisNode` or a fixed `ObservedNodes` set.
     pub fn evaluate_convergence(
         &self,
         target_revision: u64,
@@ -306,7 +306,7 @@ impl NodeReconciler {
         }
     }
 
-    /// V2-06.5: Renew the node's security lease. `now_ms` is the wall clock and
+    /// Renew the node's security lease. `now_ms` is the wall clock and
     /// feeds only the reported expiry; see [`Self::is_security_lease_current`].
     pub fn renew_security_lease(&self, now_ms: u64, lease_duration_ms: u64) {
         let mut g = self.nodes.lock_unpoisoned();
@@ -331,7 +331,7 @@ impl NodeReconciler {
             .is_some_and(|node| now_ms <= node.security_lease_expires_at_ms)
     }
 
-    /// Persist this node's [`RuntimeNodeStatus`] to `runtime_nodes` (`TD-18`).
+    /// Persist this node's [`RuntimeNodeStatus`] to `runtime_nodes`.
     pub async fn persist_local_status(
         &self,
         nodes: &dyn RuntimeNodeRepository,
@@ -355,8 +355,7 @@ impl NodeReconciler {
     }
 
     /// Load every observed cluster node from `runtime_nodes` into
-    /// `self.nodes` and update `self.store`'s retained revision sets
-    /// (`TD-18`).
+    /// `self.nodes` and update `self.store`'s retained revision sets.
     pub async fn refresh_observed_nodes(
         &self,
         nodes: &dyn RuntimeNodeRepository,

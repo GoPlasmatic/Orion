@@ -1,4 +1,4 @@
-//! V2-07.2: Connector provider authoring workflow (`scaffold`, `lint`, `pack`, `test`).
+//! Connector provider authoring workflow (`scaffold`, `lint`, `pack`, `test`).
 //!
 //! Provides deterministic package scaffolding, manifest + schema profile linting,
 //! canonical archive inventory packing, and local conformance smoke testing for
@@ -15,7 +15,7 @@ use super::package_identity::{
 };
 use super::schema_profile::{DIALECT_URI, SchemaProfileFinding, check_manifest_bundle};
 
-/// Scaffolded provider package bundle (`V2-07.2`).
+/// Scaffolded provider package bundle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScaffoldedPackage {
     pub publisher: String,
@@ -25,7 +25,7 @@ pub struct ScaffoldedPackage {
     pub files: BTreeMap<String, Vec<u8>>,
 }
 
-/// Lint report for a provider package (`V2-07.2`).
+/// Lint report for a provider package.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackageLintReport {
     pub valid: bool,
@@ -35,7 +35,7 @@ pub struct PackageLintReport {
     pub errors: Vec<String>,
 }
 
-/// Packed provider inventory and canonical package digest (`V2-07.2`).
+/// Packed provider inventory and canonical package digest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackedPackageInventory {
     pub package_digest: super::Digest,
@@ -43,7 +43,7 @@ pub struct PackedPackageInventory {
     pub inventory_bytes: Vec<u8>,
 }
 
-/// Generate a canonical scaffold for a `rust`, `workflow`, or `wasm` connector package (`V2-07.2`).
+/// Generate a canonical scaffold for a `rust`, `workflow`, or `wasm` connector package.
 pub fn scaffold_provider_package(
     publisher: &str,
     provider_id: &str,
@@ -207,7 +207,7 @@ pub fn scaffold_provider_package(
     }
 }
 
-/// Lint a provider package's manifest and schema files (`V2-07.2`).
+/// Lint a provider package's manifest and schema files.
 pub fn lint_provider_package(files: &BTreeMap<String, Vec<u8>>) -> PackageLintReport {
     let mut errors = Vec::new();
     let Some(manifest_bytes) = files.get("connector.json") else {
@@ -295,7 +295,7 @@ pub fn lint_provider_package(files: &BTreeMap<String, Vec<u8>>) -> PackageLintRe
     }
 }
 
-/// Pack and verify a provider package into a deterministic `PackedPackageInventory` (`V2-07.2`).
+/// Pack and verify a provider package into a deterministic `PackedPackageInventory`.
 pub fn pack_provider_package(
     files: &BTreeMap<String, Vec<u8>>,
 ) -> Result<PackedPackageInventory, PackageIdentityFinding> {

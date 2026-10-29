@@ -1,4 +1,4 @@
-//! V2-10.2 Constrained JSON Schema profile (`orion-json-schema/1`): the
+//! Constrained JSON Schema profile (`orion-json-schema/1`): the
 //! manifest validator and the step-metered instance validator.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -905,7 +905,7 @@ fn matches_type(ty: &Value, instance: &Value) -> bool {
 }
 
 /// Validate a connector manifest bundle (`manifest`, `files`, `schemas`) against
-/// the V2-10.2 shape and relationship rules, returning a compiled schema bundle.
+/// the profile's shape and relationship rules, returning a compiled schema bundle.
 pub fn check_manifest_bundle(
     manifest: &Value,
     files: &[String],

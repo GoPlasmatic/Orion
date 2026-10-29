@@ -1,12 +1,12 @@
-//! Owned run context and atomic budget coordinator (`V2-05.1`).
+//! Owned run context and atomic budget coordinator.
 //!
-//! Implements the host-owned run context (`V2-05.1`):
+//! Implements the host-owned run context:
 //! - [`AdmittedRun`] and [`RunContext`]: generation-pinned execution scope with
 //!   monotonic deadline clamping (`min(parent, child)`), cooperative cancellation
-//!   tree, and authority intersection (`CTX-01`, `CTX-06`).
+//!   tree, and authority intersection.
 //! - [`BudgetScope`], [`ChargeVector`], [`Reservation`], and [`WorkLease`]:
 //!   atomic multi-scope reservation coordinator under a single root critical
-//!   section (`CTX-02`, `CTX-03`, `CTX-04`, `CTX-10`).
+//!   section.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,7 +24,7 @@ fn next_unique_id() -> u64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Multi-dimensional work charge vector (`V2-05.1`).
+/// Multi-dimensional work charge vector.
 ///
 /// Distinguishes cumulative debits (`attempts`, `tasks`, `network_sends`, `bytes`)
 /// from active occupancy (`active_jobs`).
@@ -126,7 +126,7 @@ struct ScopeNode {
 }
 
 /// Root-owned reservation coordinator that serializes multi-scope reservations
-/// under one critical section (`CTX-02`, `CTX-03`, `CTX-10`).
+/// under one critical section.
 #[derive(Debug)]
 struct RootBudgetCoordinator {
     scopes: Mutex<BTreeMap<u64, ScopeNode>>,
@@ -160,7 +160,7 @@ impl BudgetScope {
     }
 
     /// Derive a child budget scope whose local ceilings cannot exceed its parent's
-    /// configured limits (`CTX-06`, `CTX-10`).
+    /// configured limits.
     pub fn derive_child(&self, requested: BudgetLimits) -> Self {
         let child_id = next_unique_id();
         let mut guard = self
@@ -197,7 +197,7 @@ impl BudgetScope {
     }
 
     /// Atomically check the full `charge` vector against this scope and every
-    /// ancestor up to the root before modifying any counter (`CTX-02`, `CTX-03`).
+    /// ancestor up to the root before modifying any counter.
     pub fn reserve(
         &self,
         charge: ChargeVector,
@@ -266,10 +266,10 @@ impl BudgetScope {
     }
 }
 
-/// An unstarted budget reservation (`V2-05.1`).
+/// An unstarted budget reservation.
 ///
 /// If dropped or explicitly aborted via [`Self::abort_before_start`] before work
-/// begins, both cumulative and occupancy counters are rolled back (`CTX-04`).
+/// begins, both cumulative and occupancy counters are rolled back.
 /// Calling [`Self::commit_started`] makes cumulative debits permanent and returns
 /// a [`WorkLease`] that holds occupancy until actual completion.
 #[derive(Debug)]
@@ -313,7 +313,7 @@ impl Drop for Reservation {
     }
 }
 
-/// Occupancy lease committed to a started job (`V2-05.1`).
+/// Occupancy lease committed to a started job.
 ///
 /// Retains `active_jobs` occupancy until the job finishes and drops this lease,
 /// while cumulative debits (`attempts`, `tasks`, `network_sends`, `bytes`) remain
@@ -356,7 +356,7 @@ impl Drop for WorkLease {
     }
 }
 
-/// Authority projection carried by a `RunContext` (`V2-05.1`).
+/// Authority projection carried by a `RunContext`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AuthorityGrant {
     /// Allowed `(connection_id, operation)` pairs in this context.
@@ -429,7 +429,7 @@ impl AuthorityGrant {
     }
 }
 
-/// Root admitted execution handle (`V2-05.1`).
+/// Root admitted execution handle.
 #[derive(Debug, Clone)]
 pub struct AdmittedRun {
     run_id: String,
@@ -489,7 +489,7 @@ impl AdmittedRun {
     }
 }
 
-/// Generation-pinned execution context for root or child runs (`V2-05.1`).
+/// Generation-pinned execution context for root or child runs.
 #[derive(Clone)]
 pub struct RunContext {
     run_id: String,
@@ -541,7 +541,7 @@ impl RunContext {
         &self.run_id
     }
 
-    /// Pinned generation ID; preserved across all child calls (`CTX-01`).
+    /// Pinned generation ID; preserved across all child calls.
     pub fn generation_id(&self) -> u64 {
         self.generation_id
     }
@@ -576,7 +576,7 @@ impl RunContext {
         Ok(())
     }
 
-    /// Derive a child context for a nested channel or sub-workflow call (`CTX-01`, `CTX-06`).
+    /// Derive a child context for a nested channel or sub-workflow call.
     ///
     /// - Preserves `generation_id`.
     /// - Clamps deadline to `min(parent.deadline, requested_deadline)`.
@@ -615,7 +615,7 @@ impl RunContext {
     }
 
     /// Start a logical connector invocation after verifying authority, cancellation,
-    /// and deadline (`V2-05.1`).
+    /// and deadline.
     pub fn start_invocation(
         &self,
         connection: ConnectionReference,
@@ -677,7 +677,7 @@ impl RunContext {
         })
     }
 
-    /// Start a host-authorized source lifecycle invocation (`orion.internal.source.*`) (`V2-15.1`).
+    /// Start a host-authorized source lifecycle invocation (`orion.internal.source.*`).
     ///
     /// Restricted to `pub(crate)` so only the host [`super::source_runner::SourceChannelRunner`]
     /// can mint privileged source facet calls while application workflows are blocked by
@@ -707,7 +707,7 @@ impl RunContext {
     }
 }
 
-/// Logical connector invocation spanning retries and nested dependency calls (`V2-05.1`).
+/// Logical connector invocation spanning retries and nested dependency calls.
 #[derive(Debug, Clone)]
 pub struct Invocation {
     invocation_id: u64,
@@ -755,7 +755,7 @@ impl Invocation {
         *self.effect_ledger.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Merge newly observed effect evidence into the invocation's monotonic ledger (`V2-10.1`).
+    /// Merge newly observed effect evidence into the invocation's monotonic ledger.
     pub fn record_effect(&self, observed: EffectStatus) -> EffectStatus {
         let mut guard = self.effect_ledger.lock().unwrap_or_else(|e| e.into_inner());
         *guard = guard.merge(observed);
@@ -763,7 +763,7 @@ impl Invocation {
     }
 
     /// Allocate the next attempt context, enforcing both the per-invocation attempt
-    /// cap and the shared root/ancestor attempt budget (`CTX-10`).
+    /// cap and the shared root/ancestor attempt budget.
     pub fn next_attempt(&self) -> Result<AttemptContext, ConnectorError> {
         let prior_effect = self.effect_status();
         self.context.check_live(prior_effect)?;
@@ -793,7 +793,7 @@ impl Invocation {
         ))
     }
 
-    /// Spawn a child dependency invocation declared in the workflow-group manifest (`V2-05.1`).
+    /// Spawn a child dependency invocation declared in the workflow-group manifest.
     pub fn derive_dependency(
         &self,
         declared_alias: &str,

@@ -12,7 +12,7 @@ use crate::queue::TraceQueue;
 use crate::storage::DbPool;
 use crate::storage::repositories::Repositories;
 
-/// Shared cache and external connection-pool caches, grouped (R26).
+/// Shared cache and external connection-pool caches, grouped.
 pub struct Caches {
     /// In-memory cache backends for workflow cache functions, dedup stores
     /// and response caches.
@@ -73,7 +73,7 @@ impl axum::extract::FromRef<AppState> for DataPlane {
 /// clone Axum performs on `State<AppState>` is a single atomic refcount bump
 /// rather than one per `Arc` field (~20+).
 ///
-/// R26: the coherent clusters are grouped — [`Repositories`] (`repos`),
+/// The coherent clusters are grouped — [`Repositories`] (`repos`),
 /// [`Caches`] (`caches`); everything genuinely
 /// runtime-singular stays a flat field.
 pub struct AppStateInner {
@@ -140,7 +140,7 @@ pub struct AppStateInner {
     pub trace_queue: TraceQueue,
     /// The startup pool. **Route handlers should not reach for this** — go
     /// through [`AppStateInner::pool_stats`] or
-    /// [`AppStateInner::backup_sqlite_into`] (R26). It stays public because
+    /// [`AppStateInner::backup_sqlite_into`]. It stays public because
     /// bootstrap assembles it and the integration harness seeds rows through
     /// it. A route that unwraps a concrete `sqlx` pool here instead of using
     /// those methods ties a handler to one backend.
@@ -228,7 +228,7 @@ pub struct AppStateInner {
     /// The data plane's narrow view of this state, built from the same
     /// handles; see [`DataPlane`].
     pub data_plane: DataPlane,
-    /// What this node serves, frozen at boot (`V2-11.1`): its edition, the
+    /// What this node serves, frozen at boot: its edition, the
     /// channel drivers, the provider backends (composed, plus the packages
     /// it admits at runtime), the connection-pool caches and its admission
     /// (the edition's package verifier over the node's revocation ledger).
@@ -251,7 +251,7 @@ impl AppStateInner {
         &self.trusted_proxies
     }
 
-    /// `(size, idle)` connection counts for the `/health` gauges (R26).
+    /// `(size, idle)` connection counts for the `/health` gauges.
     pub fn pool_stats(&self) -> (u32, usize) {
         (self.db_pool.size(), self.db_pool.num_idle())
     }
@@ -270,7 +270,7 @@ impl AppStateInner {
             .unwrap_or(Err(sqlx::Error::PoolTimedOut))
     }
 
-    /// Copy the database to `path` via SQLite's `VACUUM INTO` (R26).
+    /// Copy the database to `path` via SQLite's `VACUUM INTO`.
     ///
     /// `Ok(false)` when the backend is not SQLite — the operation has no
     /// equivalent on PostgreSQL or MySQL, which rely on operator snapshot and

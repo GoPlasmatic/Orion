@@ -80,9 +80,7 @@ orion-cli deployments rollback --target-revision 1 \
 
 ## Why a skill and not a tool server
 
-Orion shipped an MCP server inside `orion-cli` until 1.2.0. It was removed. Its HTTP transport exposed the full admin API on a port with no authentication of its own. All 58 of its tools were mirrors of commands the CLI already had.
-
-A skill is a better fit for the same job. It is knowledge, loaded only when a task needs it and costing nothing until then, and the CLI is the hands. The agent inherits your credentials rather than holding its own. Every write lands in the audit log under your principal, and nothing new listens on a port.
+A skill is knowledge, loaded only when a task needs it and costing nothing until then, while `orion-cli` is the hands. The agent inherits your credentials rather than holding its own. Every write lands in the audit log under your principal, and nothing new listens on a port.
 
 ## Recap
 

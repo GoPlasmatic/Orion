@@ -804,7 +804,7 @@ pub fn record_cache_miss(channel: &str) {
 /// `time() - orion_job_last_success_timestamp_seconds{job="…"} > threshold`.
 ///
 /// `job` is one of `trace_cleanup`, `audit_cleanup`, `dlq_retry`,
-/// `epoch_watcher`, `cron_reconcile`, `cron_cleanup`, `deployment_gc`. Called once per fully successful tick;
+/// `epoch_watcher`, `cron_reconcile`, `cron_cleanup`, `deployment_gc`, `v2_reconciler`. Called once per fully successful tick;
 /// a tick skipped because another node holds the job lease does not count —
 /// on that node the gauge honestly goes stale, and the holder keeps it fresh.
 pub fn record_job_success(job: &'static str) {
@@ -955,6 +955,31 @@ pub fn record_connector_duration(connector: &str, channel: &str, duration_secs: 
         "orion_connector_request_duration_seconds",
         "connector" => connector.to_owned(),
         "channel" => channel.to_owned()
+    )
+    .record(duration_secs);
+}
+
+/// Record one provider backend invocation attempt at the `ProviderRegistry` boundary.
+pub fn record_provider_invocation(
+    driver: &str,
+    kind: &'static str,
+    outcome: &'static str,
+    duration_secs: f64,
+) {
+    if !is_enabled() {
+        return;
+    }
+    counter!(
+        "orion_provider_invocations_total",
+        "driver" => driver.to_owned(),
+        "kind" => kind,
+        "outcome" => outcome
+    )
+    .increment(1);
+    histogram!(
+        "orion_provider_invocation_duration_seconds",
+        "driver" => driver.to_owned(),
+        "kind" => kind
     )
     .record(duration_secs);
 }

@@ -291,34 +291,11 @@ Add behavior tests beside the implementation and document the function under
 
 ### Comments citing an item ID
 
-Around 900 comments across `src/` open with a short code — `N10`, `R13`, `F35`,
-`W8`, `S15`. These are items from the pre-1.0 audits, and the code is the reason
-the comment exists rather than a note about it. Resolve one with:
-
-```bash
-git log --grep=N10          # the commit that closed it, with the full rationale
-```
-
-The IDs are a historical record — safe to ignore entirely when reading or
-writing code. Chasing one needs the full history: on a shallow clone run
-`git fetch --unshallow` first.
-
-Every commit that closed an item names it in the message body, so the history is
-the index. The `proposal.md` trackers that held open items are retired — both
-audits closed out before the 1.0 tag, and the last four carried items live where
-they are actioned: P12 and C13 in `RELEASING.md`'s release procedure, P13's
-revisit criterion in `dist-workspace.toml`, B6 an external listing process. An
-ID's absence from the tree means the work is done (or externally tracked), not
-that the reference is stale.
-
-Two rules keep this readable. Each comment must stand on its own without the ID:
-the prefix points at the history for a reader who wants the argument, and is
-never the only place the reason is written. And when a comment's claim stops
-being true, correct the comment — the ID records why the code was written, not a
-promise that it still behaves that way.
-
-New comments do not need an ID. The scheme is a record of how 1.0 was reached,
-not a convention to keep feeding.
+Some comments across `crates/` open with a short historical audit code (`N10`,
+`R13`, `F35`, `W8`, `S15`). These trace back to pre-1.0 audits; run
+`git log --grep=<ID>` (after `git fetch --unshallow` on a shallow clone) for
+the commit rationale. Every comment must stand on its own without the ID, and
+new comments should not add audit or tracker IDs.
 
 ## Cutting a Release
 

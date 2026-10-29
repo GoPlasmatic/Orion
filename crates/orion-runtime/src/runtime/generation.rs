@@ -35,7 +35,7 @@ use crate::engine::FunctionRegistry;
 use crate::plugin::PluginSet;
 
 tokio::task_local! {
-    /// Pinned [`RuntimeGeneration`] for the current root run (`V2-05.2`, `V2-05.3`).
+    /// Pinned [`RuntimeGeneration`] for the current root run.
     ///
     /// When set via `PINNED_GENERATION.scope(Arc::clone(&generation), fut)`,
     /// nested `channel_call` and guard stores inside `fut`
@@ -72,12 +72,12 @@ pub struct RuntimeGeneration {
     /// fingerprint to decide whether the engine must be rebuilt.
     pub plugins: Arc<PluginSet>,
     /// Immutable snapshot of resolved connector configurations published with
-    /// this generation (`TD-07`). When `Some`, connector tasks executing under
+    /// this generation. When `Some`, connector tasks executing under
     /// [`PINNED_GENERATION`] resolve against this snapshot rather than reading
     /// a concurrently reloaded [`crate::connector::ConnectorRegistry`].
     pub connectors:
         Option<Arc<std::collections::HashMap<String, Arc<crate::connector::ConnectorConfig>>>>,
-    /// Run-wide resource budget ceilings configured for this generation (`TD-03`).
+    /// Run-wide resource budget ceilings configured for this generation.
     pub run_budget_limits: crate::engine::budget::RunBudgetLimits,
     pub connector_budget_limits: crate::config::ConnectorBudgetLimits,
     /// Which connections each workflow may call through `connector_call`.
@@ -199,7 +199,7 @@ impl RuntimeHandle {
     }
 
     /// Return the task-local [`PINNED_GENERATION`] when executing inside an
-    /// admitted root run (`V2-05.3`), or load the current generation otherwise.
+    /// admitted root run, or load the current generation otherwise.
     pub fn load_pinned_or_current(&self) -> Arc<RuntimeGeneration> {
         PINNED_GENERATION
             .try_with(Arc::clone)

@@ -264,7 +264,7 @@ async fn route_complete(
 /// Supervise one queued trace so a panicking handler or task still records a
 /// terminal trace status (`FAILED`) and settles any leased DLQ retry entry
 /// as exhausted rather than stranding the trace at `pending`/`running` or
-/// automatically replaying after uncertain side effects (`TD-06`).
+/// automatically replaying after uncertain side effects.
 async fn run_supervised_trace(item: QueuedItem, ctx: ProcessingContext) {
     let trace_id = item.msg.trace_id.clone();
     let channel = item.msg.channel.clone();
@@ -278,7 +278,7 @@ async fn run_supervised_trace(item: QueuedItem, ctx: ProcessingContext) {
     }
 }
 
-/// Settle a trace whose worker task panicked during execution (`TD-06`).
+/// Settle a trace whose worker task panicked during execution.
 async fn settle_panicked_trace(
     ctx: &ProcessingContext,
     trace_id: &str,
@@ -634,7 +634,7 @@ struct FinishedRun<'a> {
 /// (embedding the profile when requested), enforce the result size limit,
 /// route the result write through the configured persistence mode (with
 /// inline retries in sync mode), set the final trace status, and settle any
-/// leased DLQ retry entry (`TD-05`).
+/// leased DLQ retry entry.
 async fn persist_success(
     ctx: &ProcessingContext,
     effective_trace: &crate::channel::registry::EffectiveTraceConfig,
@@ -806,7 +806,7 @@ async fn persist_success(
     }
 }
 
-/// Settle a leased DLQ entry after its retry execution succeeded (`TD-05`).
+/// Settle a leased DLQ entry after its retry execution succeeded.
 pub(crate) async fn settle_dlq_on_success(
     dlq_repo: &Option<Arc<dyn TraceDlqRepository>>,
     dlq_entry_id: Option<&str>,
@@ -828,7 +828,7 @@ pub(crate) async fn settle_dlq_on_success(
     }
 }
 
-/// Settle a failed trace against the DLQ (`TD-05`).
+/// Settle a failed trace against the DLQ.
 ///
 /// - When `candidate.dlq_entry_id` is `Some(dlq_id)`, the failure came from a
 ///   leased DLQ retry: we update the existing row in place (`mark_exhausted`

@@ -1,4 +1,4 @@
-//! V2-03 & V2-04 immutable deployment storage: canonical manifests, bounded
+//! Immutable deployment storage: canonical manifests, bounded
 //! archive ingestion, candidate planning, idempotent CAS apply, rollback by
 //! new revision, and two-phase `ACTIVE -> DRAINING -> DELETED` artifact GC.
 //!
@@ -486,7 +486,7 @@ pub struct CandidatePlan {
 
 impl CandidatePlan {
     /// Compute the deterministic request hash over `(operation, base_revision,
-    /// candidate_digest, removals, reason)` (`V2-03.3`, `V2-04.3`).
+    /// candidate_digest, removals, reason)`.
     pub fn compute_request_hash(
         &self,
         operation: &str,
@@ -583,7 +583,7 @@ impl GcOutcome {
     }
 }
 
-/// The deployment store (`V2-03`, `V2-04`): the database, through the
+/// The deployment store: the database, through the
 /// transactions in `writes`, and the `catalog` a node reads its serving
 /// path from. Cloning shares one catalog.
 #[derive(Clone)]

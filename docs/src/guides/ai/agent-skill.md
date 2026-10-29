@@ -70,9 +70,6 @@ orion-cli --change-context "ticket=OPS-4412" deployments apply -d dist/deploymen
 
 Nothing is exposed to the network. To give an agent *less* than your access, give it its own API key on an instance with [admin authentication](../../operate/run/security.md) enabled. Set `ORION_API_KEY` in the environment you launch it from.
 
-> [!NOTE]
-> Orion used to ship an MCP server inside `orion-cli`. It was removed in 1.2.0: its HTTP transport put the full admin API on a port with no authentication of its own, and every tool it exposed was a mirror of a CLI command. The skill plus the CLI covers the same ground with a smaller attack surface. See the [changelog](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-cli/CHANGELOG.md).
-
 ## Next steps
 
 - [Build a service with Claude Code](./claude-code.md): a full guided session.

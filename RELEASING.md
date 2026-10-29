@@ -3,8 +3,7 @@
 Cut releases from `main` after the workspace gate and the current release
 matrix pass. The v2 migration changes the API, deployment model and state
 schema; use the [v2 release evidence](RELEASE-EVIDENCE/release-v2-evidence.md) to track the
-remaining gates and their owners. Historical 1.0 proof below does not validate
-an unbuilt v2 release candidate.
+remaining gates and their owners.
 
 ## Prepare the candidate
 
@@ -156,25 +155,7 @@ the old multi-selection and activation-reload scenarios have different
 semantics. Publish both plugin and JSONLogic rows. Update the README's table,
 SVGs and plugin performance reference only from the dedicated release record.
 
-## First signed release: the `v1.0.0-rc.1` run (P12)
-
-**P12 is closed for 1.0.0.** The signing/attestation pipeline had shipped
-without ever executing; the `v1.0.0-rc.1` tag on `ff7b15a2` ran it and it
-passed, both in CI and independently off-runner:
-
-- The `merge` job's *"Verify what is attached to the published tag"* step
-  passed `cosign verify` + `gh attestation verify` —
-  <https://github.com/GoPlasmatic/Orion/actions/runs/31780773339>
-- Re-verified from a developer machine (2026-08-14): `cosign verify` reported
-  all three checks, and `gh attestation verify` exited 0, both resolving
-  `ghcr.io/goplasmatic/orion:1.0.0-rc.1` to digest
-  `sha256:9cc1fa0cb7e78860e59855a1a56bd393bcbc6a75b2ab8df916dbb2496040b40b`
-  carrying a cosign signature, an SPDX SBOM and SLSA provenance.
-
-Keep those URLs and the 1.0 digest as historical signing evidence. For a new
-candidate, follow the current procedure above and record its own results.
-
-## Musl promotion checkpoint (P13)
+## Musl promotion checkpoint
 
 `x86_64-unknown-linux-musl` compiles on every relevant PR
 (`cross-os-build.yml`) but is deliberately not in the dist targets — the

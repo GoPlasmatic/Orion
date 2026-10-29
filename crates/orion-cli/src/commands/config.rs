@@ -25,11 +25,14 @@ enum ConfigSubcommand {
     Show,
     /// Get a single configuration value (for scripting)
     #[command(
-        after_help = "Examples:\n  orion-cli config get server_url\n  SERVER=$(orion-cli config get server_url)"
+        after_help = "Examples:\n  orion-cli config get server_url\n  SERVER=$(orion-cli config get server_url)\n  orion-cli config get api_key --reveal"
     )]
     Get {
         /// Configuration key (server_url, default_output, api_key, api_key_header)
         key: String,
+        /// Print secret values (such as api_key) in plaintext instead of masking them
+        #[arg(long)]
+        reveal: bool,
     },
     /// Set a configuration value
     #[command(
@@ -74,12 +77,19 @@ impl ConfigCmd {
                     println!("  API Key Header: {header}");
                 }
             }
-            ConfigSubcommand::Get { key } => {
+            ConfigSubcommand::Get { key, reveal } => {
                 let config = OrionConfig::load()?;
                 let value = match key.as_str() {
                     "server_url" => config.server_url.unwrap_or_default(),
                     "default_output" => config.default_output,
-                    "api_key" => config.api_key.unwrap_or_default(),
+                    "api_key" => {
+                        let raw = config.api_key.unwrap_or_default();
+                        if *reveal || raw.is_empty() {
+                            raw
+                        } else {
+                            mask_secret(&raw)
+                        }
+                    }
                     "api_key_header" => config.api_key_header.unwrap_or_default(),
                     _ => anyhow::bail!(
                         "Unknown config key: {key}. Valid keys: server_url, default_output, api_key, api_key_header"

@@ -242,7 +242,7 @@ impl ProviderRegistry {
     }
 
     /// Execute one logical invocation attempt on `backend`, resolved once by
-    /// the caller with [`Self::get`], through the `V2-10.1` pipeline:
+    /// the caller with [`Self::get`]:
     /// 1. Check the runtime security lease and the monotonic deny-set
     ///    ([`RevocationLedger::check_runtime_lease`]).
     /// 2. Allocate `AttemptContext` (verifying cancellation, deadline, and attempt budgets).
@@ -266,16 +266,31 @@ impl ProviderRegistry {
 
         let attempt = invocation.next_attempt()?;
 
-        match backend
+        let start = std::time::Instant::now();
+        let res = backend
             .invoke(&attempt, invocation.operation(), input)
-            .await
-        {
+            .await;
+        let duration_secs = start.elapsed().as_secs_f64();
+        let kind_label = match backend.kind() {
+            ImplementationKind::Rust => "rust",
+            ImplementationKind::Workflow => "workflow",
+            ImplementationKind::Wasm => "wasm",
+        };
+        let outcome = if res.is_ok() { "ok" } else { "error" };
+        orion_common::metrics::record_provider_invocation(
+            backend.driver_id(),
+            kind_label,
+            outcome,
+            duration_secs,
+        );
+
+        match res {
             Ok(output) => {
                 invocation.record_effect(EffectStatus::Completed);
                 Ok(output)
             }
             Err(mut err) => {
-                // Never allow a provider error to downgrade prior effect uncertainty (`V2-10.1`).
+                // Never allow a provider error to downgrade prior effect uncertainty.
                 let merged = invocation.record_effect(err.effect_status);
                 err.effect_status = merged;
                 Err(err)

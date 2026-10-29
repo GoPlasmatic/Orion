@@ -109,6 +109,7 @@ fn public_sdk_and_api_docs_name_no_tracker_ids() {
         workspace().join("crates/orion-definitions/src"),
         workspace().join("crates/orion-extension-api/src"),
         workspace().join("crates/orion-plugin-sdk/src"),
+        workspace().join("crates/orion-runtime/src/extensions"),
     ];
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(&dir).unwrap().flatten() {

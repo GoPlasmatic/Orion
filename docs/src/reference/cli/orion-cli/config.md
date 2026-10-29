@@ -24,7 +24,7 @@ directory — on a shared machine, prefer the environment variable.
 |------------|-------------|
 | `set-server <url>` | Set the Orion server URL. |
 | `show` | Show the current CLI configuration. |
-| `get <key>` | Print a single value, for scripting. |
+| `get <key> [--reveal]` | Print a single value, for scripting. Masks `api_key` unless `--reveal` is passed. |
 | `set <key> <value>` | Set a value: `server_url`, `default_output`, `api_key`, or `api_key_header`. |
 
 ## Examples

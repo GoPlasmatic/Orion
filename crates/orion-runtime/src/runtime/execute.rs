@@ -14,8 +14,7 @@ use crate::engine::{ExecOpts, Execution};
 ///
 /// Pins `generation` ([`super::generation::pin`]) for the duration
 /// of the execution so nested in-process `channel_call` invocations, guard
-/// stores, and model inference resolve against the same generation (`V2-05.2`,
-/// `V2-05.3`).
+/// stores, and model inference resolve against the same generation.
 ///
 /// Owns the message build, the deadline arm and the `has_errors` rule.
 /// Everything downstream — persisting a trace, shaping a response, committing

@@ -35,6 +35,8 @@ Every Prometheus series Orion exports, one row per metric, asserted against the 
 | `orion_circuit_breaker_rejections_total` | Counter | `connector`, `channel` | Requests rejected by open breakers. |
 | `orion_connector_requests_total` | Counter | `connector`, `channel`, `status` | Outbound connector calls, by outcome. |
 | `orion_connector_request_duration_seconds` | Histogram | `connector`, `channel` | Outbound connector latency. |
+| `orion_provider_invocations_total` | Counter | `driver`, `kind`, `outcome` | Provider backend invocations at the registry boundary (`rust`, `workflow`, or `wasm`), by outcome (`ok` or `error`). |
+| `orion_provider_invocation_duration_seconds` | Histogram | `driver`, `kind` | Wall-clock time of one provider backend invocation attempt. |
 | `orion_task_duration_seconds` | Histogram | `workflow`, `task`, `function` | Per-task latency, including the engine's sync built-in functions. |
 | `orion_workflow_duration_seconds` | Histogram | `workflow` | Per-workflow-run latency, task bodies included. Subtract the `orion_task_duration_seconds` sum for the same workflow to get the engine's own overhead: condition evaluation, group gating, loop bookkeeping, audit writes. A workflow skipped by its condition or rollout gate is not recorded; a looping workflow records once for the whole loop. |
 | `orion_rate_limit_rejections_total` | Counter | `scope` | Rate-limited requests; `scope` is a channel name or route group. |
@@ -46,7 +48,7 @@ Every Prometheus series Orion exports, one row per metric, asserted against the 
 | `orion_response_cache_invalidations_total` | Counter | `source` | Response-cache namespaces invalidated, by `cache_invalidate` (`workflow`) or the admin route (`admin`). |
 | `orion_deployment_artifacts_collected_total` | Counter | `phase` | Deployment-store artifacts the [collector](./configuration/storage.md#artifact-collection) moved: `draining` (unreferenced, bytes kept until the next pass) or `deleted` (bytes gone). Counted on the node that ran the pass. |
 | `orion_deployment_artifact_bytes_collected_total` | Counter | — | Bytes the deleted artifacts held. |
-| `orion_job_last_success_timestamp_seconds` | Gauge | `job` | Unix time of each background job's last successful tick: `trace_cleanup`, `audit_cleanup`, `dlq_retry`, `epoch_watcher`, `cron_reconcile`, `cron_cleanup`, `deployment_gc`. |
+| `orion_job_last_success_timestamp_seconds` | Gauge | `job` | Unix time of each background job's last successful tick: `trace_cleanup`, `audit_cleanup`, `dlq_retry`, `epoch_watcher`, `cron_reconcile`, `cron_cleanup`, `deployment_gc`, `v2_reconciler`. |
 
 > [!NOTE]
 > `orion_errors_total{reason="channel_quarantined"}` fires only on the async-queue delivery path. A synchronous call to a quarantined channel returns an error but increments no counter.
