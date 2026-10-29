@@ -124,8 +124,8 @@ orion-runtime = { workspace = true, features = ["test-support"] }
 # gives the in-crate #[cfg(test)] modules access without shipping it in release.
 tokio = { version = "1", features = ["test-util"] }
 # testcontainers-modules 0.15 uses 0.27; 0.28's bollard conflicts with it.
-testcontainers = "0.27.3"
-testcontainers-modules = { version = "0.15", features = ["postgres", "mysql"] }
+testcontainers = { version = "0.27.3", default-features = false, features = ["aws-lc-rs"] }
+testcontainers-modules = { version = "0.15", default-features = false, features = ["aws-lc-rs", "postgres", "mysql"] }
 # In-process self-signed certificate generation for the TLS tests (no
 # external `openssl` CLI dependency), and the JWT test keypairs.
 #

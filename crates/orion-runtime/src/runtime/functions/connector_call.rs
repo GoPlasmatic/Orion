@@ -426,7 +426,7 @@ mod tests {
                 "dead-db",
                 1,
                 &digest_for("dead-db"),
-                json!({"connection_string": "postgres://127.0.0.1:1/nothing"}),
+                json!({"connection_string": "postgres://127.0.0.1:1/nothing", "allow_private_urls": true}),
                 Default::default(),
             )
             .await

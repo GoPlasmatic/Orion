@@ -114,16 +114,12 @@ pub async fn serve_tls(
         "Orion is ready (HTTPS)"
     );
 
-    let mut server = axum_server::from_tcp_rustls(std_listener, rustls_config).map_err(|e| {
+    let server = axum_server::from_tcp_rustls(std_listener, rustls_config).map_err(|e| {
         OrionError::Internal {
             context: format!("Failed to initialize HTTPS server on {addr}"),
             source: Some(Box::new(e)),
         }
     })?;
-    server
-        .http_builder()
-        .http1()
-        .header_read_timeout(std::time::Duration::from_secs(30));
     server
         .handle(handle)
         .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>())

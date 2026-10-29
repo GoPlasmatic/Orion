@@ -70,5 +70,5 @@ tempfile = "3"
 uuid = { version = "1", features = ["v4"] }
 # `sql check` against real databases (the #[ignore]d half of sql_check_test,
 # run by the containers CI job). Same requirements as orion-server's.
-testcontainers = "0.27.3"
-testcontainers-modules = { version = "0.15", features = ["postgres", "mysql"] }
+testcontainers = { version = "0.27.3", default-features = false, features = ["aws-lc-rs"] }
+testcontainers-modules = { version = "0.15", default-features = false, features = ["aws-lc-rs", "postgres", "mysql"] }
