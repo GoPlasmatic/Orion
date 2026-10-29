@@ -582,6 +582,27 @@ async fn sqlite_invoke_persists_in_memory_and_memory_cache_bounds_partitions_and
         2,
         "total partitions must not exceed max_partitions (2)"
     );
+    assert_eq!(
+        cache.get(&id1, "k"),
+        None,
+        "oldest partition (id1) must be evicted first"
+    );
+    assert_eq!(cache.get(&id2, "k"), Some(json!("v2")));
+    assert_eq!(cache.get(&id3, "k"), Some(json!("v3")));
+
+    // FIFO eviction within a partition: inserting "z", then "m", then "a" into
+    // a capacity-2 partition evicts "z" (the oldest entry) rather than "a".
+    let fifo_cache = PartitionedMemoryCache::with_limits(2, 4, 1024);
+    fifo_cache.set(&id1, "z".to_string(), json!(1), None);
+    fifo_cache.set(&id1, "m".to_string(), json!(2), None);
+    fifo_cache.set(&id1, "a".to_string(), json!(3), None);
+    assert_eq!(
+        fifo_cache.get(&id1, "z"),
+        None,
+        "oldest entry 'z' must be evicted in FIFO order"
+    );
+    assert_eq!(fifo_cache.get(&id1, "m"), Some(json!(2)));
+    assert_eq!(fifo_cache.get(&id1, "a"), Some(json!(3)));
 
     // MemoryCacheProviderBackend rejects invalid ttl_ms <= 0.
     let mem_backend = MemoryCacheProviderBackend::default();

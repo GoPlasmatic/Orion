@@ -179,8 +179,8 @@ pub fn build_router(state: AppState) -> Router {
         router
     };
 
-    // HSTS header (only when TLS is enabled)
-    let router = if state.config.server.tls.enabled {
+    // HSTS header (when TLS is enabled or `server.hsts` is set behind a proxy)
+    let router = if state.config.server.tls.enabled || state.config.server.hsts {
         router.layer(axum::middleware::from_fn(
             |req: axum::extract::Request, next: Next| async move {
                 let mut response = next.run(req).await;

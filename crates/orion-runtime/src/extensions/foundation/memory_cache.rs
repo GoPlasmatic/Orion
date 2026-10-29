@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -13,6 +14,7 @@ use super::{
 struct CacheEntry {
     value: Value,
     expires_at: Option<Instant>,
+    inserted_seq: u64,
 }
 
 /// Bounded, connection-partitioned in-memory cache store.
@@ -22,10 +24,13 @@ struct CacheEntry {
 /// - Old and new revisions of a connection have isolated keyspaces while
 ///   participating in [`ConnectionPoolCache`] eviction.
 /// - Total partitions, entries per partition, and per-value byte sizes are bounded.
+/// - Capacity eviction is FIFO (oldest inserted entry or partition after
+///   purging expired entries).
 pub struct PartitionedMemoryCache {
     max_entries_per_partition: usize,
     max_partitions: usize,
     max_value_bytes: usize,
+    next_seq: AtomicU64,
     partitions: Mutex<BTreeMap<EffectiveConnectionIdentity, BTreeMap<String, CacheEntry>>>,
 }
 
@@ -43,6 +48,7 @@ impl PartitionedMemoryCache {
             max_entries_per_partition: max_entries_per_partition.max(1),
             max_partitions: max_partitions.max(1),
             max_value_bytes: max_value_bytes.max(64),
+            next_seq: AtomicU64::new(1),
             partitions: Mutex::new(BTreeMap::new()),
         }
     }
@@ -91,11 +97,16 @@ impl PartitionedMemoryCache {
             }
             guard.retain(|_, part| !part.is_empty());
 
-            // If still at capacity, evict the first partition so total partitions stay bounded.
+            // If still at capacity, evict the partition holding the oldest entry (FIFO).
             if guard.len() >= self.max_partitions
-                && let Some(first_partition_key) = guard.keys().next().cloned()
+                && let Some(oldest_partition_key) = guard
+                    .iter()
+                    .min_by_key(|(_, part)| {
+                        part.values().map(|e| e.inserted_seq).min().unwrap_or(0)
+                    })
+                    .map(|(k, _)| k.clone())
             {
-                guard.remove(&first_partition_key);
+                guard.remove(&oldest_partition_key);
             }
         }
 
@@ -105,16 +116,27 @@ impl PartitionedMemoryCache {
         if partition.len() >= self.max_entries_per_partition && !partition.contains_key(&key) {
             partition.retain(|_, v| v.expires_at.is_none_or(|exp| now < exp));
         }
-        // If still at capacity, evict the lexicographically first key so size stays bounded.
+        // If still at capacity, evict the oldest entry (FIFO by insertion sequence).
         if partition.len() >= self.max_entries_per_partition
             && !partition.contains_key(&key)
-            && let Some(first_key) = partition.keys().next().cloned()
+            && let Some(oldest_key) = partition
+                .iter()
+                .min_by_key(|(_, v)| v.inserted_seq)
+                .map(|(k, _)| k.clone())
         {
-            partition.remove(&first_key);
+            partition.remove(&oldest_key);
         }
 
         let expires_at = ttl.and_then(|d| now.checked_add(d));
-        partition.insert(key, CacheEntry { value, expires_at });
+        let inserted_seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
+        partition.insert(
+            key,
+            CacheEntry {
+                value,
+                expires_at,
+                inserted_seq,
+            },
+        );
         orion_common::metrics::set_memory_cache_partitions(guard.len());
     }
 

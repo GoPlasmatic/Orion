@@ -51,9 +51,14 @@ pub struct Cli {
         long,
         global = true,
         env = "ORION_API_KEY",
+        conflicts_with = "api_key_file",
         help_heading = "Connection"
     )]
     api_key: Option<String>,
+
+    /// Path to a file containing the API key (`-` reads from stdin)
+    #[arg(long, global = true, value_name = "PATH", help_heading = "Connection")]
+    api_key_file: Option<std::path::PathBuf>,
 
     /// Header name for API key (default: Authorization with Bearer prefix)
     #[arg(
@@ -283,14 +288,18 @@ fn build_client(cli: &Cli) -> anyhow::Result<OrionClient> {
         })?
     };
 
-    // Flag first, then the env var, then `~/.orion/config.toml`. Reading the
-    // flag alone would mean `orion-cli config set api_key <key>` stored a key
-    // no command ever sent, and every request went out unauthenticated.
-    let api_key = cli
-        .api_key
-        .clone()
-        .map(|k| (k, cli.api_key_header.clone()))
-        .or_else(OrionConfig::resolve_api_key);
+    // Flag first, then `--api-key-file`, then the env var, then
+    // `~/.orion/config.toml`. Reading the flag alone would mean
+    // `orion-cli config set api_key <key>` stored a key no command ever sent,
+    // and every request went out unauthenticated.
+    let api_key = if let Some(key) = &cli.api_key {
+        Some((key.clone(), cli.api_key_header.clone()))
+    } else if let Some(path) = &cli.api_key_file {
+        let key = read_api_key_file(path)?;
+        Some((key, cli.api_key_header.clone()))
+    } else {
+        OrionConfig::resolve_api_key()
+    };
 
     let mut client = OrionClient::new(&server_url)?;
     if cli.verbose {
@@ -316,9 +325,58 @@ fn build_client(cli: &Cli) -> anyhow::Result<OrionClient> {
     Ok(client)
 }
 
+/// Read an admin API key from `path` (or `stdin` when `path` is `-`),
+/// trimming trailing CR/LF so a single-line secret file or piped output works
+/// without embedding a newline in the header value.
+fn read_api_key_file(path: &std::path::Path) -> anyhow::Result<String> {
+    use anyhow::Context as _;
+    use std::io::Read as _;
+    let raw = if path == std::path::Path::new("-") {
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .context("Failed to read API key from stdin")?;
+        buf
+    } else {
+        std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read API key from {}", path.display()))?
+    };
+    let key = raw.trim_end_matches(['\r', '\n']).to_string();
+    if key.is_empty() {
+        anyhow::bail!("API key file '{}' is empty", path.display());
+    }
+    Ok(key)
+}
+
 #[cfg(test)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_api_key_file_trims_trailing_newline_and_rejects_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("key.txt");
+        std::fs::write(&key_path, "secret-token-123\n").unwrap();
+        assert_eq!(read_api_key_file(&key_path).unwrap(), "secret-token-123");
+
+        let empty_path = dir.path().join("empty.txt");
+        std::fs::write(&empty_path, "\n").unwrap();
+        assert!(read_api_key_file(&empty_path).is_err());
+    }
+
+    #[test]
+    fn api_key_and_api_key_file_conflict() {
+        let res = Cli::try_parse_from([
+            "orion-cli",
+            "--api-key",
+            "inline",
+            "--api-key-file",
+            "/tmp/key",
+            "health",
+        ]);
+        assert!(res.is_err());
+    }
 
     #[test]
     fn an_api_error_keeps_its_code_request_id_and_field_errors() {

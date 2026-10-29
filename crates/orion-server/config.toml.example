@@ -79,6 +79,9 @@
 # task errors can carry upstream URLs, connector names and driver detail, and
 # the data plane is unauthenticated. Leave it unset.
 # verbose_errors = true
+# Emit Strict-Transport-Security even when server.tls.enabled is false (for
+# example, behind a TLS-terminating reverse proxy or load balancer).
+# hsts = false
 
 # [server.tls]
 # Terminate HTTPS in Orion itself. Leave disabled when a load balancer or

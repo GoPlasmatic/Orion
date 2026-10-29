@@ -18,6 +18,7 @@ orion-cli [global flags] <command> [subcommand] [args] [flags]
 |------|-------------|
 | `--server <url>` | Orion server URL. Overrides the config file and `ORION_SERVER_URL`. |
 | `--api-key <key>` | API key for admin authentication. Falls back to `ORION_API_KEY`, then the `api_key` in `~/.orion/config.toml`. When the key would travel over plain `http://` to any host but the local machine, a warning is printed to stderr — use `https://` for a remote server. |
+| `--api-key-file <path>` | Read the admin API key from `<path>` (or `-` for standard input), avoiding exposing the secret on the process command line. Conflicts with `--api-key`. |
 | `--api-key-header <name>` | Header name carrying the key. Default: `Authorization` with a `Bearer` prefix. |
 | `--change-context <ctx>` | Audit label for this change, for example `ticket=OPS-4412`. Sent as `X-Orion-Change-Context` and recorded under `details.change_context` on every audit row the command writes. Also read from `ORION_CHANGE_CONTEXT`. |
 | `--output <format>` | Output format: `table` (default), `json`, or `yaml`. |

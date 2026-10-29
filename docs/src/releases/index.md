@@ -21,16 +21,15 @@ Every release, what it added, and whether it breaks anything you have. A release
 | [1.1.0](./upgrade-to-1.1.md) | 2026-08-21 | Yes | JWT channel auth, the `smtp` and `storage` connectors, and managed OAuth2. |
 | [1.0.0](./upgrade-to-1.0/index.md) | 2026-08-14 | Yes | The frozen 1.x surfaces: the data plane, the admin API, the config keys and the metric names. |
 
-The [CHANGELOG](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/CHANGELOG.md) is the full record of what was added, as opposed to what broke.
+The [CHANGELOG](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/CHANGELOG.md) is the full record of what was added, as opposed to what broke. The 1.x upgrade guides above are kept as a historical archive for teams still operating 1.x estates.
 
 | Page | Holds |
 |---|---|
 | [Versioning and support policy](./versioning-policy.md) | which versions receive fixes, what an upgrade guarantees, and the tested toolchains, databases and platforms. |
-| [Upgrades](../operate/maintain/upgrades.md) | the version-independent procedure: back up, preflight, validate config, migrate, roll. |
+| [Upgrades](../operate/maintain/upgrades.md) | the version-independent procedure: back up, validate config, migrate, and roll. |
 
 ## Related
 
 - [Upgrades](../operate/maintain/upgrades.md): the order that works, whatever version you are on.
-- `orion-server preflight`: the read-only scan that finds stored breaks before a rollout.
+- [Upgrade to 2.0.0](./upgrade-to-2.0.md): moving from 1.x to the `/api/v2` contract and a fresh state database.
 - [Back up and restore](../operate/maintain/backup-restore.md): the step every upgrade starts with.
-- The entity lifecycle: why a stored channel survives a binary swap.

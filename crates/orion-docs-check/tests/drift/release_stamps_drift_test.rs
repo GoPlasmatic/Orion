@@ -18,6 +18,15 @@ fn read(relative: &str) -> String {
 
 /// `version = "…"` under `[workspace.package]`.
 fn workspace_version() -> String {
+    workspace_package_field("version")
+}
+
+/// `rust-version = "…"` under `[workspace.package]`.
+fn workspace_msrv() -> String {
+    workspace_package_field("rust-version")
+}
+
+fn workspace_package_field(key: &str) -> String {
     let manifest = read("Cargo.toml");
     let section = manifest
         .split("[workspace.package]")
@@ -27,11 +36,11 @@ fn workspace_version() -> String {
         .lines()
         .find_map(|line| {
             let line = line.trim();
-            line.strip_prefix("version")
+            line.strip_prefix(key)
                 .and_then(|rest| rest.trim_start().strip_prefix('='))
                 .map(|v| v.trim().trim_matches('"').to_string())
         })
-        .expect("workspace.package.version")
+        .unwrap_or_else(|| panic!("workspace.package.{key}"))
 }
 
 fn chart_field(chart: &str, key: &str) -> String {
@@ -68,5 +77,26 @@ fn the_readme_names_the_current_release() {
     assert!(
         readme.contains(&format!("The current workspace release is **{version}**")),
         "README.md must say `The current workspace release is **{version}**`"
+    );
+}
+
+#[test]
+fn the_readme_and_contributing_name_the_workspace_msrv() {
+    let msrv = workspace_msrv();
+    let readme = read("README.md");
+    assert!(
+        readme.contains(&format!("rust-{msrv}+")),
+        "README.md badge must name `rust-{msrv}+` to match workspace.package.rust-version"
+    );
+    let contributing = read("CONTRIBUTING.md");
+    assert!(
+        contributing.contains(&format!("Rust {msrv}+"))
+            && contributing.contains(&format!("MSRV is {msrv}")),
+        "CONTRIBUTING.md must name `Rust {msrv}+` and `MSRV is {msrv}`"
+    );
+    let releasing = read("RELEASING.md");
+    assert!(
+        releasing.contains(&format!("cargo +{msrv} check")),
+        "RELEASING.md must name `cargo +{msrv} check`"
     );
 }

@@ -16,6 +16,7 @@ shutdown_drain_secs = 30
 shutdown_force_timeout_secs = 30
 max_admin_body_size = 8388608
 data_mounts = []
+hsts = false
 
 [server.tls]
 enabled = false
@@ -43,6 +44,7 @@ Both endpoints are unauthenticated, and the spec publishes the complete admin AP
 | `server.shutdown_force_timeout_secs` | `30` | `ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS` | Hard cap on waiting after the drain window. `0` waits forever — only with an orchestrator that will eventually SIGKILL. |
 | `server.max_admin_body_size` | `8388608` | `ORION_SERVER__MAX_ADMIN_BODY_SIZE` | Raise for definition uploads, such as a plugin component, above 8 MiB. Applies to `/api/v2/admin/*` only; the data plane keeps `ingest.max_payload_size`. |
 | `server.data_mounts` | `[]` | `ORION_SERVER__DATA_MOUNTS` | Serve the data plane at extra path prefixes, for deployed clients that call legacy paths. Comma-separated in the env var. |
+| `server.hsts` | `false` | `ORION_SERVER__HSTS` | Emit `Strict-Transport-Security` even when `server.tls.enabled` is `false`. Enable behind a TLS-terminating reverse proxy or ingress. |
 
 **`data_mounts` is additive.** `/api/v2/data` stays mounted, so every existing client and `orion-cli` command keeps working — this is not a movable prefix. A channel's `route_pattern` is unchanged; it is also served under each mount:
 

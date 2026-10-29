@@ -4,6 +4,10 @@ A standard for how documentation is organised, how a page is built, and how it
 sounds. It is product-agnostic by design: it describes the system a
 documentation set follows, not any product the set documents.
 
+For Orion-specific decisions and recorded deviations see
+[`CONTRIBUTING-DOCS.md`](./CONTRIBUTING-DOCS.md), and for product terminology
+and spelling see [`STYLE_GUIDE.md`](./STYLE_GUIDE.md).
+
 ---
 
 ## 1. Scope

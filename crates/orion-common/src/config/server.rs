@@ -18,6 +18,11 @@ pub struct ServerConfig {
     pub shutdown_force_timeout_secs: u64,
     /// TLS configuration for HTTPS support.
     pub tls: TlsConfig,
+    /// Emit `Strict-Transport-Security` even when `server.tls.enabled` is
+    /// `false` (for example, when TLS is terminated by an upstream reverse
+    /// proxy or load balancer). When `server.tls.enabled` is `true`, HSTS is
+    /// always emitted regardless of this flag.
+    pub hsts: bool,
     /// Response compression configuration.
     pub compression: CompressionConfig,
     /// Interactive API documentation (`/docs`, `/api/v2/openapi.json`).
@@ -77,6 +82,7 @@ impl Default for ServerConfig {
             shutdown_drain_secs: 30,
             shutdown_force_timeout_secs: 30,
             tls: TlsConfig::default(),
+            hsts: false,
             compression: CompressionConfig::default(),
             docs: DocsConfig::default(),
             verbose_errors: None,
