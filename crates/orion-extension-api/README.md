@@ -5,8 +5,9 @@ edition implements to add channel protocols, connector providers, connection-poo
 package verifier to a node.
 
 - `ChannelDriver`: a channel protocol (`rest`, `http`, `cron` in Community).
-- `ProviderBackend` and `SourceConnectorFacet`: a connector provider and its optional source
-  side, called with an `AttemptContext` and answering `Result<ConnectorOutput, ConnectorError>`.
+- `ProviderBackend`: a connector provider (with an unstable `SourceConnectorFacet` hidden
+  until the first source channel protocol ships), called with an `AttemptContext` and
+  answering `Result<ConnectorOutput, ConnectorError>`.
 - `ConnectionPoolCache`: a provider's pool cache, with per-connector and whole-cache
   eviction methods. Production lifecycle wiring is pending.
 - `PackageVerifier`: whether a provider package may be admitted on the node.

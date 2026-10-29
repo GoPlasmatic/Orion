@@ -7,15 +7,6 @@
 -- carries the notes on what each column means; the three schemas are one
 -- schema, which tests/schema_parity.rs holds them to.
 
-CREATE FUNCTION update_updated_at_column() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-BEGIN
-    NEW.updated_at = CURRENT_TIMESTAMP;
-    RETURN NEW;
-END;
-$$;
-
 -- ============================================================
 -- Traces and the trace dead-letter queue
 -- ============================================================
@@ -51,10 +42,6 @@ CREATE INDEX idx_traces_status_channel_mode ON traces (status, channel, mode, cr
 
 CREATE INDEX idx_traces_updated_at ON traces (updated_at);
 
-CREATE TRIGGER trg_traces_updated_at
-    BEFORE UPDATE ON traces
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
 CREATE TABLE trace_dlq (
     id text NOT NULL,
     trace_id text NOT NULL,
@@ -79,10 +66,6 @@ CREATE INDEX idx_trace_dlq_claimed_until ON trace_dlq (claimed_until);
 CREATE INDEX idx_trace_dlq_created_at ON trace_dlq (created_at);
 
 CREATE INDEX idx_trace_dlq_next_retry ON trace_dlq (next_retry_at) WHERE (retry_count < max_retries);
-
-CREATE TRIGGER trg_trace_dlq_updated_at
-    BEFORE UPDATE ON trace_dlq
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================================
 -- Audit log
@@ -121,10 +104,6 @@ CREATE TABLE cron_schedule_state (
     PRIMARY KEY (channel_id)
 );
 
-CREATE TRIGGER trg_cron_schedule_state_updated_at
-    BEFORE UPDATE ON cron_schedule_state
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
 CREATE TABLE cron_occurrences (
     id text NOT NULL,
     channel_id text NOT NULL,
@@ -160,10 +139,6 @@ CREATE INDEX idx_cron_occurrences_due ON cron_occurrences (status, scheduled_for
 
 CREATE UNIQUE INDEX idx_cron_occurrences_identity ON cron_occurrences (channel_id, scheduled_for);
 
-CREATE TRIGGER trg_cron_occurrences_updated_at
-    BEFORE UPDATE ON cron_occurrences
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
 CREATE TABLE cron_singletons (
     singleton_key text NOT NULL,
     occurrence_id text NOT NULL,
@@ -175,10 +150,6 @@ CREATE TABLE cron_singletons (
 );
 
 CREATE INDEX idx_cron_singletons_lease_until ON cron_singletons (lease_until);
-
-CREATE TRIGGER trg_cron_singletons_updated_at
-    BEFORE UPDATE ON cron_singletons
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TABLE cron_singleton_slots (
     singleton_key text NOT NULL,
@@ -192,10 +163,6 @@ CREATE TABLE cron_singleton_slots (
 );
 
 CREATE INDEX idx_cron_singleton_slots_lease_until ON cron_singleton_slots (lease_until);
-
-CREATE TRIGGER trg_cron_singleton_slots_updated_at
-    BEFORE UPDATE ON cron_singleton_slots
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================================
 -- Cluster coordination and shared state
@@ -292,6 +259,7 @@ CREATE TABLE connection_revisions (
     provider_digest text NOT NULL,
     public_config_json text NOT NULL,
     secret_locators_json text,
+    bindings_json text,
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     PRIMARY KEY (connection_id, revision)
 );
@@ -308,6 +276,8 @@ CREATE TABLE deployment_revisions (
     PRIMARY KEY (revision)
 );
 
+CREATE INDEX idx_deployment_revisions_created_at ON deployment_revisions (created_at);
+
 CREATE TABLE deployment_members (
     deployment_revision bigint NOT NULL,
     entity_kind text NOT NULL,
@@ -317,6 +287,8 @@ CREATE TABLE deployment_members (
     definition_digest text NOT NULL,
     PRIMARY KEY (deployment_revision, entity_kind, entity_id, entity_revision)
 );
+
+CREATE INDEX idx_deployment_members_entity ON deployment_members (entity_kind, entity_id);
 
 CREATE TABLE deployment_head (
     singleton_id bigint NOT NULL,

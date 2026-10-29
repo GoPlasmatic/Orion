@@ -1057,8 +1057,7 @@ async fn updated_at(pool: &DbPool, table: &str, key_col: &str, key: &str) -> chr
 }
 
 /// Assert `write` moved the row's `updated_at` off [`BACKDATED`]: the
-/// statement sets it, since no trigger does any more
-/// (`003_drop_updated_at_triggers`).
+/// statement sets it, since no trigger does.
 async fn assert_moves<F: std::future::Future<Output = ()>>(
     backend: &str,
     pool: &DbPool,

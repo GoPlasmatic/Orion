@@ -36,11 +36,6 @@ CREATE INDEX "idx_traces_mode_created_at" ON "traces" ("mode", "created_at");
 CREATE INDEX "idx_traces_updated_at" ON "traces" ("updated_at");
 CREATE INDEX "idx_traces_created_at_id" ON "traces" ("created_at", "id");
 
-CREATE TRIGGER trg_traces_updated_at AFTER UPDATE ON traces
-BEGIN
-  UPDATE traces SET updated_at = datetime('now') WHERE id = NEW.id;
-END;
-
 CREATE TABLE "trace_dlq" (
     "id" text NOT NULL PRIMARY KEY,
     "trace_id" text NOT NULL,
@@ -62,11 +57,6 @@ CREATE INDEX "idx_trace_dlq_next_retry" ON "trace_dlq" ("next_retry_at") WHERE "
 CREATE INDEX "idx_trace_dlq_channel_created_at" ON "trace_dlq" ("channel", "created_at");
 CREATE INDEX "idx_trace_dlq_claimed_until" ON "trace_dlq" ("claimed_until");
 CREATE INDEX "idx_trace_dlq_created_at" ON "trace_dlq" ("created_at");
-
-CREATE TRIGGER trg_trace_dlq_updated_at AFTER UPDATE ON trace_dlq
-BEGIN
-  UPDATE trace_dlq SET updated_at = datetime('now') WHERE id = NEW.id;
-END;
 
 -- ============================================================
 -- Audit log
@@ -110,13 +100,6 @@ CREATE TABLE "cron_schedule_state" (
     "paused_at" timestamp,
     "updated_at" timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-
-CREATE TRIGGER trg_cron_schedule_state_updated_at
-AFTER UPDATE ON cron_schedule_state
-BEGIN
-  UPDATE cron_schedule_state SET updated_at = datetime('now')
-  WHERE channel_id = NEW.channel_id;
-END;
 
 CREATE TABLE "cron_occurrences" (
     -- UUID v7: time-ordered, so the primary key index and the listing order
@@ -179,13 +162,6 @@ CREATE INDEX "idx_cron_occurrences_created_at_id"
 CREATE INDEX "idx_cron_occurrences_channel_created"
     ON "cron_occurrences" ("channel_id", "created_at");
 
-CREATE TRIGGER trg_cron_occurrences_updated_at
-AFTER UPDATE ON cron_occurrences
-BEGIN
-  UPDATE cron_occurrences SET updated_at = datetime('now')
-  WHERE id = NEW.id;
-END;
-
 -- Slot 0 of every `forbid` key.
 CREATE TABLE "cron_singletons" (
     "singleton_key" text NOT NULL PRIMARY KEY,
@@ -206,13 +182,6 @@ CREATE TABLE "cron_singletons" (
 CREATE INDEX "idx_cron_singletons_lease_until"
     ON "cron_singletons" ("lease_until");
 
-CREATE TRIGGER trg_cron_singletons_updated_at
-AFTER UPDATE ON cron_singletons
-BEGIN
-  UPDATE cron_singletons SET updated_at = datetime('now')
-  WHERE singleton_key = NEW.singleton_key;
-END;
-
 -- Slots 1 and up of a key with `concurrency.slots` above one.
 CREATE TABLE "cron_singleton_slots" (
     "singleton_key" text NOT NULL,
@@ -228,13 +197,6 @@ CREATE TABLE "cron_singleton_slots" (
 
 CREATE INDEX "idx_cron_singleton_slots_lease_until"
     ON "cron_singleton_slots" ("lease_until");
-
-CREATE TRIGGER trg_cron_singleton_slots_updated_at
-AFTER UPDATE ON cron_singleton_slots
-BEGIN
-  UPDATE cron_singleton_slots SET updated_at = datetime('now')
-  WHERE singleton_key = NEW.singleton_key AND slot = NEW.slot;
-END;
 
 -- ============================================================
 -- Cluster coordination and shared state
@@ -331,13 +293,16 @@ CREATE TABLE "provider_admissions" (
 
 -- A connection revision. Secrets are never stored: `secret_locators_json` is
 -- the canonical JSON map from a config path to the reference (`env://…`,
--- `vault://…`) resolved at load, or NULL when there are none.
+-- `vault://…`) resolved at load, or NULL when there are none. `bindings_json`
+-- maps each dependency alias of a `workflow` provider package to a connection
+-- id, or NULL for a connection with none.
 CREATE TABLE "connection_revisions" (
     "connection_id" text NOT NULL,
     "revision" integer NOT NULL,
     "provider_digest" text NOT NULL,
     "public_config_json" text NOT NULL,
     "secret_locators_json" text,
+    "bindings_json" text,
     "created_at" timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY ("connection_id", "revision")
 );
@@ -354,6 +319,9 @@ CREATE TABLE "deployment_revisions" (
     PRIMARY KEY ("revision")
 );
 
+CREATE INDEX "idx_deployment_revisions_created_at"
+    ON "deployment_revisions" ("created_at");
+
 CREATE TABLE "deployment_members" (
     "deployment_revision" integer NOT NULL,
     "entity_kind" text NOT NULL,
@@ -363,6 +331,9 @@ CREATE TABLE "deployment_members" (
     "definition_digest" text NOT NULL,
     PRIMARY KEY ("deployment_revision", "entity_kind", "entity_id", "entity_revision")
 );
+
+CREATE INDEX "idx_deployment_members_entity"
+    ON "deployment_members" ("entity_kind", "entity_id");
 
 -- One row: the committed revision every node converges on. `epoch` is the
 -- compare-and-swap token a deployment names.

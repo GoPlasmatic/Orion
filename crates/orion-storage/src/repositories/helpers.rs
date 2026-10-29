@@ -134,11 +134,11 @@ pub fn sql_now(backend: crate::DbBackend) -> &'static str {
 
 /// What every UPDATE on a table with an `updated_at` column writes to it.
 ///
-/// The statement sets it itself; there is no trigger behind it
-/// (`003_drop_updated_at_triggers`), because on SQLite a per-table trigger is
-/// a second UPDATE per UPDATE. `CURRENT_TIMESTAMP` renders the same on all
-/// three backends (SQLite's is the text `datetime('now')` produces). Any new UPDATE on `traces`,
-/// `trace_dlq` or a cron table must set it, or the row keeps its old time.
+/// The statement sets it itself; there is no trigger behind it, because on
+/// SQLite a per-table trigger is a second UPDATE per UPDATE.
+/// `CURRENT_TIMESTAMP` renders the same on all three backends (SQLite's is the
+/// text `datetime('now')` produces). Any new UPDATE on `traces`, `trace_dlq`
+/// or a cron table must set it, or the row keeps its old time.
 pub fn updated_now() -> sea_query::SimpleExpr {
     sea_query::Expr::cust("CURRENT_TIMESTAMP")
 }
@@ -152,6 +152,19 @@ pub fn sql_now_plus_secs(backend: crate::DbBackend, secs: u64) -> String {
         }
         crate::DbBackend::Mysql => {
             format!("DATE_ADD(UTC_TIMESTAMP(), INTERVAL {secs} SECOND)")
+        }
+    }
+}
+
+/// `sql_now` minus a positive offset in seconds, per backend.
+pub fn sql_now_minus_secs(backend: crate::DbBackend, secs: u64) -> String {
+    match backend {
+        crate::DbBackend::Sqlite => format!("datetime('now', '-{secs} seconds')"),
+        crate::DbBackend::Postgres => {
+            format!("LOCALTIMESTAMP - interval '{secs} seconds'")
+        }
+        crate::DbBackend::Mysql => {
+            format!("DATE_SUB(UTC_TIMESTAMP(), INTERVAL {secs} SECOND)")
         }
     }
 }

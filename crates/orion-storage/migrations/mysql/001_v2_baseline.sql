@@ -36,11 +36,6 @@ CREATE TABLE `traces` (
   KEY `idx_traces_created_at_id` (`created_at`,`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TRIGGER trg_traces_updated_at
-    BEFORE UPDATE ON traces
-    FOR EACH ROW
-    SET NEW.updated_at = CURRENT_TIMESTAMP;
-
 CREATE TABLE `trace_dlq` (
   `id` varchar(36) NOT NULL,
   `trace_id` varchar(36) NOT NULL,
@@ -61,11 +56,6 @@ CREATE TABLE `trace_dlq` (
   KEY `idx_trace_dlq_created_at` (`created_at`),
   KEY `idx_trace_dlq_channel_created_at` (`channel`,`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TRIGGER trg_trace_dlq_updated_at
-    BEFORE UPDATE ON trace_dlq
-    FOR EACH ROW
-    SET NEW.updated_at = CURRENT_TIMESTAMP;
 
 -- ============================================================
 -- Audit log
@@ -100,11 +90,6 @@ CREATE TABLE `cron_schedule_state` (
   PRIMARY KEY (`channel_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TRIGGER trg_cron_schedule_state_updated_at
-    BEFORE UPDATE ON cron_schedule_state
-    FOR EACH ROW
-    SET NEW.updated_at = CURRENT_TIMESTAMP;
-
 CREATE TABLE `cron_occurrences` (
   `id` varchar(64) NOT NULL,
   `channel_id` varchar(255) NOT NULL,
@@ -135,11 +120,6 @@ CREATE TABLE `cron_occurrences` (
   KEY `idx_cron_occurrences_channel_created` (`channel_id`,`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TRIGGER trg_cron_occurrences_updated_at
-    BEFORE UPDATE ON cron_occurrences
-    FOR EACH ROW
-    SET NEW.updated_at = CURRENT_TIMESTAMP;
-
 CREATE TABLE `cron_singletons` (
   `singleton_key` varchar(128) NOT NULL,
   `occurrence_id` varchar(64) NOT NULL,
@@ -150,11 +130,6 @@ CREATE TABLE `cron_singletons` (
   PRIMARY KEY (`singleton_key`),
   KEY `idx_cron_singletons_lease_until` (`lease_until`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TRIGGER trg_cron_singletons_updated_at
-    BEFORE UPDATE ON cron_singletons
-    FOR EACH ROW
-    SET NEW.updated_at = CURRENT_TIMESTAMP;
 
 CREATE TABLE `cron_singleton_slots` (
   `singleton_key` varchar(128) NOT NULL,
@@ -167,11 +142,6 @@ CREATE TABLE `cron_singleton_slots` (
   PRIMARY KEY (`singleton_key`,`slot`),
   KEY `idx_cron_singleton_slots_lease_until` (`lease_until`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TRIGGER trg_cron_singleton_slots_updated_at
-    BEFORE UPDATE ON cron_singleton_slots
-    FOR EACH ROW
-    SET NEW.updated_at = CURRENT_TIMESTAMP;
 
 -- ============================================================
 -- Cluster coordination and shared state
@@ -265,6 +235,7 @@ CREATE TABLE `connection_revisions` (
   `provider_digest` varchar(128) NOT NULL,
   `public_config_json` mediumtext NOT NULL,
   `secret_locators_json` mediumtext,
+  `bindings_json` mediumtext,
   `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`connection_id`,`revision`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -278,7 +249,8 @@ CREATE TABLE `deployment_revisions` (
   `reason` mediumtext NOT NULL,
   `members_compacted` tinyint(1) NOT NULL DEFAULT '0',
   `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-  PRIMARY KEY (`revision`)
+  PRIMARY KEY (`revision`),
+  KEY `idx_deployment_revisions_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE `deployment_members` (
@@ -288,7 +260,8 @@ CREATE TABLE `deployment_members` (
   `entity_revision` bigint NOT NULL,
   `owning_package` varchar(128) NOT NULL,
   `definition_digest` varchar(128) NOT NULL,
-  PRIMARY KEY (`deployment_revision`,`entity_kind`,`entity_id`,`entity_revision`)
+  PRIMARY KEY (`deployment_revision`,`entity_kind`,`entity_id`,`entity_revision`),
+  KEY `idx_deployment_members_entity` (`entity_kind`,`entity_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE `deployment_head` (

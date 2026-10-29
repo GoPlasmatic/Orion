@@ -1,11 +1,14 @@
-//! The connector provider traits: [`ProviderBackend`], and the optional
-//! [`SourceConnectorFacet`] a source-capable provider adds.
+//! The connector provider trait: [`ProviderBackend`].
 //!
 //! A provider is registered under its kind and backend id
 //! ([`ProviderBackend::kind`], [`ProviderBackend::driver_id`]): a `rust`
 //! backend under its driver id (`org.orion.http`), a `workflow` or `wasm`
 //! package under its digest. The node dispatches each attempt of a call to
 //! it with an [`AttemptContext`].
+//!
+//! The optional source-polling facet (`SourceConnectorFacet`) stays
+//! `#[doc(hidden)]` and unstable until the first source channel protocol
+//! ships.
 
 use std::collections::BTreeMap;
 
@@ -18,6 +21,9 @@ use crate::contract::{ConnectorError, ConnectorOutput, ImplementationKind};
 use crate::identity::{EffectiveConnectionIdentity, Revision};
 
 /// Source batch item emitted by [`SourceConnectorFacet::poll`].
+///
+/// Unstable until the first source channel protocol ships.
+#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct SourceBatchItem {
@@ -44,6 +50,9 @@ impl SourceBatchItem {
 }
 
 /// Source poll batch returned by [`SourceConnectorFacet::poll`].
+///
+/// Unstable until the first source channel protocol ships.
+#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct SourcePollBatch {
@@ -62,6 +71,9 @@ impl SourcePollBatch {
 
 /// Settlement disposition reported by the native Rust `source` channel runner
 /// back to [`SourceConnectorFacet::settle`] after workflow execution completes.
+///
+/// Unstable until the first source channel protocol ships.
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -74,6 +86,9 @@ pub enum SourceSettlement {
 /// Optional source facet (`open` / `poll` / `settle` / `close`) implemented by
 /// source-capable connectors of any backend kind (`rust`, `workflow`, `wasm`)
 /// and driven by the native Rust `source` channel runner.
+///
+/// Unstable until the first source channel protocol ships.
+#[doc(hidden)]
 #[async_trait]
 pub trait SourceConnectorFacet: Send + Sync {
     /// Open or resume a source cursor from `checkpoint`.
@@ -198,7 +213,9 @@ pub trait ProviderBackend: Send + Sync {
     }
 
     /// Return the optional [`SourceConnectorFacet`] if this provider supports
-    /// `source` channel polling.
+    /// `source` channel polling. Unstable until the first source channel
+    /// protocol ships.
+    #[doc(hidden)]
     fn as_source(&self) -> Option<&dyn SourceConnectorFacet> {
         None
     }

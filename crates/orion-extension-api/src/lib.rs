@@ -8,7 +8,7 @@
 //! | Extension point | Trait | Keyed by |
 //! |---|---|---|
 //! | A channel protocol | [`ChannelDriver`] | its protocol id |
-//! | A connector provider | [`ProviderBackend`] (+ [`SourceConnectorFacet`]) | `(kind, driver_id)` |
+//! | A connector provider | [`ProviderBackend`] | `(kind, driver_id)` |
 //! | A provider's pool cache | [`ConnectionPoolCache`] | its `cache_id` |
 //! | Package admission | [`PackageVerifier`] | one per node |
 //!
@@ -64,10 +64,9 @@ pub use identity::{
     Revision,
 };
 pub use pool::{ConnectionPoolCache, PoolEntry};
-pub use provider::{
-    ProviderBackend, SourceBatchItem, SourceConnectorFacet, SourcePollBatch, SourceSettlement,
-    ValidateContext,
-};
+pub use provider::{ProviderBackend, ValidateContext};
+#[doc(hidden)]
+pub use provider::{SourceBatchItem, SourceConnectorFacet, SourcePollBatch, SourceSettlement};
 
 /// The wire types a contract shares with `orion-api`. The vocabularies
 /// ([`ImplementationKind`], [`ConnectorErrorClass`], [`EffectStatus`],
