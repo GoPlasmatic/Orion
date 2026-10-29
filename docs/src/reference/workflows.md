@@ -108,7 +108,7 @@ It is about **position, not outcome**:
 - A task that *failed* under `on_failure: "continue"` **does** halt, because
   the author said nothing runs after this one.
 
-**Since:** Orion 1.2. Task groups and `terminal` need dataflow-rs 3.6, which Orion 1.2.0 ships. A definition using a group fails to load on an older engine, loudly; a bare `terminal: true` is silently ignored there and every later task runs. Gate on the server version if you deploy definitions to instances you do not control.
+**Since:** Orion 1.2 (`dataflow-rs` 3.6+; Orion 2.0 ships 4.x). On older engines, a group fails to load, and `terminal: true` is ignored so later tasks still run. Gate on the server version if you deploy definitions to instances you do not control.
 
 ### Halting on a rejection
 

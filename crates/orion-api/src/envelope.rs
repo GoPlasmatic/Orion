@@ -1,4 +1,4 @@
-//! The 2xx envelopes: `{"data": …}` (R17) and its paginated sibling.
+//! The 2xx envelopes: `{"data": …}` and its paginated sibling.
 //!
 //! Admin endpoints wrap every success body this way. These types are the one
 //! definition of that shape: the server returns them, publishes them in its

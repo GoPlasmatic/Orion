@@ -1,5 +1,7 @@
 # Community v2 release evidence
 
+> **Status:** Local pre-candidate verification only; not final published release evidence until [#385](https://github.com/GoPlasmatic/Orion/issues/385) closes with a published candidate digest.
+
 This records the pre-candidate validation at `8d940cfb`. For the current local
 `2.0.0-rc.1` candidate, see [candidate evidence](release-v2-rc1.md).
 

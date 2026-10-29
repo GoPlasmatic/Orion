@@ -108,7 +108,7 @@ impl OrionClient {
         self
     }
 
-    /// Send `X-Orion-Change-Context` on every request (K5), so the audit
+    /// Send `X-Orion-Change-Context` on every request, so the audit
     /// trail groups a multi-call operation.
     pub fn with_change_context(mut self, context: String) -> Self {
         self.change_context = Some(context);

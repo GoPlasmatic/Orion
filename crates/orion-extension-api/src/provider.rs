@@ -161,9 +161,10 @@ impl<'a> ValidateContext<'a> {
 
 /// Unified connector provider backend trait.
 ///
-/// External Community and Enterprise providers register implementations of this
-/// trait without modifying core enums or built-in handler tables. Implement it
-/// with `#[async_trait::async_trait]`.
+/// Providers register implementations of this trait through
+/// [`Registrar::provider_backend`](crate::Registrar::provider_backend) without
+/// modifying core enums or built-in handler tables. Implement it with
+/// `#[async_trait::async_trait]`.
 #[async_trait]
 pub trait ProviderBackend: Send + Sync {
     /// Implementation kind (`Rust`, `Workflow`, or `Wasm`).

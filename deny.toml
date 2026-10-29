@@ -1,14 +1,14 @@
-# cargo-deny configuration (proposal T12): advisories, license
-# compatibility, bans and source policy for the full dependency tree.
+# cargo-deny configuration: advisories, license compatibility, bans and
+# source policy for the full dependency tree.
 # CI runs `cargo deny check` in the deny job; run it locally with:
 #   cargo install cargo-deny --locked && cargo deny check
 
 [graph]
 # Orion has no features — check the tree exactly as it builds.
 all-features = false
-# T30: keep in step with dist-workspace.toml's `targets` plus the platforms
+# Keep in step with dist-workspace.toml's `targets` plus the platforms
 # CI qualifies for promotion (cross-os-build.yml). x86_64-apple-darwin was
-# dropped from dist before ever shipping (P13); musl is compiled on every
+# dropped from dist before ever shipping; musl is compiled on every
 # relevant PR and staged to join the dist list.
 targets = [
     "x86_64-unknown-linux-gnu",
@@ -23,7 +23,7 @@ version = 2
 yanked = "deny"
 ignore = [
     # RUSTSEC-2023-0071 — Marvin timing sidechannel in the `rsa` crate
-    # (no fixed release exists). Re-evaluated 2026-07-27 (proposal T11), now
+    # (no fixed release exists). Re-evaluated 2026-07-27, now
     # that MySQL is a live, container-tested backend rather than "we only
     # use SQLite":
     #

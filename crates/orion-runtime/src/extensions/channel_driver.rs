@@ -1,4 +1,4 @@
-//! Native Rust channel driver interface and registry (`V2-11.1`).
+//! Native Rust channel driver interface and registry.
 //!
 //! A channel's `protocol` names a [`ChannelDriver`], and the driver registered
 //! in the node's [`super::Composition`] under that name is what decides
@@ -157,7 +157,7 @@ impl ChannelDriver for CronChannelDriver {
     }
 }
 
-/// The registry of native Rust [`ChannelDriver`]s a node serves (`V2-11.1`):
+/// The registry of native Rust [`ChannelDriver`]s a node serves:
 /// the one answer to which channel protocols exist. Built once, by
 /// [`super::CompositionBuilder::build`] (or [`Self::community`] for the
 /// offline tooling), and frozen.

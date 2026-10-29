@@ -1,4 +1,4 @@
-//! The node's connector provider registry (`V2-11.1`, `V2-10.1`, `V2-15`).
+//! The node's connector provider registry.
 //!
 //! Connector implementations implement [`ProviderBackend`] and register into
 //! [`ProviderRegistry`]:
@@ -97,7 +97,7 @@ impl ProviderTable {
     }
 }
 
-/// The node's [`ProviderBackend`]s, in two layers (`V2-11.1`):
+/// The node's [`ProviderBackend`]s, in two layers:
 ///
 /// - **Composed**: what the edition's [`super::CompositionBuilder`] registered
 ///   (the foundation drivers, Enterprise's providers). Frozen when the

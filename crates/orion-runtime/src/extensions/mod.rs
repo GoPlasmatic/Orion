@@ -1,4 +1,4 @@
-//! The node's side of the extension seams (`V2-11.1`, `V2-05.1`).
+//! The node's side of the extension seams.
 //!
 //! What an edition implements (the channel driver, provider backend, pool
 //! cache and package verifier traits, their contract types and the
@@ -112,7 +112,7 @@ pub struct BuildContext {
     pub foundation: FoundationOptions,
 }
 
-/// An owned description of what a node serves (`V2-11.1`): its edition, the
+/// An owned description of what a node serves: its edition, the
 /// channel drivers, the connector provider backends, the connection-pool
 /// caches and the package verifier. The node freezes it into the
 /// [`Composition`] it runs on when it starts; nothing registered here can
@@ -194,7 +194,7 @@ impl CompositionBuilder {
         }
     }
 
-    /// The Community Edition composition (`V2-11.1`, `V2-14`):
+    /// The Community Edition composition:
     /// - the foundational native Rust channel drivers (`rest`, `http`, `cron`)
     /// - the foundational Direct Rust connector providers (`org.orion.http`,
     ///   `org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite`,
@@ -350,7 +350,7 @@ impl Registrar for CompositionBuilder {
     }
 }
 
-/// What a node serves, frozen (`V2-11.1`): the edition, the channel drivers,
+/// What a node serves, frozen: the edition, the channel drivers,
 /// the provider backends, the pool caches and the admission they were
 /// composed with, bound to the node's deployment store and revocation
 /// ledger. Built from a [`CompositionBuilder`] when the node starts; cheap

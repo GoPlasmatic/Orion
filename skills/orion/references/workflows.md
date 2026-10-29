@@ -109,7 +109,7 @@ Avoid creating your own values in the `_orion` namespace.
 Without an override, a task error halts the pipeline. A task's
 `on_failure: "continue"` makes that step non-fatal (`"halt"` ends the workflow
 instead). The workflow's `continue_on_error: true` ends the failing workflow
-without failing the request; its later tasks do not run. The 1.x task keys
+without failing the request; its later tasks do not run. The retired task keys
 `halt_on` and `continue_on_error` are refused.
 
 Continued failures append bounded, sanitized records to

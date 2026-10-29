@@ -101,6 +101,43 @@ fn cli_help_names_no_tracker_ids() {
 }
 
 #[test]
+fn public_sdk_and_api_docs_name_no_tracker_ids() {
+    let mut found = Vec::new();
+    let mut stack = vec![
+        workspace().join("crates/orion-api/src"),
+        workspace().join("crates/orion-client/src"),
+        workspace().join("crates/orion-definitions/src"),
+        workspace().join("crates/orion-extension-api/src"),
+        workspace().join("crates/orion-plugin-sdk/src"),
+    ];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (n, line) in text.lines().enumerate() {
+                let t = line.trim_start();
+                if (t.starts_with("///") || t.starts_with("//!"))
+                    && let Some(id) = tracker_id(t)
+                {
+                    found.push(format!("{}:{}: {id}", path.display(), n + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "public SDK/API rustdoc carries tracker IDs: {found:?}"
+    );
+}
+
+#[test]
 fn the_matcher_finds_the_shapes_it_is_for() {
     for hit in [
         "x (R12) y",

@@ -202,49 +202,29 @@ fn endpoint_of(conn: &str) -> Option<(String, u16)> {
     Some((host, port))
 }
 
-/// Shared body of the connection-string checks: honour the opt-out, skip
-/// connection strings with no network endpoint to judge, and refuse the rest
-/// when they target a private/internal address.
-async fn check_conn_endpoint(
-    kind: &str,
-    connector_name: &str,
-    conn: &str,
-    allow_private: bool,
-) -> Result<(), OrionError> {
-    if allow_private {
-        return Ok(());
-    }
-    let Some((host, port)) = endpoint_of(conn) else {
-        return Ok(());
-    };
-    validate_hostport_not_private(&host, port)
-        .await
-        .map_err(|msg| refused(kind, connector_name, &msg))?;
-    Ok(())
-}
-
 /// Private-address check for a `db` connector, on the pool-open path.
 ///
-/// Skips `sqlite:` (a file, not a socket).
+/// Honours `allow_private_urls`, skips `sqlite:` (a file, not a socket), and
+/// refuses targets resolving to a private/internal address.
 pub async fn check_db_endpoint(
     connector_name: &str,
     config: &DbConnectorConfig,
 ) -> Result<(), OrionError> {
-    check_conn_endpoint(
-        "db",
-        connector_name,
-        &config.connection_string,
-        config.allow_private_urls,
-    )
-    .await
-}
-
-fn refused(kind: &str, connector_name: &str, msg: &str) -> OrionError {
-    OrionError::validation(format!(
-        "Refusing to connect {kind} connector '{connector_name}': {msg}. \
-         Set \"allow_private_urls\": true on this connector if the target is \
-         intentionally on a private network."
-    ))
+    if config.allow_private_urls {
+        return Ok(());
+    }
+    let Some((host, port)) = endpoint_of(&config.connection_string) else {
+        return Ok(());
+    };
+    validate_hostport_not_private(&host, port)
+        .await
+        .map_err(|msg| {
+            OrionError::validation(format!(
+                "Refusing to connect db connector '{connector_name}': {msg}. \
+                 Set \"allow_private_urls\": true on this connector if the target is \
+                 intentionally on a private network."
+            ))
+        })
 }
 
 #[cfg(test)]

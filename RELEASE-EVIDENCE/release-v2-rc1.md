@@ -1,5 +1,7 @@
 # Orion 2.0.0-rc.1 local candidate
 
+> **Status:** Local candidate verification only; not final published release evidence until [#385](https://github.com/GoPlasmatic/Orion/issues/385) closes with a published candidate digest.
+
 Prepared on 2026-10-28 from `8d940cfb` and the changes in the commit containing
 this record. The version update used `cargo release version --workspace` in an
 isolated clean checkout, followed by its generated manifest/lockfile diff.

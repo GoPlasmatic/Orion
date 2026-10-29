@@ -210,7 +210,7 @@ impl fmt::Display for Revision {
 }
 
 /// A provider package, pinned: who published it, its id, its semantic
-/// version, and the digest of its bytes (`V2-03.1`).
+/// version, and the digest of its bytes.
 ///
 /// One type for every place a provider is named: a deployment manifest's
 /// `providers`, an admission request, and the connection a running call is
@@ -235,7 +235,7 @@ pub struct ConnectionReference {
     pub provider: ProviderRef,
 }
 
-/// Effective identity used to partition stateful sessions and connection pools (`V2-05.4`, `CTX-08`).
+/// Effective identity used to partition stateful sessions and connection pools.
 ///
 /// Two invocations share a session pool entry only when their provider artifact,
 /// connection ID, connection revision, and resolved credential hash all match.
@@ -251,7 +251,7 @@ pub struct EffectiveConnectionIdentity {
 
 impl EffectiveConnectionIdentity {
     /// Stable capacity key shared across revisions of the same logical connection
-    /// so rotating credentials or updating config does not multiply max pool ceilings (`CTX-08`).
+    /// so rotating credentials or updating config does not multiply max pool ceilings.
     pub fn stable_capacity_key(&self) -> (&str, &str) {
         (&self.provider_digest, &self.connection_id)
     }

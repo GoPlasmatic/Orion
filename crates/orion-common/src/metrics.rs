@@ -1042,6 +1042,22 @@ pub fn set_db_pool_idle(idle: f64) {
     gauge!("orion_db_pool_idle").set(idle);
 }
 
+/// Set the number of cached sessions held by a version-fenced provider pool.
+pub fn set_session_pool_entries(cache: &str, count: usize) {
+    if !is_enabled() {
+        return;
+    }
+    gauge!("orion_session_pool_entries", "cache" => cache.to_owned()).set(count as f64);
+}
+
+/// Set the number of active connection-identity partitions in the foundation in-memory cache.
+pub fn set_memory_cache_partitions(count: usize) {
+    if !is_enabled() {
+        return;
+    }
+    gauge!("orion_memory_cache_partitions").set(count as f64);
+}
+
 // ---------------------------------------------------------------------------
 // Admin audit trail
 // ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-//! Extensible connection-pool registry and version-fenced session cache (`V2-05.4`, `V2-11.1`).
+//! Extensible connection-pool registry and version-fenced session cache.
 //!
 //! Replaces reliance on a closed [`crate::connector::PoolSlot`] enum for new
 //! Direct Rust providers:
@@ -8,7 +8,7 @@
 //!   [`EffectiveConnectionIdentity`] (`(provider_digest, connection_id, revision, secret_hash)`),
 //!   fences invalidated creators so late completions from a superseded revision
 //!   cannot populate the current cache, and shares a stable capacity ceiling
-//!   keyed by `(provider_digest, connection_id)` across retained revisions (`CTX-08`).
+//!   keyed by `(provider_digest, connection_id)` across retained revisions.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -20,9 +20,9 @@ use orion_extension_api::{
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-/// Registry of provider-owned connection-pool caches (`V2-11.1`).
+/// Registry of provider-owned connection-pool caches.
 ///
-/// Lets Community foundation providers and Enterprise providers register
+/// Lets foundation and edition-supplied providers register
 /// typed pool caches and receive per-connector and blanket eviction
 /// notifications without adding variants to [`crate::connector::PoolSlot`].
 /// Built once, whole, by [`super::CompositionBuilder::build`], and frozen:
@@ -56,7 +56,7 @@ impl ResourcePoolRegistry {
         })
     }
 
-    /// The pool registered as `cache_id`, when it is a `C` (`TD-28`).
+    /// The pool registered as `cache_id`, when it is a `C`.
     pub fn get_by_id<C: Send + Sync + 'static>(&self, cache_id: &str) -> Option<Arc<C>> {
         self.entries.get(cache_id)?.downcast::<C>()
     }
@@ -91,7 +91,7 @@ impl ResourcePoolRegistry {
 }
 
 /// A leased session holding a permit from the stable `(provider_digest, connection_id)`
-/// capacity ceiling (`V2-05.4`, `CTX-08`).
+/// capacity ceiling.
 #[derive(Debug)]
 pub struct SessionHandle<S> {
     session: S,
@@ -113,20 +113,20 @@ struct SessionPoolState<S> {
     /// Cached sessions keyed by full effective identity (`(provider_digest, connection_id, revision, secret_hash)`).
     sessions: BTreeMap<EffectiveConnectionIdentity, S>,
     /// Explicitly invalidated identities or minimum valid revision per `(provider_digest, connection_id)`.
-    /// Any creator completing for an identity in `invalidated` or below `min_revision` is fenced (`CTX-08`).
+    /// Any creator completing for an identity in `invalidated` or below `min_revision` is fenced.
     invalidated: BTreeSet<EffectiveConnectionIdentity>,
     min_revision: BTreeMap<(Digest, ConnectionId), Revision>,
     /// Shared capacity semaphores keyed by stable `(provider_digest, connection_id)` so
-    /// retained revisions and rotated secrets share one capacity ceiling (`CTX-08`).
+    /// retained revisions and rotated secrets share one capacity ceiling.
     capacity: BTreeMap<(Digest, ConnectionId), Arc<Semaphore>>,
     /// Monotonic global eviction epoch incremented on `evict_all` so in-flight creators
-    /// started before blanket eviction cannot populate the cache (`TD-28`).
+    /// started before blanket eviction cannot populate the cache.
     global_eviction_epoch: u64,
-    /// Per-connector eviction epochs incremented on `evict(connector_name)` (`TD-28`).
+    /// Per-connector eviction epochs incremented on `evict(connector_name)`.
     connector_eviction_epochs: BTreeMap<String, u64>,
 }
 
-/// Version- and credential-fenced session pool (`V2-05.4`, `CTX-08`).
+/// Version- and credential-fenced session pool.
 ///
 /// Guarantees:
 /// 1. Distinct revisions or rotated `secret_hash` values never share a cached session.
@@ -158,7 +158,7 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
     }
 
     /// Invalidate a specific effective identity and optionally advance the minimum
-    /// acceptable revision for its connection (`CTX-08`).
+    /// acceptable revision for its connection.
     pub fn invalidate(
         &self,
         identity: &EffectiveConnectionIdentity,
@@ -192,6 +192,7 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
             });
         }
         Self::retire_idle_capacity(&mut guard);
+        orion_common::metrics::set_session_pool_entries(&self.cache_id, guard.sessions.len());
     }
 
     /// Drop the capacity semaphore of every connection that has no outstanding
@@ -225,7 +226,7 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
     }
 
     /// Acquire a session handle for `identity`, creating the session via `creator`
-    /// on cache miss while enforcing the shared per-connection capacity ceiling (`CTX-08`).
+    /// on cache miss while enforcing the shared per-connection capacity ceiling.
     pub async fn acquire<F, Fut>(
         &self,
         identity: &EffectiveConnectionIdentity,
@@ -263,8 +264,8 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
         };
 
         // Non-blocking capacity check so a suspended parent holding the only permit
-        // cannot deadlock a child (`CTX-07`) and retained revisions cannot exceed
-        // the stable connection ceiling (`CTX-08`).
+        // cannot deadlock a child and retained revisions cannot exceed
+        // the stable connection ceiling.
         let permit = semaphore.try_acquire_owned().map_err(|_| {
             ConnectorError::budget_exhausted(
                 format!(
@@ -286,7 +287,7 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
         // Create outside the lock.
         let created = creator().await?;
 
-        // Re-check fence after async creation (`CTX-08`, `TD-28`): if `identity` was invalidated
+        // Re-check fence after async creation: if `identity` was invalidated
         // or evicted while `creator` was running, refuse to insert into the cache.
         let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if Self::is_fenced(&guard, identity) {
@@ -313,6 +314,7 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
             .entry(identity.clone())
             .or_insert(created)
             .clone();
+        orion_common::metrics::set_session_pool_entries(&self.cache_id, guard.sessions.len());
 
         Ok(SessionHandle {
             session,
@@ -349,12 +351,16 @@ impl<S: Clone + Send + Sync + 'static> ConnectionPoolCache for VersionedSessionP
         guard
             .sessions
             .retain(|k, _| k.connection_id != connector_name);
+        Self::retire_idle_capacity(&mut guard);
+        orion_common::metrics::set_session_pool_entries(&self.cache_id, guard.sessions.len());
     }
 
     async fn evict_all(&self) {
         let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         guard.global_eviction_epoch = guard.global_eviction_epoch.saturating_add(1);
         guard.sessions.clear();
+        Self::retire_idle_capacity(&mut guard);
+        orion_common::metrics::set_session_pool_entries(&self.cache_id, 0);
     }
 }
 

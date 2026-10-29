@@ -108,8 +108,8 @@ impl std::error::Error for AdmissionRejection {}
 /// The part of admission an edition plugs in: whether a provider package may
 /// be admitted on this node.
 ///
-/// Community composes its own; Enterprise supplies its (signed packages,
-/// offline entitlements) through [`Registrar::package_verifier`](crate::Registrar::package_verifier).
+/// Supplied through [`Registrar::package_verifier`](crate::Registrar::package_verifier)
+/// (for example, to enforce detached signatures or tier entitlements).
 /// Revocation and the security lease are not the verifier's: every node keeps
 /// them in its revocation ledger and consults it before and after the
 /// verifier, so a verifier cannot disable revocation by omission.

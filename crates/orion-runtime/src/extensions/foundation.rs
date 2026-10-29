@@ -1,15 +1,14 @@
-//! Community Edition foundation Direct Rust connector backends (`V2-14.2`–`V2-14.4`).
+//! Community Edition foundation Direct Rust connector backends.
 //!
 //! Implements the five foundational Direct Rust (`ImplementationKind::Rust`)
-//! connector providers maintained in the public Community repository per
-//! `DEC-005`:
+//! connector providers maintained in the public Community repository:
 //! - [`HttpProviderBackend`] (`"org.orion.http"`)
 //! - [`PostgresProviderBackend`] (`"org.orion.postgresql"`)
 //! - [`MysqlProviderBackend`] (`"org.orion.mysql"`) — MySQL and MariaDB
 //! - [`SqliteProviderBackend`] (`"org.orion.sqlite"`) — enforces approved-root
-//!   path sandboxing and rejects path traversal or Orion's own config DB (`V2-14.3`)
+//!   path sandboxing and rejects path traversal or Orion's own config DB
 //! - [`MemoryCacheProviderBackend`] (`"org.orion.memory-cache"`) — bounded,
-//!   TTL-aware, connection-partitioned in-memory cache (`V2-14.4`)
+//!   TTL-aware, connection-partitioned in-memory cache
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -467,10 +466,10 @@ async fn run_sql(
 }
 
 // ============================================================================
-// 1. org.orion.http (V2-14.2)
+// 1. org.orion.http
 // ============================================================================
 
-/// Community foundation HTTP/REST connector provider (`org.orion.http`, `V2-14.2`).
+/// Community foundation HTTP/REST connector provider (`org.orion.http`).
 #[derive(Default)]
 pub struct HttpProviderBackend {
     deployments: Option<super::deployment_store::ImmutableDeploymentStore>,
@@ -828,40 +827,118 @@ impl ProviderBackend for HttpProviderBackend {
 }
 
 // ============================================================================
-// 2. org.orion.postgresql (V2-14.3)
+// 2. Shared SQL dialect & org.orion.postgresql / org.orion.mysql
 // ============================================================================
 
-/// Community foundation PostgreSQL connector provider (`org.orion.postgresql`, `V2-14.3`).
-pub struct PostgresProviderBackend {
+#[doc(hidden)]
+#[async_trait::async_trait]
+pub trait RemoteSqlDialect: Send + Sync + 'static {
+    const DRIVER_ID: &'static str;
+    const DISPLAY_NAME: &'static str;
+    const SESSION_PREFIX: &'static str;
+    const CACHE_NAME: &'static str;
+    const SCHEMES: &'static [&'static str];
+    const SCHEME_ERR: &'static str;
+    type Pool: Clone + Send + Sync + 'static;
+
+    fn close_pool(pool: Self::Pool);
+    async fn connect_pool(url: &str) -> Result<Self::Pool, sqlx::Error>;
+    fn wrap_pool(pool: Self::Pool) -> crate::connector::pool_cache::SqlPool;
+}
+
+#[doc(hidden)]
+pub struct PostgresDialect;
+
+#[async_trait::async_trait]
+impl RemoteSqlDialect for PostgresDialect {
+    const DRIVER_ID: &'static str = DRIVER_POSTGRESQL;
+    const DISPLAY_NAME: &'static str = "PostgreSQL";
+    const SESSION_PREFIX: &'static str = "pg-session";
+    const CACHE_NAME: &'static str = "v2_postgres";
+    const SCHEMES: &'static [&'static str] = &["postgres://", "postgresql://"];
+    const SCHEME_ERR: &'static str =
+        "org.orion.postgresql requires a postgres:// or postgresql:// connection_string";
+    type Pool = sqlx::PgPool;
+
+    fn close_pool(pool: Self::Pool) {
+        tokio::spawn(async move {
+            pool.close().await;
+        });
+    }
+
+    async fn connect_pool(url: &str) -> Result<Self::Pool, sqlx::Error> {
+        sqlx::postgres::PgPoolOptions::new()
+            .max_connections(4)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(url)
+            .await
+    }
+
+    fn wrap_pool(pool: Self::Pool) -> crate::connector::pool_cache::SqlPool {
+        crate::connector::pool_cache::SqlPool::Postgres(pool)
+    }
+}
+
+#[doc(hidden)]
+pub struct MysqlDialect;
+
+#[async_trait::async_trait]
+impl RemoteSqlDialect for MysqlDialect {
+    const DRIVER_ID: &'static str = DRIVER_MYSQL;
+    const DISPLAY_NAME: &'static str = "MySQL";
+    const SESSION_PREFIX: &'static str = "mysql-session";
+    const CACHE_NAME: &'static str = "v2_mysql";
+    const SCHEMES: &'static [&'static str] = &["mysql://", "mariadb://"];
+    const SCHEME_ERR: &'static str =
+        "org.orion.mysql requires a mysql:// or mariadb:// connection_string";
+    type Pool = sqlx::MySqlPool;
+
+    fn close_pool(pool: Self::Pool) {
+        tokio::spawn(async move {
+            pool.close().await;
+        });
+    }
+
+    async fn connect_pool(url: &str) -> Result<Self::Pool, sqlx::Error> {
+        sqlx::mysql::MySqlPoolOptions::new()
+            .max_connections(4)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(url)
+            .await
+    }
+
+    fn wrap_pool(pool: Self::Pool) -> crate::connector::pool_cache::SqlPool {
+        crate::connector::pool_cache::SqlPool::MySql(pool)
+    }
+}
+
+/// Shared Direct Rust SQL connector backend for network-dialled SQL engines
+/// ([`PostgresProviderBackend`] and [`MysqlProviderBackend`]).
+pub struct RemoteSqlProviderBackend<D: RemoteSqlDialect> {
     /// Admission, not pooling. The cached value is only a label (it is what an
     /// invocation reports as its `session` metadata); what this layer does is
     /// hold each invocation to the connection's capacity ceiling, shared
-    /// across its revisions and rotated secrets (`CTX-08`), and refuse an
-    /// identity once `dispose` has invalidated it. The other
-    /// SQL providers share this shape.
+    /// across its revisions and rotated secrets, and refuse an
+    /// identity once `dispose` has invalidated it.
     sessions: Arc<VersionedSessionPool<String>>,
     /// The connections themselves, keyed by identity and a digest of the
     /// resolved target, closed when evicted.
-    live_pools: crate::connector::lru_cache::LruCache<sqlx::PgPool>,
+    live_pools: crate::connector::lru_cache::LruCache<D::Pool>,
     deployments: Option<super::deployment_store::ImmutableDeploymentStore>,
     limits: SqlLimits,
 }
 
-impl PostgresProviderBackend {
+impl<D: RemoteSqlDialect> RemoteSqlProviderBackend<D> {
     pub fn new(max_capacity_per_connection: usize) -> Self {
         Self {
             sessions: Arc::new(VersionedSessionPool::new(
-                DRIVER_POSTGRESQL,
+                D::DRIVER_ID,
                 max_capacity_per_connection,
             )),
             live_pools: crate::connector::lru_cache::LruCache::with_evict_handler(
                 max_capacity_per_connection.max(4),
-                "v2_postgres",
-                |pool: sqlx::PgPool| {
-                    tokio::spawn(async move {
-                        pool.close().await;
-                    });
-                },
+                D::CACHE_NAME,
+                D::close_pool,
             ),
             deployments: None,
             limits: SqlLimits::default(),
@@ -892,12 +969,12 @@ impl PostgresProviderBackend {
         identity: &EffectiveConnectionIdentity,
     ) -> Result<String, ConnectorError> {
         let conn_str =
-            governed_connection_string(self.deployments.as_ref(), identity, DRIVER_POSTGRESQL)
-                .await?;
+            governed_connection_string(self.deployments.as_ref(), identity, D::DRIVER_ID).await?;
         let Some(conn_str) = conn_str else {
             return Err(ConnectorError::invalid_input(
                 format!(
-                    "PostgreSQL operation on '{}' requires a configured 'connection_string'",
+                    "{} operation on '{}' requires a configured 'connection_string'",
+                    D::DISPLAY_NAME,
                     identity.connection_id
                 ),
                 Some(json!({"pointer": "/connection_string"})),
@@ -907,7 +984,7 @@ impl PostgresProviderBackend {
         Ok(conn_str)
     }
 
-    async fn execute_live_postgres(
+    async fn execute_live(
         &self,
         conn_key: &str,
         conn_str: &str,
@@ -926,18 +1003,15 @@ impl PostgresProviderBackend {
             .get_or_create(&cache_key, || {
                 let target_url = conn_str.to_string();
                 async move {
-                    sqlx::postgres::PgPoolOptions::new()
-                        .max_connections(4)
-                        .acquire_timeout(Duration::from_secs(5))
-                        .connect(&target_url)
+                    D::connect_pool(&target_url)
                         .await
-                        .map_err(|e| sql_error(DRIVER_POSTGRESQL, e, EffectStatus::NotStarted))
+                        .map_err(|e| sql_error(D::DRIVER_ID, e, EffectStatus::NotStarted))
                 }
             })
             .await?;
         run_sql(
-            &crate::connector::pool_cache::SqlPool::Postgres(pool),
-            DRIVER_POSTGRESQL,
+            &D::wrap_pool(pool),
+            D::DRIVER_ID,
             operation,
             statement,
             params,
@@ -947,33 +1021,33 @@ impl PostgresProviderBackend {
     }
 }
 
-impl Default for PostgresProviderBackend {
+impl<D: RemoteSqlDialect> Default for RemoteSqlProviderBackend<D> {
     fn default() -> Self {
         Self::new(16)
     }
 }
 
 #[async_trait::async_trait]
-impl ProviderBackend for PostgresProviderBackend {
+impl<D: RemoteSqlDialect> ProviderBackend for RemoteSqlProviderBackend<D> {
     fn kind(&self) -> ImplementationKind {
         ImplementationKind::Rust
     }
 
     fn driver_id(&self) -> &str {
-        DRIVER_POSTGRESQL
+        D::DRIVER_ID
     }
 
     fn validate_config(&self, config: &Value) -> Result<(), ConnectorError> {
         let Some(conn_str) = config.get("connection_string").and_then(Value::as_str) else {
             return Err(ConnectorError::invalid_input(
-                "PostgreSQL connector requires 'connection_string'",
+                format!("{} connector requires 'connection_string'", D::DISPLAY_NAME),
                 Some(json!({"pointer": "/connection_string"})),
             ));
         };
         let lower = conn_str.trim().to_ascii_lowercase();
-        if !lower.starts_with("postgres://") && !lower.starts_with("postgresql://") {
+        if !D::SCHEMES.iter().any(|scheme| lower.starts_with(scheme)) {
             return Err(ConnectorError::invalid_input(
-                "org.orion.postgresql requires a postgres:// or postgresql:// connection_string",
+                D::SCHEME_ERR,
                 Some(json!({"pointer": "/connection_string"})),
             ));
         }
@@ -993,8 +1067,10 @@ impl ProviderBackend for PostgresProviderBackend {
             .sessions
             .acquire(identity, || async move {
                 Ok(format!(
-                    "pg-session:{}:r{}",
-                    identity.connection_id, identity.revision
+                    "{}:{}:r{}",
+                    D::SESSION_PREFIX,
+                    identity.connection_id,
+                    identity.revision
                 ))
             })
             .await?;
@@ -1004,21 +1080,21 @@ impl ProviderBackend for PostgresProviderBackend {
             return Err(ConnectorError::forbidden(
                 codes::OPERATION_FORBIDDEN,
                 "dispatch",
-                format!("Unsupported PostgreSQL operation '{operation}'"),
+                format!("Unsupported {} operation '{operation}'", D::DISPLAY_NAME),
                 ctx.effect_status(),
             ));
         };
         refuse_input_target(&input, &["connection_string"])?;
-        let statement = sql_statement(&input, sql_op.statement_keys(), DRIVER_POSTGRESQL)?;
+        let statement = sql_statement(&input, sql_op.statement_keys(), D::DRIVER_ID)?;
         let params = sql_params(&input)?;
         let conn_str = self.resolve_connection_string(identity).await?;
         ctx.record_effect(EffectStatus::Unknown);
         let data = self
-            .execute_live_postgres(&conn_key, &conn_str, sql_op, statement, &params)
+            .execute_live(&conn_key, &conn_str, sql_op, statement, &params)
             .await?;
         ctx.record_effect(EffectStatus::Completed);
         let mut metadata = BTreeMap::new();
-        metadata.insert("driver".to_string(), json!(DRIVER_POSTGRESQL));
+        metadata.insert("driver".to_string(), json!(D::DRIVER_ID));
         metadata.insert("session".to_string(), json!(handle.session()));
         Ok(ConnectorOutput::with_metadata(data, metadata))
     }
@@ -1035,11 +1111,21 @@ impl ProviderBackend for PostgresProviderBackend {
     }
 }
 
+/// Community foundation PostgreSQL connector provider (`org.orion.postgresql`).
+pub type PostgresProviderBackend = RemoteSqlProviderBackend<PostgresDialect>;
+
+/// Community foundation MySQL and MariaDB connector provider (`org.orion.mysql`).
+///
+/// The same operations as [`PostgresProviderBackend`]: `query` and `execute`,
+/// a literal statement with `params` bound to its `?` placeholders, and a
+/// target taken only from the connection revision.
+pub type MysqlProviderBackend = RemoteSqlProviderBackend<MysqlDialect>;
+
 // ============================================================================
-// 3. org.orion.sqlite (V2-14.3)
+// 3. org.orion.sqlite
 // ============================================================================
 
-/// Community foundation scoped SQLite connector provider (`org.orion.sqlite`, `V2-14.3`).
+/// Community foundation scoped SQLite connector provider (`org.orion.sqlite`).
 ///
 /// Enforces strict root-directory sandboxing:
 /// - `sqlite::memory:` is always permitted (isolated per connection identity).
@@ -1129,7 +1215,7 @@ impl SqliteProviderBackend {
         })
     }
 
-    /// Execute a real SQL statement against a sandboxed SQLite target (`V2-14.3`).
+    /// Execute a real SQL statement against a sandboxed SQLite target.
     #[cfg(test)]
     pub async fn execute_live_sqlite(
         &self,
@@ -1144,7 +1230,7 @@ impl SqliteProviderBackend {
     /// Execute a real SQL statement against a sandboxed SQLite target, with
     /// `params` bound to its placeholders, optionally partitioning
     /// `sqlite::memory:` pools by `connection_key` so tables persist across
-    /// statements on the same connection (`TD-24`, `V2-14.3`).
+    /// statements on the same connection.
     pub async fn execute_live_sqlite_for_connection(
         &self,
         connection_key: Option<&str>,
@@ -1296,210 +1382,7 @@ impl ProviderBackend for SqliteProviderBackend {
 }
 
 // ============================================================================
-// 4. org.orion.mysql
-// ============================================================================
-
-/// Community foundation MySQL and MariaDB connector provider (`org.orion.mysql`).
-///
-/// The same operations as `PostgresProviderBackend`: `query` and `execute`,
-/// a literal statement with `params` bound to its `?` placeholders, and a
-/// target taken only from the connection revision.
-pub struct MysqlProviderBackend {
-    sessions: Arc<VersionedSessionPool<String>>,
-    live_pools: crate::connector::lru_cache::LruCache<sqlx::MySqlPool>,
-    deployments: Option<super::deployment_store::ImmutableDeploymentStore>,
-    limits: SqlLimits,
-}
-
-impl MysqlProviderBackend {
-    pub fn new(max_capacity_per_connection: usize) -> Self {
-        Self {
-            sessions: Arc::new(VersionedSessionPool::new(
-                DRIVER_MYSQL,
-                max_capacity_per_connection,
-            )),
-            live_pools: crate::connector::lru_cache::LruCache::with_evict_handler(
-                max_capacity_per_connection.max(4),
-                "v2_mysql",
-                |pool: sqlx::MySqlPool| {
-                    tokio::spawn(async move {
-                        pool.close().await;
-                    });
-                },
-            ),
-            deployments: None,
-            limits: SqlLimits::default(),
-        }
-    }
-
-    pub fn with_deployment_store(
-        max_capacity_per_connection: usize,
-        deployments: super::deployment_store::ImmutableDeploymentStore,
-    ) -> Self {
-        let mut backend = Self::new(max_capacity_per_connection);
-        backend.deployments = Some(deployments);
-        backend
-    }
-
-    /// The same provider, holding every query to `limits`.
-    pub fn with_limits(mut self, limits: SqlLimits) -> Self {
-        self.limits = limits;
-        self
-    }
-
-    pub fn session_pool(&self) -> Arc<VersionedSessionPool<String>> {
-        self.sessions.clone()
-    }
-
-    async fn resolve_connection_string(
-        &self,
-        identity: &EffectiveConnectionIdentity,
-    ) -> Result<String, ConnectorError> {
-        let conn_str =
-            governed_connection_string(self.deployments.as_ref(), identity, DRIVER_MYSQL).await?;
-        let Some(conn_str) = conn_str else {
-            return Err(ConnectorError::invalid_input(
-                format!(
-                    "MySQL operation on '{}' requires a configured 'connection_string'",
-                    identity.connection_id
-                ),
-                Some(json!({"pointer": "/connection_string"})),
-            ));
-        };
-        self.validate_config(&json!({"connection_string": conn_str}))?;
-        Ok(conn_str)
-    }
-
-    async fn execute_live_mysql(
-        &self,
-        conn_key: &str,
-        conn_str: &str,
-        operation: SqlOperation,
-        statement: &str,
-        params: &[Value],
-    ) -> Result<Value, ConnectorError> {
-        // Keyed by a digest of the target, never the text: a resolved
-        // connection string carries its credential.
-        let cache_key = format!(
-            "{conn_key}::{}",
-            super::package_identity::sha256_digest(conn_str.as_bytes())
-        );
-        let pool = self
-            .live_pools
-            .get_or_create(&cache_key, || {
-                let target_url = conn_str.to_string();
-                async move {
-                    sqlx::mysql::MySqlPoolOptions::new()
-                        .max_connections(4)
-                        .acquire_timeout(Duration::from_secs(5))
-                        .connect(&target_url)
-                        .await
-                        .map_err(|e| sql_error(DRIVER_MYSQL, e, EffectStatus::NotStarted))
-                }
-            })
-            .await?;
-        run_sql(
-            &crate::connector::pool_cache::SqlPool::MySql(pool),
-            DRIVER_MYSQL,
-            operation,
-            statement,
-            params,
-            self.limits,
-        )
-        .await
-    }
-}
-
-impl Default for MysqlProviderBackend {
-    fn default() -> Self {
-        Self::new(16)
-    }
-}
-
-#[async_trait::async_trait]
-impl ProviderBackend for MysqlProviderBackend {
-    fn kind(&self) -> ImplementationKind {
-        ImplementationKind::Rust
-    }
-
-    fn driver_id(&self) -> &str {
-        DRIVER_MYSQL
-    }
-
-    fn validate_config(&self, config: &Value) -> Result<(), ConnectorError> {
-        let Some(conn_str) = config.get("connection_string").and_then(Value::as_str) else {
-            return Err(ConnectorError::invalid_input(
-                "MySQL connector requires 'connection_string'",
-                Some(json!({"pointer": "/connection_string"})),
-            ));
-        };
-        let lower = conn_str.trim().to_ascii_lowercase();
-        if !lower.starts_with("mysql://") && !lower.starts_with("mariadb://") {
-            return Err(ConnectorError::invalid_input(
-                "org.orion.mysql requires a mysql:// or mariadb:// connection_string",
-                Some(json!({"pointer": "/connection_string"})),
-            ));
-        }
-        Ok(())
-    }
-
-    async fn invoke(
-        &self,
-        ctx: &AttemptContext,
-        operation: &str,
-        input: Value,
-    ) -> Result<ConnectorOutput, ConnectorError> {
-        ctx.check_live()?;
-
-        let identity = ctx.effective_identity();
-        let handle = self
-            .sessions
-            .acquire(identity, || async move {
-                Ok(format!(
-                    "mysql-session:{}:r{}",
-                    identity.connection_id, identity.revision
-                ))
-            })
-            .await?;
-
-        let conn_key = format!("{}:r{}", identity.connection_id, identity.revision);
-        let Some(sql_op) = SqlOperation::parse(operation) else {
-            return Err(ConnectorError::forbidden(
-                codes::OPERATION_FORBIDDEN,
-                "dispatch",
-                format!("Unsupported MySQL operation '{operation}'"),
-                ctx.effect_status(),
-            ));
-        };
-        refuse_input_target(&input, &["connection_string"])?;
-        let statement = sql_statement(&input, sql_op.statement_keys(), DRIVER_MYSQL)?;
-        let params = sql_params(&input)?;
-        let conn_str = self.resolve_connection_string(identity).await?;
-        ctx.record_effect(EffectStatus::Unknown);
-        let data = self
-            .execute_live_mysql(&conn_key, &conn_str, sql_op, statement, &params)
-            .await?;
-        ctx.record_effect(EffectStatus::Completed);
-        let mut metadata = BTreeMap::new();
-        metadata.insert("driver".to_string(), json!(DRIVER_MYSQL));
-        metadata.insert("session".to_string(), json!(handle.session()));
-        Ok(ConnectorOutput::with_metadata(data, metadata))
-    }
-
-    fn literal_input_keys(&self, _operation: &str) -> Vec<String> {
-        SQL_STATEMENT_KEYS
-            .iter()
-            .map(|k| (*k).to_string())
-            .collect()
-    }
-
-    async fn dispose(&self, identity: &EffectiveConnectionIdentity) {
-        self.sessions.invalidate(identity, None);
-    }
-}
-
-// ============================================================================
-// 5. org.orion.memory-cache (V2-14.4)
+// 4. org.orion.memory-cache
 // ============================================================================
 
 #[derive(Debug, Clone)]
@@ -1508,7 +1391,7 @@ struct CacheEntry {
     expires_at: Option<Instant>,
 }
 
-/// Bounded, connection-partitioned in-memory cache store (`V2-14.4`, `TD-29`).
+/// Bounded, connection-partitioned in-memory cache store.
 ///
 /// Keyed by [`EffectiveConnectionIdentity`] so:
 /// - Two different connections never share keys.
@@ -1550,6 +1433,7 @@ impl PartitionedMemoryCache {
         let Some(entry) = partition.get(key) else {
             if partition.is_empty() {
                 guard.remove(identity);
+                orion_common::metrics::set_memory_cache_partitions(guard.len());
             }
             return None;
         };
@@ -1559,6 +1443,7 @@ impl PartitionedMemoryCache {
             partition.remove(key);
             if partition.is_empty() {
                 guard.remove(identity);
+                orion_common::metrics::set_memory_cache_partitions(guard.len());
             }
             return None;
         }
@@ -1576,7 +1461,7 @@ impl PartitionedMemoryCache {
         let now = Instant::now();
 
         if !guard.contains_key(identity) && guard.len() >= self.max_partitions {
-            // Sweep expired entries across all partitions and drop empty partitions first (`TD-29`).
+            // Sweep expired entries across all partitions and drop empty partitions first.
             for part in guard.values_mut() {
                 part.retain(|_, v| v.expires_at.is_none_or(|exp| now < exp));
             }
@@ -1606,6 +1491,7 @@ impl PartitionedMemoryCache {
 
         let expires_at = ttl.and_then(|d| now.checked_add(d));
         partition.insert(key, CacheEntry { value, expires_at });
+        orion_common::metrics::set_memory_cache_partitions(guard.len());
     }
 
     pub fn delete(&self, identity: &EffectiveConnectionIdentity, key: &str) -> bool {
@@ -1616,6 +1502,7 @@ impl PartitionedMemoryCache {
         let removed = partition.remove(key).is_some();
         if partition.is_empty() {
             guard.remove(identity);
+            orion_common::metrics::set_memory_cache_partitions(guard.len());
         }
         removed
     }
@@ -1635,15 +1522,17 @@ impl ConnectionPoolCache for PartitionedMemoryCache {
     async fn evict(&self, connector_name: &str) {
         let mut guard = self.partitions.lock().unwrap_or_else(|e| e.into_inner());
         guard.retain(|k, _| k.connection_id != connector_name);
+        orion_common::metrics::set_memory_cache_partitions(guard.len());
     }
 
     async fn evict_all(&self) {
         let mut guard = self.partitions.lock().unwrap_or_else(|e| e.into_inner());
         guard.clear();
+        orion_common::metrics::set_memory_cache_partitions(0);
     }
 }
 
-/// Community foundation in-memory cache connector provider (`org.orion.memory-cache`, `V2-14.4`).
+/// Community foundation in-memory cache connector provider (`org.orion.memory-cache`).
 pub struct MemoryCacheProviderBackend {
     store: Arc<PartitionedMemoryCache>,
 }
@@ -1783,13 +1672,13 @@ impl ProviderBackend for MemoryCacheProviderBackend {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         guard.remove(identity);
+        orion_common::metrics::set_memory_cache_partitions(guard.len());
     }
 }
 
 /// Register the five Community foundation Direct Rust providers and their
 /// session/cache pools, bound to the node's deployment store and bounded by
-/// its options (`V2-11.1`, `V2-14.2`–`V2-14.4`). What
-/// [`super::CompositionBuilder::community`] composes.
+/// its options. What [`super::CompositionBuilder::community`] composes.
 pub fn register_community_foundation(r: &mut super::ProviderRegistrar<'_>) {
     let options = r.options().clone();
     let store = r.deployments().clone();

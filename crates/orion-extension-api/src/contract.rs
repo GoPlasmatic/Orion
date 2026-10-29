@@ -15,7 +15,7 @@ pub use orion_api::v2::{ConnectorErrorClass, EffectStatus, ImplementationKind};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Normalized retry advice (`V2-10.1`).
+/// Normalized retry advice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
@@ -32,7 +32,7 @@ pub enum OriginKind {
     Provider,
 }
 
-/// Structured error origin (`V2-10.1`). The stage is a fixed word in
+/// Structured error origin. The stage is a fixed word in
 /// practice (`dispatch`, `validation`, `transport`, …), so it is borrowed
 /// rather than allocated; a deserialized one owns its text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,7 +57,7 @@ impl ErrorOrigin {
     }
 }
 
-/// Standard v2 connector host error codes (`V2-10.1`).
+/// Standard v2 connector host error codes.
 pub mod codes {
     pub const INVALID_INPUT: &str = "CONNECTOR_INVALID_INPUT";
     pub const CONNECTION_FORBIDDEN: &str = "CONNECTOR_CONNECTION_FORBIDDEN";
@@ -74,7 +74,7 @@ pub mod codes {
     pub const WORKFLOW_FAILED: &str = "PROVIDER_WORKFLOW_FAILED";
 }
 
-/// Normalized connector failure record (`V2-10.1`).
+/// Normalized connector failure record.
 ///
 /// Kept small enough to travel in a `Result` by value: the code and the
 /// stage are borrowed (every host code is a [`codes`] constant), and the

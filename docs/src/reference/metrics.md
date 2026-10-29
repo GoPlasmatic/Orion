@@ -27,6 +27,8 @@ Every Prometheus series Orion exports, one row per metric, asserted against the 
 | `orion_db_query_duration_seconds` | Histogram | `operation` | Database query latency. |
 | `orion_db_pool_size` | Gauge | — | Connections in the primary database pool. |
 | `orion_db_pool_idle` | Gauge | — | Idle connections in the primary pool. |
+| `orion_session_pool_entries` | Gauge | `cache` | Cached sessions held by a version-fenced provider pool (`org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite`, …). |
+| `orion_memory_cache_partitions` | Gauge | — | Active connection-identity partitions in the foundation in-memory cache (`org.orion.memory-cache`). |
 | `orion_engine_reloads_total` | Counter | `status` | Engine reload events. |
 | `orion_engine_reload_duration_seconds` | Histogram | — | Engine reload latency. |
 | `orion_circuit_breaker_trips_total` | Counter | `connector`, `channel` | Circuit breaker trips. |

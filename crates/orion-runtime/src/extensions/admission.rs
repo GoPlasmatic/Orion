@@ -1,10 +1,10 @@
-//! Package admission and runtime security-lease policy (`V2-11.1`, `V2-05.5`, `CTX-09`).
+//! Package admission and runtime security-lease policy.
 //!
 //! Split in two: the [`PackageVerifier`] an edition plugs in (Community's
 //! [`CommunityPackageVerifier`], or Enterprise's license, signature and
 //! entitlement checks), and the [`RevocationLedger`] every node keeps, which
-//! enforces monotonic runtime revocation across all live generations
-//! (`CTX-09`). [`Admission`] is the two together.
+//! enforces monotonic runtime revocation across all live generations.
+//! [`Admission`] is the two together.
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -15,7 +15,7 @@ use orion_extension_api::{
     EffectStatus, PackageAdmissionRequest, PackageVerifier, ProviderId, admission_codes, codes,
 };
 
-/// Community Edition package verifier (`V2-11.1`).
+/// Community Edition package verifier.
 ///
 /// - Verifies a non-empty provider id and target (the digest is a checked
 ///   [`Digest`] by type).
@@ -65,7 +65,7 @@ impl PackageVerifier for CommunityPackageVerifier {
     }
 }
 
-/// The node's monotonic runtime deny-set and security lease (`CTX-09`).
+/// The node's monotonic runtime deny-set and security lease.
 ///
 /// Core state every node keeps whatever its edition: revocations take effect
 /// immediately across all retained generations, and an expired lease blocks
@@ -145,7 +145,7 @@ impl RevocationLedger {
     }
 
     /// Check the deny-set and the security lease before child dispatch or an
-    /// external connector operation (`V2-05.5`, `CTX-09`).
+    /// external connector operation.
     ///
     /// Generation pinning does not freeze an emergency revocation or an
     /// expired lease: an old generation consults this before starting new
