@@ -161,29 +161,6 @@ impl NodeReconciler {
         g.keys().cloned().collect()
     }
 
-    pub fn register_peer_node(&self, node_id: &str, boot_id: &str) {
-        let mut g = self.nodes.lock_unpoisoned();
-        g.insert(
-            node_id.to_string(),
-            RuntimeNodeStatus {
-                identity: NodeIdentity {
-                    node_id: node_id.to_string(),
-                    boot_id: boot_id.to_string(),
-                },
-                desired_revision: 0,
-                applied_revision: 0,
-                applied_manifest_digest: None,
-                configuration_degraded: false,
-                quarantined_entities: Vec::new(),
-                last_error: None,
-                backoff_attempt: 0,
-                backoff_delay_ms: 0,
-                security_lease_expires_at_ms: 0,
-                retained_revisions: BTreeSet::new(),
-            },
-        );
-    }
-
     /// V2-06.1: Poll the durable `deployment_head` from the store. When a new
     /// desired revision is observed, reset any prior failure backoff.
     pub fn observe_desired_head(&self) -> u64 {
@@ -390,6 +367,8 @@ impl NodeReconciler {
             .map_err(|e| DeploymentError::new(DeploymentErrorKind::DbRead, e.to_string()))?;
 
         let mut retained_updates = Vec::new();
+        let mut live_ids = BTreeSet::new();
+        live_ids.insert(self.local_identity.node_id.clone());
         {
             let mut g = self.nodes.lock_unpoisoned();
             for RuntimeNodeRow {
@@ -406,6 +385,7 @@ impl NodeReconciler {
                     .unwrap_or_default()
                     .into_iter()
                     .collect();
+                live_ids.insert(node_id.clone());
                 retained_updates.push((node_id.clone(), retained.clone()));
 
                 if node_id == self.local_identity.node_id {
@@ -427,6 +407,15 @@ impl NodeReconciler {
                         retained_revisions: retained,
                     },
                 );
+            }
+            let stale_peers: Vec<String> = g
+                .keys()
+                .filter(|id| !live_ids.contains(*id))
+                .cloned()
+                .collect();
+            for stale_id in stale_peers {
+                g.remove(&stale_id);
+                retained_updates.push((stale_id, BTreeSet::new()));
             }
         }
         for (node_id, retained) in retained_updates {

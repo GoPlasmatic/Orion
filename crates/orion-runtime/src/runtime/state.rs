@@ -193,6 +193,9 @@ pub struct AppStateInner {
     /// The plugin sandbox, when `plugins.enabled`. `None` makes every stored
     /// plugin a load issue on this node rather than a running function.
     pub plugins: Option<Arc<crate::plugin::WasmRuntime>>,
+    /// Configured admin API key digests, hashed once at assembly so the
+    /// authentication middleware never re-hashes or allocates per request.
+    pub admin_keys: Arc<[crate::config::AdminKey]>,
     /// Per-client failed-admin-auth backoff. Node-local and ephemeral by
     /// design: it exists to blunt online guessing, not to be a shared ledger.
     pub admin_auth_failures: Arc<crate::auth::FailedAuthTracker>,

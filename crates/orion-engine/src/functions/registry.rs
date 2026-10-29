@@ -739,7 +739,12 @@ fn labels() -> &'static RwLock<HashSet<&'static str>> {
     LABELS.get_or_init(|| RwLock::new(HashSet::new()))
 }
 
-/// Record `name` as a label value, leaking it once.
+/// Maximum distinct function names interned as static metric labels over the
+/// process's lifetime. Above this cap, additional dynamic names collapse to
+/// `"plugin"` so repeated uploads cannot grow the label set without bound.
+const MAX_INTERNED_LABELS: usize = 1024;
+
+/// Record `name` as a label value, leaking it once while below [`MAX_INTERNED_LABELS`].
 fn intern(name: &str) {
     let labels = labels();
     if labels
@@ -750,7 +755,7 @@ fn intern(name: &str) {
         return;
     }
     let mut write = labels.write().unwrap_or_else(|e| e.into_inner());
-    if !write.contains(name) {
+    if write.len() < MAX_INTERNED_LABELS && !write.contains(name) {
         write.insert(Box::leak(name.to_string().into_boxed_str()));
     }
 }
@@ -770,14 +775,14 @@ impl FunctionEntry {
     ///
     /// Interned on first use for an entry no registry has held yet, so a
     /// handler built straight from a manifest (a test, a dry run) labels
-    /// itself the same way one a generation carries does. Still bounded: one
-    /// leak per distinct registered name.
+    /// itself the same way one a generation carries does. Bounded by
+    /// `MAX_INTERNED_LABELS`, falling back to `"plugin"` if the cap is full.
     pub fn label(&self) -> &'static str {
         if let Some(label) = interned(&self.name) {
             return label;
         }
         intern(&self.name);
-        interned(&self.name).expect("interned just above")
+        interned(&self.name).unwrap_or("plugin")
     }
 }
 

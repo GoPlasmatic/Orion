@@ -1177,7 +1177,7 @@ impl SqliteProviderBackend {
         let pool = self
             .live_pools
             .get_or_create(&cache_key, || {
-                let target_url = target.clone();
+                let target_label = connection_key.unwrap_or("<sqlite>").to_string();
                 async move {
                     let builder = if in_memory {
                         sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
@@ -1187,7 +1187,7 @@ impl SqliteProviderBackend {
                     builder.connect_with(options).await.map_err(|e| {
                         ConnectorError::invalid_input(
                             format!(
-                                "Failed to connect to sandboxed SQLite target '{target_url}': {e}"
+                                "Failed to connect to sandboxed SQLite target '{target_label}': {e}"
                             ),
                             None,
                         )

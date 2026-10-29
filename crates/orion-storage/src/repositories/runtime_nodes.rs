@@ -6,7 +6,7 @@
 //! upsert stamps it with the database's `now`, not the node's.
 
 use async_trait::async_trait;
-use sea_query::{Expr, Query};
+use sea_query::{Expr, ExprTrait, Query};
 
 use crate::models::RuntimeNodeRow;
 use crate::schema::RuntimeNodes as N;
@@ -22,6 +22,10 @@ pub trait RuntimeNodeRepository: Send + Sync {
     /// Every node's row. Empty when the table does not exist yet — a node
     /// reading before the migration ran sees no peers rather than an error.
     async fn list_nodes(&self) -> Result<Vec<RuntimeNodeRow>, OrionError>;
+
+    /// Delete node rows whose `updated_at` is older than `max_age_secs` on the
+    /// database's clock, answering how many rows were removed.
+    async fn reap_stale_nodes(&self, max_age_secs: u64) -> Result<u64, OrionError>;
 }
 
 pub struct SqlRuntimeNodeRepository {
@@ -104,6 +108,27 @@ impl RuntimeNodeRepository for SqlRuntimeNodeRepository {
             match self.pool.fetch_all_as::<RuntimeNodeRow>(&sql, values).await {
                 Ok(rows) => Ok(rows),
                 Err(e) if crate::is_undefined_table(&e) => Ok(Vec::new()),
+                Err(e) => Err(e.into()),
+            }
+        })
+        .await
+    }
+
+    async fn reap_stale_nodes(&self, max_age_secs: u64) -> Result<u64, OrionError> {
+        orion_common::metrics::timed_db_op("runtime_nodes.reap", async {
+            let cutoff = Expr::cust(super::helpers::sql_now_minus_secs(
+                self.pool.backend(),
+                max_age_secs,
+            ));
+            let (sql, values) = build_sqlx(
+                self.pool.backend(),
+                Query::delete()
+                    .from_table(N::Table)
+                    .and_where(Expr::col(N::UpdatedAt).lt(cutoff)),
+            );
+            match self.pool.execute_query(&sql, values).await {
+                Ok(n) => Ok(n),
+                Err(e) if crate::is_undefined_table(&e) => Ok(0),
                 Err(e) => Err(e.into()),
             }
         })

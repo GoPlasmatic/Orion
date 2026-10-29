@@ -160,7 +160,7 @@ pub async fn admin_auth_middleware(
     // Compare SHA-256 digests instead of raw keys: fixed width, so timing
     // reveals neither key length nor content (S11).
     let presented: [u8; 32] = Sha256::digest(token.as_bytes()).into();
-    let matched_key = match_key(state.config.admin_auth.admin_keys(), &presented);
+    let matched_key = match_key(&state.admin_keys, &presented);
 
     let Some(matched_key) = matched_key else {
         metrics::record_admin_auth_failure("invalid_key");
@@ -210,10 +210,10 @@ pub async fn admin_auth_middleware(
 /// which position in the list (or whether the read-only or full-access list) a
 /// valid key sat in. An early exit would leak exactly that.
 fn match_key(
-    keys: Vec<crate::config::AdminKey>,
+    keys: &[crate::config::AdminKey],
     presented: &[u8; 32],
 ) -> Option<crate::config::AdminKey> {
-    keys.into_iter().fold(None, |found, key| {
+    keys.iter().copied().fold(None, |found, key| {
         let is_match = constant_time_eq(presented, &key.digest);
         found.or(is_match.then_some(key))
     })
@@ -249,10 +249,7 @@ pub(crate) fn headers_present_valid_key(
         return false;
     };
     let presented: [u8; 32] = Sha256::digest(token.as_bytes()).into();
-    config
-        .admin_keys()
-        .into_iter()
-        .any(|key| constant_time_eq(&presented, &key.digest))
+    match_key(&config.admin_keys(), &presented).is_some()
 }
 
 /// SHA-256 hex of an async-trace capability token (R12). The trace row
@@ -321,22 +318,22 @@ mod tests {
             ]
         };
         assert!(
-            !super::match_key(keys(), &digest(1))
+            !super::match_key(&keys(), &digest(1))
                 .expect("first")
                 .read_only
         );
         assert!(
-            !super::match_key(keys(), &digest(2))
+            !super::match_key(&keys(), &digest(2))
                 .expect("middle")
                 .read_only
         );
         assert!(
-            super::match_key(keys(), &digest(3))
+            super::match_key(&keys(), &digest(3))
                 .expect("last")
                 .read_only
         );
-        assert!(super::match_key(keys(), &digest(9)).is_none());
-        assert!(super::match_key(Vec::new(), &digest(1)).is_none());
+        assert!(super::match_key(&keys(), &digest(9)).is_none());
+        assert!(super::match_key(&[], &digest(1)).is_none());
     }
 
     #[test]

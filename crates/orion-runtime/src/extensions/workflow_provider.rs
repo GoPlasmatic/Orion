@@ -45,6 +45,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use orion_common::sync::LockExt;
+
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{Interpolated, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec, Prepare};
@@ -619,13 +621,20 @@ pub fn package_registry(
     Ok(registry)
 }
 
+/// Maximum number of compiled generation engines retained concurrently per
+/// workflow package so overlapping generations during drain do not thrash.
+const MAX_CACHED_GENERATION_ENGINES: usize = 4;
+
+type GenerationEngineCell = Arc<tokio::sync::OnceCell<Arc<dataflow_rs::Engine>>>;
+
 /// A workflow package as a provider backend, registered under its digest.
 pub struct WorkflowProviderBackend {
     package: WorkflowPackage,
     host: WorkflowHost,
-    /// The engine compiled for the last generation it ran under: a package
-    /// links the plugin functions that generation serves.
-    engine: Mutex<Option<(u64, Arc<dataflow_rs::Engine>)>>,
+    /// Compiled engines keyed by generation id: a package links the plugin
+    /// functions that generation serves. Bounded to the most recent
+    /// [`MAX_CACHED_GENERATION_ENGINES`] generations.
+    engines: Mutex<BTreeMap<u64, GenerationEngineCell>>,
 }
 
 impl WorkflowProviderBackend {
@@ -633,7 +642,7 @@ impl WorkflowProviderBackend {
         Self {
             package,
             host,
-            engine: Mutex::new(None),
+            engines: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -710,30 +719,48 @@ impl WorkflowProviderBackend {
         Ok(crate::engine::serving_engine(compiler.link(compiled)))
     }
 
-    /// The engine for `generation`, compiled once per generation.
-    fn engine_for(
+    /// The engine for `generation`, compiled once per generation outside the
+    /// cache lock so concurrent calls do not serialize behind a sync mutex or
+    /// thrash when two generations overlap during drain.
+    async fn engine_for(
         &self,
         generation: &crate::runtime::RuntimeGeneration,
     ) -> Result<Arc<dataflow_rs::Engine>, ConnectorError> {
-        let mut cached = self.engine.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((id, engine)) = cached.as_ref()
-            && *id == generation.id
-        {
-            return Ok(Arc::clone(engine));
-        }
-        let engine = Arc::new(self.compile(&generation.plugins).map_err(|problems| {
-            ConnectorError::contract_violation(
-                "compile",
-                format!(
-                    "workflow package '{}' does not compile on this generation: {}",
-                    self.package.provider.provider_id,
-                    describe(&problems)
-                ),
-                EffectStatus::NotStarted,
-            )
-        })?);
-        *cached = Some((generation.id, Arc::clone(&engine)));
-        Ok(engine)
+        let cell = {
+            let mut cached = self.engines.lock_unpoisoned();
+            if let Some(existing) = cached.get(&generation.id) {
+                Arc::clone(existing)
+            } else {
+                while cached.len() >= MAX_CACHED_GENERATION_ENGINES {
+                    if let Some((&oldest, _)) = cached.iter().next() {
+                        cached.remove(&oldest);
+                    } else {
+                        break;
+                    }
+                }
+                let cell = Arc::new(tokio::sync::OnceCell::new());
+                cached.insert(generation.id, Arc::clone(&cell));
+                cell
+            }
+        };
+        let engine = cell
+            .get_or_try_init(|| async {
+                self.compile(&generation.plugins)
+                    .map(Arc::new)
+                    .map_err(|problems| {
+                        ConnectorError::contract_violation(
+                            "compile",
+                            format!(
+                                "workflow package '{}' does not compile on this generation: {}",
+                                self.package.provider.provider_id,
+                                describe(&problems)
+                            ),
+                            EffectStatus::NotStarted,
+                        )
+                    })
+            })
+            .await?;
+        Ok(Arc::clone(engine))
     }
 }
 
@@ -810,7 +837,7 @@ impl ProviderBackend for WorkflowProviderBackend {
                     effect,
                 )
             })?;
-        let engine = self.engine_for(&generation)?;
+        let engine = self.engine_for(&generation).await?;
         // The package's own connector calls are dependencies of this
         // invocation: they run under its authority and share its effect
         // ledger, so the node's invocation is what the scope carries.

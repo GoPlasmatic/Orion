@@ -288,7 +288,7 @@ impl SchemaWalk<'_> {
                     let child_key = self.walk(path, child, next_ptr, depth + 1)?;
                     self.edges
                         .get_mut(&key)
-                        .expect("node edge list initialized")
+                        .ok_or_else(|| SchemaProfileFinding::new("SCHEMA_INVALID", path))?
                         .push(child_key);
                 }
             }
@@ -301,7 +301,7 @@ impl SchemaWalk<'_> {
                 let child_key = self.walk(path, sub, next_ptr, depth + 1)?;
                 self.edges
                     .get_mut(&key)
-                    .expect("node edge list initialized")
+                    .ok_or_else(|| SchemaProfileFinding::new("SCHEMA_INVALID", path))?
                     .push(child_key);
             }
         }
@@ -327,7 +327,7 @@ impl SchemaWalk<'_> {
                     let child_key = self.walk(path, child, next_ptr, depth + 1)?;
                     self.edges
                         .get_mut(&key)
-                        .expect("node edge list initialized")
+                        .ok_or_else(|| SchemaProfileFinding::new("SCHEMA_INVALID", path))?
                         .push(child_key);
                 }
             }
@@ -449,7 +449,7 @@ impl CompiledSchemaBundle {
             }
             edges
                 .get_mut(&key)
-                .expect("node edge list initialized")
+                .ok_or_else(|| SchemaProfileFinding::new("SCHEMA_INVALID", key.path.clone()))?
                 .push(target_key);
         }
 

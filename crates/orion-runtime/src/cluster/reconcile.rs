@@ -179,6 +179,22 @@ pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
         tick_ok = false;
     }
 
+    // Reap departed node heartbeats older than 5 minutes (or 10 poll intervals)
+    // before refreshing the observed peer set so dead nodes stop pinning
+    // retained revisions forever.
+    let stale_ttl_secs = Ord::max(
+        300,
+        (state.config.cluster.epoch_poll_interval_ms / 1_000) * 10,
+    );
+    if let Err(e) = state
+        .repos
+        .runtime_nodes
+        .reap_stale_nodes(stale_ttl_secs)
+        .await
+    {
+        tracing::warn!(error = %e, "V2 reconciler: failed to reap stale runtime_nodes rows");
+    }
+
     if let Err(e) = state
         .reconciler
         .refresh_observed_nodes(state.repos.runtime_nodes.as_ref())

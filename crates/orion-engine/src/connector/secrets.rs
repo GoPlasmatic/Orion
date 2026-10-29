@@ -396,11 +396,15 @@ pub async fn resolve_in_place(
     let mut resolved: std::collections::HashMap<String, String> = Default::default();
     for reference_string in wanted {
         let (scheme, reference) =
-            parse_reference(&reference_string).expect("collected as a reference");
+            parse_reference(&reference_string).ok_or_else(|| OrionError::Config {
+                message: format!("{source_label}: invalid secret reference '{reference_string}'"),
+            })?;
         let resolver = resolvers
             .iter()
             .find(|r| r.scheme() == scheme)
-            .expect("collected against this registry");
+            .ok_or_else(|| OrionError::Config {
+                message: format!("{source_label}: unknown secret scheme '{scheme}'"),
+            })?;
         let secret = resolver.resolve(reference).await.map_err(|e| match e {
             OrionError::Config { message } => OrionError::Config {
                 message: format!("{source_label}: {message}"),

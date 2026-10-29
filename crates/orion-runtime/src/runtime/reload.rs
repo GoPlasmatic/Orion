@@ -453,6 +453,11 @@ fn manifest_connectors(
             .deployments
             .get_connection(&member.entity.id, member.entity.revision)
         else {
+            tracing::warn!(
+                connection_id = %member.entity.id,
+                revision = %member.entity.revision,
+                "Manifest connection revision is missing from the deployment store; skipping"
+            );
             continue;
         };
         let Some(driver) = crate::extensions::foundation::builtin_driver(&row.provider_digest)
@@ -462,6 +467,12 @@ fn manifest_connectors(
         let Some((connector_type, config)) =
             crate::extensions::foundation::builtin_connector(driver, row.config_with_locators())
         else {
+            tracing::warn!(
+                connection_id = %row.connection_id,
+                revision = %row.revision,
+                driver = %driver,
+                "Built-in connection revision configuration could not be materialized; skipping"
+            );
             continue;
         };
         connectors.push(crate::connector::StoredConnector {

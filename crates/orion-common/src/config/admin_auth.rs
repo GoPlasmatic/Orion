@@ -74,6 +74,7 @@ pub fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
 /// (see `AdminPrincipal::from_digest`). Carrying the distinction only ever
 /// invited code that treats them differently. The *role* is recorded — that
 /// distinction is the point of `read_only_api_keys` (S13).
+#[derive(Clone, Copy)]
 pub struct AdminKey {
     /// SHA-256 digest of the key, compared against the digest of the
     /// presented token.

@@ -17,7 +17,7 @@ mod rules;
 mod sql;
 mod writes;
 
-use orion_common::sync::RwLockExt;
+use orion_common::sync::{LockExt, RwLockExt};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -796,11 +796,14 @@ impl ImmutableDeploymentStore {
     }
 
     /// Record the revisions currently held (applied + retained in-flight) by a node.
+    /// An empty set removes the node's entry.
     pub fn update_node_retained_revisions(&self, node_id: &str, revisions: BTreeSet<u64>) {
-        self.held
-            .lock()
-            .expect("held revisions lock")
-            .insert(node_id.to_string(), revisions);
+        let mut held = self.held.lock_unpoisoned();
+        if revisions.is_empty() {
+            held.remove(node_id);
+        } else {
+            held.insert(node_id.to_string(), revisions);
+        }
     }
 }
 
