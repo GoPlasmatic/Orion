@@ -49,9 +49,9 @@ pub(crate) async fn create_backup(
 
     // One backup at a time on this node (B4). Held to the end of the handler,
     // so it also covers the retention prune below — see
-    // `AppStateInner::backup_lock` for why concurrent backups are not just a
+    // `AppStateInner::lock_backup` for why concurrent backups are not just a
     // naming problem.
-    let _backup_guard = state.backup_lock.lock().await;
+    let _backup_guard = state.lock_backup().await;
 
     // Directory and destination together, in one trip off the async runtime:
     // choosing a free name is a filesystem question, and asking it anywhere

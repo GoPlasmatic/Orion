@@ -358,6 +358,7 @@ impl<S: Clone + Send + Sync + 'static> ConnectionPoolCache for VersionedSessionP
     async fn evict_all(&self) {
         let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         guard.global_eviction_epoch = guard.global_eviction_epoch.saturating_add(1);
+        guard.connector_eviction_epochs.clear();
         guard.sessions.clear();
         Self::retire_idle_capacity(&mut guard);
         orion_common::metrics::set_session_pool_entries(&self.cache_id, 0);

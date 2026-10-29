@@ -23,6 +23,8 @@ pub struct OrionClient {
     api_key_header: Option<String>,
     change_context: Option<String>,
     max_response_bytes: usize,
+    get_retries: u32,
+    get_retry_backoff: Duration,
 }
 
 /// Never prints the credential: a `{:?}` of a client lands in logs and panic
@@ -35,6 +37,7 @@ impl std::fmt::Debug for OrionClient {
             .field("api_key_header", &self.api_key_header)
             .field("change_context", &self.change_context)
             .field("max_response_bytes", &self.max_response_bytes)
+            .field("get_retries", &self.get_retries)
             .finish_non_exhaustive()
     }
 }
@@ -68,12 +71,24 @@ impl OrionClient {
             api_key_header: None,
             change_context: None,
             max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+            get_retries: 0,
+            get_retry_backoff: Duration::from_millis(200),
         })
     }
 
     /// Override the maximum response body size in bytes (`0` disables the cap).
     pub fn with_max_response_bytes(mut self, max_bytes: usize) -> Self {
         self.max_response_bytes = max_bytes;
+        self
+    }
+
+    /// Opt in to bounded exponential-backoff retries for idempotent `GET`
+    /// requests that fail on connection/transport errors or `502`/`503`/`504`
+    /// gateway statuses. Mutating verbs (`POST`, `PUT`, `PATCH`, `DELETE`) are
+    /// never retried automatically.
+    pub fn with_get_retries(mut self, max_retries: u32, initial_backoff: Duration) -> Self {
+        self.get_retries = max_retries;
+        self.get_retry_backoff = initial_backoff;
         self
     }
 
@@ -246,6 +261,31 @@ impl OrionClient {
         path: &str,
         body: Option<&Value>,
     ) -> Result<bytes::Bytes, ClientError> {
+        let max_attempts = if method == Method::GET {
+            self.get_retries.saturating_add(1)
+        } else {
+            1
+        };
+        let mut attempt = 0u32;
+        loop {
+            attempt = attempt.saturating_add(1);
+            match self.execute_once(method.clone(), path, body).await {
+                Ok(bytes) => return Ok(bytes),
+                Err(err) if attempt < max_attempts && is_retryable_get_error(&err) => {
+                    let shift = (attempt - 1).min(6);
+                    tokio::time::sleep(self.get_retry_backoff.saturating_mul(1u32 << shift)).await;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
+    async fn execute_once(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<bytes::Bytes, ClientError> {
         let url = format!("{}{path}", self.base_url);
         let mut req = self.http.request(method, &url);
         req = match (&self.api_key, &self.api_key_header) {
@@ -295,6 +335,20 @@ impl OrionClient {
             return Err(ClientError::from_response(status, &bytes));
         }
         Ok(bytes)
+    }
+}
+
+fn is_retryable_get_error(err: &ClientError) -> bool {
+    match err {
+        ClientError::Connect { .. } | ClientError::Transport { .. } => true,
+        other => matches!(
+            other.status(),
+            Some(
+                StatusCode::BAD_GATEWAY
+                    | StatusCode::SERVICE_UNAVAILABLE
+                    | StatusCode::GATEWAY_TIMEOUT
+            )
+        ),
     }
 }
 
@@ -348,5 +402,29 @@ mod tests {
                 .expect("test")
                 .sends_credential_in_clear()
         );
+    }
+
+    #[test]
+    fn get_retry_policy_only_retries_transient_server_statuses() {
+        let make_api = |status: StatusCode| ClientError::Api {
+            status,
+            error: orion_api::ErrorBody {
+                code: "ERR".into(),
+                message: "msg".into(),
+                details: Vec::new(),
+                request_id: None,
+            },
+        };
+        assert!(is_retryable_get_error(&make_api(StatusCode::BAD_GATEWAY)));
+        assert!(is_retryable_get_error(&make_api(
+            StatusCode::SERVICE_UNAVAILABLE
+        )));
+        assert!(is_retryable_get_error(&make_api(
+            StatusCode::GATEWAY_TIMEOUT
+        )));
+        assert!(!is_retryable_get_error(&make_api(
+            StatusCode::INTERNAL_SERVER_ERROR
+        )));
+        assert!(!is_retryable_get_error(&make_api(StatusCode::NOT_FOUND)));
     }
 }

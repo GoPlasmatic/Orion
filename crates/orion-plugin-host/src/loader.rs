@@ -9,7 +9,6 @@
 //! the same shape a channel that fails to load already takes.
 
 use std::sync::Arc;
-use std::time::Instant;
 
 use dataflow_rs::Issue;
 use dataflow_rs::program::{IssueCode, PathSeg};
@@ -255,13 +254,10 @@ async fn load_one(
                     format!("no component is deployed under {}", row.digest),
                 )
             })?;
-            let started = Instant::now();
-            let loaded = runtime
+            runtime
                 .load(bytes)
                 .await
-                .map_err(|e| (load_stage(&e), e.to_string()))?;
-            let _ = started;
-            loaded
+                .map_err(|e| (load_stage(&e), e.to_string()))?
         }
     };
     if loaded.digest != row.digest {

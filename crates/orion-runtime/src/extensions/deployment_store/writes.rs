@@ -11,7 +11,7 @@
 //! their catalog refreshes in commit order. Planning takes neither: it reads
 //! in one read-only snapshot.
 
-use orion_common::sync::RwLockExt;
+use orion_common::sync::{LockExt, RwLockExt};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -733,8 +733,7 @@ impl ImmutableDeploymentStore {
         let flags = sql::revision_flags(&mut tx).await?;
         let held: Vec<u64> = self
             .held
-            .lock()
-            .expect("held revisions lock")
+            .lock_unpoisoned()
             .values()
             .flatten()
             .copied()

@@ -427,8 +427,7 @@ pub fn validate_workflow_tasks_schema(
     // messages.
     if errors.is_empty() {
         let document = shape_document(tasks, loop_config);
-        let mut issues = dataflow_rs::def::parse(&document, crate::engine::parse_options()).issues;
-        crate::engine::name_v3_spellings(&document, &mut issues);
+        let issues = dataflow_rs::def::parse(&document, crate::engine::parse_options()).issues;
         errors.extend(
             issues
                 .into_iter()

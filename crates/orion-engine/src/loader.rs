@@ -87,43 +87,9 @@ fn glob_match(pattern: &str, name: &str) -> bool {
 /// How Orion reads a workflow definition: with dataflow-rs's v3 compat
 /// reader off. A v3 spelling — a task's `continue_on_error` or `halt_on`,
 /// `validate` for `validation` — is then an unknown key or function, and
-/// refused; [`name_v3_spellings`] says what to write instead.
+/// refused.
 pub fn parse_options() -> ParseOptions {
     ParseOptions::default().compat(false)
-}
-
-/// Names, in each issue of `issues` that sits at a v3 spelling of `json`,
-/// the v4 spelling to write in its place.
-///
-/// The spellings are the compat reader's own: a parse with it on reports
-/// each as a `V3_SPELLING` at the v3 key, the path the strict parse refuses
-/// the key at (a function name's refusal is the compile's, at the same
-/// `function.name`). An issue anywhere else is left as it is.
-pub fn name_v3_spellings(json: &Value, issues: &mut [Issue]) {
-    if issues.is_empty() {
-        return;
-    }
-    let spellings: Vec<(String, String)> = parse(json, ParseOptions::default().compat(true))
-        .issues
-        .into_iter()
-        .filter(|issue| issue.code == IssueCode::V3Spelling)
-        .map(|issue| (issue.path.to_string(), issue.message))
-        .collect();
-    if spellings.is_empty() {
-        return;
-    }
-    for issue in issues.iter_mut() {
-        let path = issue.path.to_string();
-        if let Some((_, spelling)) = spellings.iter().find(|(at, _)| *at == path) {
-            // The reader's text says what it read the key as: "`halt_on:
-            // failure` is a v3 spelling, read as `on_failure: fail, …`".
-            let instead = match spelling.split_once(", read as ") {
-                Some((v3, v4)) => format!("{v3}, which is no longer read: write {v4}"),
-                None => spelling.clone(),
-            };
-            issue.message = format!("{} — {instead}", issue.message);
-        }
-    }
 }
 
 /// Whether `issue` quarantines its channel (I182, as refined).
@@ -165,19 +131,16 @@ pub fn compile_row(compiler: &Compiler, json: &Value) -> Result<Compiled, Vec<Is
     let parsed = parse(json, parse_options());
     let mut issues = parsed.issues;
     let Some(def) = parsed.def else {
-        name_v3_spellings(json, &mut issues);
         return Err(issues);
     };
     match compiler.compile_one(&def) {
         Err(mut compiled) => {
             issues.append(&mut compiled);
-            name_v3_spellings(json, &mut issues);
             Err(issues)
         }
         Ok(mut compiled) => {
             issues.append(&mut compiled.issues);
             if issues.iter().any(quarantines) {
-                name_v3_spellings(json, &mut issues);
                 return Err(issues);
             }
             compiled.issues = issues;

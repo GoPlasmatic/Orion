@@ -36,8 +36,14 @@ pub(crate) async fn authoring_scaffold(
 ) -> V2Result<Json<ScaffoldResponse>> {
     let pkg = scaffold_provider_package(&req.publisher, &req.provider_id, &req.version, req.kind);
     let package_digest = pack_provider_package(&pkg.files)
-        .map(|inv| inv.package_digest.into_string())
-        .unwrap_or_default();
+        .map_err(|err| {
+            V2Error::new(
+                DeploymentErrorKind::PackValidationFailed,
+                format!("the files do not pack: {}", err.code),
+            )
+        })?
+        .package_digest
+        .into_string();
     let files_utf8: BTreeMap<String, String> = pkg
         .files
         .into_iter()

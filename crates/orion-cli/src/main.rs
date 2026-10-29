@@ -163,15 +163,27 @@ fn resolve_output(flag: Option<OutputFormat>) -> OutputFormat {
     .unwrap_or(OutputFormat::Table)
 }
 
+/// Find the underlying [`orion_client::ClientError`] in an `anyhow::Error` chain,
+/// whether attached directly or wrapped in [`client::CliClientError`].
+fn find_client_error(e: &anyhow::Error) -> Option<&orion_client::ClientError> {
+    e.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<orion_client::ClientError>()
+            .or_else(|| {
+                cause
+                    .downcast_ref::<client::CliClientError>()
+                    .map(client::CliClientError::client_error)
+            })
+    })
+}
+
 /// An error as structured output: `{"error": {"code", "message", "request_id",
 /// "details"}}`, the server's envelope when it sent one.
 fn error_json(e: &anyhow::Error) -> serde_json::Value {
-    let api = e.chain().find_map(
-        |cause| match cause.downcast_ref::<orion_client::ClientError>() {
-            Some(orion_client::ClientError::Api { error, .. }) => Some(error.clone()),
-            _ => None,
-        },
-    );
+    let api = match find_client_error(e) {
+        Some(orion_client::ClientError::Api { error, .. }) => Some(error.clone()),
+        _ => None,
+    };
     match api {
         Some(body) => serde_json::json!({ "error": body }),
         None => {
@@ -180,7 +192,9 @@ fn error_json(e: &anyhow::Error) -> serde_json::Value {
     }
 }
 
-/// The per-field refusals an API error carried, wherever in the chain it is.
+/// The per-field refusals an API error carried, when attached as a raw
+/// [`orion_client::ClientError`] (rendered [`client::CliClientError`] values
+/// already include formatted field details in their display text).
 fn error_details(e: &anyhow::Error) -> &[orion_api::FieldError] {
     e.chain()
         .find_map(
@@ -380,7 +394,7 @@ mod tests {
 
     #[test]
     fn an_api_error_keeps_its_code_request_id_and_field_errors() {
-        let api = orion_client::ClientError::Api {
+        let make_api = || orion_client::ClientError::Api {
             status: orion_client::StatusCode::UNPROCESSABLE_ENTITY,
             error: orion_api::ErrorBody {
                 code: "VALIDATION_ERROR".into(),
@@ -389,11 +403,15 @@ mod tests {
                 request_id: Some("req-1".into()),
             },
         };
-        let err = anyhow::Error::new(api).context("uploading 'x'");
-        let body = error_json(&err);
-        assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
-        assert_eq!(body["error"]["request_id"], "req-1");
-        assert_eq!(body["error"]["details"][0]["path"], "a.b");
+        for err in [
+            anyhow::Error::new(make_api()).context("uploading 'x'"),
+            client::render(make_api()).context("calling client"),
+        ] {
+            let body = error_json(&err);
+            assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+            assert_eq!(body["error"]["request_id"], "req-1");
+            assert_eq!(body["error"]["details"][0]["path"], "a.b");
+        }
     }
 
     #[test]

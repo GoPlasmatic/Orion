@@ -304,6 +304,27 @@ const NOT_A_SERVER_SETTING: &[(&str, &str, &str)] = &[
          class of name that has to move under ORION_SECRET_* because it \
          follows the override grammar",
     ),
+    (
+        "ORION_QUEUE__WORKERS",
+        "docs/src/releases/upgrade-to-1.0/config-keys.md",
+        "quoted in the historical 1.0 upgrade guide as the pre-1.0 name replaced by \
+         ORION_TRACE_QUEUE__WORKERS",
+    ),
+    (
+        "ORION_KAFKA__MAX_INFLIGHT",
+        "docs/src/releases/upgrade-to-1.0/config-keys.md",
+        "quoted in the historical 1.0 upgrade guide as the pre-1.0 setting removed in K4",
+    ),
+    (
+        "ORION_KAFKA__MAX_INFLIGHT",
+        "docs/src/releases/upgrade-to-1.0/index.md",
+        "quoted in the historical 1.0 upgrade guide as the pre-1.0 setting removed in K4",
+    ),
+    (
+        "ORION_ENGINE__RELOAD_TIMEOUT_SECS",
+        "docs/src/releases/upgrade-to-1.0/renames-and-removals.md",
+        "quoted in the historical 1.0 upgrade guide as the pre-1.0 setting removed in 1.0",
+    ),
 ];
 
 /// Whether `token` is excused in the file at repository-relative `path`.

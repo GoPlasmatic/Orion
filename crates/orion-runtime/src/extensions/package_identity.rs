@@ -560,7 +560,20 @@ fn validate_lock_shape(lock: &Value) -> Result<(), PackageIdentityFinding> {
         let Some(digest) = p_obj.get("digest").and_then(Value::as_str) else {
             return Err(PackageIdentityFinding::new("LOCK_SHAPE_INVALID"));
         };
-        if !is_sha256_digest(digest) {
+        if !is_sha256_digest(digest)
+            || !p_obj
+                .get("publisher")
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.is_empty())
+            || !p_obj
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.is_empty())
+            || !p_obj
+                .get("version")
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.is_empty())
+        {
             return Err(PackageIdentityFinding::new("LOCK_SHAPE_INVALID"));
         }
         match p_obj.get("kind").and_then(Value::as_str) {
@@ -568,7 +581,10 @@ fn validate_lock_shape(lock: &Value) -> Result<(), PackageIdentityFinding> {
                 if p_obj.get("contract").and_then(Value::as_str) != Some("orion:connector@1.0.0")
                     || p_obj.get("schema_profile").and_then(Value::as_str)
                         != Some("orion-json-schema/1")
-                    || !p_obj.get("operations").is_some_and(Value::is_array)
+                    || !p_obj
+                        .get("operations")
+                        .and_then(Value::as_array)
+                        .is_some_and(|arr| arr.iter().all(Value::is_string))
                     || !p_obj.get("dependencies").is_some_and(Value::is_array)
                 {
                     return Err(PackageIdentityFinding::new("LOCK_SHAPE_INVALID"));
@@ -588,7 +604,10 @@ fn validate_lock_shape(lock: &Value) -> Result<(), PackageIdentityFinding> {
             }
             Some("function_plugin") => {
                 if p_obj.get("contract").and_then(Value::as_str) != Some("orion:plugin@1.0.0")
-                    || !p_obj.get("functions").is_some_and(Value::is_array)
+                    || !p_obj
+                        .get("functions")
+                        .and_then(Value::as_array)
+                        .is_some_and(|arr| arr.iter().all(Value::is_string))
                     || !p_obj
                         .get("dependencies")
                         .and_then(Value::as_array)
@@ -610,20 +629,30 @@ fn validate_lock_shape(lock: &Value) -> Result<(), PackageIdentityFinding> {
                 .get("digest")
                 .and_then(Value::as_str)
                 .is_some_and(is_sha256_digest)
-                || d_obj.get("alias").and_then(Value::as_str).is_none()
+                || !d_obj
+                    .get("alias")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.is_empty())
             {
                 return Err(PackageIdentityFinding::new("LOCK_SHAPE_INVALID"));
             }
             match d_obj.get("kind").and_then(Value::as_str) {
                 Some("provider") => {
-                    if !d_obj.get("operations").is_some_and(Value::is_array)
+                    if !d_obj
+                        .get("operations")
+                        .and_then(Value::as_array)
+                        .is_some_and(|arr| arr.iter().all(Value::is_string))
                         || d_obj.get("binding_slot").and_then(Value::as_str).is_none()
                     {
                         return Err(PackageIdentityFinding::new("LOCK_SHAPE_INVALID"));
                     }
                 }
                 Some("function_plugin") => {
-                    if !d_obj.get("functions").is_some_and(Value::is_array) {
+                    if !d_obj
+                        .get("functions")
+                        .and_then(Value::as_array)
+                        .is_some_and(|arr| arr.iter().all(Value::is_string))
+                    {
                         return Err(PackageIdentityFinding::new("LOCK_SHAPE_INVALID"));
                     }
                 }
@@ -862,6 +891,22 @@ mod tests {
                 }
             };
             assert_eq!(observed, expected, "case {id} mismatch");
+        }
+
+        // Malformed lock fields (missing publisher/id/version or non-string array items)
+        // return LOCK_SHAPE_INVALID rather than panicking.
+        for bad_patch in [
+            json!([{"op": "replace", "path": "/packages/0/publisher", "value": 123}]),
+            json!([{"op": "replace", "path": "/packages/0/id", "value": ""}]),
+            json!([{"op": "replace", "path": "/packages/0/version", "value": null}]),
+            json!([{"op": "replace", "path": "/packages/0/operations/0", "value": 42}]),
+        ] {
+            let mut lock = fixture["lock"].clone();
+            apply_patch(&mut lock, bad_patch.as_array().unwrap());
+            assert_eq!(
+                check_dependency_lock(&lock, &artifacts).unwrap_err().code,
+                "LOCK_SHAPE_INVALID"
+            );
         }
     }
 }

@@ -304,7 +304,38 @@ impl ProviderBackend for HttpProviderBackend {
             }
         };
 
-        if let Err(ssrf_reason) = orion_common::ssrf::validate_url_not_private(&url).await {
+        let base = url.trim_end_matches('/');
+        let full_url = format!("{base}{path}");
+        let parsed_base = url::Url::parse(&url).map_err(|e| {
+            ConnectorError::invalid_input(
+                format!("Invalid HTTP connector URL '{url}': {e}"),
+                Some(json!({"pointer": "/url"})),
+            )
+        })?;
+        let parsed_full = url::Url::parse(&full_url).map_err(|e| {
+            ConnectorError::invalid_input(
+                format!("Invalid HTTP request path '{path}': {e}"),
+                Some(json!({"pointer": "/path"})),
+            )
+        })?;
+        if parsed_base.scheme() != parsed_full.scheme()
+            || parsed_base.host_str() != parsed_full.host_str()
+            || parsed_base.port_or_known_default() != parsed_full.port_or_known_default()
+        {
+            return Err(ConnectorError::invalid_input(
+                "HTTP request 'path' must not alter the connection URL authority",
+                Some(json!({"pointer": "/path"})),
+            ));
+        }
+
+        let allow_private = conn
+            .public_config
+            .get("allow_private_urls")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if !allow_private
+            && let Err(ssrf_reason) = orion_common::ssrf::validate_url_not_private(&full_url).await
+        {
             return Err(ConnectorError::forbidden(
                 codes::CAPABILITY_INVALID,
                 "ssrf_validation",
@@ -312,9 +343,6 @@ impl ProviderBackend for HttpProviderBackend {
                 ctx.effect_status(),
             ));
         }
-
-        let base = url.trim_end_matches('/');
-        let full_url = format!("{base}{path}");
         let req_method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| {
             ConnectorError::invalid_input(
                 format!("Invalid HTTP method '{method}': {e}"),

@@ -319,11 +319,11 @@ fn unregistered_custom_function_quarantines_only_its_channel() {
 // ---- dataflow-rs 4 decides which rows load (I182) ---------------------
 
 /// A v3 spelling is not read: a task's `continue_on_error` and
-/// `halt_on` are refused at the key, `validate` as an unknown function,
-/// and each refusal names the v4 spelling to write. A function input's
-/// 1.12 alias is an unknown key of the function's config.
+/// `halt_on` are refused at the key, and `validate` is refused as an
+/// unknown function. A function input's 1.12 alias is an unknown key of
+/// the function's config.
 #[test]
-fn a_v3_spelling_is_refused_naming_its_v4_spelling() {
+fn a_v3_spelling_is_refused() {
     let engines = Engines::orion();
     let task = |extra: Value, name: &str, input: Value| {
         let mut task = serde_json::json!({"id": "t", "function": {"name": name, "input": input}});
@@ -341,7 +341,7 @@ fn a_v3_spelling_is_refused_naming_its_v4_spelling() {
                 log.clone(),
             ),
             "tasks[0].continue_on_error",
-            "write `on_failure: continue, on_rejection: continue`",
+            IssueCode::UnknownKey,
         ),
         (
             task(
@@ -350,7 +350,7 @@ fn a_v3_spelling_is_refused_naming_its_v4_spelling() {
                 log.clone(),
             ),
             "tasks[0].halt_on",
-            "write `on_failure: fail, on_rejection: halt`",
+            IssueCode::UnknownKey,
         ),
         (
             task(
@@ -359,16 +359,16 @@ fn a_v3_spelling_is_refused_naming_its_v4_spelling() {
                 serde_json::json!({"rules": [{"logic": true, "message": "m"}]}),
             ),
             "tasks[0].function.name",
-            "write `validation`",
+            IssueCode::UnknownFunction,
         ),
     ];
-    for (json, path, instead) in cases {
+    for (json, path, expected_code) in cases {
         let issues = compile_row(&engines.compiler, &json).expect_err("refused");
         let issue = issues
             .iter()
             .find(|i| i.path.to_string() == path)
             .unwrap_or_else(|| unreachable!("no issue at {path}: {issues:?}"));
-        assert!(issue.message.contains(instead), "{}", issue.message);
+        assert_eq!(issue.code, expected_code, "{}", issue.message);
     }
 
     for (function, alias) in [

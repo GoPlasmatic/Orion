@@ -206,6 +206,30 @@ impl<V: Clone> LruCache<V> {
         .await
     }
 
+    /// Like [`Self::get_or_create`], but partitions `name` by `version_key` while
+    /// keeping `name` as the connector key that [`Self::evict`] matches.
+    pub async fn get_or_create_with_version<F, Fut, E>(
+        &self,
+        name: &str,
+        version_key: &str,
+        create_fn: F,
+    ) -> Result<V, E>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<V, E>>,
+    {
+        let mut hasher = Sha256::new();
+        hasher.update(version_key.as_bytes());
+        self.get_or_create_key(
+            CacheKeyRef {
+                name,
+                config: Some(hasher.finalize().into()),
+            },
+            create_fn,
+        )
+        .await
+    }
+
     /// Connection settings are part of identity: an old caller may finish
     /// opening a connection after an edit, but cannot supply a new caller's
     /// pool. Only the connector name, never this digest or its input, is logged.

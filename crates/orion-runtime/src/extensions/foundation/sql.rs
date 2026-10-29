@@ -8,7 +8,8 @@ use serde_json::{Value, json};
 use super::{
     AttemptContext, ConnectorError, ConnectorOutput, DRIVER_MYSQL, DRIVER_POSTGRESQL,
     DRIVER_SQLITE, EffectStatus, EffectiveConnectionIdentity, ImplementationKind, ProviderBackend,
-    SqlLimits, VersionedSessionPool, codes, governed_connection_string, refuse_input_target,
+    SqlLimits, VersionedSessionPool, codes, governed_connection, governed_connection_string,
+    refuse_input_target,
 };
 use crate::extensions::ErrorOrigin;
 use crate::extensions::deployment_store::ImmutableDeploymentStore;
@@ -363,10 +364,17 @@ impl<D: RemoteSqlDialect> RemoteSqlProviderBackend<D> {
         self.sessions.clone()
     }
 
-    async fn resolve_connection_string(
+    async fn resolve_connection_target(
         &self,
         identity: &EffectiveConnectionIdentity,
-    ) -> Result<String, ConnectorError> {
+    ) -> Result<(String, bool), ConnectorError> {
+        let allow_private_urls = governed_connection(self.deployments.as_ref(), identity)
+            .and_then(|conn| {
+                conn.public_config
+                    .get("allow_private_urls")
+                    .and_then(Value::as_bool)
+            })
+            .unwrap_or(false);
         let conn_str =
             governed_connection_string(self.deployments.as_ref(), identity, D::DRIVER_ID).await?;
         let Some(conn_str) = conn_str else {
@@ -380,25 +388,49 @@ impl<D: RemoteSqlDialect> RemoteSqlProviderBackend<D> {
             ));
         };
         self.validate_config(&json!({"connection_string": conn_str}))?;
-        Ok(conn_str)
+        Ok((conn_str, allow_private_urls))
     }
 
     async fn execute_live(
         &self,
-        conn_key: &str,
+        identity: &EffectiveConnectionIdentity,
         conn_str: &str,
+        allow_private_urls: bool,
         operation: SqlOperation,
         statement: &str,
         params: &[Value],
     ) -> Result<Value, ConnectorError> {
-        // Keyed by a digest of the target, never the text: a resolved
-        // connection string carries its credential.
-        let cache_key = format!("{conn_key}::{}", sha256_digest(conn_str.as_bytes()));
+        // Keyed by connector name with a version digest of revision + target:
+        // a resolved connection string carries its credential, so only its
+        // digest is stored, while `evict(connection_id)` closes all revisions.
+        let version_key = format!(
+            "r{}::{}::{allow_private_urls}",
+            identity.revision,
+            sha256_digest(conn_str.as_bytes())
+        );
+        let conn_id = identity.connection_id.to_string();
         let pool = self
             .live_pools
-            .get_or_create(&cache_key, || {
+            .get_or_create_with_version(identity.connection_id.as_str(), &version_key, || {
                 let target_url = conn_str.to_string();
                 async move {
+                    crate::connector::endpoints::check_db_connection_string(
+                        &conn_id,
+                        &target_url,
+                        allow_private_urls,
+                    )
+                    .await
+                    .map_err(|e| {
+                        ConnectorError::forbidden(
+                            codes::CAPABILITY_INVALID,
+                            "ssrf_validation",
+                            format!(
+                                "Outbound {} target blocked by SSRF guard: {e}",
+                                D::DISPLAY_NAME
+                            ),
+                            EffectStatus::NotStarted,
+                        )
+                    })?;
                     D::connect_pool(&target_url)
                         .await
                         .map_err(|e| sql_error(D::DRIVER_ID, e, EffectStatus::NotStarted))
@@ -420,6 +452,23 @@ impl<D: RemoteSqlDialect> RemoteSqlProviderBackend<D> {
 impl<D: RemoteSqlDialect> Default for RemoteSqlProviderBackend<D> {
     fn default() -> Self {
         Self::new(16)
+    }
+}
+
+#[async_trait::async_trait]
+impl<D: RemoteSqlDialect> orion_extension_api::ConnectionPoolCache for RemoteSqlProviderBackend<D> {
+    fn cache_id(&self) -> &str {
+        D::DRIVER_ID
+    }
+
+    async fn evict(&self, connector_name: &str) {
+        self.sessions.evict(connector_name).await;
+        self.live_pools.evict(connector_name).await;
+    }
+
+    async fn evict_all(&self) {
+        self.sessions.evict_all().await;
+        self.live_pools.evict_all().await;
     }
 }
 
@@ -471,7 +520,6 @@ impl<D: RemoteSqlDialect> ProviderBackend for RemoteSqlProviderBackend<D> {
             })
             .await?;
 
-        let conn_key = format!("{}:r{}", identity.connection_id, identity.revision);
         let Some(sql_op) = SqlOperation::parse(operation) else {
             return Err(ConnectorError::forbidden(
                 codes::OPERATION_FORBIDDEN,
@@ -483,10 +531,17 @@ impl<D: RemoteSqlDialect> ProviderBackend for RemoteSqlProviderBackend<D> {
         refuse_input_target(&input, &["connection_string"])?;
         let statement = sql_statement(&input, sql_op.statement_keys(), D::DRIVER_ID)?;
         let params = sql_params(&input)?;
-        let conn_str = self.resolve_connection_string(identity).await?;
+        let (conn_str, allow_private_urls) = self.resolve_connection_target(identity).await?;
         ctx.record_effect(EffectStatus::Unknown);
         let data = self
-            .execute_live(&conn_key, &conn_str, sql_op, statement, &params)
+            .execute_live(
+                identity,
+                &conn_str,
+                allow_private_urls,
+                sql_op,
+                statement,
+                &params,
+            )
             .await?;
         ctx.record_effect(EffectStatus::Completed);
         let mut metadata = BTreeMap::new();
@@ -504,6 +559,7 @@ impl<D: RemoteSqlDialect> ProviderBackend for RemoteSqlProviderBackend<D> {
 
     async fn dispose(&self, identity: &EffectiveConnectionIdentity) {
         self.sessions.invalidate(identity, None);
+        self.live_pools.evict(identity.connection_id.as_str()).await;
     }
 }
 
@@ -526,6 +582,7 @@ pub type MysqlProviderBackend = RemoteSqlProviderBackend<MysqlDialect>;
 ///   and must not target Orion's own state database filenames.
 pub struct SqliteProviderBackend {
     approved_root: PathBuf,
+    state_db: Option<PathBuf>,
     sessions: Arc<VersionedSessionPool<String>>,
     live_pools: crate::connector::lru_cache::LruCache<sqlx::SqlitePool>,
     deployments: Option<ImmutableDeploymentStore>,
@@ -536,6 +593,7 @@ impl SqliteProviderBackend {
     pub fn new(approved_root: impl Into<PathBuf>, max_capacity_per_connection: usize) -> Self {
         Self {
             approved_root: approved_root.into(),
+            state_db: None,
             sessions: Arc::new(VersionedSessionPool::new(
                 DRIVER_SQLITE,
                 max_capacity_per_connection,
@@ -557,6 +615,13 @@ impl SqliteProviderBackend {
     /// The same provider, holding every query to `limits`.
     pub fn with_limits(mut self, limits: SqlLimits) -> Self {
         self.limits = limits;
+        self
+    }
+
+    /// Record Orion's own SQLite state-database path so a SQLite connection
+    /// cannot open it or its WAL/SHM/journal sidecars even under a custom name.
+    pub fn with_state_db(mut self, state_db: Option<PathBuf>) -> Self {
+        self.state_db = state_db;
         self
     }
 
@@ -592,19 +657,20 @@ impl SqliteProviderBackend {
         &self,
         conn_str: &str,
     ) -> Result<sqlx::sqlite::SqliteConnectOptions, ConnectorError> {
-        use crate::connector::sqlite_target::{SqliteTargetError, confined_options};
-        confined_options(&self.approved_root, conn_str).map_err(|e| match e {
-            SqliteTargetError::Boundary(_) => ConnectorError::forbidden(
-                codes::CAPABILITY_INVALID,
-                "validation",
-                e.to_string(),
-                EffectStatus::NotStarted,
-            ),
-            _ => ConnectorError::invalid_input(
-                e.to_string(),
-                Some(json!({"pointer": "/connection_string"})),
-            ),
-        })
+        use crate::connector::sqlite_target::{SqliteTargetError, confined_options_with_state_db};
+        confined_options_with_state_db(&self.approved_root, conn_str, self.state_db.as_deref())
+            .map_err(|e| match e {
+                SqliteTargetError::Boundary(_) => ConnectorError::forbidden(
+                    codes::CAPABILITY_INVALID,
+                    "validation",
+                    e.to_string(),
+                    EffectStatus::NotStarted,
+                ),
+                _ => ConnectorError::invalid_input(
+                    e.to_string(),
+                    Some(json!({"pointer": "/connection_string"})),
+                ),
+            })
     }
 
     /// Execute a real SQL statement against a sandboxed SQLite target.
@@ -648,13 +714,16 @@ impl SqliteProviderBackend {
         } else {
             format!("{:?}", (options.get_filename(), conn_str.trim()))
         };
-        let cache_key = match connection_key {
+        let connector_name = connection_key
+            .map(|k| k.split_once(':').map_or(k, |(id, _)| id))
+            .unwrap_or("<sqlite>");
+        let version_key = match connection_key {
             Some(key) if in_memory => format!("{key}::{target}"),
-            _ => target.clone(),
+            _ => target,
         };
         let pool = self
             .live_pools
-            .get_or_create(&cache_key, || {
+            .get_or_create_with_version(connector_name, &version_key, || {
                 let target_label = connection_key.unwrap_or("<sqlite>").to_string();
                 async move {
                     let builder = if in_memory {
@@ -688,6 +757,23 @@ impl SqliteProviderBackend {
 impl Default for SqliteProviderBackend {
     fn default() -> Self {
         Self::new("./data/connectors/sqlite", 8)
+    }
+}
+
+#[async_trait::async_trait]
+impl orion_extension_api::ConnectionPoolCache for SqliteProviderBackend {
+    fn cache_id(&self) -> &str {
+        DRIVER_SQLITE
+    }
+
+    async fn evict(&self, connector_name: &str) {
+        self.sessions.evict(connector_name).await;
+        self.live_pools.evict(connector_name).await;
+    }
+
+    async fn evict_all(&self) {
+        self.sessions.evict_all().await;
+        self.live_pools.evict_all().await;
     }
 }
 
@@ -770,5 +856,6 @@ impl ProviderBackend for SqliteProviderBackend {
 
     async fn dispose(&self, identity: &EffectiveConnectionIdentity) {
         self.sessions.invalidate(identity, None);
+        self.live_pools.evict(identity.connection_id.as_str()).await;
     }
 }

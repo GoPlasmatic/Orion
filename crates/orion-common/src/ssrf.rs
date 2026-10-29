@@ -158,21 +158,26 @@ pub async fn validate_url_not_private(url: &str) -> Result<(), String> {
     // Always `Some` for http/https (checked above); 80 is unreachable.
     let port = parsed.port_or_known_default().unwrap_or(80);
 
-    check_host_not_private(host, port, &format!("URL '{url}'"), true).await
+    check_host_not_private(host, port, &format!("URL '{url}'"), true)
+        .await
+        .map(|_| ())
 }
 
 /// Refuse a `host:port` that resolves to a private/internal address, for
 /// callers that already hold a split host and port rather than a URL (S6):
-/// a connection string's host and port.
+/// a connection string's host and port, or a connection probe's authority.
 ///
-/// No pinning: [`PinnedDnsResolver`] is consulted only by the shared reqwest
-/// client, and a database driver re-resolves through the system
-/// resolver regardless. The gap between this check and the driver's own
-/// connect is therefore a genuine TOCTOU that pinning cannot close from here
-/// — it is narrowed, not eliminated, which is why the private-IP check is a
-/// guard rather than the only control. Prefer network-level egress policy for
-/// the strong version.
-pub async fn validate_hostport_not_private(host: &str, port: u16) -> Result<(), String> {
+/// Returns the vetted [`SocketAddr`] set so a direct TCP caller (such as an
+/// admin connection probe) can dial those exact addresses without a second DNS
+/// lookup. Database drivers that accept only a connection string re-resolve
+/// through the system resolver; for those, the gap between this check and the
+/// driver's own connect is narrowed rather than eliminated, which is why the
+/// private-IP check is a guard rather than the only control. Prefer
+/// network-level egress policy for the strong version.
+pub async fn validate_hostport_not_private(
+    host: &str,
+    port: u16,
+) -> Result<Vec<SocketAddr>, String> {
     let parsed = url::Host::parse(host).map_err(|e| format!("Invalid host '{host}': {e}"))?;
     let display = format!("host '{host}:{port}'");
     match parsed {
@@ -197,13 +202,13 @@ async fn check_host_not_private(
     port: u16,
     target: &str,
     pin: bool,
-) -> Result<(), String> {
+) -> Result<Vec<SocketAddr>, String> {
     // IP-literal targets involve no DNS at connect time, so no pinning is needed.
     let check_ip = |ip: IpAddr| {
         if is_private_ip(&ip) {
             Err(format!("{target} targets private/internal IP address {ip}"))
         } else {
-            Ok(())
+            Ok(vec![SocketAddr::new(ip, port)])
         }
     };
 
@@ -232,7 +237,7 @@ async fn check_host_not_private(
             if pin {
                 pin_validated(domain, &addrs);
             }
-            Ok(())
+            Ok(addrs)
         }
     }
 }

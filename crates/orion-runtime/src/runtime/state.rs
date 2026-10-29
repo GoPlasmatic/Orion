@@ -112,12 +112,7 @@ pub struct AppStateInner {
     /// A process-local mutex is sufficient because backups are refused
     /// outright in cluster mode (they would land on one arbitrary node), so
     /// there is never a second process writing this directory.
-    pub backup_lock: tokio::sync::Mutex<()>,
-    /// `[secrets]`, resolved at startup. Held so the admin plane's per-request
-    /// engines (the workflow test endpoint) carry the same store the serving
-    /// engine does — otherwise "test this workflow" would refuse a definition
-    /// that runs fine in production.
-    pub secrets: Arc<crate::engine::ResolvedSecrets>,
+    pub(crate) backup_lock: tokio::sync::Mutex<()>,
     /// `[vars]` as one JSON object, or `None` when the instance declares none.
     ///
     /// Stamped into `metadata.vars` at every ingress, overwriting whatever the
@@ -137,7 +132,6 @@ pub struct AppStateInner {
     pub connector_registry: Arc<ConnectorRegistry>,
     /// Cache backends plus the external SQL connection-pool cache.
     pub caches: Caches,
-    pub trace_queue: TraceQueue,
     /// The startup pool. **Route handlers should not reach for this** — go
     /// through [`AppStateInner::pool_stats`] or
     /// [`AppStateInner::backup_sqlite_into`]. It stays public because
@@ -149,21 +143,21 @@ pub struct AppStateInner {
     pub config: Arc<AppConfig>,
     pub start_time: chrono::DateTime<chrono::Utc>,
     pub metrics_handle: PrometheusHandle,
-    pub http_client: reqwest::Client,
+    pub(crate) http_client: reqwest::Client,
     /// The process's one expression engine (I188): Orion's ten operators,
     /// `[secrets]` and `engine.ops_budget`, built at boot and kept across
     /// every reload. The channel guards, channel auth, cron and `/validate` compile and evaluate on it. Cheap to clone: a clone
     /// shares the engine.
-    pub exprs: ExprEngine,
+    pub(crate) exprs: ExprEngine,
     /// The instance's JWKS cache, built on `http_client` — the client with
     /// `PinnedDnsResolver`. Both verify surfaces (the channel `jwt` auth mode
     /// and the `jwt_verify` task) share it, so a key set is fetched once per
     /// URL per instance and an issuer's rotation is seen by both at once.
-    pub jwks: Arc<crate::jwt::jwks::JwksCache>,
+    pub(crate) jwks: Arc<crate::jwt::jwks::JwksCache>,
     /// The instance's OIDC discovery cache (#355), on the same pinned client.
     /// Read by `oauth2_login` compile for a provider that names an `issuer`; a
     /// reload passes it back through `ReloadDeps`.
-    pub oidc_discovery: Arc<crate::channel::oidc_discovery::DiscoveryCache>,
+    pub(crate) oidc_discovery: Arc<crate::channel::oidc_discovery::DiscoveryCache>,
     pub rate_limit_state: Option<Arc<RateLimitState>>,
     /// Startup readiness flag — set to true after engine is fully loaded.
     pub ready: Arc<AtomicBool>,
@@ -176,8 +170,6 @@ pub struct AppStateInner {
     /// generation correctly, and taking it out of rotation would replace a
     /// stale-config problem with an availability one.
     pub reload_degraded: Arc<AtomicBool>,
-    /// Background queue for trace-storage writes. A no-op handle in sync/off modes.
-    pub trace_persistence_queue: crate::queue::TracePersistenceQueue,
     /// Multi-instance coordination runtime. Inert when `cluster.enabled = false`.
     pub cluster: Arc<crate::cluster::ClusterRuntime>,
     /// The node's long-lived background tasks. Held here so `/health` and
@@ -199,15 +191,6 @@ pub struct AppStateInner {
     /// Per-client failed-admin-auth backoff. Node-local and ephemeral by
     /// design: it exists to blunt online guessing, not to be a shared ledger.
     pub admin_auth_failures: Arc<crate::auth::FailedAuthTracker>,
-    /// The same, for channel credentials — a separate budget on purpose.
-    ///
-    /// One shared tracker would let guessing at a public data-plane channel
-    /// lock the same address out of the admin plane, and the reverse. They are
-    /// different credentials answering to different operators, so they get
-    /// different budgets; keys are `channel\u{1f}client`, which also keeps one
-    /// misconfigured integration behind a NAT from locking that address out of
-    /// every *other* channel.
-    pub channel_auth_failures: Arc<crate::auth::FailedAuthTracker>,
     /// `rate_limit.trusted_proxies`, parsed once at startup.
     ///
     /// Held here rather than read off `rate_limit_state` because client
@@ -227,7 +210,7 @@ pub struct AppStateInner {
     pub trusted_proxies: Arc<Vec<ipnet::IpNet>>,
     /// The data plane's narrow view of this state, built from the same
     /// handles; see [`DataPlane`].
-    pub data_plane: DataPlane,
+    pub(crate) data_plane: DataPlane,
     /// What this node serves, frozen at boot: its edition, the
     /// channel drivers, the provider backends (composed, plus the packages
     /// it admits at runtime), the connection-pool caches and its admission
@@ -243,7 +226,123 @@ pub struct AppStateInner {
     pub native_scheduler: crate::extensions::NativeWorkScheduler,
 }
 
+/// Construction inputs for [`AppStateInner::new`].
+pub struct AppStateParts {
+    pub runtime: Arc<crate::runtime::RuntimeHandle>,
+    pub channel_loader: Arc<crate::channel::ChannelLoader>,
+    pub vars: Option<Arc<serde_json::Value>>,
+    pub repos: Repositories,
+    pub audit_queue: crate::queue::audit_queue::AuditQueue,
+    pub connector_registry: Arc<ConnectorRegistry>,
+    pub caches: Caches,
+    pub trace_queue: TraceQueue,
+    pub db_pool: DbPool,
+    pub config: Arc<AppConfig>,
+    pub metrics_handle: PrometheusHandle,
+    pub http_client: reqwest::Client,
+    pub exprs: ExprEngine,
+    pub jwks: Arc<crate::jwt::jwks::JwksCache>,
+    pub oidc_discovery: Arc<crate::channel::oidc_discovery::DiscoveryCache>,
+    pub rate_limit_state: Option<Arc<RateLimitState>>,
+    pub ready: Arc<AtomicBool>,
+    pub trace_persistence_queue: crate::queue::TracePersistenceQueue,
+    pub cluster: Arc<crate::cluster::ClusterRuntime>,
+    pub tasks: Arc<crate::runtime::TaskRegistry>,
+    pub cron_status: Arc<crate::cron::CronStatus>,
+    pub plugins: Option<Arc<crate::plugin::WasmRuntime>>,
+    pub composition: crate::extensions::Composition,
+    pub deployments: crate::extensions::ImmutableDeploymentStore,
+    pub reconciler: crate::extensions::NodeReconciler,
+    pub native_scheduler: crate::extensions::NativeWorkScheduler,
+}
+
 impl AppStateInner {
+    /// Construct a shared [`AppState`] from the assembled runtime parts.
+    pub fn new(parts: AppStateParts) -> AppState {
+        let AppStateParts {
+            runtime,
+            channel_loader,
+            vars,
+            repos,
+            audit_queue,
+            connector_registry,
+            caches,
+            trace_queue,
+            db_pool,
+            config,
+            metrics_handle,
+            http_client,
+            exprs,
+            jwks,
+            oidc_discovery,
+            rate_limit_state,
+            ready,
+            trace_persistence_queue,
+            cluster,
+            tasks,
+            cron_status,
+            plugins,
+            composition,
+            deployments,
+            reconciler,
+            native_scheduler,
+        } = parts;
+        let trusted_proxies = Arc::new(config.rate_limit.parsed_trusted_proxies());
+        let admin_keys: Arc<[crate::config::AdminKey]> = Arc::from(config.admin_auth.admin_keys());
+        let channel_auth_failures = Arc::new(crate::auth::FailedAuthTracker::default());
+        let data_plane = DataPlane::new(DataPlaneParts {
+            runtime: runtime.clone(),
+            config: config.clone(),
+            exprs: exprs.clone(),
+            vars: vars.clone(),
+            trusted_proxies: trusted_proxies.clone(),
+            trace_queue,
+            trace_persistence_queue,
+            traces: repos.traces.clone(),
+            channel_auth_failures,
+        });
+        Arc::new(Self {
+            runtime,
+            channel_loader,
+            reload_lock: tokio::sync::Mutex::new(()),
+            backup_lock: tokio::sync::Mutex::new(()),
+            vars,
+            repos,
+            audit_queue,
+            connector_registry,
+            caches,
+            db_pool,
+            config,
+            start_time: chrono::Utc::now(),
+            metrics_handle,
+            http_client,
+            exprs,
+            jwks,
+            oidc_discovery,
+            rate_limit_state,
+            ready,
+            reload_degraded: Arc::new(AtomicBool::new(false)),
+            cluster,
+            tasks,
+            cron_status,
+            plugins,
+            admin_keys,
+            admin_auth_failures: Arc::new(Default::default()),
+            trusted_proxies,
+            data_plane,
+            composition,
+            deployments,
+            reconciler,
+            native_scheduler,
+        })
+    }
+
+    /// Acquire the node-local backup serialization guard covering destination
+    /// selection, `VACUUM INTO`, and retention pruning.
+    pub async fn lock_backup(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.backup_lock.lock().await
+    }
+
     /// Reverse proxies whose `X-Forwarded-For` / `X-Real-IP` are honoured
     /// when identifying the client. Empty by default, in which case the
     /// direct peer is the client — see [`Self::trusted_proxies`].

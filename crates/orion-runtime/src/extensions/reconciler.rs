@@ -380,10 +380,18 @@ impl NodeReconciler {
                 retained_revisions_json: retained_str,
             } in rows
             {
-                let retained: BTreeSet<u64> = serde_json::from_str::<Vec<u64>>(&retained_str)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .collect();
+                let retained: BTreeSet<u64> = match serde_json::from_str::<Vec<u64>>(&retained_str)
+                {
+                    Ok(revs) => revs.into_iter().collect(),
+                    Err(e) => {
+                        tracing::warn!(
+                            node_id = %node_id,
+                            error = %e,
+                            "Malformed retained_revisions_json on runtime_nodes row; treating as empty"
+                        );
+                        BTreeSet::new()
+                    }
+                };
                 live_ids.insert(node_id.clone());
                 retained_updates.push((node_id.clone(), retained.clone()));
 

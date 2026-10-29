@@ -18,10 +18,78 @@ pub enum SqliteTargetError {
 }
 
 const RESERVED_NAMES: &[&str] = &["orion.db", "orion.sqlite", "orion-state.db"];
+const SQLITE_SIDECAR_SUFFIXES: &[&str] = &["", "-wal", "-shm", "-journal"];
+
+fn is_reserved_sqlite_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    RESERVED_NAMES.iter().any(|reserved| {
+        SQLITE_SIDECAR_SUFFIXES
+            .iter()
+            .any(|suffix| lower == format!("{reserved}{suffix}"))
+    })
+}
+
+/// Extract the filesystem path of Orion's own SQLite state database from
+/// `storage.url`, or `None` when the state database is not file-backed SQLite.
+pub fn state_db_path(storage_url: &str) -> Option<PathBuf> {
+    let url = storage_url.trim();
+    if !url.starts_with("sqlite:") || is_memory_url(url) {
+        return None;
+    }
+    let options = SqliteConnectOptions::from_str(url).ok()?;
+    let filename = options.get_filename();
+    if filename.as_os_str().is_empty() {
+        return None;
+    }
+    std::path::absolute(filename)
+        .ok()
+        .or_else(|| Some(filename.to_path_buf()))
+}
+
+fn targets_state_db(target: &Path, state_db: &Path) -> std::io::Result<bool> {
+    let abs_state = std::path::absolute(state_db)?;
+    let resolved_state = resolve_existing_prefix(&abs_state).unwrap_or(abs_state);
+    if target == resolved_state {
+        return Ok(true);
+    }
+    if let Some(state_name) = resolved_state.file_name().and_then(|s| s.to_str())
+        && let Some(state_parent) = resolved_state.parent()
+    {
+        for suffix in ["-wal", "-shm", "-journal"] {
+            if target == state_parent.join(format!("{state_name}{suffix}")) {
+                return Ok(true);
+            }
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(target_meta), Ok(state_meta)) = (
+            std::fs::metadata(target),
+            std::fs::metadata(&resolved_state),
+        ) && target_meta.dev() == state_meta.dev()
+            && target_meta.ino() == state_meta.ino()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
 
 /// Parse a URL once, then replace its filename with the confined absolute path.
 /// Passing these options directly to SQLx avoids decoding a filename twice.
 pub fn confined_options(root: &Path, url: &str) -> Result<SqliteConnectOptions, SqliteTargetError> {
+    confined_options_with_state_db(root, url, None)
+}
+
+/// Like [`confined_options`], additionally rejecting targets that resolve to
+/// Orion's configured `state_db` path, its `-wal`/`-shm`/`-journal` sidecars,
+/// or (on Unix) an existing file sharing the same `(dev, ino)` as `state_db`.
+pub fn confined_options_with_state_db(
+    root: &Path,
+    url: &str,
+    state_db: Option<&Path>,
+) -> Result<SqliteConnectOptions, SqliteTargetError> {
     let url = url.trim();
     if !url.starts_with("sqlite:") {
         return Err(SqliteTargetError::Boundary(
@@ -57,16 +125,19 @@ pub fn confined_options(root: &Path, url: &str) -> Result<SqliteConnectOptions, 
         if path
             .file_name()
             .and_then(|s| s.to_str())
-            .is_some_and(|name| {
-                RESERVED_NAMES
-                    .iter()
-                    .any(|reserved| reserved.eq_ignore_ascii_case(name))
-            })
+            .is_some_and(is_reserved_sqlite_name)
         {
             return Err(SqliteTargetError::Boundary(
                 "SQLite filename is reserved for Orion's configuration database",
             ));
         }
+    }
+    if let Some(state_db) = state_db
+        && targets_state_db(&target, state_db)?
+    {
+        return Err(SqliteTargetError::Boundary(
+            "SQLite filename is reserved for Orion's configuration database",
+        ));
     }
     Ok(options.filename(target))
 }
@@ -230,10 +301,35 @@ mod tests {
             "sqlite:%2fetc/outside.db",
             "sqlite:orion.db",
             "sqlite:orion%2edb",
+            "sqlite:orion.db-wal",
+            "sqlite:orion.db-shm",
+            "sqlite:orion.db-journal",
+            "sqlite:orion.sqlite-wal",
+            "sqlite:orion-state.db-wal",
             "sqlite:",
         ] {
             assert!(confined_options(&root, url).is_err(), "{url}");
         }
+        let custom_state = root.join("custom-state.sqlite3");
+        assert!(
+            confined_options_with_state_db(
+                &root,
+                "sqlite:custom-state.sqlite3",
+                Some(&custom_state)
+            )
+            .is_err()
+        );
+        assert!(
+            confined_options_with_state_db(
+                &root,
+                "sqlite:custom-state.sqlite3-wal",
+                Some(&custom_state)
+            )
+            .is_err()
+        );
+        assert!(
+            confined_options_with_state_db(&root, "sqlite:orders.db", Some(&custom_state)).is_ok()
+        );
         for url in [
             "sqlite::memory:",
             "sqlite://:memory:",

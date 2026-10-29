@@ -278,16 +278,8 @@ mod tests {
     #[test]
     fn a_retired_name_is_left_to_the_retired_check() {
         let known = known_env_override_keys();
-        reject_unknown_env_vars(
-            names(&[
-                "ORION_ENV",
-                "ORION_QUEUE__WORKERS",
-                "ORION_KAFKA__MAX_INFLIGHT",
-            ]),
-            &known,
-            &empty(),
-        )
-        .expect("retired names belong to reject_retired_env_vars");
+        reject_unknown_env_vars(names(&["ORION_ENV"]), &known, &empty())
+            .expect("retired names belong to reject_retired_env_vars");
         // …and that check still fires on the separator-less one.
         let err = super::super::retired_env::reject_retired_env_vars(|key| {
             if key == "ORION_ENV" {
@@ -298,6 +290,17 @@ mod tests {
         })
         .expect_err("ORION_ENV must still report its rename");
         assert!(err.to_string().contains("ORION_ENVIRONMENT"), "{err}");
+
+        // Double-underscore pre-1.0 names are refused by the unknown-variable scan.
+        let err = reject_unknown_env_vars(
+            names(&["ORION_QUEUE__WORKERS", "ORION_KAFKA__MAX_INFLIGHT"]),
+            &known,
+            &empty(),
+        )
+        .expect_err("pre-1.0 double-underscore names are refused as unknown overrides");
+        let msg = err.to_string();
+        assert!(msg.contains("ORION_QUEUE__WORKERS"), "{msg}");
+        assert!(msg.contains("ORION_KAFKA__MAX_INFLIGHT"), "{msg}");
     }
 
     /// `${VAR}` substitution reads arbitrary names out of the config file, so

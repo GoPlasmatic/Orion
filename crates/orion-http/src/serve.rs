@@ -81,7 +81,13 @@ pub async fn serve_tls(
             .await?;
 
     let addr = listen_addr(&config.server.host, config.server.port);
-    let bind_addr = resolve_listen_addr(&addr)?;
+    let std_listener =
+        create_tcp_listener(&addr)?
+            .into_std()
+            .map_err(|e| OrionError::Internal {
+                context: format!("Failed to convert TCP listener for {addr}"),
+                source: Some(Box::new(e)),
+            })?;
     let shutdown_handle = handle.clone();
     let drain_secs = config.server.shutdown_drain_secs;
     let force_timeout_secs = config.server.shutdown_force_timeout_secs;
@@ -104,10 +110,21 @@ pub async fn serve_tls(
         address = %addr,
         storage = %crate::connector::redact_url_secrets_or_raw(&config.storage.url),
         tls = true,
+        tcp_nodelay = true,
         "Orion is ready (HTTPS)"
     );
 
-    axum_server::bind_rustls(bind_addr, rustls_config)
+    let mut server = axum_server::from_tcp_rustls(std_listener, rustls_config).map_err(|e| {
+        OrionError::Internal {
+            context: format!("Failed to initialize HTTPS server on {addr}"),
+            source: Some(Box::new(e)),
+        }
+    })?;
+    server
+        .http_builder()
+        .http1()
+        .header_read_timeout(std::time::Duration::from_secs(30));
+    server
         .handle(handle)
         .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .await

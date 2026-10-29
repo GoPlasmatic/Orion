@@ -78,8 +78,13 @@ impl ContiguousCheckpointLedger {
         if let Some((offset, ref cursor, fence)) = stored {
             let mut guard = self.ledgers.lock().await;
             let ledger = guard.entry(key.clone()).or_default();
+            if ledger.committed_fence != fence {
+                ledger.items.clear();
+                ledger.next_seq = offset;
+            } else {
+                ledger.next_seq = ledger.next_seq.max(offset);
+            }
             ledger.committed_seq = offset;
-            ledger.next_seq = ledger.next_seq.max(offset);
             ledger.committed_checkpoint = Some(cursor.clone());
             ledger.committed_fence = fence;
         }

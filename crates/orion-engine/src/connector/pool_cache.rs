@@ -125,6 +125,7 @@ impl SqlPool {
 pub struct SqlPoolCache {
     cache: LruCache<SqlPool>,
     sqlite_root: std::path::PathBuf,
+    sqlite_state_db: Option<std::path::PathBuf>,
 }
 
 impl SqlPoolCache {
@@ -135,6 +136,7 @@ impl SqlPoolCache {
     pub fn with_sqlite_root(max_entries: usize, root: impl Into<std::path::PathBuf>) -> Self {
         Self {
             sqlite_root: root.into(),
+            sqlite_state_db: None,
             // F17: close evicted pools on a detached task — new acquires on
             // the closed pool fail fast, in-flight queries finish, and the
             // TCP connections are returned instead of counting against the
@@ -143,6 +145,13 @@ impl SqlPoolCache {
                 tokio::spawn(async move { pool.close().await });
             }),
         }
+    }
+
+    /// Record Orion's own SQLite state-database path so a SQLite connector
+    /// cannot open it or its WAL/SHM/journal sidecars even under a custom name.
+    pub fn with_state_db(mut self, state_db: Option<std::path::PathBuf>) -> Self {
+        self.sqlite_state_db = state_db;
+        self
     }
 
     /// Get or lazily create a pool for the named connector.
@@ -189,9 +198,10 @@ impl SqlPoolCache {
                             .max_connections(max_conns)
                             .acquire_timeout(timeout)
                             .connect_with(
-                                super::sqlite_target::confined_options(
+                                super::sqlite_target::confined_options_with_state_db(
                                     &self.sqlite_root,
                                     &conn_str,
+                                    self.sqlite_state_db.as_deref(),
                                 )
                                 .map_err(|e| OrionError::validation(e.to_string()))?,
                             )

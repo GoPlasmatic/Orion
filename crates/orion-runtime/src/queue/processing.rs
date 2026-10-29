@@ -864,7 +864,9 @@ async fn settle_dlq_on_failure(
                 );
             }
         } else {
-            let next_retry = chrono::Utc::now().naive_utc();
+            let delay_secs = 1i64 << candidate.retry_count.clamp(0, 16);
+            let next_retry =
+                (chrono::Utc::now() + chrono::Duration::seconds(delay_secs)).naive_utc();
             if let Err(e) = dlq.record_retry(dlq_id, next_retry).await {
                 tracing::error!(
                     dlq_id = %dlq_id,

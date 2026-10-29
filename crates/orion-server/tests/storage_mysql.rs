@@ -649,7 +649,7 @@ async fn mysql_foundation_provider_runs_bound_statements() {
             "orders-mysql",
             1,
             &builtin_provider_digest(DRIVER_MYSQL).expect("a built-in driver"),
-            json!({"connection_string": url}),
+            json!({"connection_string": url, "allow_private_urls": true}),
             Default::default(),
         )
         .await

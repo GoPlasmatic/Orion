@@ -147,8 +147,7 @@ pub(crate) async fn get_connector_package(
     let states = state
         .deployments
         .artifact_states(&state.db_pool, std::slice::from_ref(&digest))
-        .await
-        .unwrap_or_default();
+        .await?;
     let summary = package_row_to_summary(
         &package,
         admission.as_ref().is_some_and(|a| !a.revoked),

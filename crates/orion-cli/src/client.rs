@@ -149,13 +149,38 @@ impl orion_client::V2Admin for OrionClient {
     }
 }
 
+/// Wrapper around [`ClientError`] that formats as the human-readable terminal
+/// message (`[CODE] message`, field errors, `request_id`, and hint) while
+/// preserving the structured [`ClientError`] for `--output json|yaml`
+/// downcasting in `main.rs`.
+#[derive(Debug)]
+pub struct CliClientError {
+    rendered: String,
+    inner: ClientError,
+}
+
+impl CliClientError {
+    pub fn client_error(&self) -> &ClientError {
+        &self.inner
+    }
+}
+
+impl std::fmt::Display for CliClientError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.rendered)
+    }
+}
+
+impl std::error::Error for CliClientError {}
+
 /// Translate a typed transport error into the message this CLI has always
 /// printed: `[CODE] message`, indented field errors, `request_id`, then an
-/// actionable hint keyed on the shared `orion_api::codes` registry.
-fn render(err: ClientError) -> anyhow::Error {
-    match err {
+/// actionable hint keyed on the shared `orion_api::codes` registry, while
+/// keeping [`ClientError`] accessible via [`CliClientError::client_error`].
+pub(crate) fn render(err: ClientError) -> anyhow::Error {
+    let rendered = match &err {
         ClientError::Connect { url, source } => {
-            anyhow::anyhow!(source).context(connection_hint(&url))
+            format!("{}: {source}", connection_hint(url))
         }
         ClientError::Api { error, .. } => {
             let code = if error.code.is_empty() {
@@ -174,24 +199,28 @@ fn render(err: ClientError) -> anyhow::Error {
                 out.push_str(&format!("\n  request_id: {request_id}"));
             }
             out.push_str(error_hint(code));
-            anyhow::anyhow!(out)
+            out
         }
-        ClientError::Http { status, .. } if status == StatusCode::UNAUTHORIZED => {
-            anyhow::anyhow!(
+        ClientError::Http { status, .. } if *status == StatusCode::UNAUTHORIZED => {
+            format!(
                 "Unauthorized ({status})\n  Hint: Check your --api-key or ORION_API_KEY environment variable"
             )
         }
-        ClientError::Http { status, .. } => anyhow::anyhow!("Request failed ({status})"),
+        ClientError::Http { status, .. } => format!("Request failed ({status})"),
         ClientError::Decode { source } => {
-            anyhow::anyhow!(source).context("Failed to parse response JSON")
+            format!("Failed to parse response JSON: {source}")
         }
         ClientError::Transport { source } => {
-            anyhow::anyhow!(source).context("Failed to read response body")
+            format!("Failed to read response body: {source}")
         }
         ClientError::ResponseTooLarge { url, max_bytes } => {
-            anyhow::anyhow!("Response from {url} exceeded the {max_bytes}-byte client limit")
+            format!("Response from {url} exceeded the {max_bytes}-byte client limit")
         }
-    }
+    };
+    anyhow::Error::new(CliClientError {
+        rendered,
+        inner: err,
+    })
 }
 
 fn connection_hint(url: &str) -> String {

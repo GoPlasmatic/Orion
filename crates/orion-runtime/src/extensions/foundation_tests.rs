@@ -279,12 +279,34 @@ async fn mysql_provider_refuses_input_targets_and_non_literal_statements() {
         .unwrap_err();
     assert_eq!(err.code, codes::INVALID_INPUT);
 
-    // An unreachable server is a transport failure, which is retryable.
-    let mysql = MysqlProviderBackend::with_deployment_store(
+    // A private target without allow_private_urls is refused by the SSRF guard.
+    let mysql_ssrf = MysqlProviderBackend::with_deployment_store(
         4,
         with_connection(
             "mysql-conn",
             json!({"connection_string": "mysql://127.0.0.1:1/app"}),
+            &[],
+        )
+        .await,
+    );
+    let inv = make_invocation(DRIVER_MYSQL, "mysql-conn", 1, "execute");
+    let attempt = inv.next_attempt().unwrap();
+    let err = mysql_ssrf
+        .invoke(
+            &attempt,
+            "execute",
+            json!({"sql": "INSERT INTO items VALUES (?)", "params": [1]}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, codes::CAPABILITY_INVALID);
+
+    // An unreachable server with allow_private_urls: true is a transport failure, which is retryable.
+    let mysql = MysqlProviderBackend::with_deployment_store(
+        4,
+        with_connection(
+            "mysql-conn",
+            json!({"connection_string": "mysql://127.0.0.1:1/app", "allow_private_urls": true}),
             &[],
         )
         .await,
@@ -451,11 +473,35 @@ async fn http_ssrf_guard_and_live_sqlite_execution() {
         .unwrap_err();
     assert_eq!(pg_input_err.code, codes::CONNECTION_FORBIDDEN);
 
-    let pg = PostgresProviderBackend::with_deployment_store(
+    let pg_ssrf = PostgresProviderBackend::with_deployment_store(
         4,
         with_connection(
             "pg-conn",
             json!({"connection_string": "postgres://127.0.0.1:1/nonexistent"}),
+            &[],
+        )
+        .await,
+    );
+    let pg_inv_ssrf = make_invocation(DRIVER_POSTGRESQL, "pg-conn", 1, "execute");
+    let pg_attempt_ssrf = pg_inv_ssrf.next_attempt().unwrap();
+    let pg_ssrf_err = pg_ssrf
+        .invoke(
+            &pg_attempt_ssrf,
+            "execute",
+            json!({"sql": "INSERT INTO items VALUES ($1)", "params": [1]}),
+        )
+        .await
+        .expect_err("Postgres write to private host without allow_private_urls must be refused");
+    assert_eq!(pg_ssrf_err.code, codes::CAPABILITY_INVALID);
+
+    let pg = PostgresProviderBackend::with_deployment_store(
+        4,
+        with_connection(
+            "pg-conn",
+            json!({
+                "connection_string": "postgres://127.0.0.1:1/nonexistent",
+                "allow_private_urls": true
+            }),
             &[],
         )
         .await,
@@ -543,6 +589,22 @@ async fn sqlite_invoke_persists_in_memory_and_memory_cache_bounds_partitions_and
     assert_eq!(sel_out.data["count"], 1);
     assert_eq!(sel_out.data["rows"][0]["id"], 7);
     assert_eq!(sel_out.data["rows"][0]["label"], "persisted");
+
+    // Evicting the connection through ConnectionPoolCache closes its live SQLite pool.
+    ConnectionPoolCache::evict(&sqlite, "sqlite-conn").await;
+    let inv_after_evict = make_invocation(DRIVER_SQLITE, "sqlite-conn", 1, "query");
+    let attempt_after_evict = inv_after_evict.next_attempt().unwrap();
+    let evicted_err = sqlite
+        .invoke(
+            &attempt_after_evict,
+            "query",
+            json!({
+                "sql": "SELECT id, label FROM items"
+            }),
+        )
+        .await
+        .expect_err("evicted in-memory SQLite pool must not retain prior table");
+    assert_eq!(evicted_err.code, codes::INVALID_INPUT);
 
     // TD-29: PartitionedMemoryCache bounds total partitions, drops empty partitions, and honors ttl_ms.
     let cache = PartitionedMemoryCache::with_limits(4, 2, 128);

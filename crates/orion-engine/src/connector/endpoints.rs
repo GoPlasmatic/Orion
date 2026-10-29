@@ -202,6 +202,34 @@ fn endpoint_of(conn: &str) -> Option<(String, u16)> {
     Some((host, port))
 }
 
+/// Private-address check for a `db` connector or SQL provider connection string,
+/// on the pool-open path.
+///
+/// Honours `allow_private_urls`, skips `sqlite:` (a file, not a socket), and
+/// refuses targets resolving to a private/internal address.
+pub async fn check_db_connection_string(
+    connector_name: &str,
+    connection_string: &str,
+    allow_private_urls: bool,
+) -> Result<(), OrionError> {
+    if allow_private_urls {
+        return Ok(());
+    }
+    let Some((host, port)) = endpoint_of(connection_string) else {
+        return Ok(());
+    };
+    validate_hostport_not_private(&host, port)
+        .await
+        .map(|_| ())
+        .map_err(|msg| {
+            OrionError::validation(format!(
+                "Refusing to connect db connector '{connector_name}': {msg}. \
+                 Set \"allow_private_urls\": true on this connector if the target is \
+                 intentionally on a private network."
+            ))
+        })
+}
+
 /// Private-address check for a `db` connector, on the pool-open path.
 ///
 /// Honours `allow_private_urls`, skips `sqlite:` (a file, not a socket), and
@@ -210,21 +238,12 @@ pub async fn check_db_endpoint(
     connector_name: &str,
     config: &DbConnectorConfig,
 ) -> Result<(), OrionError> {
-    if config.allow_private_urls {
-        return Ok(());
-    }
-    let Some((host, port)) = endpoint_of(&config.connection_string) else {
-        return Ok(());
-    };
-    validate_hostport_not_private(&host, port)
-        .await
-        .map_err(|msg| {
-            OrionError::validation(format!(
-                "Refusing to connect db connector '{connector_name}': {msg}. \
-                 Set \"allow_private_urls\": true on this connector if the target is \
-                 intentionally on a private network."
-            ))
-        })
+    check_db_connection_string(
+        connector_name,
+        &config.connection_string,
+        config.allow_private_urls,
+    )
+    .await
 }
 
 #[cfg(test)]

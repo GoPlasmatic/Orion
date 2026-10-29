@@ -715,19 +715,25 @@ async fn probe_http(
     let port = url
         .port_or_known_default()
         .ok_or_else(|| "the url has no port".to_string())?;
-    if !http.allow_private_urls {
-        orion_common::ssrf::validate_hostport_not_private(authority_host, port)
+    let connect_result = if http.allow_private_urls {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::net::TcpStream::connect((host.as_str(), port)),
+        )
+        .await
+    } else {
+        let vetted_addrs = orion_common::ssrf::validate_hostport_not_private(authority_host, port)
             .await
             .map_err(|e| {
                 format!("{e}; set allow_private_urls on the connection if that is intended")
             })?;
-    }
-    match tokio::time::timeout(
-        Duration::from_secs(5),
-        tokio::net::TcpStream::connect((host.as_str(), port)),
-    )
-    .await
-    {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::net::TcpStream::connect(&vetted_addrs[..]),
+        )
+        .await
+    };
+    match connect_result {
         Ok(Ok(_stream)) => Ok(()),
         Ok(Err(e)) => {
             tracing::warn!(connection = %name, error = %e, "connection probe could not connect");

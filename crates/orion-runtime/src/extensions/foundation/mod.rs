@@ -152,6 +152,9 @@ pub struct FoundationOptions {
     pub sql: SqlLimits,
     /// The directory file-backed SQLite connections resolve beneath.
     pub sqlite_root: PathBuf,
+    /// Optional path to Orion's own file-backed SQLite state database so
+    /// SQLite connections cannot open it or its WAL/SHM/journal sidecars.
+    pub sqlite_state_db: Option<PathBuf>,
     /// Maximum concurrent session pools retained per remote SQL provider
     /// (`org.orion.postgresql`, `org.orion.mysql`).
     pub max_pool_sessions: usize,
@@ -172,6 +175,7 @@ impl Default for FoundationOptions {
             http_max_response_bytes: 10 * 1024 * 1024,
             sql: SqlLimits::default(),
             sqlite_root: PathBuf::from("./data/connectors/sqlite"),
+            sqlite_state_db: None,
             max_pool_sessions: 16,
             sqlite_max_sessions: 8,
             memory_cache_max_entries_per_partition: 1024,
@@ -305,6 +309,7 @@ pub fn register_community_foundation(r: &mut super::ProviderRegistrar<'_>) {
             options.sqlite_max_sessions,
             store,
         )
+        .with_state_db(options.sqlite_state_db.clone())
         .with_limits(options.sql),
     );
     let mem_cache = Arc::new(MemoryCacheProviderBackend::with_limits(
@@ -313,9 +318,9 @@ pub fn register_community_foundation(r: &mut super::ProviderRegistrar<'_>) {
         options.memory_cache_max_value_bytes,
     ));
 
-    r.pool(pg.session_pool());
-    r.pool(mysql.session_pool());
-    r.pool(sqlite.session_pool());
+    r.pool(pg.clone());
+    r.pool(mysql.clone());
+    r.pool(sqlite.clone());
     r.pool(mem_cache.store());
 
     r.provider(http);

@@ -297,14 +297,22 @@ async fn attempt(deps: &WorkerDeps, occurrence: &CronOccurrence) -> Result<(), A
                 singleton_key = %descriptor.singleton_key,
                 "Cron occurrence skipped: its singleton key is held by a running attempt"
             );
-            let _ = deps
+            if let Err(e) = deps
                 .repo
                 .settle_skipped(
                     &occurrence.id,
                     &deps.instance_id,
                     &descriptor.singleton_busy_reason(),
                 )
-                .await;
+                .await
+            {
+                crate::metrics::record_error("cron_settle");
+                tracing::warn!(
+                    occurrence_id = %occurrence.id,
+                    error = %e,
+                    "Could not settle skipped cron occurrence"
+                );
+            }
             return Err(Abandoned::Settled);
         }
     };
@@ -442,20 +450,45 @@ async fn execute(
                 error = %e,
                 "Could not create a cron trace; returning the occurrence to pending"
             );
-            let _ = deps
+            if let Err(release_err) = deps
                 .repo
                 .release_claim(&occurrence.id, &deps.instance_id)
-                .await;
+                .await
+            {
+                crate::metrics::record_error("cron_settle");
+                tracing::warn!(
+                    occurrence_id = %occurrence.id,
+                    error = %release_err,
+                    "Could not release cron occurrence claim after trace creation failure"
+                );
+            }
             return Err(Abandoned::Settled);
         }
     };
     let trace_id = trace.as_ref().map(|t| t.id.clone());
     if let Some(ref id) = trace_id {
-        let _ = deps.repo.set_trace_id(&occurrence.id, id).await;
-        let _ = deps
+        if let Err(e) = deps.repo.set_trace_id(&occurrence.id, id).await {
+            crate::metrics::record_error("cron_trace_write");
+            tracing::warn!(
+                occurrence_id = %occurrence.id,
+                trace_id = %id,
+                error = %e,
+                "Could not record trace_id on cron occurrence"
+            );
+        }
+        if let Err(e) = deps
             .trace_repo
             .update_status(id, crate::storage::models::TRACE_STATUS_RUNNING, None)
-            .await;
+            .await
+        {
+            crate::metrics::record_error("cron_trace_write");
+            tracing::warn!(
+                occurrence_id = %occurrence.id,
+                trace_id = %id,
+                error = %e,
+                "Could not mark cron trace as running"
+            );
+        }
     }
 
     // 5. `Transport::Cron`'s row of the guard matrix — validation and
@@ -498,32 +531,56 @@ async fn execute(
                     occurrence_id = %occurrence.id,
                     "Cron occurrence deferred by backpressure; returning it to pending"
                 );
-                let _ = deps
+                if let Err(release_err) = deps
                     .repo
                     .release_claim(&occurrence.id, &deps.instance_id)
-                    .await;
-                if let Some(ref id) = trace_id {
-                    let _ = deps
+                    .await
+                {
+                    crate::metrics::record_error("cron_settle");
+                    tracing::warn!(
+                        occurrence_id = %occurrence.id,
+                        error = %release_err,
+                        "Could not release cron occurrence claim after backpressure deferral"
+                    );
+                }
+                if let Some(ref id) = trace_id
+                    && let Err(trace_err) = deps
                         .trace_repo
                         .update_status(
                             id,
                             crate::storage::models::TRACE_STATUS_PENDING,
                             Some("deferred by backpressure"),
                         )
-                        .await;
+                        .await
+                {
+                    crate::metrics::record_error("cron_trace_write");
+                    tracing::warn!(
+                        occurrence_id = %occurrence.id,
+                        trace_id = %id,
+                        error = %trace_err,
+                        "Could not revert cron trace status to pending after backpressure deferral"
+                    );
                 }
                 return Err(Abandoned::Settled);
             }
             let reason = format!("guard_refused: {e}");
-            if let Some(ref id) = trace_id {
-                let _ = deps
+            if let Some(ref id) = trace_id
+                && let Err(trace_err) = deps
                     .trace_repo
                     .update_status(
                         id,
                         crate::storage::models::TRACE_STATUS_FAILED,
                         Some(&reason),
                     )
-                    .await;
+                    .await
+            {
+                crate::metrics::record_error("cron_trace_write");
+                tracing::warn!(
+                    occurrence_id = %occurrence.id,
+                    trace_id = %id,
+                    error = %trace_err,
+                    "Could not mark cron trace as failed after guard refusal"
+                );
             }
             settle_failed(deps, occurrence, trace_id.as_deref(), &reason).await;
             return Err(Abandoned::Settled);
@@ -616,25 +673,35 @@ async fn execute(
         };
         // The result and the terminal status in one write; a trace whose
         // result the plan drops still gets its status.
-        if crate::queue::trace_record::TracePlan::decide(&effective_trace, has_errors).persists() {
-            let _ = deps
-                .trace_repo
-                .complete(
-                    id,
-                    crate::storage::repositories::traces::TraceCompletion {
-                        result_json: &result_json,
-                        duration_ms: duration.as_secs_f64() * 1000.0,
-                        task_trace_json: task_trace_json.as_deref(),
-                        status: trace_status,
-                        error_message: error_message.as_deref(),
-                    },
-                )
-                .await;
-        } else {
-            let _ = deps
-                .trace_repo
-                .update_status(id, trace_status, error_message.as_deref())
-                .await;
+        let trace_write =
+            if crate::queue::trace_record::TracePlan::decide(&effective_trace, has_errors)
+                .persists()
+            {
+                deps.trace_repo
+                    .complete(
+                        id,
+                        crate::storage::repositories::traces::TraceCompletion {
+                            result_json: &result_json,
+                            duration_ms: duration.as_secs_f64() * 1000.0,
+                            task_trace_json: task_trace_json.as_deref(),
+                            status: trace_status,
+                            error_message: error_message.as_deref(),
+                        },
+                    )
+                    .await
+            } else {
+                deps.trace_repo
+                    .update_status(id, trace_status, error_message.as_deref())
+                    .await
+            };
+        if let Err(e) = trace_write {
+            crate::metrics::record_error("cron_trace_write");
+            tracing::warn!(
+                occurrence_id = %occurrence.id,
+                trace_id = %id,
+                error = %e,
+                "Could not persist completed cron trace"
+            );
         }
     }
 

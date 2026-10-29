@@ -185,11 +185,6 @@ pub struct ServingComponents {
     /// through the same `oauth2_login.allow_private_token_urls` gate as the token
     /// exchange.
     pub oidc_discovery: Arc<crate::channel::oidc_discovery::DiscoveryCache>,
-    /// `[secrets]`, resolved once. Every engine built from here on carries it,
-    /// including the ones the admin plane builds per request — a surface that
-    /// built its engine without it would refuse a workflow the serving engine
-    /// runs.
-    pub secrets: Arc<crate::engine::ResolvedSecrets>,
     /// `[vars]` as one JSON object, or `None` when the instance declares none.
     ///
     /// Derived once, here, and cloned to every consumer — `AppState` and the
@@ -336,11 +331,13 @@ pub async fn build_engine_components(
     ));
 
     // Create external connector pool caches (shared with AppState for eviction on update/delete)
+    let sqlite_state_db = crate::connector::sqlite_target::state_db_path(&config.storage.url);
     let sql_pool_cache = Arc::new(
         crate::connector::pool_cache::SqlPoolCache::with_sqlite_root(
             config.engine.max_pool_cache_entries,
             &config.engine.sqlite_connector_root,
-        ),
+        )
+        .with_state_db(sqlite_state_db.clone()),
     );
 
     let foundation = crate::extensions::FoundationOptions {
@@ -350,6 +347,7 @@ pub async fn build_engine_components(
             max_result_bytes: config.query.max_result_bytes,
         },
         sqlite_root: std::path::PathBuf::from(&config.engine.sqlite_connector_root),
+        sqlite_state_db,
         max_pool_sessions: config.engine.max_pool_cache_entries.max(1),
         memory_cache_max_entries_per_partition: if config.engine.max_memory_cache_entries == 0 {
             1024
@@ -428,7 +426,6 @@ pub async fn build_engine_components(
             exprs,
             jwks,
             oidc_discovery,
-            secrets,
             vars,
             runtime,
             cache_pool,
@@ -1312,7 +1309,6 @@ pub fn build_app_state(params: AppStateParams) -> crate::runtime::state::AppStat
         exprs,
         jwks,
         oidc_discovery,
-        secrets,
         vars,
         runtime,
         cache_pool,
@@ -1323,31 +1319,9 @@ pub fn build_app_state(params: AppStateParams) -> crate::runtime::state::AppStat
         reconciler,
         native_scheduler,
     } = components;
-    // Parsed once, unconditionally — not from `rate_limit_state`. Three
-    // callers need it whether or not the platform limiter is enabled: the
-    // audit trail (O7), the failed-auth backoff, and the per-channel rate
-    // limit, which applies with the platform limiter off (S15) and keys on
-    // the same client identity. See `AppStateInner::trusted_proxies`.
-    let trusted_proxies = Arc::new(config.rate_limit.parsed_trusted_proxies());
-    let admin_keys: Arc<[crate::config::AdminKey]> = Arc::from(config.admin_auth.admin_keys());
-    let channel_auth_failures = Arc::new(crate::auth::FailedAuthTracker::default());
-    let data_plane = crate::runtime::state::DataPlane::new(crate::runtime::state::DataPlaneParts {
-        runtime: runtime.clone(),
-        config: config.clone(),
-        exprs: exprs.clone(),
-        vars: vars.clone(),
-        trusted_proxies: trusted_proxies.clone(),
-        trace_queue: trace_queue.clone(),
-        trace_persistence_queue: trace_persistence_queue.clone(),
-        traces: repos.traces.clone(),
-        channel_auth_failures: channel_auth_failures.clone(),
-    });
-    crate::runtime::state::AppState::new(crate::runtime::state::AppStateInner {
+    crate::runtime::state::AppStateInner::new(crate::runtime::state::AppStateParts {
         runtime,
         channel_loader,
-        reload_lock: tokio::sync::Mutex::new(()),
-        backup_lock: tokio::sync::Mutex::new(()),
-        secrets,
         vars,
         repos,
         audit_queue,
@@ -1359,7 +1333,6 @@ pub fn build_app_state(params: AppStateParams) -> crate::runtime::state::AppStat
         trace_queue,
         db_pool: pool,
         config,
-        start_time: chrono::Utc::now(),
         metrics_handle,
         http_client,
         exprs,
@@ -1367,17 +1340,11 @@ pub fn build_app_state(params: AppStateParams) -> crate::runtime::state::AppStat
         oidc_discovery,
         rate_limit_state,
         ready,
-        reload_degraded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         trace_persistence_queue,
         cluster,
         tasks,
         cron_status,
         plugins,
-        admin_keys,
-        admin_auth_failures: Arc::new(Default::default()),
-        channel_auth_failures,
-        trusted_proxies,
-        data_plane,
         composition,
         deployments,
         reconciler,
