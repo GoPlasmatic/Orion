@@ -14,7 +14,7 @@ Name the variables anything you like, with one restriction. Orion [refuses to st
 
 <details><summary>Vault reference form</summary>
 
-The api-path is exactly what follows `/v1/` in Vault's HTTP API. A KV v2 secret therefore reads as `vault://secret/data/db#password` — the `data/` segment is KV v2's, not Orion's. Field lookup understands both KV shapes: v2's nested `data.data.<field>` first, then v1's flat `data.<field>`. `VAULT_ADDR` and `VAULT_TOKEN` are re-read on every load, so a renewed token applies at the next reload without a restart.
+The api-path is exactly what follows `/v1/` in Vault's HTTP API. A KV v2 secret therefore reads as `vault://secret/data/db#password` — the `data/` segment is KV v2's, not Orion's. Field lookup understands both KV shapes: v2's nested `data.data.<field>` first, then v1's flat `data.<field>`. `VAULT_ADDR` and `VAULT_TOKEN` are re-read on every load, so a renewed token applies at the next reload without a restart. `VAULT_ADDR` is operator server configuration, so the resolver may dial private addresses directly. It refuses HTTP redirects so `X-Vault-Token` never leaves the configured host.
 
 </details>
 

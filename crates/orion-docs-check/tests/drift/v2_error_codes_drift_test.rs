@@ -39,7 +39,8 @@ const ERRORS_MD: &str = concat!(
 
 /// The files whose findings reach a v2 refusal under their own code.
 const PRODUCERS: &[&str] = &[
-    "extensions/schema_profile.rs",
+    "extensions/schema_profile/mod.rs",
+    "extensions/schema_profile/manifest.rs",
     "extensions/package_identity.rs",
     "extensions/admission.rs",
     // The host's rejection codes are constants of the extension contract.
