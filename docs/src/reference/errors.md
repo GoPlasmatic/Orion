@@ -8,7 +8,7 @@ Every Orion response is one of three JSON shapes: the admin success envelope, th
 
 ## The admin envelope
 
-Every admin 2xx body puts its payload under a top-level `data` key. List endpoints add `limit` and, when more rows follow, `next_cursor`; `total` appears only with `?include_total=true` (see [Envelopes](./admin-api/envelopes.md)). [Admin API](./admin-api/index.md) documents each endpoint's payload.
+Operational admin 2xx bodies put their payload under a top-level `data` key. The v2 deployment, provider, connection and definition single-resource endpoints return their typed DTO directly at the top level. List endpoints on both surfaces return `data`, `limit` and, when more rows follow, `next_cursor`; `total` appears only with `?include_total=true` (see [Envelopes](./admin-api/envelopes.md)). [Admin API](./admin-api/index.md) documents each endpoint's payload.
 
 ### The error envelope
 

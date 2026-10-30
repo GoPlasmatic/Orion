@@ -652,8 +652,8 @@ pub struct ScaffoldResponse {
 }
 
 /// A provider package's lint report (`POST /api/v2/admin/authoring/lint`):
-/// `200` when it is valid, `422` when it is not, `400` when a file does not
-/// decode.
+/// `200` when linting ran (`valid` indicates whether all checks passed),
+/// `400` (`ErrorEnvelope`) when a file does not decode.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct LintResponse {

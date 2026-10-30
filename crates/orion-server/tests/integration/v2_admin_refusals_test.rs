@@ -205,3 +205,31 @@ async fn a_secret_locator_must_be_a_reference() {
         resp.status()
     );
 }
+
+#[tokio::test]
+async fn authoring_lint_returns_200_with_report_and_400_envelope_on_bad_encoding() {
+    let app = test_app().await;
+    let (status, report) = send(
+        &app,
+        "POST",
+        "/api/v2/admin/authoring/lint",
+        json!({"files": {}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(report["valid"], false);
+    assert!(!report["errors"].as_array().unwrap().is_empty());
+
+    let (status, bad_encoding) = send(
+        &app,
+        "POST",
+        "/api/v2/admin/authoring/lint",
+        json!({"files": {"connector.json": "base64:not valid base64!!!"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{bad_encoding}");
+    assert_eq!(
+        bad_encoding["error"]["code"], "INVALID_PACKAGE_ENCODING",
+        "{bad_encoding}"
+    );
+}

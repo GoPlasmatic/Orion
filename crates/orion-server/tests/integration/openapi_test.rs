@@ -412,6 +412,13 @@ async fn openapi_declares_403_on_guarded_mutating_operations() {
     let mut missing = Vec::new();
     let mut spurious = Vec::new();
 
+    const READ_ONLY_SAFE_POSTS_WITHOUT_HANDLER_403: &[&str] = &[
+        "/api/v2/admin/edition-transition-preflight",
+        "/api/v2/admin/authoring/scaffold",
+        "/api/v2/admin/authoring/lint",
+        "/api/v2/admin/authoring/pack",
+    ];
+
     for (path, item) in body["paths"].as_object().expect("paths") {
         for (method, op) in item.as_object().expect("path item") {
             // Only guarded operations carry `security`; the data plane does not.
@@ -419,7 +426,10 @@ async fn openapi_declares_403_on_guarded_mutating_operations() {
                 continue;
             }
             let declares_403 = op["responses"].get("403").is_some();
-            if matches!(method.as_str(), "get" | "head") {
+            let is_read_only_safe = matches!(method.as_str(), "get" | "head")
+                || (method == "post"
+                    && READ_ONLY_SAFE_POSTS_WITHOUT_HANDLER_403.contains(&path.as_str()));
+            if is_read_only_safe {
                 if declares_403 {
                     spurious.push(format!("{} {path}", method.to_uppercase()));
                 }
@@ -433,7 +443,7 @@ async fn openapi_declares_403_on_guarded_mutating_operations() {
     }
 
     assert!(
-        checked > 20,
+        checked >= 15,
         "expected the admin plane to have many guarded mutating operations, found {checked}"
     );
     assert!(

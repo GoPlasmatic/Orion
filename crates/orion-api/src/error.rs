@@ -7,6 +7,83 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+macro_rules! error_codes {
+    ($( $(#[$meta:meta])* $variant:ident = $code:literal => $status:literal, )*) => {
+        /// The closed vocabulary of general `error.code` values emitted across
+        /// both the data and admin planes.
+        ///
+        /// Every general refusal has a stable code and canonical HTTP status.
+        /// V2-specific admin refusals (packages, connections, plans and
+        /// deployments) live in [`V2Code`].
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum ErrorCode {
+            $( $(#[$meta])* $variant, )*
+        }
+
+        impl ErrorCode {
+            /// Every general code, in registry order.
+            pub const ALL: &'static [ErrorCode] = &[ $( ErrorCode::$variant, )* ];
+
+            /// The wire spelling.
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $( Self::$variant => $code, )*
+                }
+            }
+
+            /// The canonical HTTP status this code answers with.
+            pub const fn status(self) -> u16 {
+                match self {
+                    $( Self::$variant => $status, )*
+                }
+            }
+
+            /// The code `code` spells, when it is a registered general code.
+            pub fn parse(code: &str) -> Option<Self> {
+                match code {
+                    $( $code => Some(Self::$variant), )*
+                    _ => None,
+                }
+            }
+        }
+
+        impl std::fmt::Display for ErrorCode {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+    };
+}
+
+error_codes! {
+    ValidationError = "VALIDATION_ERROR" => 400,
+    Unauthorized = "UNAUTHORIZED" => 401,
+    Forbidden = "FORBIDDEN" => 403,
+    NotFound = "NOT_FOUND" => 404,
+    MethodNotAllowed = "METHOD_NOT_ALLOWED" => 405,
+    Conflict = "CONFLICT" => 409,
+    /// The request body exceeded `ingest.max_payload_bytes` (data plane) or
+    /// `server.max_admin_body_bytes` (admin plane). Distinct from
+    /// [`ErrorCode::ResponseTooLarge`], which is about what the server built.
+    PayloadTooLarge = "PAYLOAD_TOO_LARGE" => 413,
+    UnsupportedMediaType = "UNSUPPORTED_MEDIA_TYPE" => 415,
+    RateLimited = "RATE_LIMITED" => 429,
+    InternalError = "INTERNAL_ERROR" => 500,
+    EngineError = "ENGINE_ERROR" => 500,
+    StorageError = "STORAGE_ERROR" => 500,
+    SerializationError = "SERIALIZATION_ERROR" => 500,
+    ConfigError = "CONFIG_ERROR" => 500,
+    ResponseTooLarge = "RESPONSE_TOO_LARGE" => 500,
+    ServiceUnavailable = "SERVICE_UNAVAILABLE" => 503,
+    /// An open circuit breaker shed the request before it reached a connector.
+    CircuitOpen = "CIRCUIT_OPEN" => 503,
+    Timeout = "TIMEOUT" => 504,
+    /// A `channel_call` chain came back to a channel already on it, or went
+    /// deeper than the configured maximum (`508 Loop Detected`). The loop is
+    /// in the deployed channels, not in the request.
+    LoopDetected = "LOOP_DETECTED" => 508,
+}
+
 /// The stable machine-readable `error.code` registry.
 ///
 /// A client branches on these, so renaming one is a breaking API change. The
@@ -15,38 +92,34 @@ use serde_json::Value;
 /// production code (server mapping, client hints) is written against, and the
 /// tests are what keep the two honest.
 pub mod codes {
-    pub const NOT_FOUND: &str = "NOT_FOUND";
-    pub const VALIDATION_ERROR: &str = "VALIDATION_ERROR";
-    pub const UNAUTHORIZED: &str = "UNAUTHORIZED";
-    pub const FORBIDDEN: &str = "FORBIDDEN";
-    pub const CONFLICT: &str = "CONFLICT";
-    pub const UNSUPPORTED_MEDIA_TYPE: &str = "UNSUPPORTED_MEDIA_TYPE";
-    pub const METHOD_NOT_ALLOWED: &str = "METHOD_NOT_ALLOWED";
-    pub const SERVICE_UNAVAILABLE: &str = "SERVICE_UNAVAILABLE";
-    pub const RATE_LIMITED: &str = "RATE_LIMITED";
-    pub const TIMEOUT: &str = "TIMEOUT";
-    /// The request body exceeded `ingest.max_payload_size` (data plane) or
-    /// `server.max_admin_body_size` (admin plane). Distinct from
+    pub const NOT_FOUND: &str = super::ErrorCode::NotFound.as_str();
+    pub const VALIDATION_ERROR: &str = super::ErrorCode::ValidationError.as_str();
+    pub const UNAUTHORIZED: &str = super::ErrorCode::Unauthorized.as_str();
+    pub const FORBIDDEN: &str = super::ErrorCode::Forbidden.as_str();
+    pub const CONFLICT: &str = super::ErrorCode::Conflict.as_str();
+    pub const UNSUPPORTED_MEDIA_TYPE: &str = super::ErrorCode::UnsupportedMediaType.as_str();
+    pub const METHOD_NOT_ALLOWED: &str = super::ErrorCode::MethodNotAllowed.as_str();
+    pub const SERVICE_UNAVAILABLE: &str = super::ErrorCode::ServiceUnavailable.as_str();
+    pub const RATE_LIMITED: &str = super::ErrorCode::RateLimited.as_str();
+    pub const TIMEOUT: &str = super::ErrorCode::Timeout.as_str();
+    /// The request body exceeded `ingest.max_payload_bytes` (data plane) or
+    /// `server.max_admin_body_bytes` (admin plane). Distinct from
     /// [`RESPONSE_TOO_LARGE`], which is about what the server built.
-    pub const PAYLOAD_TOO_LARGE: &str = "PAYLOAD_TOO_LARGE";
-    pub const RESPONSE_TOO_LARGE: &str = "RESPONSE_TOO_LARGE";
-    pub const INTERNAL_ERROR: &str = "INTERNAL_ERROR";
-    pub const CONFIG_ERROR: &str = "CONFIG_ERROR";
-    pub const STORAGE_ERROR: &str = "STORAGE_ERROR";
-    pub const ENGINE_ERROR: &str = "ENGINE_ERROR";
-    pub const SERIALIZATION_ERROR: &str = "SERIALIZATION_ERROR";
+    pub const PAYLOAD_TOO_LARGE: &str = super::ErrorCode::PayloadTooLarge.as_str();
+    pub const RESPONSE_TOO_LARGE: &str = super::ErrorCode::ResponseTooLarge.as_str();
+    pub const INTERNAL_ERROR: &str = super::ErrorCode::InternalError.as_str();
+    pub const CONFIG_ERROR: &str = super::ErrorCode::ConfigError.as_str();
+    pub const STORAGE_ERROR: &str = super::ErrorCode::StorageError.as_str();
+    pub const ENGINE_ERROR: &str = super::ErrorCode::EngineError.as_str();
+    pub const SERIALIZATION_ERROR: &str = super::ErrorCode::SerializationError.as_str();
     /// An open circuit breaker shed the request before it reached a connector.
-    pub const CIRCUIT_OPEN: &str = "CIRCUIT_OPEN";
+    pub const CIRCUIT_OPEN: &str = super::ErrorCode::CircuitOpen.as_str();
     /// A `channel_call` chain came back to a channel already on it, or went
     /// deeper than the configured maximum (`508 Loop Detected`). The loop is
     /// in the deployed channels, not in the request.
-    pub const LOOP_DETECTED: &str = "LOOP_DETECTED";
-    /// V2 deferred-write incompatibility (`426 Upgrade Required`).
-    pub const UPGRADE_REQUIRED: &str = "UPGRADE_REQUIRED";
+    pub const LOOP_DETECTED: &str = super::ErrorCode::LoopDetected.as_str();
     /// Enterprise tier package or feature rejected on Community Edition.
-    pub const ENTERPRISE_TIER_NOT_ENABLED: &str = "ENTERPRISE_TIER_NOT_ENABLED";
-    /// Edition transition blocked by active Enterprise dependencies.
-    pub const EDITION_TRANSITION_BLOCKED: &str = "EDITION_TRANSITION_BLOCKED";
+    pub const ENTERPRISE_TIER_NOT_ENABLED: &str = super::V2Code::EnterpriseTierNotEnabled.as_str();
 }
 
 /// The closed vocabulary of [`FieldError::code`].
@@ -447,6 +520,19 @@ pub struct ErrorEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each code is spelled once and names itself back.
+    #[test]
+    fn error_codes_are_unique_and_parse_back() {
+        let mut seen = std::collections::BTreeSet::new();
+        for code in ErrorCode::ALL {
+            assert!(seen.insert(code.as_str()), "{code} is registered twice");
+            assert_eq!(ErrorCode::parse(code.as_str()), Some(*code));
+        }
+        assert_eq!(ErrorCode::parse("NOT_A_CODE"), None);
+        assert_eq!(ErrorCode::ValidationError.status(), 400);
+        assert_eq!(ErrorCode::LoopDetected.status(), 508);
+    }
 
     /// Each code is spelled once and names itself back.
     #[test]

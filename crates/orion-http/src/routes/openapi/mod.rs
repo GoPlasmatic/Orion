@@ -179,9 +179,13 @@ impl Modify for SecurityAddon {
                     // S13: a read-only key authenticates but does not authorize
                     // a mutation. Injected rather than annotated for the same
                     // reason the 401 is — the rule lives in the middleware and
-                    // is method-based, so a per-handler annotation would be a
-                    // second copy of it that a new route could forget.
-                    if !matches!(method, "GET" | "HEAD") {
+                    // is method/path-based, so a per-handler annotation would
+                    // be a second copy of it that a new route could forget.
+                    let http_method = axum::http::Method::from_bytes(method.as_bytes())
+                        .expect("valid HTTP method");
+                    if !matches!(method, "GET" | "HEAD")
+                        && !crate::admin_auth::read_only_may_call(&http_method, path)
+                    {
                         ensure_response(
                             operation,
                             "403",

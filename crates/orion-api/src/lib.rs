@@ -80,4 +80,6 @@ pub use enums::{
     VALID_CHANNEL_TYPES,
 };
 pub use envelope::{Data, Page};
-pub use error::{ErrorBody, ErrorEnvelope, ErrorKind, FieldError, V2Code, codes, field_codes};
+pub use error::{
+    ErrorBody, ErrorCode, ErrorEnvelope, ErrorKind, FieldError, V2Code, codes, field_codes,
+};

@@ -6,13 +6,15 @@
 
 The shape of an admin success body and an admin error body, and how list endpoints page.
 
-Every admin 2xx body puts its payload under a top-level `data` key — one shape, so one unwrapping function works everywhere:
+Every operational admin 2xx body (`/engine/status`, `/traces`, `/audit-logs`, `/trace-dlq`, `/cron/*`, `/backups`, `/connectors/circuit-breakers`, `/functions`, `/cache/invalidate`) puts its payload under a top-level `data` key:
 
 ```json
 { "data": { "version": "…", "generation": 3, "...": "..." } }
 ```
 
-A list answers the same envelope everywhere: `data` plus how to get the next page.
+The v2 deployment, provider, connection, definition and authoring single-resource endpoints return their typed response DTO directly at the top level. This covers `/runtime-capabilities`, `/definitions*`, `/connections/{id}/revisions*`, `/connector-packages/{digest}*`, `/deployment-plans`, `/deployments/{revision}*`, `/authoring/*` and `/edition-transition-preflight`.
+
+Every list endpoint — across both operational and v2 surfaces — answers the same paginated envelope: `data` plus how to get the next page.
 
 ```json
 { "data": [ ... ], "limit": 50, "next_cursor": "1753900000123456.0190…" }

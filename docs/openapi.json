@@ -157,7 +157,7 @@
           "Providers"
         ],
         "summary": "Lint a provider package manifest and schema bundle",
-        "description": "Validates `manifest.json`, `distribution.json`, and implementation files, returning lint errors, warnings, and the canonical package digest.",
+        "description": "Validates `connector.json`, `distribution.json`, and implementation files, returning the lint report (`valid` and `errors`).",
         "operationId": "authoring_lint",
         "requestBody": {
           "content": {
@@ -171,7 +171,7 @@
         },
         "responses": {
           "200": {
-            "description": "Package is valid",
+            "description": "Lint report (`valid` indicates whether all checks passed)",
             "content": {
               "application/json": {
                 "schema": {
@@ -181,11 +181,11 @@
             }
           },
           "400": {
-            "description": "Invalid file encoding",
+            "description": "A file is not valid `base64:` (`INVALID_PACKAGE_ENCODING`), or the request body did not parse (`VALIDATION_ERROR`)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/LintResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -196,26 +196,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Package has lint errors",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LintResponse"
                 }
               }
             }
@@ -290,16 +270,6 @@
               }
             }
           },
-          "403": {
-            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
             "content": {
@@ -362,16 +332,6 @@
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2840,16 +2800,6 @@
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6607,7 +6557,7 @@
       },
       "LintResponse": {
         "type": "object",
-        "description": "A provider package's lint report (`POST /api/v2/admin/authoring/lint`):\n`200` when it is valid, `422` when it is not, `400` when a file does not\ndecode.",
+        "description": "A provider package's lint report (`POST /api/v2/admin/authoring/lint`):\n`200` when linting ran (`valid` indicates whether all checks passed),\n`400` (`ErrorEnvelope`) when a file does not decode.",
         "required": [
           "valid",
           "errors"

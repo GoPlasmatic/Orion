@@ -309,7 +309,7 @@ fn variant_name(err: &OrionError) -> &'static str {
 /// [`OrionError::Http`] constructor as its own. Bumping this is the
 /// second half of the prompt: the compile error says "name the variant",
 /// this assertion says "and state its wire contract below".
-const VARIANT_COUNT: usize = 20;
+const VARIANT_COUNT: usize = 19;
 
 /// One sample per variant with the `(status, code)` it must answer with.
 ///
@@ -427,11 +427,6 @@ fn wire_contract() -> Vec<(OrionError, StatusCode, &'static str)> {
             OrionError::Serialization(serde_json::from_str::<i32>("not json").expect_err("test")),
             StatusCode::INTERNAL_SERVER_ERROR,
             "SERIALIZATION_ERROR",
-        ),
-        (
-            OrionError::upgrade_required("use /api/v2/admin/deployments"),
-            StatusCode::UPGRADE_REQUIRED,
-            "UPGRADE_REQUIRED",
         ),
     ]
 }

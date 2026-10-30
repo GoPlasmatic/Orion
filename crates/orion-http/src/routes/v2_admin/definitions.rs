@@ -83,12 +83,11 @@ pub(crate) async fn upload_definition(
 pub(crate) async fn get_definition(
     State(state): State<AppState>,
     Path(digest): Path<String>,
-) -> Result<Json<Definition>, OrionError> {
+) -> V2Result<Json<Definition>> {
     let bytes = state
         .deployments
         .fetch_artifact(&state.db_pool, &digest)
-        .await
-        .map_err(|e| OrionError::internal(e.to_string()))?
+        .await?
         .and_then(|row| row.bytes)
         .ok_or_else(|| OrionError::not_found(format!("no definition is stored as '{digest}'")))?;
     // A stored artifact that is not a definition — a connection's

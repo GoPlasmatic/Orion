@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use orion_api::V2Code;
+use orion_api::{ErrorCode, V2Code};
 
 /// The sources of every crate the runtime is built from. Not `orion-api`:
 /// it defines the registry, so scanning it would find every code raised.
@@ -154,6 +154,41 @@ fn every_registered_code_is_reachable() {
         unreachable.is_empty(),
         "v2 codes registered but never raised by src/: {unreachable:?} — a code \
          no call site produces is one clients would wait forever for"
+    );
+}
+
+#[test]
+fn the_errors_reference_documents_the_general_code_registry() {
+    let md = std::fs::read_to_string(ERRORS_MD).expect("read docs/src/reference/errors.md");
+    let heading = "## The code registry";
+    let start = md
+        .find(heading)
+        .expect("errors.md must carry a '## The code registry' table");
+    let section = &md[start + heading.len()..];
+    let end = section.find("\n## ").unwrap_or(section.len());
+
+    let mut documented = BTreeMap::new();
+    for line in section[..end].lines() {
+        let cells: Vec<&str> = line.trim().split('|').map(str::trim).collect();
+        if cells.len() < 4 {
+            continue;
+        }
+        let (Some(code), Ok(status)) = (
+            cells[1].strip_prefix('`').and_then(|c| c.strip_suffix('`')),
+            cells[2].parse::<u16>(),
+        ) else {
+            continue;
+        };
+        documented.insert(code.to_string(), status);
+    }
+    let expected: BTreeMap<String, u16> = ErrorCode::ALL
+        .iter()
+        .map(|c| (c.as_str().to_string(), c.status()))
+        .collect();
+    assert_eq!(
+        documented, expected,
+        "docs/src/reference/errors.md's general code table and orion_api::ErrorCode \
+         disagree (code or status)"
     );
 }
 

@@ -3,8 +3,6 @@
 use std::collections::BTreeMap;
 
 use axum::Json;
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use orion_api::v2::{
     LintResponse, PackResponse, ScaffoldRequest, ScaffoldResponse, UploadPackageRequest,
@@ -107,42 +105,26 @@ pub(crate) async fn authoring_pack(
     path = "/api/v2/admin/authoring/lint",
     tag = "Providers",
     summary = "Lint a provider package manifest and schema bundle",
-    description = "Validates `manifest.json`, `distribution.json`, and implementation files, returning lint errors, warnings, and the canonical package digest.",
+    description = "Validates `connector.json`, `distribution.json`, and implementation files, returning the lint report (`valid` and `errors`).",
     request_body = UploadPackageRequest,
     responses(
-        (status = 200, description = "Package is valid", body = LintResponse),
-        (status = 400, description = "Invalid file encoding", body = LintResponse),
-        (status = 422, description = "Package has lint errors", body = LintResponse),
+        (status = 200, description = "Lint report (`valid` indicates whether all checks passed)", body = LintResponse),
+        (status = 400, description = "A file is not valid `base64:` (`INVALID_PACKAGE_ENCODING`), or the request body did not parse (`VALIDATION_ERROR`)"),
     )
 )]
-pub(crate) async fn authoring_lint(OrionJson(req): OrionJson<UploadPackageRequest>) -> Response {
-    let files = match decode_files_map(&req.files) {
-        Ok(f) => f,
-        Err(V2Error::Store(e)) => {
-            let resp = LintResponse {
-                valid: false,
-                errors: vec![e.message],
-                ..LintResponse::default()
-            };
-            return (StatusCode::BAD_REQUEST, Json(resp)).into_response();
-        }
-        Err(other) => return other.into_response(),
-    };
+pub(crate) async fn authoring_lint(
+    OrionJson(req): OrionJson<UploadPackageRequest>,
+) -> V2Result<Json<LintResponse>> {
+    let files = decode_files_map(&req.files)?;
     let report = lint_provider_package(&files);
-    let status = if report.valid {
-        StatusCode::OK
-    } else {
-        StatusCode::UNPROCESSABLE_ENTITY
-    };
     // The report names what `connector.json` declares, empty when it could
     // not be read.
     let declared = |s: String| (!s.is_empty()).then_some(s);
-    let resp = LintResponse {
+    Ok(Json(LintResponse {
         valid: report.valid,
         implementation: ImplementationKind::parse(&report.implementation),
         provider_id: declared(report.provider_id),
         version: declared(report.version),
         errors: report.errors,
-    };
-    (status, Json(resp)).into_response()
+    }))
 }

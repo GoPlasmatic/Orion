@@ -42,8 +42,8 @@ impl BearerChallenge {
 pub enum OrionError {
     /// A refusal that is nothing but its HTTP status, wire code and a message
     /// the caller may read: not found, unauthorized, forbidden, conflict,
-    /// payload too large, unsupported media type, method not allowed, upgrade
-    /// required. Built with the constructor of that name
+    /// payload too large, unsupported media type, method not allowed. Built
+    /// with the constructor of that name
     /// ([`OrionError::not_found`], …); `Display` keeps the label each had as
     /// a variant of its own ("Not found: …"), so logs and persisted error text
     /// read as they did.
@@ -195,7 +195,6 @@ fn http_label(status: StatusCode) -> &'static str {
         StatusCode::PAYLOAD_TOO_LARGE => "Payload too large",
         StatusCode::UNSUPPORTED_MEDIA_TYPE => "Unsupported media type",
         StatusCode::METHOD_NOT_ALLOWED => "Method not allowed",
-        StatusCode::UPGRADE_REQUIRED => "Upgrade required",
         _ => status.canonical_reason().unwrap_or("Error"),
     }
 }
@@ -243,15 +242,6 @@ impl OrionError {
         Self::http(
             StatusCode::METHOD_NOT_ALLOWED,
             codes::METHOD_NOT_ALLOWED,
-            message,
-        )
-    }
-
-    /// 426 `UPGRADE_REQUIRED`: a pre-v2 write refused once v2 deployments are active.
-    pub fn upgrade_required(message: impl Into<String>) -> Self {
-        Self::http(
-            StatusCode::UPGRADE_REQUIRED,
-            codes::UPGRADE_REQUIRED,
             message,
         )
     }
