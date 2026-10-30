@@ -173,7 +173,7 @@ impl EngineConfig {
 
 /// Configuration for circuit breakers. Disabled by default.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct CircuitBreakerConfig {
     pub enabled: bool,
     pub failure_threshold: u32,

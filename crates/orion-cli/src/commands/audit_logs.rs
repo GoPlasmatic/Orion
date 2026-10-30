@@ -22,15 +22,15 @@ enum AuditLogsSubcommand {
         after_help = "Filters match exactly and combine with AND. A mistyped filter is\n\
             rejected with 400 rather than answered with unfiltered rows.\n\n\
             Examples:\n  \
-            orion-cli audit-logs list --action status_active --resource-type workflow\n  \
-            orion-cli audit-logs list --resource-id wf-orders --start-time 2026-07-01T00:00:00Z\n  \
-            orion-cli audit-logs list --principal ci-deploy --limit 200"
+            orion-cli audit-logs list --action v2_deployment_apply --resource-type deployment\n  \
+            orion-cli audit-logs list --resource-id orders-db --start-time 2026-07-01T00:00:00Z\n  \
+            orion-cli audit-logs list --principal key-0123456789abcdef --limit 200"
     )]
     List {
-        /// Filter by action (create, update, delete, status_active, ...)
+        /// Filter by action (v2_deployment_apply, reset, trigger, ...)
         #[arg(long)]
         action: Option<String>,
-        /// Filter by resource type (workflow, channel, connector, engine, ...)
+        /// Filter by resource type (deployment, definition, connection, connector_package, ...)
         #[arg(long)]
         resource_type: Option<String>,
         /// Filter by resource ID

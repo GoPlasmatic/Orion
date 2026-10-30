@@ -49,6 +49,7 @@ pub struct ServerConfig {
     /// uploads, `POST /definitions/test`) are legitimately larger; one shared
     /// ceiling would make raising it for an upload raise it for anonymous
     /// channel traffic too.
+    #[serde(alias = "max_admin_body_bytes")]
     pub max_admin_body_size: usize,
 
     /// Additional path prefixes the data plane is served at, on top of the
@@ -285,6 +286,7 @@ pub struct TlsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct IngestConfig {
+    #[serde(alias = "max_payload_bytes")]
     pub max_payload_size: usize,
 }
 

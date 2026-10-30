@@ -25,7 +25,7 @@ pub struct TracesCmd {
 enum TracesSubcommand {
     /// List traces with optional filters
     #[command(
-        after_help = "Examples:\n  orion-cli traces list --status failed --channel orders\n  orion-cli traces list --mode async --sort-by created_at --sort-order desc --limit 10"
+        after_help = "Examples:\n  orion-cli traces list --status failed --channel orders\n  orion-cli traces list --mode async --limit 10"
     )]
     List {
         /// Filter by status (pending, running, completed, failed)
@@ -58,7 +58,7 @@ enum TracesSubcommand {
     },
     /// Wait for a trace to complete (polls until done or timeout)
     #[command(
-        after_help = "Exit codes: 0 = completed, 1 = failed, 2 = timeout\n\nExamples:\n  orion-cli traces wait <trace-id>\n  orion-cli traces wait <trace-id> --timeout 120 --interval 5"
+        after_help = "Exit codes: 0 = completed, 1 = failed, 3 = timeout\n\nExamples:\n  orion-cli traces wait <trace-id>\n  orion-cli traces wait <trace-id> --timeout 120 --interval 5"
     )]
     Wait {
         /// Trace ID

@@ -95,14 +95,15 @@ pub struct WaitOptions<'a> {
 }
 
 /// Poll a trace to a terminal state and render it. **Exit 0 completed,
-/// 1 failed, 2 timed out.**
+/// 1 failed, 3 timed out.**
 ///
 /// One implementation for `traces wait` and `data send --wait`, which polled
 /// the same endpoint through the same states and rendered the same three
 /// outcomes — and had drifted on all three of the things that distinguish
 /// them:
 ///
-/// - **the timeout code.** `traces wait` documented and returned 2; `send`
+/// - **the timeout code.** `traces wait` and `send --wait` return 3 (matching
+///   `deployments wait` and `deployments apply --wait-ms`); previously `send`
 ///   returned 2 from its human branch and 1 from its JSON branch, where the
 ///   early return ran before the status was examined. Under `--output json` a
 ///   timeout was indistinguishable from a failed trace.
@@ -115,7 +116,7 @@ pub struct WaitOptions<'a> {
 ///
 /// So: the machine-readable formats always emit the trace and never the
 /// human line, on every exit including the timeout; the token always goes
-/// through `query_string`; and the timeout is always 2.
+/// through `query_string`; and the timeout is always 3.
 ///
 /// Progress goes to stderr, so `--output json` piped to a parser stays clean
 /// while a human watching the terminal still sees it.
@@ -163,7 +164,7 @@ pub async fn wait_for_trace(
 
     let status = resp["status"].as_str().unwrap_or("unknown");
     let code = if timed_out {
-        2
+        3
     } else if status == "failed" {
         1
     } else {

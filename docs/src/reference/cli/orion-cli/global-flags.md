@@ -51,6 +51,15 @@ Lists are newest-first and have no `--offset` or `--sort-by`; filters narrow the
 
 `ORION_SECTION__KEY` variables belong to the server, not the client; see [Environment variables](../../environment-variables.md).
 
+## Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Command succeeded, or a polled deployment or trace completed. |
+| `1` | Runtime, network, server, or execution error, or lint and clippy findings. |
+| `2` | Usage error, invalid CLI arguments, or preflight and gate refusal. |
+| `3` | Polling timeout (`deployments wait`, `deployments apply --wait-ms`, `traces wait`, `send --wait`). |
+
 ## Related
 
 - [`orion-cli config`](./config.md): the settings file behind the flags.

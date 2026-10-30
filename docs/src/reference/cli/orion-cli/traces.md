@@ -25,7 +25,7 @@ id could read another caller's payload.
 |------------|-------------|
 | `list` | List traces, newest first; filter with `--status`, `--channel`, and `--mode`. |
 | `get <id>` | Show trace details, including the result or error. |
-| `wait <id>` | Poll until the trace completes. `--interval <secs>` (default `1`), `--timeout <secs>` (default `60`). Exit codes: `0` completed, `1` failed, `2` timeout. |
+| `wait <id>` | Poll until the trace completes. `--interval <secs>` (default `1`), `--timeout <secs>` (default `60`). Exit codes: `0` completed, `1` failed, `3` timeout. |
 
 ## Options
 

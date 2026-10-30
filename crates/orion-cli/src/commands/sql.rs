@@ -64,8 +64,9 @@ pub enum SqlCommand {
         #[arg(long = "role", value_name = "NAME=ROLE")]
         roles: Vec<String>,
         /// `text` (default) or `json` — one object per finding, then a summary.
-        #[arg(long, value_enum, default_value = "text")]
-        format: ClippyFormat,
+        /// Also respects the global `--output json` flag when omitted.
+        #[arg(long, value_enum)]
+        format: Option<ClippyFormat>,
         /// Channel name that may be referenced without being in the set.
         #[arg(long = "requires-channel", value_name = "NAME")]
         requires_channels: Vec<String>,
@@ -84,7 +85,7 @@ pub enum SqlCommand {
 }
 
 impl SqlCmd {
-    pub async fn run(&self) -> anyhow::Result<i32> {
+    pub async fn run(&self, global_output: &crate::output::OutputFormat) -> anyhow::Result<i32> {
         let SqlCommand::Check {
             path,
             connectors,
@@ -98,6 +99,10 @@ impl SqlCmd {
             plugin_dirs,
             server_config,
         } = &self.command;
+        let format = format.unwrap_or(match global_output {
+            crate::output::OutputFormat::Json => ClippyFormat::Json,
+            _ => ClippyFormat::Text,
+        });
         let config = orion_common::config::load_config(server_config.as_deref())
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         run_sql_check(SqlCheckRequest {
@@ -107,7 +112,7 @@ impl SqlCmd {
             schema: schema.as_deref(),
             database: database.as_deref(),
             roles,
-            format: *format,
+            format,
             boundary: orion_authoring::definitions::Boundary {
                 channels: requires_channels.clone(),
                 connectors: requires_connectors.clone(),

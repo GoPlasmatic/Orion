@@ -698,4 +698,31 @@ header = "Authorization"
             vec!["key-a".to_string(), "key-b".to_string()]
         );
     }
+
+    #[test]
+    fn circuit_breaker_rejects_unknown_fields_and_bytes_aliases_parse() {
+        let bad = r#"
+[engine.circuit_breaker]
+failure_threshold = 5
+unknown_knob = true
+"#;
+        let err = toml::from_str::<AppConfig>(bad)
+            .expect_err("unknown field in [engine.circuit_breaker] must be rejected");
+        assert!(err.to_string().contains("unknown_knob"), "{err}");
+
+        let aliased = r#"
+[server]
+max_admin_body_bytes = 2097152
+
+[ingest]
+max_payload_bytes = 65536
+
+[trace_queue]
+max_result_bytes = 131072
+"#;
+        let config: AppConfig = toml::from_str(aliased).expect("bytes aliases must parse");
+        assert_eq!(config.server.max_admin_body_size, 2_097_152);
+        assert_eq!(config.ingest.max_payload_size, 65_536);
+        assert_eq!(config.trace_queue.max_result_size_bytes, 131_072);
+    }
 }

@@ -282,8 +282,8 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
         Commands::DryRun(cmd) => cmd.run().await,
         Commands::Test(cmd) => cmd.run().await,
         Commands::Fmt(cmd) => cmd.run(),
-        Commands::Clippy(cmd) => cmd.run(),
-        Commands::Sql(cmd) => cmd.run().await,
+        Commands::Clippy(cmd) => cmd.run(&cli.output),
+        Commands::Sql(cmd) => cmd.run(&cli.output).await,
         Commands::Plugin(cmd) => cmd.run(),
     }
 }

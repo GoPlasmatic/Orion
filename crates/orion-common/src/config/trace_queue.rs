@@ -21,6 +21,7 @@ pub struct TraceQueueConfig {
     pub processing_timeout_ms: u64,
     /// Maximum size in bytes for serialized trace results. Results exceeding
     /// this limit are rejected (sync) or marked as failed (async). Default 1 MB.
+    #[serde(alias = "max_result_bytes")]
     pub max_result_size_bytes: usize,
     /// Maximum total memory in bytes for queued trace payloads. New submissions
     /// are rejected with 503 when this limit is exceeded. Default 100 MB.

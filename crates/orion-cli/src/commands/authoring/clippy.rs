@@ -21,8 +21,9 @@ pub struct ClippyCmd {
     #[arg(long)]
     pub deny_warnings: bool,
     /// `text` (default) or `json` — one object per diagnostic on stdout.
-    #[arg(long, value_enum, default_value = "text")]
-    pub format: ClippyFormat,
+    /// Also respects the global `--output json` flag when omitted.
+    #[arg(long, value_enum)]
+    pub format: Option<ClippyFormat>,
     /// Print every rule with its level, scope and summary, and exit.
     #[arg(long, conflicts_with_all = ["explain", "path"])]
     pub list: bool,
@@ -64,7 +65,7 @@ pub struct ClippyCmd {
 }
 
 impl ClippyCmd {
-    pub fn run(&self) -> anyhow::Result<i32> {
+    pub fn run(&self, global_output: &crate::output::OutputFormat) -> anyhow::Result<i32> {
         if self.list {
             return run_clippy_list().map_err(boxed);
         }
@@ -74,6 +75,10 @@ impl ClippyCmd {
         let Some(path) = &self.path else {
             anyhow::bail!("clippy needs a directory or file to check (or --list / --explain)");
         };
+        let format = self.format.unwrap_or(match global_output {
+            crate::output::OutputFormat::Json => ClippyFormat::Json,
+            _ => ClippyFormat::Text,
+        });
         // Only a config the author named counts as "the serving config".
         let config = self
             .server_config
@@ -84,7 +89,7 @@ impl ClippyCmd {
         run_clippy(ClippyRequest {
             path,
             deny_warnings: self.deny_warnings,
-            format: self.format,
+            format,
             definitions: self.definitions.as_deref(),
             plugin_dirs: &self.plugin_dirs,
             boundary: Boundary {

@@ -389,3 +389,18 @@ fn test_http_connector_config_defaults() {
         _ => unreachable!("Expected Http config"),
     }
 }
+
+#[test]
+fn a_misspelled_auth_or_oauth2_key_is_rejected() {
+    for bad in [
+        r#"{"type":"http","url":"https://example.com",
+            "auth":{"type":"bearer","tokn":"secret"}}"#,
+        r#"{"type":"http","url":"https://example.com",
+            "auth":{"type":"oauth2","token_url":"https://example.com/token",
+                    "client_id":"id","client_secret":"s","scops":["read"]}}"#,
+    ] {
+        let err = serde_json::from_str::<ConnectorConfig>(bad)
+            .expect_err("a misspelled auth or oauth2 key must be rejected");
+        assert!(err.to_string().contains("unknown field"), "{err}");
+    }
+}

@@ -54,7 +54,7 @@ fn default_max_response_size() -> usize {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum AuthConfig {
     Bearer {
         token: String,
@@ -81,6 +81,7 @@ pub enum AuthConfig {
 /// exchange, device code) is a new value with its own request shape, not a new
 /// auth type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OAuth2Config {
     /// `"client_credentials"`, `"refresh_token"` or `"account_credentials"` —
     /// parsed by [`OAuth2Grant::parse`], validated at authoring time.

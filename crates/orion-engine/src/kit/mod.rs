@@ -308,18 +308,20 @@ impl CallLayer for ProfileLayer {
     }
 }
 
-/// What a sample is attributed to: the input's `connector`, else the
-/// `channel` a `channel_call` reaches (the label 1.12 gave it). Read from
-/// [`Ctx::input`], which evaluates no secret-reading field, and only while
-/// profiling.
+/// What a sample is attributed to: the input's `connector` (or `connection`
+/// for `connector_call`), else the `channel` a `channel_call` reaches (the
+/// label 1.12 gave it). Read from [`Ctx::input`], which evaluates no
+/// secret-reading field, and only while profiling.
 fn profile_target(ctx: &Ctx<'_>) -> Option<String> {
     let input = ctx.input().ok()?;
-    ["connector", "channel"].iter().find_map(|key| {
-        input
-            .get(*key)
-            .and_then(OwnedDataValue::as_str)
-            .map(str::to_owned)
-    })
+    ["connector", "connection", "channel"]
+        .iter()
+        .find_map(|key| {
+            input
+                .get(*key)
+                .and_then(OwnedDataValue::as_str)
+                .map(str::to_owned)
+        })
 }
 
 /// Orion's expressions with no secrets and no budget: `orion_exprs` as an
@@ -747,6 +749,7 @@ mod tests {
     #[derive(Debug, dataflow_rs::function::FunctionConfig)]
     struct Target {
         connector: Option<String>,
+        connection: Option<String>,
         channel: Option<dataflow_rs::Expr<String>>,
     }
 
@@ -798,6 +801,16 @@ mod tests {
         assert_eq!(handlers[0]["connector"], "db1", "attributed by ctx.input()");
         assert_eq!(profile["by_function"]["db_read"]["count"], 1);
         assert_eq!(profile["by_connector"]["db1"]["count"], 1);
+
+        // `connector_call`'s label is the `connection` it targets.
+        let profile = profiled(
+            Probe { nested: false },
+            "connector_call",
+            json!({"connection": "stripe"}),
+            true,
+        )
+        .await;
+        assert_eq!(profile["by_connector"]["stripe"]["count"], 1, "{profile}");
 
         // `channel_call`'s label is the channel it reaches, computed or not.
         let profile = profiled(

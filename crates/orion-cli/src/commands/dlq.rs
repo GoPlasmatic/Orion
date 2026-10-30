@@ -101,9 +101,9 @@ impl DlqCmd {
                 list(client, format, quiet, &qs).await
             }
             DlqSubcommand::Get { id } => get(client, format, quiet, id).await,
-            DlqSubcommand::Requeue { id } => requeue(client, quiet, id).await,
+            DlqSubcommand::Requeue { id } => requeue(client, format, quiet, id).await,
             DlqSubcommand::Purge { older_than_hours } => {
-                purge(client, quiet, yes, *older_than_hours).await
+                purge(client, format, quiet, yes, *older_than_hours).await
             }
         }
     }
@@ -195,8 +195,18 @@ async fn get(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &str)
     Ok(0)
 }
 
-async fn requeue(client: &OrionClient, quiet: bool, id: &str) -> Result<i32> {
+async fn requeue(
+    client: &OrionClient,
+    format: &OutputFormat,
+    quiet: bool,
+    id: &str,
+) -> Result<i32> {
     let resp: Value = client.post_empty(&paths::trace_dlq_requeue(id)).await?;
+
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, &resp)?;
+        return Ok(0);
+    }
 
     if !quiet {
         let entry = &resp["data"];
@@ -210,7 +220,13 @@ async fn requeue(client: &OrionClient, quiet: bool, id: &str) -> Result<i32> {
     Ok(0)
 }
 
-async fn purge(client: &OrionClient, quiet: bool, yes: bool, older_than_hours: i64) -> Result<i32> {
+async fn purge(
+    client: &OrionClient,
+    format: &OutputFormat,
+    quiet: bool,
+    yes: bool,
+    older_than_hours: i64,
+) -> Result<i32> {
     if !utils::confirm(
         &format!("Permanently delete exhausted DLQ entries older than {older_than_hours}h?"),
         yes,
@@ -222,6 +238,11 @@ async fn purge(client: &OrionClient, quiet: bool, yes: bool, older_than_hours: i
     let body = serde_json::json!({ "older_than_hours": older_than_hours });
     let resp: Value = client.post(paths::TRACE_DLQ_PURGE, &body).await?;
     let purged = resp["data"]["purged"].as_i64().unwrap_or(0);
+
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, &resp)?;
+        return Ok(0);
+    }
 
     if quiet {
         println!("{purged}");
