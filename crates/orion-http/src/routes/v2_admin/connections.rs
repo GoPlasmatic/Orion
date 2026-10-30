@@ -334,34 +334,51 @@ pub(crate) async fn probe_connection(
         )));
     }
 
-    let pkg = state
-        .deployments
-        .get_package(&conn_row.provider_digest)
-        .ok_or_else(|| {
-            V2Error::new(
-                DeploymentErrorKind::PackageNotFound,
-                format!(
-                    "connection '{connection_id}' revision {revision} names provider package '{}', which is not stored",
-                    conn_row.provider_digest
-                ),
-            )
-        })?;
-    if state
-        .deployments
-        .get_admission(&pkg.package_digest)
-        .is_some_and(|a| a.revoked)
+    let (kind, driver_id, provider_ref) = if let Some(pkg) =
+        state.deployments.get_package(&conn_row.provider_digest)
     {
+        if state
+            .deployments
+            .get_admission(&pkg.package_digest)
+            .is_some_and(|a| a.revoked)
+        {
+            return Err(V2Error::new(
+                DeploymentErrorKind::ProviderRevoked,
+                format!(
+                    "provider package '{}' ({}) for connection '{connection_id}' is revoked",
+                    pkg.provider_id, pkg.package_digest
+                ),
+            ));
+        }
+        let driver_id = pkg.backend_id().to_string();
+        let provider_ref = ProviderRef {
+            publisher: pkg.publisher.clone(),
+            provider_id: driver_id.as_str().into(),
+            version: pkg.version.clone(),
+            digest: conn_row.provider_digest.clone(),
+        };
+        (pkg.implementation, driver_id, provider_ref)
+    } else if let Some(driver) = state
+        .deployments
+        .composed_rust_driver(&conn_row.provider_digest)
+    {
+        let driver_id = driver.to_string();
+        let provider_ref = crate::extensions::foundation::synthetic_provider_ref(&driver_id);
+        (
+            crate::extensions::ImplementationKind::Rust,
+            driver_id,
+            provider_ref,
+        )
+    } else {
         return Err(V2Error::new(
-            DeploymentErrorKind::ProviderRevoked,
+            DeploymentErrorKind::PackageNotFound,
             format!(
-                "provider package '{}' ({}) for connection '{connection_id}' is revoked",
-                pkg.provider_id, pkg.package_digest
+                "connection '{connection_id}' revision {revision} names provider package '{}', which is not stored",
+                conn_row.provider_digest
             ),
         ));
-    }
+    };
 
-    let kind = pkg.implementation;
-    let driver_id = pkg.backend_id().to_string();
     let Some(backend) = state.composition.providers().get(kind, &driver_id) else {
         return Err(V2Error::new(
             DeploymentErrorKind::ProviderNotFound,
@@ -412,16 +429,13 @@ pub(crate) async fn probe_connection(
         BudgetLimits::default(),
         grant,
     );
-    let run_ctx = admitted.context();
+    let run_ctx = admitted
+        .context()
+        .with_deployments(state.deployments.clone());
     let conn_ref = ConnectionReference {
         connection_id: ConnectionId::from(&connection_id),
         revision: conn_row.revision,
-        provider: ProviderRef {
-            publisher: pkg.publisher.clone(),
-            provider_id: driver_id.as_str().into(),
-            version: pkg.version.clone(),
-            digest: conn_row.provider_digest.clone(),
-        },
+        provider: provider_ref,
     };
     let eff = EffectiveConnectionIdentity {
         provider_digest: conn_row.provider_digest.clone(),

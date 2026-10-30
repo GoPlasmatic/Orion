@@ -52,21 +52,24 @@ pub use admission::{
     AdmissionRejection, AdmissionVerdict, EditionTier, PackageAdmissionRequest, PackageVerifier,
     admission_codes,
 };
-pub use attempt::{AttemptContext, AttemptScope};
-pub use channel::{ChannelDriver, ChannelDriverCapabilities, ChannelProtocolFields};
+pub use attempt::{AttemptContext, AttemptScope, ConnectionResolver, SecretValue};
+pub use channel::{
+    ChannelDriver, ChannelDriverCapabilities, ChannelProtocolFields, ChannelSubscriptionHandle,
+};
 pub use compose::{CompositionError, DuplicateProvider, Registrar};
 pub use contract::{
     ConnectorError, ConnectorErrorClass, ConnectorOutput, EffectStatus, ErrorOrigin,
     ImplementationKind, OriginKind, RetryAdvice, codes,
 };
 pub use identity::{
-    ConnectionId, ConnectionReference, EffectiveConnectionIdentity, ProviderId, ProviderRef,
-    Revision,
+    BackendKey, ConnectionId, ConnectionReference, EffectiveConnectionIdentity, ProviderId,
+    ProviderRef, Revision,
 };
 pub use pool::{ConnectionPoolCache, PoolEntry};
-pub use provider::{ProviderBackend, ValidateContext};
-#[doc(hidden)]
-pub use provider::{SourceBatchItem, SourceConnectorFacet, SourcePollBatch, SourceSettlement};
+pub use provider::{
+    ProviderBackend, SourceBatchItem, SourceConnectorFacet, SourcePollBatch, SourceSettlement,
+    ValidateContext,
+};
 
 /// The wire types a contract shares with `orion-api`. The vocabularies
 /// ([`ImplementationKind`], [`ConnectorErrorClass`], [`EffectStatus`],

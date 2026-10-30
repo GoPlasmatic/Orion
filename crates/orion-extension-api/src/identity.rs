@@ -26,6 +26,7 @@ use std::ops::Deref;
 
 use serde::{Deserialize, Serialize};
 
+use crate::contract::ImplementationKind;
 use orion_api::Digest;
 
 macro_rules! string_id {
@@ -153,6 +154,38 @@ string_id! {
 string_id! {
     /// A connection's stable logical id, shared by all of its revisions.
     ConnectionId
+}
+
+/// The key a [`ProviderBackend`](crate::ProviderBackend) registers under in
+/// the node's provider registry:
+/// - `Rust(ProviderId)` for compiled-in Direct Rust drivers (e.g. `"org.orion.http"`),
+/// - `Workflow(Digest)` for admitted workflow provider packages,
+/// - `Wasm(Digest)` for admitted Wasm provider packages.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum BackendKey {
+    Rust(ProviderId),
+    Workflow(Digest),
+    Wasm(Digest),
+}
+
+impl BackendKey {
+    /// Implementation kind (`Rust`, `Workflow`, or `Wasm`).
+    pub const fn kind(&self) -> ImplementationKind {
+        match self {
+            Self::Rust(_) => ImplementationKind::Rust,
+            Self::Workflow(_) => ImplementationKind::Workflow,
+            Self::Wasm(_) => ImplementationKind::Wasm,
+        }
+    }
+
+    /// Driver identifier for `Rust` backends, or package digest string for
+    /// `Workflow` and `Wasm` backends.
+    pub fn driver_id(&self) -> &str {
+        match self {
+            Self::Rust(id) => id.as_str(),
+            Self::Workflow(digest) | Self::Wasm(digest) => digest.as_str(),
+        }
+    }
 }
 
 /// An immutable revision of a deployment entity or a connection: numbered

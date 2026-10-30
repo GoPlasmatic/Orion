@@ -46,8 +46,12 @@ async fn commit(tx: DbTransaction) -> Result<(), DeploymentError> {
 async fn closure_facts(
     tx: &mut DbTransaction,
     manifest: &CanonicalManifest,
+    composed_rust_digests: HashSet<orion_extension_api::Digest>,
 ) -> Result<ClosureFacts, DeploymentError> {
-    let mut facts = ClosureFacts::default();
+    let mut facts = ClosureFacts {
+        composed_rust_digests,
+        ..ClosureFacts::default()
+    };
     let packages: Vec<String> = manifest
         .providers
         .iter()
@@ -117,10 +121,11 @@ async fn plan_in(
     tx: &mut DbTransaction,
     base_revision: u64,
     candidate: CanonicalManifest,
+    composed_rust_digests: HashSet<orion_extension_api::Digest>,
 ) -> Result<CandidatePlan, DeploymentError> {
     let canonical = candidate.canonicalize_and_verify()?;
     let base = base_manifest(tx, base_revision).await?;
-    let facts = closure_facts(tx, &candidate).await?;
+    let facts = closure_facts(tx, &candidate, composed_rust_digests).await?;
     rules::plan(&facts, base_revision, base.as_ref(), candidate, canonical)
 }
 
@@ -475,7 +480,13 @@ impl ImmutableDeploymentStore {
         let mut tx = pool.begin_snapshot_tx().await.map_err(|e| {
             DeploymentError::new(Kind::DbTransaction, format!("failed to begin tx: {e}"))
         })?;
-        let plan = plan_in(&mut tx, base_revision, candidate_manifest).await?;
+        let plan = plan_in(
+            &mut tx,
+            base_revision,
+            candidate_manifest,
+            self.composed_rust_digests(),
+        )
+        .await?;
         tx.commit().await.map_err(DeploymentError::read)?;
         Ok(plan)
     }
@@ -566,7 +577,13 @@ impl ImmutableDeploymentStore {
                 format!("target revision {target_revision} has been compacted"),
             ));
         }
-        let mut plan = plan_in(&mut tx, expected_head_revision, target.manifest).await?;
+        let mut plan = plan_in(
+            &mut tx,
+            expected_head_revision,
+            target.manifest,
+            self.composed_rust_digests(),
+        )
+        .await?;
         plan.external_effect_warnings.push(
             "Configuration rollback creates a new deployment revision; already-emitted external side effects are not reversed."
                 .to_string(),
@@ -634,7 +651,8 @@ impl ImmutableDeploymentStore {
             ));
         }
 
-        let facts = closure_facts(tx, &plan.candidate_manifest).await?;
+        let facts =
+            closure_facts(tx, &plan.candidate_manifest, self.composed_rust_digests()).await?;
         rules::recheck_admissions(&facts, &plan.candidate_manifest, policy)?;
         rules::verify_closure(
             &facts,

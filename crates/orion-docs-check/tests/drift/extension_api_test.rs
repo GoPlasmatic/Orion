@@ -45,3 +45,13 @@ fn the_extension_api_depends_only_on_what_its_signatures_name() {
         );
     }
 }
+
+#[test]
+fn the_plugin_host_and_sdk_wit_contracts_are_identical() {
+    const HOST_WIT: &str = include_str!("../../../orion-plugin-host/wit/orion-plugin.wit");
+    const SDK_WIT: &str = include_str!("../../../orion-plugin-sdk/wit/orion-plugin.wit");
+    assert_eq!(
+        HOST_WIT, SDK_WIT,
+        "orion-plugin-host/wit/orion-plugin.wit and orion-plugin-sdk/wit/orion-plugin.wit must be identical"
+    );
+}

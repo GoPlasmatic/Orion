@@ -596,6 +596,10 @@ pub struct ImmutableDeploymentStore {
     /// The revisions each node reports holding (applied, or retained while a
     /// generation drains): the collector keeps them whole.
     held: Arc<Mutex<BTreeMap<String, BTreeSet<u64>>>>,
+    /// Composed Direct Rust drivers registered at boot (`synthetic_provider_digest(driver_id) -> driver_id`),
+    /// so custom Rust providers composed via `CompositionBuilder` can be referenced by connections
+    /// without requiring a dummy uploaded package.
+    composed_rust: Arc<RwLock<BTreeMap<Digest, ProviderId>>>,
 }
 
 impl Default for ImmutableDeploymentStore {
@@ -611,7 +615,30 @@ impl ImmutableDeploymentStore {
             catalog: Arc::default(),
             write_lock: Arc::default(),
             held: Arc::default(),
+            composed_rust: Arc::default(),
         }
+    }
+
+    /// Record a composed Direct Rust driver by its synthetic provider digest.
+    pub fn register_composed_rust_driver(&self, driver_id: &str) {
+        let digest = super::foundation::synthetic_provider_digest(driver_id);
+        self.composed_rust
+            .write_unpoisoned()
+            .insert(digest, ProviderId::from(driver_id));
+    }
+
+    /// The driver id of a composed Direct Rust driver registered under `digest`.
+    pub fn composed_rust_driver(&self, digest: &str) -> Option<ProviderId> {
+        self.composed_rust.read_unpoisoned().get(digest).cloned()
+    }
+
+    /// The synthetic digests of all composed Direct Rust drivers registered on this store.
+    pub fn composed_rust_digests(&self) -> std::collections::HashSet<Digest> {
+        self.composed_rust
+            .read_unpoisoned()
+            .keys()
+            .cloned()
+            .collect()
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, catalog::Catalog> {
@@ -671,11 +698,15 @@ impl ImmutableDeploymentStore {
             .cloned()
     }
 
-    /// The pinned identity of the provider `digest` names: a built-in
-    /// driver's synthetic one, or the stored package's. `None` when it is
-    /// neither.
+    /// The pinned identity of the provider `digest` names: a built-in or
+    /// composed Direct Rust driver's synthetic one, or the stored package's.
+    /// `None` when it is none of those.
     pub fn provider_ref(&self, digest: &Digest) -> Option<ProviderRef> {
         super::foundation::builtin_provider_ref(digest)
+            .or_else(|| {
+                self.composed_rust_driver(digest)
+                    .map(|driver| super::foundation::synthetic_provider_ref(&driver))
+            })
             .or_else(|| self.get_package(digest).map(|pkg| pkg.provider_ref()))
     }
 

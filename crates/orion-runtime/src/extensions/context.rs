@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use orion_extension_api::{
-    AttemptContext, AttemptScope, ConnectionReference, ConnectorError, EffectStatus,
-    EffectiveConnectionIdentity, codes,
+    AttemptContext, AttemptScope, ConnectionReference, ConnectionResolver, ConnectorError,
+    EffectStatus, EffectiveConnectionIdentity, SecretValue, codes,
 };
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -455,6 +455,7 @@ impl AdmittedRun {
             depth: 0,
             cancellation,
             accountant: None,
+            deployments: None,
             budget,
             authority,
         };
@@ -473,6 +474,17 @@ impl AdmittedRun {
     ) -> Self {
         self.context.cancellation = token;
         self.context.accountant = accountant;
+        self
+    }
+
+    /// Attach the deployment store so invocations started in this run resolve
+    /// their governed connection configuration and secrets via
+    /// [`AttemptContext::connection_resolver`].
+    pub fn with_deployments(
+        mut self,
+        deployments: super::deployment_store::ImmutableDeploymentStore,
+    ) -> Self {
+        self.context.deployments = Some(deployments);
         self
     }
 
@@ -498,6 +510,7 @@ pub struct RunContext {
     depth: u32,
     cancellation: dataflow_rs::run::CancelToken,
     accountant: Option<Arc<crate::engine::SharedRunAccountant>>,
+    deployments: Option<super::deployment_store::ImmutableDeploymentStore>,
     budget: BudgetScope,
     authority: AuthorityGrant,
 }
@@ -535,6 +548,17 @@ impl RunContext {
 
     pub fn accountant(&self) -> Option<&Arc<crate::engine::SharedRunAccountant>> {
         self.accountant.as_ref()
+    }
+
+    /// Attach the deployment store so invocations started in this run resolve
+    /// their governed connection configuration and secrets via
+    /// [`AttemptContext::connection_resolver`].
+    pub fn with_deployments(
+        mut self,
+        deployments: super::deployment_store::ImmutableDeploymentStore,
+    ) -> Self {
+        self.deployments = Some(deployments);
+        self
     }
 
     pub fn run_id(&self) -> &str {
@@ -609,6 +633,7 @@ impl RunContext {
             depth: next_depth,
             cancellation: self.cancellation.child(),
             accountant: self.accountant.clone(),
+            deployments: self.deployments.clone(),
             budget: self.budget.derive_child(requested_limits),
             authority: self.authority.intersect(requested_authority),
         })
@@ -662,6 +687,8 @@ impl RunContext {
             ));
         }
 
+        let connection_row =
+            super::foundation::governed_connection(self.deployments.as_ref(), &effective_identity);
         let invocation_id = next_unique_id();
         Ok(Invocation {
             invocation_id,
@@ -669,6 +696,7 @@ impl RunContext {
             context: self.clone(),
             connection,
             effective_identity,
+            connection_row,
             operation,
             idempotency_key,
             max_attempts: max_invocation_attempts.max(1),
@@ -690,6 +718,8 @@ impl RunContext {
         max_invocation_attempts: u32,
     ) -> Result<Invocation, ConnectorError> {
         self.check_live(EffectStatus::NotStarted)?;
+        let connection_row =
+            super::foundation::governed_connection(self.deployments.as_ref(), &effective_identity);
         let operation = format!("orion.internal.source.{facet_step}");
         let invocation_id = next_unique_id();
         Ok(Invocation {
@@ -698,6 +728,7 @@ impl RunContext {
             context: self.clone(),
             connection,
             effective_identity,
+            connection_row,
             operation,
             idempotency_key: None,
             max_attempts: max_invocation_attempts.max(1),
@@ -715,6 +746,7 @@ pub struct Invocation {
     context: RunContext,
     connection: ConnectionReference,
     effective_identity: EffectiveConnectionIdentity,
+    connection_row: Option<Arc<super::deployment_store::ConnectionRevisionRow>>,
     operation: String,
     idempotency_key: Option<String>,
     max_attempts: u32,
@@ -723,6 +755,25 @@ pub struct Invocation {
 }
 
 impl Invocation {
+    /// Return a copy of this invocation bound to `deployments` if not already
+    /// bound to a governed connection row.
+    pub fn with_deployments(
+        &self,
+        deployments: &super::deployment_store::ImmutableDeploymentStore,
+    ) -> Self {
+        let mut cloned = self.clone();
+        if cloned.context.deployments.is_none() {
+            cloned.context.deployments = Some(deployments.clone());
+        }
+        if cloned.connection_row.is_none() {
+            cloned.connection_row = super::foundation::governed_connection(
+                Some(deployments),
+                &cloned.effective_identity,
+            );
+        }
+        cloned
+    }
+
     pub fn invocation_id(&self) -> u64 {
         self.invocation_id
     }
@@ -863,9 +914,14 @@ impl Invocation {
             depth: next_depth,
             cancellation: self.context.cancellation.child(),
             accountant: self.context.accountant.clone(),
+            deployments: self.context.deployments.clone(),
             budget: self.context.budget.derive_child(requested_limits),
             authority: child_authority,
         };
+        let connection_row = super::foundation::governed_connection(
+            child_ctx.deployments.as_ref(),
+            &effective_identity,
+        );
 
         let child_invocation_id = next_unique_id();
         Ok(Invocation {
@@ -874,12 +930,57 @@ impl Invocation {
             context: child_ctx,
             connection: conn_ref,
             effective_identity,
+            connection_row,
             operation,
             idempotency_key: self.idempotency_key.clone(),
             max_attempts: max_invocation_attempts.max(1),
             attempt_counter: Arc::new(AtomicU64::new(0)),
             effect_ledger: self.effect_ledger.clone(),
         })
+    }
+}
+
+#[async_trait::async_trait]
+impl ConnectionResolver for Invocation {
+    fn public_config(&self) -> Option<&serde_json::Value> {
+        self.connection_row.as_ref().map(|r| &r.public_config)
+    }
+
+    async fn resolve_secret(&self, path: &str) -> Result<Option<SecretValue>, ConnectorError> {
+        let Some(conn) = self.connection_row.as_deref() else {
+            return Ok(None);
+        };
+        super::foundation::governed_secret(
+            conn,
+            path,
+            &self.effective_identity,
+            self.connection.provider.provider_id.as_str(),
+        )
+        .await
+        .map(|opt| opt.map(SecretValue::new))
+    }
+
+    async fn resolve_merged_config(&self) -> Result<Option<serde_json::Value>, ConnectorError> {
+        let Some(conn) = self.connection_row.as_deref() else {
+            return Ok(None);
+        };
+        let mut resolved_locators = BTreeMap::new();
+        for path in conn.secret_locators.keys() {
+            if let Some(secret) = super::foundation::governed_secret(
+                conn,
+                path,
+                &self.effective_identity,
+                self.connection.provider.provider_id.as_str(),
+            )
+            .await?
+            {
+                resolved_locators.insert(path.clone(), secret);
+            }
+        }
+        Ok(Some(super::deployment_store::place_locators(
+            &conn.public_config,
+            &resolved_locators,
+        )))
     }
 }
 
@@ -935,6 +1036,10 @@ impl AttemptScope for Invocation {
 
     fn record_effect(&self, observed: EffectStatus) -> EffectStatus {
         Invocation::record_effect(self, observed)
+    }
+
+    fn connection_resolver(&self) -> Option<&dyn ConnectionResolver> {
+        self.connection_row.is_some().then_some(self)
     }
 }
 

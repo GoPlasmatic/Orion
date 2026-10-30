@@ -197,9 +197,28 @@ fn check_protocol_fields(
     driver_fields.channel_type = fields.channel_type;
     driver_fields.methods = fields.methods;
     driver_fields.route_pattern = fields.route_pattern;
-    driver_fields.topic = fields.topic;
-    driver_fields.consumer_group = fields.consumer_group;
     let mut out = drivers.validate_channel(&driver_fields, transport_config, config, channel_id);
+    if fields.protocol == crate::extensions::channel_driver::PROTOCOL_CRON {
+        for (path, name, value) in [
+            ("channel.topic", "topic", fields.topic),
+            (
+                "channel.consumer_group",
+                "consumer_group",
+                fields.consumer_group,
+            ),
+        ] {
+            if value.is_some_and(|v| !v.trim().is_empty()) {
+                out.push(crate::errors::FieldError::new(
+                    path,
+                    orion_api::error::field_codes::INVALID,
+                    format!(
+                        "a cron channel must not declare {name}: it is started by its \
+                         schedule and registers no HTTP route"
+                    ),
+                ));
+            }
+        }
+    }
     // The caps are deliberately outside the driver: all three fields are
     // optional and kept whatever the protocol says, so an over-long `topic` on
     // a REST channel (or `route_pattern` on a cron one) must be refused too.
@@ -923,14 +942,24 @@ mod tests {
             }
             fn validate_fields(
                 &self,
-                fields: &crate::extensions::ChannelProtocolFields<'_>,
+                _fields: &crate::extensions::ChannelProtocolFields<'_>,
             ) -> Vec<crate::errors::FieldError> {
-                fields
-                    .topic
+                Vec::new()
+            }
+            fn validate_transport(
+                &self,
+                transport_config: &serde_json::Value,
+                _config: &serde_json::Value,
+                _channel_id: Option<&str>,
+            ) -> Vec<crate::errors::FieldError> {
+                transport_config
+                    .get("topic")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|t| !t.trim().is_empty())
                     .is_none()
                     .then(|| {
                         crate::errors::FieldError::new(
-                            "channel.topic",
+                            "channel.transport_config.topic",
                             "REQUIRED_FOR_PROTOCOL",
                             "kafka channels name a topic",
                         )
@@ -944,9 +973,9 @@ mod tests {
         let drivers =
             crate::extensions::ChannelDriverRegistry::new(with_kafka).expect("distinct protocols");
         let err = validate_create_channel(&req("kafka"), &drivers).expect_err("no topic");
-        assert_eq!(err.field_errors()[0].path, "channel.topic");
+        assert_eq!(err.field_errors()[0].path, "channel.transport_config.topic");
         let mut with_topic = req("kafka");
-        with_topic.topic = Some("orders".to_string());
+        with_topic.transport_config = json!({"topic": "orders"});
         validate_create_channel(&with_topic, &drivers).expect("the driver accepts it");
 
         // oauth2_login follows the driver's capability, not a protocol name:

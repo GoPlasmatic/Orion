@@ -210,11 +210,18 @@ async fn execute_connector_call(
             declared_by = Some(pkg.package_digest.clone());
             pkg.provider_ref()
         }
-        // A provider built into this binary has no uploaded package: the
-        // revision names it by its built-in digest, which must be the
-        // driver this call targets.
+        // A provider built into this binary (or composed via `CompositionBuilder`)
+        // has no uploaded package: the revision names it by its synthetic digest,
+        // which must be the driver this call targets.
         None => {
-            match crate::extensions::foundation::builtin_provider_ref(&conn_row.provider_digest) {
+            match crate::extensions::foundation::builtin_provider_ref(&conn_row.provider_digest)
+                .or_else(|| {
+                    store
+                        .composed_rust_driver(&conn_row.provider_digest)
+                        .map(|driver| {
+                            crate::extensions::foundation::synthetic_provider_ref(&driver)
+                        })
+                }) {
                 Some(builtin)
                     if impl_kind == ImplementationKind::Rust
                         && builtin.provider_id == target_id =>

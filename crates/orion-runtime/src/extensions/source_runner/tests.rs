@@ -365,8 +365,8 @@ async fn source_runner_executes_privileged_facet_while_app_boundary_blocks_it() 
         .poll_batch(
             &run.context(),
             SourceTarget {
-                connection: conn,
-                effective_identity: eff_id,
+                connection: conn.clone(),
+                effective_identity: eff_id.clone(),
                 kind: ImplementationKind::Rust,
                 driver_id: TEST_SOURCE.to_string(),
             },
@@ -377,4 +377,18 @@ async fn source_runner_executes_privileged_facet_while_app_boundary_blocks_it() 
         .expect("source poll succeeds");
     assert!(batch.items.is_empty());
     assert_eq!(batch.next_checkpoint, Some(json!({"lsn": 42})));
+
+    runner
+        .close_cursor(
+            &run.context(),
+            SourceTarget {
+                connection: conn,
+                effective_identity: eff_id,
+                kind: ImplementationKind::Rust,
+                driver_id: TEST_SOURCE.to_string(),
+            },
+            cursor,
+        )
+        .await
+        .expect("source close succeeds");
 }

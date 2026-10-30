@@ -135,8 +135,8 @@ impl ChannelDriver for CronChannelDriver {
             fields.channel_type,
             fields.methods,
             fields.route_pattern,
-            fields.topic,
-            fields.consumer_group,
+            None,
+            None,
         )
     }
 

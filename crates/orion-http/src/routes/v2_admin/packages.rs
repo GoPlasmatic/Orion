@@ -335,6 +335,15 @@ pub(crate) async fn revoke_connector_package(
             .admission()
             .ledger()
             .revoke_digest(&revoked);
+        for conn in state.deployments.list_connections() {
+            if conn.provider_digest == revoked {
+                state
+                    .composition
+                    .pools()
+                    .evict_connector(&conn.connection_id)
+                    .await;
+            }
+        }
     }
     crate::runtime::workflow_providers::sync(&state).await;
     crate::routes::admin::audit_log(

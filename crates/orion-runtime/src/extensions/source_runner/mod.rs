@@ -121,8 +121,10 @@ impl SourceChannelRunner {
             &connection.connection_id,
             EffectStatus::NotStarted,
         )?;
-        let invocation =
-            run_ctx.start_privileged_source_invocation(connection, effective_identity, step, 1)?;
+        let invocation = run_ctx
+            .clone()
+            .with_deployments(self.providers.deployment_store().clone())
+            .start_privileged_source_invocation(connection, effective_identity, step, 1)?;
         let attempt = invocation.next_attempt()?;
         let backend = self.providers.get(kind, &driver_id).ok_or_else(|| {
             ConnectorError::forbidden(
@@ -196,6 +198,18 @@ impl SourceChannelRunner {
         call.source()?
             .settle(&call.attempt, delivery_id, settlement)
             .await
+    }
+
+    /// Authorize and execute `source.close` to release a source cursor.
+    pub async fn close_cursor(
+        &self,
+        run_ctx: &RunContext,
+        target: SourceTarget,
+        cursor: Value,
+    ) -> Result<(), ConnectorError> {
+        self.check_cursor_size(&cursor)?;
+        let call = self.authorize(run_ctx, target, "close")?;
+        call.source()?.close(&call.attempt, cursor).await
     }
 }
 

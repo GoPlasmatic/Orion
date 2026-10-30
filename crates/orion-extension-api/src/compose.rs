@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::admission::{EditionTier, PackageVerifier};
 use crate::channel::ChannelDriver;
 use crate::contract::ImplementationKind;
+use crate::identity::BackendKey;
 use crate::pool::PoolEntry;
 use crate::provider::ProviderBackend;
 
@@ -52,6 +53,16 @@ pub trait Registrar {
 pub struct DuplicateProvider {
     pub kind: ImplementationKind,
     pub driver_id: String,
+}
+
+impl DuplicateProvider {
+    /// Construct from a typed [`BackendKey`].
+    pub fn from_key(key: &BackendKey) -> Self {
+        Self {
+            kind: key.kind(),
+            driver_id: key.driver_id().to_string(),
+        }
+    }
 }
 
 /// A second registration of something the composition already holds. Every

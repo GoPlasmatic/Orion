@@ -71,14 +71,12 @@ impl ProviderTable {
         &mut self,
         backend: Arc<dyn ProviderBackend>,
     ) -> Result<(), DuplicateProvider> {
-        let kind = backend.kind();
-        let id = backend.driver_id().to_string();
+        let key = backend.key();
+        let kind = key.kind();
+        let id = key.driver_id().to_string();
         let map = self.of_mut(kind);
         if map.contains_key(&id) {
-            return Err(DuplicateProvider {
-                kind,
-                driver_id: id,
-            });
+            return Err(DuplicateProvider::from_key(&key));
         }
         map.insert(id, backend);
         Ok(())
@@ -168,11 +166,9 @@ impl ProviderRegistry {
     /// already holds its `(kind, driver_id)`: an admitted package cannot
     /// shadow a composed provider, nor replace another admitted one.
     pub fn admit(&self, backend: Arc<dyn ProviderBackend>) -> Result<(), DuplicateProvider> {
-        if self.composed.contains(backend.kind(), backend.driver_id()) {
-            return Err(DuplicateProvider {
-                kind: backend.kind(),
-                driver_id: backend.driver_id().to_string(),
-            });
+        let key = backend.key();
+        if self.composed.contains(key.kind(), key.driver_id()) {
+            return Err(DuplicateProvider::from_key(&key));
         }
         let _write = self
             .admitted
@@ -264,6 +260,7 @@ impl ProviderRegistry {
             prior_effect,
         )?;
 
+        let invocation = invocation.with_deployments(&self.deployments);
         let attempt = invocation.next_attempt()?;
 
         let start = std::time::Instant::now();

@@ -15,8 +15,63 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
 
+use async_trait::async_trait;
+use serde_json::Value;
+
 use crate::contract::{ConnectorError, EffectStatus};
 use crate::identity::{ConnectionReference, EffectiveConnectionIdentity};
+
+/// A resolved secret value whose `Debug` and `Display` implementations are
+/// redacted (`"******"`) so credentials never leak into logs or error strings.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SecretValue(String);
+
+impl SecretValue {
+    /// Wrap a resolved secret string.
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    /// Explicitly expose the underlying secret string at the point of use.
+    pub fn expose_secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for SecretValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SecretValue(\"******\")")
+    }
+}
+
+impl fmt::Display for SecretValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("******")
+    }
+}
+
+/// Host-provided resolver for the governed connection revision an
+/// [`AttemptContext`] runs over.
+///
+/// Allows external [`ProviderBackend`](crate::ProviderBackend) implementations
+/// to read their connection's public configuration and resolve its secret
+/// locators on demand without depending on internal deployment-store types.
+#[async_trait]
+pub trait ConnectionResolver: Send + Sync + fmt::Debug {
+    /// The governed connection revision's `public_config` JSON object.
+    fn public_config(&self) -> Option<&Value>;
+
+    /// Resolve the secret locator registered at `path` (e.g. `"connection_string"`
+    /// or `"auth.token"`), or `Ok(None)` if no secret locator is configured at
+    /// `path`.
+    async fn resolve_secret(&self, path: &str) -> Result<Option<SecretValue>, ConnectorError>;
+
+    /// Return `public_config` with every configured secret locator resolved and
+    /// merged at its dotted path.
+    async fn resolve_merged_config(&self) -> Result<Option<Value>, ConnectorError> {
+        Ok(self.public_config().cloned())
+    }
+}
 
 /// The node's side of an attempt: the invocation an [`AttemptContext`]
 /// views. Implemented by the host, read by a provider through the context.
@@ -60,6 +115,12 @@ pub trait AttemptScope: Any + Send + Sync + fmt::Debug {
 
     /// Merge `observed` into the invocation's evidence and answer the result.
     fn record_effect(&self, observed: EffectStatus) -> EffectStatus;
+
+    /// Optional governed connection configuration and secret resolver for this
+    /// invocation's connection revision.
+    fn connection_resolver(&self) -> Option<&dyn ConnectionResolver> {
+        None
+    }
 }
 
 /// One attempt at a connector call, as the provider dispatched to sees it.
@@ -146,6 +207,37 @@ impl AttemptContext {
     /// See [`AttemptScope::record_effect`].
     pub fn record_effect(&self, observed: EffectStatus) -> EffectStatus {
         self.scope.record_effect(observed)
+    }
+
+    /// Governed connection configuration and secret resolver for the
+    /// connection revision this attempt runs over, when bound to a host store.
+    pub fn connection_resolver(&self) -> Option<&dyn ConnectionResolver> {
+        self.scope.connection_resolver()
+    }
+
+    /// The governed connection revision's `public_config`, when bound to a host
+    /// store.
+    pub fn public_config(&self) -> Option<&Value> {
+        self.connection_resolver()
+            .and_then(ConnectionResolver::public_config)
+    }
+
+    /// Resolve the secret locator at `path` for this attempt's connection
+    /// revision, when bound to a host store.
+    pub async fn resolve_secret(&self, path: &str) -> Result<Option<SecretValue>, ConnectorError> {
+        match self.connection_resolver() {
+            Some(resolver) => resolver.resolve_secret(path).await,
+            None => Ok(None),
+        }
+    }
+
+    /// Return `public_config` with all configured secret locators resolved and
+    /// merged at their dotted paths, when bound to a host store.
+    pub async fn resolve_merged_config(&self) -> Result<Option<Value>, ConnectorError> {
+        match self.connection_resolver() {
+            Some(resolver) => resolver.resolve_merged_config().await,
+            None => Ok(None),
+        }
     }
 
     /// Refuse to go on once the run is cancelled or past its deadline,

@@ -672,6 +672,24 @@ async fn build_and_publish(
             .prune_breakers(&live_channels)
             .await;
 
+        let active_connections: std::collections::HashSet<&str> = manifest
+            .members
+            .iter()
+            .filter(|m| {
+                m.entity.kind == crate::extensions::deployment_store::EntityKind::Connection
+            })
+            .map(|m| m.entity.id.as_str())
+            .collect();
+        for conn in state.deployments.list_connections() {
+            if !active_connections.contains(conn.connection_id.as_str()) {
+                state
+                    .composition
+                    .pools()
+                    .evict_connector(&conn.connection_id)
+                    .await;
+            }
+        }
+
         // Update active workflows gauge
         crate::metrics::set_active_workflows(active_workflows.len() as f64);
 

@@ -403,6 +403,8 @@ pub(super) struct ClosureFacts {
     /// `artifact_objects` row: their rows hold what the artifact would.
     pub artifacts: HashMap<String, ArtifactState>,
     pub connections: HashMap<(String, u64), ConnectionRevisionRow>,
+    /// Synthetic digests of composed Direct Rust providers registered on this node.
+    pub composed_rust_digests: HashSet<Digest>,
 }
 
 impl ClosureFacts {
@@ -563,10 +565,11 @@ pub(super) fn verify_closure(
                     ),
                 ));
             }
-            // A built-in driver ships with the binary: it is always
+            // A built-in or composed Direct Rust driver ships with the binary: it is always
             // available and has no package to declare.
             if !declared.contains(conn.provider_digest.as_str())
                 && crate::extensions::foundation::builtin_driver(&conn.provider_digest).is_none()
+                && !facts.composed_rust_digests.contains(&conn.provider_digest)
             {
                 return Err(DeploymentError::new(
                     Kind::ConnectionProviderNotDeclared,

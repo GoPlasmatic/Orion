@@ -47,12 +47,13 @@ pub mod workflow_provider;
 use std::sync::Arc;
 
 pub use orion_extension_api::{
-    AttemptContext, ChannelDriver, ChannelProtocolFields, CompositionError, ConnectionId,
-    ConnectionPoolCache, ConnectionReference, ConnectorError, ConnectorErrorClass, ConnectorOutput,
-    Digest, EditionTier, EffectStatus, EffectiveConnectionIdentity, ErrorOrigin,
-    ImplementationKind, PackageAdmissionRequest, PackageVerifier, PoolEntry, ProviderBackend,
-    ProviderId, ProviderRef, Registrar, RetryAdvice, Revision, SourcePollBatch, SourceSettlement,
-    ValidateContext, codes,
+    AttemptContext, BackendKey, ChannelDriver, ChannelProtocolFields, ChannelSubscriptionHandle,
+    CompositionError, ConnectionId, ConnectionPoolCache, ConnectionReference, ConnectionResolver,
+    ConnectorError, ConnectorErrorClass, ConnectorOutput, Digest, EditionTier, EffectStatus,
+    EffectiveConnectionIdentity, ErrorOrigin, ImplementationKind, PackageAdmissionRequest,
+    PackageVerifier, PoolEntry, ProviderBackend, ProviderId, ProviderRef, Registrar, RetryAdvice,
+    Revision, SecretValue, SourceBatchItem, SourceConnectorFacet, SourcePollBatch,
+    SourceSettlement, ValidateContext, codes,
 };
 
 pub use admission::{Admission, CommunityPackageVerifier, RevocationLedger};
@@ -299,6 +300,9 @@ impl CompositionBuilder {
         } = registrar;
         let mut table = provider_backend::ProviderTable::default();
         for backend in backends {
+            if backend.kind() == ImplementationKind::Rust {
+                deployments.register_composed_rust_driver(backend.driver_id());
+            }
             table
                 .insert(backend)
                 .map_err(CompositionError::DuplicateProvider)?;
@@ -397,14 +401,7 @@ impl Composition {
     }
 
     /// The connection-pool caches.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "pool eviction is not wired to connection changes yet; only tests read it"
-        )
-    )]
-    pub(crate) fn pools(&self) -> &ResourcePoolRegistry {
+    pub fn pools(&self) -> &ResourcePoolRegistry {
         &self.pools
     }
 

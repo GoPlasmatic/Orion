@@ -91,16 +91,29 @@ const BUILTIN_PROVIDER_CONTRACT: u32 = 1;
 /// The publisher a built-in driver's [`ProviderRef`] names.
 pub const BUILTIN_PUBLISHER: &str = "org.orion";
 
+/// Compute the deterministic synthetic package digest for a compiled-in `rust`
+/// driver (`sha256("orion-builtin-provider:{driver_id}@1")`).
+pub fn synthetic_provider_digest(driver_id: &str) -> Digest {
+    crate::crypto::sha256_digest(
+        format!("orion-builtin-provider:{driver_id}@{BUILTIN_PROVIDER_CONTRACT}").as_bytes(),
+    )
+}
+
+/// Build the synthetic [`ProviderRef`] for a compiled-in `rust` driver.
+pub fn synthetic_provider_ref(driver_id: &str) -> ProviderRef {
+    ProviderRef {
+        publisher: BUILTIN_PUBLISHER.to_string(),
+        provider_id: ProviderId::from(driver_id),
+        version: crate::version::ORION_VERSION.to_string(),
+        digest: synthetic_provider_digest(driver_id),
+    }
+}
+
 /// Each built-in driver and the digest it answers to, computed once.
 static BUILTIN_DIGESTS: LazyLock<Vec<(&'static str, Digest)>> = LazyLock::new(|| {
     COMMUNITY_RUST_DRIVERS
         .iter()
-        .map(|driver| {
-            let digest = crate::crypto::sha256_digest(
-                format!("orion-builtin-provider:{driver}@{BUILTIN_PROVIDER_CONTRACT}").as_bytes(),
-            );
-            (*driver, digest)
-        })
+        .map(|driver| (*driver, synthetic_provider_digest(driver)))
         .collect()
 });
 

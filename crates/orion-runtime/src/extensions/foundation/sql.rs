@@ -366,17 +366,34 @@ impl<D: RemoteSqlDialect> RemoteSqlProviderBackend<D> {
 
     async fn resolve_connection_target(
         &self,
-        identity: &EffectiveConnectionIdentity,
+        ctx: &AttemptContext,
     ) -> Result<(String, bool), ConnectorError> {
-        let allow_private_urls = governed_connection(self.deployments.as_ref(), identity)
-            .and_then(|conn| {
-                conn.public_config
-                    .get("allow_private_urls")
-                    .and_then(Value::as_bool)
+        let identity = ctx.effective_identity();
+        let allow_private_urls = ctx
+            .public_config()
+            .and_then(|cfg| cfg.get("allow_private_urls").and_then(Value::as_bool))
+            .or_else(|| {
+                governed_connection(self.deployments.as_ref(), identity).and_then(|conn| {
+                    conn.public_config
+                        .get("allow_private_urls")
+                        .and_then(Value::as_bool)
+                })
             })
             .unwrap_or(false);
-        let conn_str =
-            governed_connection_string(self.deployments.as_ref(), identity, D::DRIVER_ID).await?;
+        let from_ctx = match ctx.resolve_secret("connection_string").await? {
+            Some(secret) => Some(secret.expose_secret().to_string()),
+            None => ctx
+                .public_config()
+                .and_then(|cfg| cfg.get("connection_string").and_then(Value::as_str))
+                .map(str::to_string),
+        };
+        let conn_str = match from_ctx {
+            Some(s) => Some(s),
+            None => {
+                governed_connection_string(self.deployments.as_ref(), identity, D::DRIVER_ID)
+                    .await?
+            }
+        };
         let Some(conn_str) = conn_str else {
             return Err(ConnectorError::invalid_input(
                 format!(
@@ -531,7 +548,7 @@ impl<D: RemoteSqlDialect> ProviderBackend for RemoteSqlProviderBackend<D> {
         refuse_input_target(&input, &["connection_string"])?;
         let statement = sql_statement(&input, sql_op.statement_keys(), D::DRIVER_ID)?;
         let params = sql_params(&input)?;
-        let (conn_str, allow_private_urls) = self.resolve_connection_target(identity).await?;
+        let (conn_str, allow_private_urls) = self.resolve_connection_target(ctx).await?;
         ctx.record_effect(EffectStatus::Unknown);
         let data = self
             .execute_live(
@@ -639,8 +656,18 @@ impl SqliteProviderBackend {
     /// private to the connection when no revision names one.
     async fn resolve_connection_string(
         &self,
-        identity: &EffectiveConnectionIdentity,
+        ctx: &AttemptContext,
     ) -> Result<String, ConnectorError> {
+        let identity = ctx.effective_identity();
+        if let Some(secret) = ctx.resolve_secret("connection_string").await? {
+            return Ok(secret.expose_secret().to_string());
+        }
+        if let Some(conn_str) = ctx
+            .public_config()
+            .and_then(|cfg| cfg.get("connection_string").and_then(Value::as_str))
+        {
+            return Ok(conn_str.to_string());
+        }
         Ok(
             governed_connection_string(self.deployments.as_ref(), identity, DRIVER_SQLITE)
                 .await?
@@ -829,7 +856,7 @@ impl ProviderBackend for SqliteProviderBackend {
         refuse_input_target(&input, &["connection_string"])?;
         let statement = sql_statement(&input, sql_op.statement_keys(), DRIVER_SQLITE)?;
         let params = sql_params(&input)?;
-        let target_conn = self.resolve_connection_string(identity).await?;
+        let target_conn = self.resolve_connection_string(ctx).await?;
         ctx.record_effect(EffectStatus::Unknown);
         let data = self
             .execute_live_sqlite_for_connection(

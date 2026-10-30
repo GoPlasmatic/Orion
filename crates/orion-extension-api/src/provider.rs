@@ -1,29 +1,27 @@
 //! The connector provider trait: [`ProviderBackend`].
 //!
-//! A provider is registered under its kind and backend id
-//! ([`ProviderBackend::kind`], [`ProviderBackend::driver_id`]): a `rust`
-//! backend under its driver id (`org.orion.http`), a `workflow` or `wasm`
-//! package under its digest. The node dispatches each attempt of a call to
-//! it with an [`AttemptContext`].
+//! A provider is registered under its [`BackendKey`]
+//! ([`ProviderBackend::key`], [`ProviderBackend::kind`],
+//! [`ProviderBackend::driver_id`]): a `rust` backend under its driver id
+//! (`org.orion.http`), a `workflow` or `wasm` package under its digest. The
+//! node dispatches each attempt of a call to it with an [`AttemptContext`].
 //!
-//! The optional source-polling facet (`SourceConnectorFacet`) stays
-//! `#[doc(hidden)]` and unstable until the first source channel protocol
-//! ships.
+//! Providers that support `source` channel polling also implement
+//! [`SourceConnectorFacet`] and return `Some(self)` from
+//! [`ProviderBackend::as_source`].
 
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
+use orion_api::Digest;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::attempt::AttemptContext;
 use crate::contract::{ConnectorError, ConnectorOutput, ImplementationKind};
-use crate::identity::{EffectiveConnectionIdentity, Revision};
+use crate::identity::{BackendKey, EffectiveConnectionIdentity, ProviderId, Revision};
 
 /// Source batch item emitted by [`SourceConnectorFacet::poll`].
-///
-/// Unstable until the first source channel protocol ships.
-#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct SourceBatchItem {
@@ -50,9 +48,6 @@ impl SourceBatchItem {
 }
 
 /// Source poll batch returned by [`SourceConnectorFacet::poll`].
-///
-/// Unstable until the first source channel protocol ships.
-#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct SourcePollBatch {
@@ -71,9 +66,6 @@ impl SourcePollBatch {
 
 /// Settlement disposition reported by the native Rust `source` channel runner
 /// back to [`SourceConnectorFacet::settle`] after workflow execution completes.
-///
-/// Unstable until the first source channel protocol ships.
-#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -86,9 +78,6 @@ pub enum SourceSettlement {
 /// Optional source facet (`open` / `poll` / `settle` / `close`) implemented by
 /// source-capable connectors of any backend kind (`rust`, `workflow`, `wasm`)
 /// and driven by the native Rust `source` channel runner.
-///
-/// Unstable until the first source channel protocol ships.
-#[doc(hidden)]
 #[async_trait]
 pub trait SourceConnectorFacet: Send + Sync {
     /// Open or resume a source cursor from `checkpoint`.
@@ -175,6 +164,22 @@ pub trait ProviderBackend: Send + Sync {
     /// or a `workflow`/`wasm` backend's package digest.
     fn driver_id(&self) -> &str;
 
+    /// Typed registration key (`BackendKey::Rust(ProviderId)`,
+    /// `BackendKey::Workflow(Digest)`, or `BackendKey::Wasm(Digest)`).
+    fn key(&self) -> BackendKey {
+        match self.kind() {
+            ImplementationKind::Rust => BackendKey::Rust(ProviderId::from(self.driver_id())),
+            ImplementationKind::Workflow => BackendKey::Workflow(
+                Digest::parse(self.driver_id())
+                    .expect("workflow ProviderBackend::driver_id must be a valid sha256 digest"),
+            ),
+            ImplementationKind::Wasm => BackendKey::Wasm(
+                Digest::parse(self.driver_id())
+                    .expect("wasm ProviderBackend::driver_id must be a valid sha256 digest"),
+            ),
+        }
+    }
+
     /// Validate resolved connection configuration against provider-specific invariants.
     fn validate_config(&self, config: &Value) -> Result<(), ConnectorError>;
 
@@ -214,9 +219,7 @@ pub trait ProviderBackend: Send + Sync {
     }
 
     /// Return the optional [`SourceConnectorFacet`] if this provider supports
-    /// `source` channel polling. Unstable until the first source channel
-    /// protocol ships.
-    #[doc(hidden)]
+    /// `source` channel polling.
     fn as_source(&self) -> Option<&dyn SourceConnectorFacet> {
         None
     }

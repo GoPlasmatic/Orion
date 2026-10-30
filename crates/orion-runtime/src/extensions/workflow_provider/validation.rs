@@ -498,8 +498,14 @@ fn target_problem(
     target: &ConnectionRevisionRow,
     dependency: &PackageDependency,
 ) -> Option<String> {
-    let provider_id = match super::super::foundation::builtin_driver(&target.provider_digest) {
-        Some(driver) => driver.to_string(),
+    let provider_id = match super::super::foundation::builtin_driver(&target.provider_digest)
+        .map(ToString::to_string)
+        .or_else(|| {
+            store
+                .composed_rust_driver(&target.provider_digest)
+                .map(|id| id.to_string())
+        }) {
+        Some(driver) => driver,
         None => match store.get_package(&target.provider_digest) {
             Some(pkg) if pkg.implementation == ImplementationKind::Workflow => {
                 return Some(format!(

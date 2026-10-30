@@ -4,6 +4,7 @@
 //! A channel's `protocol` names a driver. A node refuses a channel whose
 //! protocol no registered driver serves, at upload and at load.
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -75,8 +76,6 @@ pub struct ChannelProtocolFields<'a> {
     pub channel_type: Option<&'a str>,
     pub methods: Option<&'a [String]>,
     pub route_pattern: Option<&'a str>,
-    pub topic: Option<&'a str>,
-    pub consumer_group: Option<&'a str>,
 }
 
 impl<'a> ChannelProtocolFields<'a> {
@@ -88,16 +87,24 @@ impl<'a> ChannelProtocolFields<'a> {
             channel_type: None,
             methods: None,
             route_pattern: None,
-            topic: None,
-            consumer_group: None,
         }
     }
+}
+
+/// Active subscription or listener handle returned by
+/// [`ChannelDriver::activate`] for non-HTTP / event-driven channel protocols.
+#[async_trait]
+pub trait ChannelSubscriptionHandle: Send + Sync {
+    /// Gracefully drain and stop the active channel subscription when its
+    /// runtime generation is superseded or the node shuts down.
+    async fn drain(self: Box<Self>);
 }
 
 /// A native Rust channel driver: one channel protocol.
 ///
 /// A node registers a set of drivers through its composition; each serves one
 /// protocol.
+#[async_trait]
 pub trait ChannelDriver: Send + Sync {
     /// Lowercase wire protocol identifier (e.g. `"rest"`, `"http"`, `"cron"`).
     fn protocol_id(&self) -> &str;
@@ -105,7 +112,7 @@ pub trait ChannelDriver: Send + Sync {
     /// Transport and routing capabilities supported by this channel driver.
     fn capabilities(&self) -> ChannelDriverCapabilities;
 
-    /// Validate protocol-conditional fields (`methods`, `route_pattern`, `topic`, etc.).
+    /// Validate protocol-conditional fields (`channel_type`, `methods`, `route_pattern`).
     fn validate_fields(&self, fields: &ChannelProtocolFields<'_>) -> Vec<FieldError>;
 
     /// Validate protocol-specific `transport_config` and `config` combinations,
@@ -117,5 +124,22 @@ pub trait ChannelDriver: Send + Sync {
         _channel_id: Option<&str>,
     ) -> Vec<FieldError> {
         Vec::new()
+    }
+
+    /// Optional allow-list of workflow function names permitted on channels of
+    /// this protocol (`None` allows all registered workflow functions).
+    fn allowed_functions(&self) -> Option<&[&str]> {
+        None
+    }
+
+    /// Optional activation lifecycle hook for event-driven or subscription-based
+    /// channel drivers.
+    async fn activate(
+        &self,
+        _channel_id: &str,
+        _transport_config: &Value,
+        _config: &Value,
+    ) -> Result<Option<Box<dyn ChannelSubscriptionHandle>>, String> {
+        Ok(None)
     }
 }

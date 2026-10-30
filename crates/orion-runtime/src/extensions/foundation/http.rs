@@ -264,15 +264,21 @@ impl ProviderBackend for HttpProviderBackend {
         }
 
         let identity = ctx.effective_identity();
-        let conn = governed_connection(self.deployments.as_ref(), identity);
-        let url = conn.as_ref().and_then(|conn| {
-            conn.public_config
-                .get("url")
-                .or_else(|| conn.public_config.get("base_url"))
+        let fallback_conn = if ctx.public_config().is_none() {
+            governed_connection(self.deployments.as_ref(), identity)
+        } else {
+            None
+        };
+        let public_config = ctx
+            .public_config()
+            .or_else(|| fallback_conn.as_ref().map(|c| &c.public_config));
+        let url = public_config.and_then(|cfg| {
+            cfg.get("url")
+                .or_else(|| cfg.get("base_url"))
                 .and_then(Value::as_str)
                 .map(str::to_string)
         });
-        let Some((url, conn)) = url.zip(conn) else {
+        let Some((url, public_config)) = url.zip(public_config) else {
             return Err(ConnectorError::invalid_input(
                 format!(
                     "HTTP connector invocation on '{}' requires a connection revision with a 'url'",
@@ -285,12 +291,18 @@ impl ProviderBackend for HttpProviderBackend {
         // The credential is settled before anything leaves the node: a
         // revision whose `auth` has no secret locator for its credential is refused
         // without a DNS lookup.
-        let credential = match http_auth(&conn.public_config)? {
+        let credential = match http_auth(public_config)? {
             None => None,
             Some(auth) => {
                 let path = auth.secret_path();
-                let Some(secret) = governed_secret(&conn, path, identity, DRIVER_HTTP).await?
-                else {
+                let resolved_secret = match ctx.resolve_secret(path).await? {
+                    Some(secret) => Some(secret.expose_secret().to_string()),
+                    None => match fallback_conn.as_ref() {
+                        Some(conn) => governed_secret(conn, path, identity, DRIVER_HTTP).await?,
+                        None => None,
+                    },
+                };
+                let Some(secret) = resolved_secret else {
                     return Err(ConnectorError::invalid_input(
                         format!(
                             "HTTP connection '{}' declares 'auth' but has no secret \
@@ -328,8 +340,7 @@ impl ProviderBackend for HttpProviderBackend {
             ));
         }
 
-        let allow_private = conn
-            .public_config
+        let allow_private = public_config
             .get("allow_private_urls")
             .and_then(Value::as_bool)
             .unwrap_or(false);
