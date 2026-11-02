@@ -3,7 +3,7 @@
 # doubling the cold-cache cost for the same binary (T23).
 # P18: digest-pinned (multi-arch manifest list) so a rebuild months from now
 # resolves the same base layers; dependabot bumps the tag+digest pair.
-FROM rust:1.98-slim@sha256:bce1476d4be4d78b83705bc5f428b86d640eeeea33e9dadafbc037b5703a53bf AS chef
+FROM rust:1.99-slim@sha256:b8e062b1c3a80183df83d9ba187cadd2b5ab84bc78d453dbfeb2fccd5f982247 AS chef
 RUN cargo install cargo-chef --locked
 WORKDIR /app
 
