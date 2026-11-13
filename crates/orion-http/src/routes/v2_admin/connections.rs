@@ -221,9 +221,12 @@ pub(crate) async fn create_connection_revision(
 
 /// What the connection's configuration would not load with, by field: over a
 /// built-in driver, [`crate::validation::builtin_connection_problems`] (the
-/// check `compile` makes); over an uploaded package, its declared
-/// `configuration_schema`. A provider digest naming neither is judged when a
-/// manifest names the connection.
+/// check `compile` makes); over a Direct Rust driver an edition composed, the
+/// provider's own [`ProviderBackend::validate_connection`]; over an uploaded
+/// package, its declared `configuration_schema`. A provider digest naming none
+/// of them is judged when a manifest names the connection.
+///
+/// [`ProviderBackend::validate_connection`]: crate::extensions::ProviderBackend::validate_connection
 fn config_problems(state: &AppState, req: &CreateConnectionRevisionRequest) -> Vec<FieldError> {
     let rooted = |path: &str| field_root(path, &req.secret_locators);
     if let Some(problems) = crate::validation::builtin_connection_problems(
@@ -243,6 +246,43 @@ fn config_problems(state: &AppState, req: &CreateConnectionRevisionRequest) -> V
         &req.public_config,
         &req.secret_locators,
     );
+    if let Some(driver) = state.deployments.composed_rust_driver(&req.provider_digest) {
+        let Some(backend) = state
+            .composition
+            .providers()
+            .get(crate::extensions::ImplementationKind::Rust, driver.as_str())
+        else {
+            return Vec::new();
+        };
+        // Secret locators are unresolved here: the provider sees each as the
+        // reference text it names, which is what its shape checks need and
+        // never a secret.
+        return match backend.validate_connection(&crate::extensions::ValidateContext::new(&config))
+        {
+            Ok(()) => Vec::new(),
+            Err(refused) => {
+                let field = refused
+                    .details
+                    .as_deref()
+                    .and_then(|d| d.get("pointer"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(|pointer| {
+                        pointer
+                            .trim_start_matches('/')
+                            .split('/')
+                            .filter(|s| !s.is_empty())
+                            .collect::<Vec<_>>()
+                            .join(".")
+                    })
+                    .unwrap_or_default();
+                vec![FieldError::new(
+                    rooted(&field),
+                    field_codes::INVALID,
+                    format!("{driver} refused the configuration: {}", refused.message),
+                )]
+            }
+        };
+    }
     match state.deployments.check_package_instance(
         &req.provider_digest,
         PackageSchema::Configuration,

@@ -7600,7 +7600,7 @@
               "string",
               "null"
             ],
-            "description": "A built-in driver's fixed provider digest — what a connection\nrevision over it names as its `provider_digest`. Absent for a\nbackend that is not a built-in driver."
+            "description": "A `rust` driver's provider digest, derived from its id — what a\nconnection revision over it names as its `provider_digest`, whether\nthe driver is Community's or one an edition compiled in. Absent for a\n`workflow` or `wasm` backend, whose id is already its package digest."
           }
         }
       },

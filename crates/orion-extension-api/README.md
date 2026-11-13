@@ -10,7 +10,10 @@ package verifier to a node.
   published generation, and it dispatches each message through `IngressHost::dispatch`. Dispatch
   applies the channel's guards, traces and runs the workflow, and answers a `DispatchOutcome`
   plus a `Settle` handle for the deduplication claim. See the `ingress` module.
-- `ProviderBackend`: a connector provider (with an unstable `SourceConnectorFacet` hidden
+- `ProviderBackend`: a connector provider. A `rust` backend compiled into an edition's
+  binary needs no package: connections name it by a digest derived from its id (reported in
+  `/runtime-capabilities`), and its `validate_connection` judges a revision's configuration at
+  upload. A definition set names it with `"provider": "<driver id>"` (with an unstable `SourceConnectorFacet` hidden
   until the first source channel protocol ships), called with an `AttemptContext` and
   answering `Result<ConnectorOutput, ConnectorError>`.
 - `ConnectionPoolCache`: a provider's pool cache, with per-connector and whole-cache

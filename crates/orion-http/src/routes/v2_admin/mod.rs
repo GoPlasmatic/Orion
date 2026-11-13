@@ -295,11 +295,13 @@ pub(crate) async fn get_runtime_capabilities(
         .into_iter()
         .map(|(kind, driver_id)| ProviderBackendInfo {
             kind,
-            // A built-in driver's digest is what a connection revision
-            // names as its provider, so it is reported where a client
-            // looks for it.
-            package_digest: crate::extensions::foundation::builtin_provider_digest(&driver_id)
-                .map(|d| d.to_string()),
+            // A driver compiled into this binary (Community's, or one the
+            // edition composed) has no package: the digest a connection
+            // revision names it by is derived from its id, and is reported
+            // where a client looks for it.
+            package_digest: (kind == crate::extensions::ImplementationKind::Rust).then(|| {
+                crate::extensions::foundation::synthetic_provider_digest(&driver_id).to_string()
+            }),
             driver_id,
         })
         .collect();

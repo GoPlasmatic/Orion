@@ -43,7 +43,7 @@ The same answer reports these capabilities and runtime state:
 |---|---|
 | `channel_drivers` | The registered channel drivers. |
 | `channel_driver_info` | What each of those drivers declares: `protocol`, `supports_sync`, `supports_async`, `registers_http_routes`, `supports_oauth2_login`, `ingress_guards` (for a driver that runs its own listener, the guards its deliveries pass) and `transport_schema` (the `orion-json-schema/1` document its channels' `transport_config` must satisfy, when it publishes one). `orion-cli compile --capabilities` reads it. |
-| `provider_backends` | Each backend's `kind` and `driver_id`, plus `package_digest` for built-in drivers. |
+| `provider_backends` | Each backend's `kind` and `driver_id`, plus `package_digest` for a `rust` driver compiled into the server: the digest a connection revision over it names. |
 | `deployment_head` | The head's `revision` and `epoch`. |
 | `native_scheduler` | The native work scheduler's load. |
 | `node_status` | Desired and applied revisions, quarantined members, the last build error and its backoff. |
@@ -112,7 +112,7 @@ A connection revision is the configuration a provider runs with. It is created u
 
 `public_config` holds the settings. A secret-shaped key (`password`, `token`, `secret`, …), an `Authorization` value or credentials in a URL are refused there. A key naming an endpoint, ending `_url`, `_uri` or `_endpoint`, is not secret-shaped, so OAuth2's `token_url` stays public; its value is still screened for credentials. `secret_locators` maps a dotted config path to a secret reference such as `env://ORDERS_DB_URL` or `vault://secret/data/db#url`. The reference is placed at its path when the connection is used, and resolved there. A locator's path may not be one `public_config` already sets.
 
-`provider_digest` names the provider. A built-in driver's digest is listed under `provider_backends[].package_digest` in `GET /api/v2/admin/runtime-capabilities`. The built-in drivers are `org.orion.http`, `org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite` and `org.orion.memory-cache`.
+`provider_digest` names the provider. A driver compiled into the server has no package; its digest is derived from its id and listed under `provider_backends[].package_digest` in `GET /api/v2/admin/runtime-capabilities`. Community's are `org.orion.http`, `org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite` and `org.orion.memory-cache`; an edition's server adds its own the same way. Over one an edition compiled in, creating a revision runs the provider's own configuration check, and a refusal names the field it points at.
 
 The configuration is judged as the node reads it, `public_config` with each locator's reference at its path, before anything is stored. The references are not resolved, so a reference standing in a boolean or a number is read as the kind of value that field takes.
 

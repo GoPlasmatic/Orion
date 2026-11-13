@@ -494,10 +494,15 @@ fn dependency_target(
     };
     let identity = row.effective_identity();
     let digest = &bound.provider.digest;
-    if let Some(driver) = super::super::foundation::builtin_driver(digest) {
+    // A Direct Rust driver compiled into this binary, Community's or one an
+    // edition composed: it has no package, and its id is the backend id.
+    let compiled_in = super::super::foundation::builtin_driver(digest)
+        .map(str::to_string)
+        .or_else(|| store.composed_rust_driver(digest).map(|id| id.to_string()));
+    if let Some(driver) = compiled_in {
         return Ok(DependencyTarget {
             kind: ImplementationKind::Rust,
-            backend_id: driver.to_string(),
+            backend_id: driver,
             identity,
             package_digest: None,
         });

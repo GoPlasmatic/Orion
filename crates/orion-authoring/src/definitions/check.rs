@@ -6,7 +6,7 @@
 //! cannot be verified statically and must not fail a gate, while a connector
 //! that exists nowhere must.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
@@ -122,10 +122,14 @@ pub fn check(
 ) -> Vec<Diagnostic> {
     let mut findings = Vec::new();
 
-    let connectors = check_connectors(set, &mut findings);
+    let mut provider_backed = BTreeSet::new();
+    let connectors = check_connectors(set, &mut provider_backed, &mut findings);
     let workflows = check_workflows(set, require_explicit_ids, functions, &mut findings);
-    let known_connector =
-        |name: &str| connectors.contains_key(name) || boundary.allows_connector(name);
+    let known_connector = |name: &str| {
+        connectors.contains_key(name)
+            || provider_backed.contains(name)
+            || boundary.allows_connector(name)
+    };
     let drivers = boundary
         .channel_drivers
         .clone()
@@ -232,11 +236,39 @@ struct Workflows {
 /// name → what the connector is, for the closure checks.
 fn check_connectors(
     set: &DefinitionSet,
+    provider_backed: &mut BTreeSet<String>,
     findings: &mut Vec<Diagnostic>,
 ) -> BTreeMap<String, crate::engine::ConnectorFacts> {
     let mut by_name = BTreeMap::new();
     let mut seen: Vec<String> = Vec::new();
     for def in set.iter(Entity::Connector) {
+        // A connector over a Direct Rust driver named by id (an edition's, such
+        // as `com.orion.enterprise.kafka`) has no Community connector type for
+        // the typed functions to check; it is reached through `connector_call`
+        // and a channel's `connections`. `compile`'s own conversion is the
+        // judgement, so the two cannot disagree about it.
+        if def.doc.get("provider").is_some() {
+            let name = def.doc.get("name").and_then(Value::as_str).unwrap_or("?");
+            match crate::definitions::deployment::connection(&def.doc, &def.origin) {
+                Ok(_) => {
+                    if seen.iter().any(|n| n == name) {
+                        findings.push(Diagnostic::error(
+                            "duplicate.connector_name",
+                            format!("connector '{name}'"),
+                            "two connectors in the set share this name",
+                        ));
+                    }
+                    seen.push(name.to_string());
+                    provider_backed.insert(name.to_string());
+                }
+                Err(e) => findings.push(Diagnostic::error(
+                    "schema.connector",
+                    format!("connector '{name}'"),
+                    e,
+                )),
+            }
+            continue;
+        }
         let req: CreateConnectorRequest = match serde_json::from_value(def.doc.clone()) {
             Ok(req) => req,
             Err(e) => {

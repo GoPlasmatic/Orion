@@ -134,9 +134,10 @@ pub struct ProviderBackendInfo {
     /// The backend id: a `rust` driver's id, or a `workflow`/`wasm`
     /// package's digest.
     pub driver_id: String,
-    /// A built-in driver's fixed provider digest — what a connection
-    /// revision over it names as its `provider_digest`. Absent for a
-    /// backend that is not a built-in driver.
+    /// A `rust` driver's provider digest, derived from its id — what a
+    /// connection revision over it names as its `provider_digest`, whether
+    /// the driver is Community's or one an edition compiled in. Absent for a
+    /// `workflow` or `wasm` backend, whose id is already its package digest.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_digest: Option<String>,
 }

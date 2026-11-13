@@ -588,13 +588,21 @@ fn an_edition_protocol_compiles_against_the_target_nodes_capabilities() {
     let channel = |transport: &str| {
         format!(
             r#"{{ "channel_id": "remember-events", "name": "remember-events", "channel_type": "async",
-                 "protocol": "queue", "workflow_id": "remember", "connections": ["partner-api"],
+                 "protocol": "queue", "workflow_id": "remember", "connections": ["events"],
                  "transport_config": {transport} }}"#
         )
     };
     std::fs::write(
         scratch.path().join("ch-queue.json"),
         channel(r#"{ "topics": ["orders"] }"#),
+    )
+    .unwrap();
+    // The cluster the channel consumes from: a connection over a driver the
+    // target node compiled in, named by id.
+    std::fs::write(
+        scratch.path().join("conn-events.json"),
+        r#"{ "name": "events", "provider": "com.orion.enterprise.kafka",
+             "config": { "brokers": ["kafka-1:9092"], "sasl_password": "env://KAFKA_PASSWORD" } }"#,
     )
     .unwrap();
     let capabilities = scratch.path().join("caps.json");
@@ -647,12 +655,22 @@ fn an_edition_protocol_compiles_against_the_target_nodes_capabilities() {
     let (ok, report) = compile("dist");
     assert!(ok, "{report}");
     let deployment = read_json(&scratch.path().join("dist").join("deployment.json"));
+    let members = deployment["members"].as_array().unwrap();
+    let channel_member = members
+        .iter()
+        .find(|m| m["kind"] == "channel" && m["id"] == "remember-events")
+        .unwrap_or_else(|| panic!("{deployment}"));
     assert!(
-        deployment["members"]
+        channel_member["requires"]
             .as_array()
             .unwrap()
+            .contains(&serde_json::json!({"kind": "connection", "id": "events"})),
+        "{channel_member}"
+    );
+    assert!(
+        members
             .iter()
-            .any(|m| m["kind"] == "channel" && m["id"] == "remember-events"),
+            .any(|m| m["kind"] == "connection" && m["id"] == "events"),
         "{deployment}"
     );
 

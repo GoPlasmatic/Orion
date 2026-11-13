@@ -122,9 +122,10 @@ static BUILTIN_DIGESTS: LazyLock<Vec<(&'static str, Digest)>> = LazyLock::new(||
 /// package, so this stable digest of its id and contract stands in for one.
 /// `None` for an id this build does not ship.
 ///
-/// The table is Community's: a `rust` backend an edition composes beyond
-/// `COMMUNITY_RUST_DRIVERS` has no built-in digest, so a connection
-/// reaches it through an uploaded `rust` package naming its id.
+/// The table is Community's. A `rust` backend an edition composes answers to
+/// [`synthetic_provider_digest`] of its id too; the deployment store learns
+/// those at boot (`register_composed_rust_driver`), and every lookup that
+/// resolves a connection's provider consults it after this table.
 pub fn builtin_provider_digest(driver_id: &str) -> Option<Digest> {
     BUILTIN_DIGESTS
         .iter()

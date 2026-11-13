@@ -41,7 +41,9 @@ impl Entity {
         if obj.contains_key("tasks") {
             return Some(Entity::Workflow);
         }
-        if obj.contains_key("connector_type") {
+        // A connector names its provider one of two ways: a Community
+        // connector type, or a compiled-in driver's id (`provider`).
+        if obj.contains_key("connector_type") || obj.contains_key("provider") {
             return Some(Entity::Connector);
         }
         if obj.contains_key("channel_type") || obj.contains_key("protocol") {
@@ -622,6 +624,12 @@ mod tests {
         );
         assert_eq!(
             Entity::classify(&json!({"name": "c", "connector_type": "db", "config": {}})),
+            Some(Entity::Connector)
+        );
+        assert_eq!(
+            Entity::classify(
+                &json!({"name": "events", "provider": "com.orion.enterprise.kafka", "config": {}})
+            ),
             Some(Entity::Connector)
         );
         assert_eq!(

@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   under `components.channel_drivers`. A channel of such a protocol that
   configures a guard its deliveries never pass, or an HTTP-only block (`auth`,
   `cache`, `oauth2_login`, …), is refused at upload.
+- **An edition's compiled-in providers work like Community's.** A `rust`
+  provider an edition composes answers to a digest derived from its id, which
+  `/runtime-capabilities` now reports for every `rust` backend. Connection
+  revisions name it without an uploaded package, and creating one runs the
+  provider's own `validate_connection`. A workflow package may depend on a
+  connection over it. A definition set names such a driver with
+  `"provider": "<driver id>"` in place of `connector_type`.
 - **Offline tools validate an edition's channels.** A channel driver can
   publish its `transport_config` schema (`ChannelDriver::transport_schema`),
   which the node enforces at upload. `/runtime-capabilities` describes every

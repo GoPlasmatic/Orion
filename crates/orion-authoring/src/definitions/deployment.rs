@@ -586,7 +586,7 @@ pub fn connection(doc: &Value, origin: &str) -> Result<(CompiledConnection, Vec<
     let what = format!("connector '{name}' ({origin})");
     refuse_unknown_keys(
         obj,
-        &["name", "connector_type", "config"],
+        &["name", "connector_type", "provider", "config"],
         &["id", "tags", "enabled"],
         &what,
     )?;
@@ -623,16 +623,36 @@ pub fn connection(doc: &Value, origin: &str) -> Result<(CompiledConnection, Vec<
         .get("connector_type")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let driver = driver_for(connector_type, &config).map_err(|e| format!("{what}: {e}"))?;
-    if connector_type == "db" {
-        // It became the provider; the provider's settings have no such key.
-        if let Some(settings) = config.as_object_mut() {
-            settings.remove("driver");
+    // `provider` names a Direct Rust driver compiled into the target node by
+    // its id — Community's (`org.orion.http`) or an edition's
+    // (`com.orion.enterprise.kafka`). Its digest is derived from the id, the
+    // way the node derives it, so no package needs to exist offline. A
+    // `connector_type` maps to one of Community's drivers instead.
+    let driver = match (obj.get("provider"), obj.contains_key("connector_type")) {
+        (Some(_), true) => {
+            return Err(format!(
+                "{what}: names both `provider` and `connector_type`; a connection runs on one \
+                 provider"
+            ));
         }
-    }
-    let provider_digest = foundation::builtin_provider_digest(driver)
-        .ok_or_else(|| format!("{what}: '{driver}' is not a built-in driver"))?
-        .into_string();
+        (Some(Value::String(id)), false) if is_member_id(id) => id.clone(),
+        (Some(other), false) => {
+            return Err(format!(
+                "{what}: `provider` is a driver id such as \"org.orion.http\", not {other}"
+            ));
+        }
+        (None, _) => {
+            let driver = driver_for(connector_type, &config).map_err(|e| format!("{what}: {e}"))?;
+            if connector_type == "db" {
+                // It became the provider; the provider's settings have no such key.
+                if let Some(settings) = config.as_object_mut() {
+                    settings.remove("driver");
+                }
+            }
+            driver.to_string()
+        }
+    };
+    let provider_digest = foundation::synthetic_provider_digest(&driver).into_string();
 
     let mut secret_locators = BTreeMap::new();
     let mut misplaced = Vec::new();
@@ -857,6 +877,51 @@ mod tests {
         )
         .expect_err("refused");
         assert!(err.contains("`connections`"), "{err}");
+    }
+
+    #[test]
+    fn a_connector_names_a_compiled_in_driver_by_id() {
+        let (conn, _) = connection(
+            &json!({"name": "events", "provider": "com.orion.enterprise.kafka",
+                    "config": {"brokers": ["kafka-1:9092"],
+                               "sasl_password": "env://KAFKA_PASSWORD"}}),
+            "events.json",
+        )
+        .expect("converts");
+        assert_eq!(
+            conn.provider_digest,
+            foundation::synthetic_provider_digest("com.orion.enterprise.kafka").into_string(),
+            "the digest the node derives from the same id"
+        );
+        assert!(conn.secret_locators.contains_key("sasl_password"));
+
+        // A built-in driver named by id is the digest its connector type names.
+        let (http, _) = connection(
+            &json!({"name": "api", "provider": "org.orion.http",
+                    "config": {"url": "https://api.example.com"}}),
+            "api.json",
+        )
+        .expect("converts");
+        assert_eq!(
+            Some(http.provider_digest.as_str()),
+            foundation::builtin_provider_digest(foundation::DRIVER_HTTP)
+                .as_ref()
+                .map(|d| d.as_str())
+        );
+
+        let both = connection(
+            &json!({"name": "x", "provider": "org.orion.http", "connector_type": "http",
+                    "config": {}}),
+            "x.json",
+        )
+        .expect_err("refused");
+        assert!(
+            both.contains("both `provider` and `connector_type`"),
+            "{both}"
+        );
+        let bad = connection(&json!({"name": "x", "provider": 7, "config": {}}), "x.json")
+            .expect_err("refused");
+        assert!(bad.contains("`provider`"), "{bad}");
     }
 
     #[test]
