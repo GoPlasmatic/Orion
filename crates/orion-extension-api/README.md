@@ -21,8 +21,9 @@ package verifier to a node.
   changes that connection.
 - `PackageVerifier`: whether a provider package may be admitted on the node.
 - `Registrar`: the registration surface. `orion-server`'s `CompositionBuilder` implements it,
-  so an edition's registration code depends on this crate alone; its binary hands the builder
-  to `orion::run`.
+  so an edition's registration code depends on this crate alone. Its binary hands the builder
+  to `orion::cli::main`, which gives it `orion-server`'s command line and operator subcommands,
+  and its tests boot a real node over the same builder with `orion::testing::TestNode`.
 
 The crate depends on `serde`, `serde_json`, `thiserror`, `async-trait` and `orion-api` (for
 `Digest` and `FieldError`, which it shares with the wire). It ships in lockstep with

@@ -1,6 +1,7 @@
-//! Startup-sequence helpers for `run()` in `main.rs` — observability init,
-//! repository construction, and background-task lifecycle. `main.rs` stays
-//! the readable orchestration script and calls these phases in order.
+//! The startup sequence: [`run`](crate::bootstrap::run) (what
+//! `orion::cli::main` serves with) and
+//! [`assemble`](crate::bootstrap::assemble), its five boot phases from an open pool to a wired
+//! `AppState`, plus observability init and the background-task lifecycle.
 
 use std::sync::Arc;
 
@@ -1026,8 +1027,8 @@ pub struct Assembled {
 /// 5. [`build_committed_head`]: the deployment store hydrated and its head
 ///    built, after which the node reports ready.
 ///
-/// The server's startup (`run`, which `main.rs` calls) and the
-/// integration-test harness (`tests/integration/common`) both call this, so a
+/// The server's startup ([`run`]) and the test harness
+/// ([`crate::testing::TestNode`]) both call this, so a
 /// step added here reaches both — spelled twice, a step added to one would run
 /// untested in the other.
 ///
@@ -1323,7 +1324,7 @@ pub async fn build_committed_head(
 
 /// Assemble `AppState` from the bootstrap products — the single place the
 /// [`Repositories`] / [`ServingComponents`] fields map onto `AppStateInner`.
-/// Called only by [`assemble`], which is the shared entry point `main.rs` and
+/// Called only by [`assemble`], which is the shared entry point the server and
 /// the test harness go through.
 pub fn build_app_state(params: AppStateParams) -> crate::runtime::state::AppState {
     let AppStateParams {

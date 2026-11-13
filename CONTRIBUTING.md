@@ -71,10 +71,11 @@ Both build against this repository's crates at a release tag.
 ```
 crates/orion-server/
  src/
-  main.rs              # Binary entrypoint (thin wrapper over cli.rs)
+  main.rs              # Binary entrypoint: orion::cli::main with Community's composition
   lib.rs               # Public module declarations
   bootstrap.rs         # Startup sequence: config -> pools -> repos -> engine -> server
-  cli.rs               # CLI subcommands (migrate, lint, dry-run, test, preflight, ...)
+  cli.rs               # The command line any edition binary shares (validate-config, migrate, ...)
+  testing.rs           # TestNode: a real node over a given composition, for tests
  tests/
   integration/         # Consolidated integration test binary (main.rs + *_test.rs modules)
   integration/common/  # Test helpers (test_app, json_request, body_json)

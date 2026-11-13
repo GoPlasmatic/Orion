@@ -50,9 +50,7 @@ use orion::runtime::state::AppState;
 /// that exercise a particular mode — including `sync` itself — set it
 /// explicitly through [`test_app_with_config`] and do not rely on this.
 pub async fn test_app() -> Router {
-    let mut config = AppConfig::default();
-    config.trace_storage.mode = orion::config::TraceStorageMode::Sync;
-    test_app_with_config(config).await
+    test_app_with_config(orion::testing::test_config()).await
 }
 
 /// Create a test app with a custom config (e.g. for rate limiting tests).
@@ -102,90 +100,26 @@ pub async fn test_state_with_handles(
     (state, handles)
 }
 
-/// Build `AppState` through the REAL boot path — `orion::bootstrap::assemble`,
-/// the same ordered sequence `main.rs::run()` calls between an open pool and a
-/// wired state — so wiring drift between tests and production startup is
-/// impossible. Everything from the cluster runtime to `build_app_state` is
-/// `assemble`; the harness only supplies the two inputs it builds differently
-/// and sets the one config knob it must.
-///
-/// Deliberate divergences from production bootstrap:
-///
-/// 1. **Storage**: an empty/default URL becomes in-memory SQLite with a pool
-///    of >= 5, via `init_pool` (always migrates) instead of
-///    `init_pool_for_startup` (tests must not trip the migration guard). The
-///    override is NOT written back into `config` — `state.config` keeps what
-///    the test passed (pool_exhaustion_test depends on that).
-/// 2. **Metrics**: `init_metrics_with_instance` with first-caller-wins
-///    semantics — the recorder is process-global and only the first test app
-///    installs it. Never `init_metrics_handle`, and never `init_observability`
-///    (a global tracing subscriber would collide across tests).
-/// 3. **DLQ retry loop forced off**: a harness-owned 30 s DLQ poller would
-///    steal claims from tests that drive retries themselves
-///    (trace_dlq_poison_test, trace_dlq_admin_test). Tests that want the
-///    loop call `orion::queue::start_dlq_retry` directly.
-///
-/// The state-dependent serving tasks `main` spawns after `assemble` (model
-/// admission, cluster tasks, limiter prune, `[packages] apply`) are the test's
-/// to start — the cluster harness spawns cluster tasks itself, and
-/// `boot_packages_test` drives `package::boot::run` directly.
+/// Build `AppState` through the REAL boot path: `orion::testing::TestNode`,
+/// which runs `orion::bootstrap::assemble`, the sequence `orion::run` runs,
+/// so wiring drift between tests and production startup is impossible. Its
+/// documentation lists where it deliberately differs from a production boot
+/// (in-memory SQLite, the process-global metrics recorder, no DLQ retry loop,
+/// no serving tasks). Tests that want the DLQ loop call
+/// `orion::queue::start_dlq_retry` directly; the cluster harness spawns cluster
+/// tasks itself.
 async fn test_state_inner(
-    mut config: AppConfig,
+    config: AppConfig,
     composition: orion::extensions::CompositionBuilder,
 ) -> (
     AppState,
     orion::bootstrap::TaskHandles,
     orion::storage::DbPool,
 ) {
-    // Divergence 1: in-memory SQLite fallback (see doc comment).
-    let storage_config = if config.storage.url.is_empty()
-        || config.storage.url == orion::config::StorageConfig::default().url
-    {
-        orion::config::StorageConfig {
-            url: "sqlite::memory:".to_string(),
-            max_connections: 5,
-            ..config.storage.clone()
-        }
-    } else {
-        orion::config::StorageConfig {
-            max_connections: config.storage.max_connections.max(5),
-            ..config.storage.clone()
-        }
-    };
-    let pool = orion::storage::init_pool(&storage_config).await.unwrap();
-
-    // Divergence 3: no harness-owned DLQ retry loop.
-    config.trace_queue.dlq_retry_enabled = false;
-
-    // Divergence 2: process-global metrics recorder (see doc comment).
-    //
-    // T37: through orion's own init rather than a raw `PrometheusBuilder` —
-    // the raw install left `orion::metrics::is_enabled()` false, so every
-    // metric write in the app short-circuited before reaching the recorder
-    // and the rendered exposition was empty in *every* test app, first or
-    // not (which is why `metrics_endpoint_test` could only assert status
-    // codes). Same first-caller-wins semantics: later apps get a standalone
-    // handle from the fallback inside `init_metrics_with_instance`. Installed
-    // before `assemble` (as production installs it before its sequence), so
-    // `set_active_workflows` inside `assemble` lands on a live recorder.
-    let metrics_handle = orion::metrics::init_metrics_with_instance(None);
-
-    // Handed back so a test can close it — see `test_state_and_pool`.
-    let pool_handle = pool.clone();
-
-    // From here on the shared production sequence.
-    let assembled = orion::bootstrap::assemble(
-        orion::bootstrap::AssembleParams {
-            config: Arc::new(config),
-            pool,
-            metrics_handle,
-        },
-        composition,
-    )
-    .await
-    .expect("assemble app state");
-
-    (assembled.state, assembled.task_handles, pool_handle)
+    orion::testing::TestNode::start(config, composition)
+        .await
+        .expect("assemble app state")
+        .into_parts()
 }
 
 pub fn json_request(method: &str, uri: &str, body: Option<Value>) -> Request<Body> {

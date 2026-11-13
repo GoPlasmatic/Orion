@@ -1,4 +1,4 @@
-use orion::config;
+use crate::config;
 
 use super::config_cmd::{open_state_db, redacted};
 
@@ -12,7 +12,7 @@ pub(crate) async fn run_test_connectivity(
     let pool = open_state_db(config, wait)
         .await
         .map_err(|e| format!("storage: connection failed: {e}"))?;
-    let pending = orion::storage::pending_migrations(&pool)
+    let pending = crate::storage::pending_migrations(&pool)
         .await
         .map_err(|e| format!("storage: pending_migrations query failed: {e}"))?;
     println!(

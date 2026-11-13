@@ -22,7 +22,7 @@ A cargo workspace of fourteen crates, layered bottom-up. The server re-exports e
 | `orion-runtime` | The serving node: `channel/`, `runtime/` (incl. `state.rs` — `AppState`), `cron/`, `queue/`, `cluster/`, `extensions/`, `auth.rs`. Names neither the HTTP layer nor `definitions`/`validation` | `crate::channel`, `crate::runtime`, …; `crate::extensions` exposes only the composition types |
 | `orion-authoring` | Definition sets on disk (`definitions/`: check, compile, fmt adapter, clippy, analysis, fix) and every check a definition passes (`validation/`) | `crate::definitions`, `crate::validation` |
 | `orion-http` | The HTTP layer: `build_router`, admin/v2 admin/data routes, the middleware stack, TLS serving, the OpenAPI document | `crate::server` |
-| `orion-server` | `bootstrap.rs`, `main.rs`, the operator subcommands (`cli/`) | the `orion` lib |
+| `orion-server` | `bootstrap.rs`, `main.rs`, the command line and operator subcommands (`cli.rs`, `cli/`), `testing.rs` | the `orion` lib |
 | `orion-client` | The one HTTP transport over the contract: `OrionClient` and the `paths` module. The only crate that owns reqwest for API calls | — |
 | `orion-plugin-sdk` | The guest crate a plugin author links against: the `orion:plugin` bindings, a `Plugin` trait, `export_plugin!`. Depends on nothing else here; its copy of the WIT is kept byte-identical to `orion-plugin-host/wit/` by `plugin_sdk_test.rs` | — |
 | `orion-docs-check` | Never published: its test binary, `tests/drift`, holds the drift guards (see *Docs and code are kept in sync by tests*) | — |
@@ -101,7 +101,7 @@ All capabilities are compiled into the one binary; behaviour is controlled at ru
 
 ### Where things live
 
-- `orion-server/src/`: `main.rs` (clap entrypoint), `bootstrap.rs` (the boot phases, below), `cli.rs` + `cli/` (`validate-config`, `migrate`, `test-connectivity`, `dump-openapi`), `lib.rs` (the re-exports), `test_support.rs`.
+- `orion-server/src/`: `main.rs` (`orion::cli::main` with Community's composition), `bootstrap.rs` (the boot phases, below), `cli.rs` + `cli/` (the command line every edition binary shares: `cli::main(Binary, compose)`; `validate-config`, `migrate`, `test-connectivity`, `dump-openapi`), `testing.rs` (`TestNode`: a real node over a given composition, for this repo's and an edition's tests), `lib.rs` (the re-exports), `test_support.rs` (doc-hidden internals the test binaries reach).
 - `orion-http/src/`: `lib.rs` (`build_router`, the layer stack, TLS), `routes/` (`admin/`, `v2_admin/`, `data/`, `openapi/`), `admin_auth.rs`, `rate_limit.rs` (`GroupLimit`), `request_context.rs` (fills `orion_common::request_context` per request, client IP under the trusted-proxy policy), `trace_context.rs` (W3C extraction).
 - `orion-runtime/src/`:
   - `channel/` — the registry and `ChannelLoader`, config, routing, request guards (`guards/apply_guards`), `cron.rs` (the schedule compiler: `CronDescriptor`, `plan_pass`).
@@ -113,9 +113,9 @@ All capabilities are compiled into the one binary; behaviour is controlled at ru
   - `extensions/` — the v2 extension boundary: `CompositionBuilder` → frozen `Composition`, `deployment_store/` (`ImmutableDeploymentStore`), `reconciler.rs` (`NodeReconciler`), `foundation.rs` (the built-in providers), `workflow_provider.rs`, `admission.rs`. Public surface: only the composition types; integration tests reach internals through `#[doc(hidden)] test_support`.
 - `orion-authoring/src/definitions/`: `check.rs` (the cross-reference pass `lint <dir>` and `compile` share), `shared.rs` + `expand.rs` (the `$from`/`use`/`$each`/`$param` catalog and its scoped expansion, descending into task groups via `engine::is_group`), `compile.rs` (the ordered `Pass` pipeline; `residue()`), `clippy/` (`Rule` + `rules::ALL`), `analysis/` (step facts, compiled expressions, `operators.rs` classifying every operator), `fix.rs` (proven rewrites), `fmt/` (the adapter supplying this build's vocabulary), `provenance.rs`.
 
-### Startup sequence (`main.rs` → `bootstrap.rs`)
+### Startup sequence (`main.rs` → `cli.rs` → `bootstrap.rs`)
 
-CLI args → config (TOML + `ORION_SECTION__KEY` overrides, `env://` references resolved after the parse) → `orion::run(config, CompositionRoot::community())` (an edition calls it with its own builder) → tracing, metrics → DB pool + migrations → `bootstrap::assemble`, five phases, each its own function (`boot_phases_test.rs` drives them):
+CLI args → config (TOML + `ORION_SECTION__KEY` overrides, `env://` references resolved after the parse) → the operator subcommand, or the edition's `compose(&config)` → `orion::run(config, composition)` (`orion-server` composes `CompositionRoot::community()`) → tracing, metrics → DB pool + migrations → `bootstrap::assemble`, five phases, each its own function (`boot_phases_test.rs` drives them):
 
 1. `open_storage` — the node's identity, the cluster runtime, the repositories, the channel loader.
 2. `build_serving_components` — connector registry (empty until the head builds), HTTP client, plugin sandbox (only when `plugins.enabled`), runtime handle, caches, node identity + deployment store + revocation ledger + native scheduler, the composition frozen over them (a duplicate registration fails the boot), the managed-OAuth2 runtime.
@@ -123,7 +123,7 @@ CLI args → config (TOML + `ORION_SECTION__KEY` overrides, `env://` references 
 4. `start_background` — the audit writer, trace queues and workers, cleanup, DLQ retry, cron reconciler + workers (after the queues — they produce trace work), the plugin epoch ticker.
 5. `build_committed_head` — hydrate the deployment store, build the committed head (`engine.fail_on_connector_load_error` refuses the boot when a connection of it did not load), record this node's status.
 
-Then readiness → the v2 reconciler and deployment GC → (in `main`) cluster tasks, the limiter prune, the Axum server → graceful shutdown on SIGTERM/SIGINT.
+Then readiness → the v2 reconciler and deployment GC → (in `run`) cluster tasks, the limiter prune, the Axum server → graceful shutdown on SIGTERM/SIGINT.
 
 ### Key patterns
 
@@ -182,7 +182,7 @@ SQLite (default), PostgreSQL or MySQL, chosen from the `storage.url` scheme; all
 
 ## Testing
 
-- **Integration tests** (`crates/orion-server/tests/integration/`): one binary, each file a module declared in `main.rs`. `common::test_app()` builds an in-memory SQLite node through the real `bootstrap::assemble`; drive it with `tower::ServiceExt::oneshot(json_request(…))` and read with `body_json()`. Deploy fixtures through `common::deploy` / `create_connector` etc. — the v2 path, as an operator would.
+- **Integration tests** (`crates/orion-server/tests/integration/`): one binary, each file a module declared in `main.rs`. `common::test_app()` builds an in-memory SQLite node with `orion::testing::TestNode`, through the real `bootstrap::assemble`; drive it with `tower::ServiceExt::oneshot(json_request(…))` and read with `body_json()`. Deploy fixtures through `common::deploy` / `create_connector` etc. — the v2 path, as an operator would.
 - **Other server binaries:** `tests/cluster/` (multi-node), `storage_postgres.rs`, `storage_mysql.rs`, `schema_parity.rs` (container-gated), `metrics_exposition.rs` (its own process for the global recorder). Container-gated modules in the integration binary are selected by name in `.github/workflows/ci.yml` (kept in sync by `ci_filter_drift_test`).
 - **The offline tools** are tested here as library code (`orion-authoring`'s own suites); the suites that run them through the `orion-cli` binary, and the tests that drive the CLI against a server, live in the Orion-cli repository.
 - **Library unit tests** run per crate; large test modules sit beside their code (`tests.rs` beside a `mod.rs`, `foo_tests.rs` beside `foo.rs` via `#[path]`).

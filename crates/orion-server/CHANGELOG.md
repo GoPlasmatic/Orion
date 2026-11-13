@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **One command line for every edition binary.** `orion::cli::main(binary,
+  compose)` is `orion-server`'s argument parsing, config loading, operator
+  subcommands (`validate-config`, `migrate`, `test-connectivity`,
+  `dump-openapi`) and boot, named by a `cli::Binary` and serving the
+  composition `compose` builds from the loaded config. `orion-server` is that
+  call with Community's composition.
+- **`orion::testing::TestNode`** boots a real node over a given composition
+  (in-memory SQLite, the production `bootstrap::assemble`) for an edition's
+  integration tests; `testing::test_config()` pins trace persistence to
+  `sync`. `orion::server::Router` names the router it serves.
 - **Channel ingress for edition drivers.** A channel driver can run its own
   listener: `ChannelDriver::start` returns a `RunningDriver`, which the node
   reconciles after every published generation and stops at shutdown. Each

@@ -9,11 +9,14 @@
 //!
 //! The library target exists for three consumers: the `orion-server` binary,
 //! the integration test suite, and an edition binary that runs a node with its
-//! own composition: [`run`] with an [`extensions::CompositionBuilder`] carrying
-//! its channel drivers, provider backends, pools, package verifier and
-//! edition, written against [`extension_api`] (re-exported, so an edition takes
-//! the matching version from this crate). Everything else is `pub` because
-//! those need it, not because it is offered for use.
+//! own composition. An edition binary calls [`cli::main`] (the same command
+//! line and operator subcommands `orion-server` has) with an
+//! [`extensions::CompositionBuilder`] carrying its channel drivers, provider
+//! backends, pools, package verifier and edition, written against
+//! [`extension_api`] (re-exported, so an edition takes the matching version
+//! from this crate); its tests boot a real node over that composition with
+//! [`testing::TestNode`]. Everything else is `pub` because those need it, not
+//! because it is offered for use.
 //!
 //! **The Rust surface is not covered by semver.** Module layout, type names,
 //! function signatures and trait shapes change whenever the binary needs them
@@ -36,12 +39,13 @@ pub use orion_runtime::auth;
 /// Startup wiring shared by the binary and the test harness. Doc-hidden:
 /// reachable so tests exercise the REAL boot path (engine components,
 /// fail-fast connector refusal, background tasks) instead of reimplementing
-/// it, but not part of the documented 1.0 API surface.
+/// it, but not part of the documented surface.
 #[doc(hidden)]
 pub mod bootstrap;
 pub use orion_authoring::definitions;
 #[doc(hidden)]
 pub use orion_common::canonical;
+pub mod cli;
 pub use orion_common::config;
 pub use orion_common::crypto;
 pub use orion_common::errors;
@@ -92,6 +96,7 @@ pub use orion_runtime::runtime;
 pub use orion_storage as storage;
 #[doc(hidden)]
 pub mod test_support;
+pub mod testing;
 pub use orion_authoring::validation;
 #[doc(hidden)]
 pub use orion_common::trace_context;

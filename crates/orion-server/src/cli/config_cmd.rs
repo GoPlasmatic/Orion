@@ -1,4 +1,4 @@
-use orion::config;
+use crate::config;
 
 /// Output format for `validate-config`.
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -46,7 +46,7 @@ pub(crate) fn handle_validate_config(
 ///
 /// The tree goes through `toml::Value` first so unset `Option` fields drop
 /// out the way an authored config file omits them (TOML has no null).
-/// Masking reuses the connector policy (`orion::connector::mask_secrets`):
+/// Masking reuses the connector policy (`crate::connector::mask_secrets`):
 /// values under secret-looking keys (`admin_auth.api_keys`) are replaced
 /// wholesale, and URL userinfo passwords
 /// (`storage.url`) are redacted in place.
@@ -55,7 +55,7 @@ fn masked_effective_config(
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let without_unset = toml::Value::try_from(config)?;
     let mut tree = serde_json::to_value(&without_unset)?;
-    orion::connector::mask_secrets(&mut tree);
+    crate::connector::mask_secrets(&mut tree);
     Ok(tree)
 }
 
@@ -63,7 +63,7 @@ fn masked_effective_config(
 /// embed `user:password@` credentials or secret-named query parameters; show
 /// them with both positions struck out.
 pub(super) fn redacted(value: &str) -> String {
-    orion::connector::redact_url_secrets_or_raw(value)
+    crate::connector::redact_url_secrets_or_raw(value)
 }
 
 /// The `summary` format: the handful of headline settings an operator scans
@@ -161,7 +161,7 @@ pub(crate) fn parse_wait(value: &str) -> Result<std::time::Duration, String> {
     let value = value.trim();
     let secs = match value.parse::<u64>() {
         Ok(secs) => secs,
-        Err(_) => orion::engine::functions::connector_helpers::parse_duration_secs(value)?,
+        Err(_) => crate::engine::functions::connector_helpers::parse_duration_secs(value)?,
     };
     Ok(std::time::Duration::from_secs(secs))
 }
@@ -176,8 +176,8 @@ pub(crate) fn parse_wait(value: &str) -> Result<std::time::Duration, String> {
 pub(super) async fn open_state_db(
     config: &config::AppConfig,
     wait: Option<std::time::Duration>,
-) -> Result<orion::storage::DbPool, Box<dyn std::error::Error>> {
-    use orion::storage::{ConnectWait, RetryReport};
+) -> Result<crate::storage::DbPool, Box<dyn std::error::Error>> {
+    use crate::storage::{ConnectWait, RetryReport};
 
     let started = std::time::Instant::now();
     let on_retry = |report: &RetryReport<'_>| {
@@ -194,9 +194,9 @@ pub(super) async fn open_state_db(
         transient_only: wait.is_some(),
         on_retry: Some(&on_retry),
     };
-    match orion::storage::init_pool_no_migrate_waiting(&config.storage, policy).await {
+    match crate::storage::init_pool_no_migrate_waiting(&config.storage, policy).await {
         Ok(pool) => Ok(pool),
-        Err(err) if wait.is_some() && orion::storage::is_transient_connect_error(&err) => {
+        Err(err) if wait.is_some() && crate::storage::is_transient_connect_error(&err) => {
             Err(Box::new(WaitExhausted {
                 what: "state database",
                 waited: started.elapsed(),

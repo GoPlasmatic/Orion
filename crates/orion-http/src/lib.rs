@@ -18,7 +18,9 @@ pub mod routes;
 pub mod serve;
 pub use crate::runtime::state;
 
-use axum::Router;
+/// The router [`build_router`] answers, so a caller holding one need not
+/// depend on `axum` to name it.
+pub use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderValue, header};
 use axum::middleware::Next;

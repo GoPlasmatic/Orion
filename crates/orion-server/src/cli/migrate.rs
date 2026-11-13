@@ -1,4 +1,4 @@
-use orion::config;
+use crate::config;
 
 use super::config_cmd::open_state_db;
 
@@ -11,7 +11,7 @@ pub(crate) async fn handle_migrate(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pool = open_state_db(config, wait).await?;
     let backend = pool.backend();
-    let pending = orion::storage::pending_migrations(&pool).await?;
+    let pending = crate::storage::pending_migrations(&pool).await?;
 
     if pending.is_empty() {
         println!("No pending migrations ({backend}).");
@@ -39,7 +39,7 @@ pub(crate) async fn handle_migrate(
              sqlite/postgres/mysql. Refer to a migration by its name."
         );
     } else {
-        orion::storage::run_migrations(&pool).await?;
+        crate::storage::run_migrations(&pool).await?;
         println!("Migrations applied successfully.");
     }
     Ok(())
@@ -49,6 +49,6 @@ pub(crate) async fn handle_migrate(
 /// (regenerate with `orion-server dump-openapi > docs/openapi.json`) and needs
 /// neither config, a database, nor a running server.
 pub(crate) fn run_dump_openapi() -> Result<(), Box<dyn std::error::Error>> {
-    println!("{}", orion::server::routes::openapi::pretty_json());
+    println!("{}", crate::server::routes::openapi::pretty_json());
     Ok(())
 }
