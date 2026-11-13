@@ -132,6 +132,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   storage capabilities, their commands and their old admin APIs. Enterprise
   provider implementation and benchmarks belong to Orion-ext; extracted
   reference code does not establish a runnable provider.
+- `POST /api/v2/admin/edition-transition-preflight` and `orion-cli deployments
+  edition-preflight`. On a Community node the answer was always "allowed":
+  a deployment carrying an Enterprise provider cannot build there, and
+  `deployment-plans` already refuses it (`DEPLOYMENT_WOULD_NOT_BUILD`). The
+  `source` and `model` deployment member kinds, which Community accepted and
+  then ignored or refused at build: a manifest naming them is refused at the
+  wire.
 - The v1 Kafka channel fields `topic` and `consumer_group` from the channel
   row, `CreateChannelRequest` and the formatter's key order. `lint` now refuses
   them as upload and `compile` already did; a protocol that consumes topics

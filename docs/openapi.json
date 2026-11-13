@@ -2762,73 +2762,6 @@
         ]
       }
     },
-    "/api/v2/admin/edition-transition-preflight": {
-      "post": {
-        "tags": [
-          "Deployments"
-        ],
-        "summary": "Run Enterprise-to-Community edition transition preflight check",
-        "description": "Inspects the specified or active deployment revision for Enterprise-only providers or channels and returns a transition readiness report and backup checklist.",
-        "operationId": "edition_transition_preflight",
-        "requestBody": {
-          "description": "Optional target revision to inspect",
-          "content": {
-            "application/json": {
-              "schema": {
-                "oneOf": [
-                  {
-                    "$ref": "#/components/schemas/EditionTransitionPreflightRequest"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Edition transition preflight report",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EditionTransitionPreflightResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "admin_bearer": []
-          },
-          {
-            "admin_api_key": []
-          }
-        ]
-      }
-    },
     "/api/v2/admin/engine/status": {
       "get": {
         "tags": [
@@ -6202,38 +6135,6 @@
           }
         }
       },
-      "EditionFinding": {
-        "type": "object",
-        "description": "One reason a revision cannot move to the target edition.",
-        "required": [
-          "code",
-          "provider",
-          "digest",
-          "message"
-        ],
-        "properties": {
-          "code": {
-            "$ref": "#/components/schemas/EditionFindingCode"
-          },
-          "digest": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "provider": {
-            "type": "string",
-            "description": "`publisher.provider_id`."
-          }
-        }
-      },
-      "EditionFindingCode": {
-        "type": "string",
-        "description": "Why an edition transition preflight refuses a revision.",
-        "enum": [
-          "ENTERPRISE_PROVIDER_IN_MANIFEST"
-        ]
-      },
       "EditionTier": {
         "type": "string",
         "description": "An edition, and the distribution tier a provider package declares.",
@@ -6241,73 +6142,6 @@
           "community",
           "enterprise"
         ]
-      },
-      "EditionTransitionPreflightRequest": {
-        "type": "object",
-        "description": "Request body for Enterprise-to-Community edition transition preflight\n(`POST /api/v2/admin/edition-transition-preflight`). The body is optional.",
-        "properties": {
-          "revision": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "The revision to inspect; the head when absent.",
-            "minimum": 0
-          }
-        },
-        "additionalProperties": false
-      },
-      "EditionTransitionPreflightResponse": {
-        "type": "object",
-        "description": "Enterprise-to-Community edition transition preflight report (`POST /api/v2/admin/edition-transition-preflight`).",
-        "required": [
-          "target_edition",
-          "transition_allowed",
-          "inspected_revision",
-          "incompatible_providers",
-          "incompatible_channels",
-          "findings",
-          "backup_retention_checklist"
-        ],
-        "properties": {
-          "backup_retention_checklist": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "findings": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/EditionFinding"
-            }
-          },
-          "incompatible_channels": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "incompatible_providers": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "`publisher.provider_id` of each provider only Enterprise serves."
-          },
-          "inspected_revision": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "target_edition": {
-            "$ref": "#/components/schemas/EditionTier"
-          },
-          "transition_allowed": {
-            "type": "boolean"
-          }
-        }
       },
       "EffectStatus": {
         "type": "string",
@@ -6438,8 +6272,6 @@
           "workflow",
           "channel",
           "connection",
-          "source",
-          "model",
           "plugin"
         ]
       },

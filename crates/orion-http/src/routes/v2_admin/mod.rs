@@ -9,7 +9,6 @@
 //! - `deployments`: candidate plans (`/deployment-plans`), and deployments —
 //!   an apply or a rollback, both an idempotent CAS commit answered `202` —
 //!   with their convergence (`/deployments`)
-//! - `edition`: Enterprise-to-Community edition transition preflight (`/edition-transition-preflight`)
 //! - `authoring`: Provider package authoring scaffold, pack & lint (`/authoring/*`)
 //!
 //! Every refusal is a code from the closed registry `orion_api::V2Code`,
@@ -20,7 +19,6 @@ pub(crate) mod authoring;
 pub(crate) mod connections;
 pub(crate) mod definitions;
 pub(crate) mod deployments;
-pub(crate) mod edition;
 pub(crate) mod packages;
 pub(crate) mod plugin_definition;
 
@@ -99,10 +97,6 @@ pub fn v2_admin_routes(
         .route(
             "/deployments/{revision}/convergence",
             get(deployments::get_deployment_convergence),
-        )
-        .route(
-            "/edition-transition-preflight",
-            post(edition::edition_transition_preflight),
         )
         .route("/authoring/scaffold", post(authoring::authoring_scaffold))
         .route("/authoring/lint", post(authoring::authoring_lint))

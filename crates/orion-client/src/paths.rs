@@ -107,7 +107,6 @@ pub const V2_DEPLOYMENT_PLANS: &str = "/api/v2/admin/deployment-plans";
 pub const V2_DEFINITIONS: &str = "/api/v2/admin/definitions";
 pub const V2_DEFINITIONS_TEST: &str = "/api/v2/admin/definitions/test";
 pub const V2_DEPLOYMENTS: &str = "/api/v2/admin/deployments";
-pub const V2_EDITION_TRANSITION_PREFLIGHT: &str = "/api/v2/admin/edition-transition-preflight";
 pub const V2_AUTHORING_SCAFFOLD: &str = "/api/v2/admin/authoring/scaffold";
 pub const V2_AUTHORING_LINT: &str = "/api/v2/admin/authoring/lint";
 pub const V2_AUTHORING_PACK: &str = "/api/v2/admin/authoring/pack";

@@ -69,7 +69,6 @@ async fn test_openapi_spec_all_endpoints() {
         "/api/v2/admin/authoring/scaffold",
         "/api/v2/admin/authoring/pack",
         "/api/v2/admin/authoring/lint",
-        "/api/v2/admin/edition-transition-preflight",
     ];
 
     for path in &expected {
@@ -413,7 +412,6 @@ async fn openapi_declares_403_on_guarded_mutating_operations() {
     let mut spurious = Vec::new();
 
     const READ_ONLY_SAFE_POSTS_WITHOUT_HANDLER_403: &[&str] = &[
-        "/api/v2/admin/edition-transition-preflight",
         "/api/v2/admin/authoring/scaffold",
         "/api/v2/admin/authoring/lint",
         "/api/v2/admin/authoring/pack",

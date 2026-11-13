@@ -214,8 +214,6 @@ pub enum EntityKind {
     Workflow,
     Channel,
     Connection,
-    Source,
-    Model,
     Plugin,
 }
 
@@ -223,8 +221,6 @@ names!(EntityKind {
     Workflow => "workflow",
     Channel => "channel",
     Connection => "connection",
-    Source => "source",
-    Model => "model",
     Plugin => "plugin",
 });
 
@@ -247,20 +243,6 @@ names!(PackageArtifactState {
     Active => "active",
     Draining => "draining",
     Deleted => "deleted",
-});
-
-/// Why an edition transition preflight refuses a revision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-#[non_exhaustive]
-pub enum EditionFindingCode {
-    /// The manifest pins a provider only the Enterprise edition serves.
-    EnterpriseProviderInManifest,
-}
-
-names!(EditionFindingCode {
-    EnterpriseProviderInManifest => "ENTERPRISE_PROVIDER_IN_MANIFEST",
 });
 
 #[cfg(test)]
@@ -299,11 +281,6 @@ mod tests {
             PackageArtifactState::ALL,
             |v| v.as_str(),
             PackageArtifactState::parse,
-        );
-        check(
-            EditionFindingCode::ALL,
-            |v| v.as_str(),
-            EditionFindingCode::parse,
         );
     }
 

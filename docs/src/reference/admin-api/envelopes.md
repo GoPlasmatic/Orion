@@ -12,7 +12,7 @@ Every operational admin 2xx body (`/engine/status`, `/traces`, `/audit-logs`, `/
 { "data": { "version": "…", "generation": 3, "...": "..." } }
 ```
 
-The v2 deployment, provider, connection, definition and authoring single-resource endpoints return their typed response DTO directly at the top level. This covers `/runtime-capabilities`, `/definitions*`, `/connections/{id}/revisions*`, `/connector-packages/{digest}*`, `/deployment-plans`, `/deployments/{revision}*`, `/authoring/*` and `/edition-transition-preflight`.
+The v2 deployment, provider, connection, definition and authoring single-resource endpoints return their typed response DTO directly at the top level. This covers `/runtime-capabilities`, `/definitions*`, `/connections/{id}/revisions*`, `/connector-packages/{digest}*`, `/deployment-plans`, `/deployments/{revision}*` and `/authoring/*`.
 
 Every list endpoint — across both operational and v2 surfaces — answers the same paginated envelope: `data` plus how to get the next page.
 

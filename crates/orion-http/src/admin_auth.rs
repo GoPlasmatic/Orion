@@ -227,9 +227,8 @@ fn match_key(
 /// workflow against live connectors, and a connection probe, which dials one —
 /// so it stays with a full-access key.
 pub(crate) fn read_only_may_call(method: &Method, path: &str) -> bool {
-    const SIDE_EFFECT_FREE_POSTS: [&str; 5] = [
+    const SIDE_EFFECT_FREE_POSTS: [&str; 4] = [
         "/api/v2/admin/deployment-plans",
-        "/api/v2/admin/edition-transition-preflight",
         "/api/v2/admin/authoring/scaffold",
         "/api/v2/admin/authoring/lint",
         "/api/v2/admin/authoring/pack",
@@ -344,7 +343,6 @@ mod tests {
             "/api/v2/admin/deployment-plans",
             "/api/v2/admin/authoring/lint",
             "/api/v2/admin/authoring/pack/",
-            "/api/v2/admin/edition-transition-preflight",
         ] {
             assert!(read_only_may_call(&Method::POST, allowed), "{allowed}");
         }

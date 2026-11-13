@@ -332,12 +332,6 @@ async fn manifest_definitions(
                 plugin_components.insert(row.digest.clone(), bytes);
                 active_plugins.push(row);
             }
-            EntityKind::Model => {
-                return Err(OrionError::validation(format!(
-                    "model '{}' revision {}: models are not deployable through a manifest",
-                    m.entity.id, m.entity.revision
-                )));
-            }
             EntityKind::Connection => {
                 let conn = state
                     .deployments
@@ -356,7 +350,6 @@ async fn manifest_definitions(
                 }
                 workflow_package_serves(state, &conn).await?;
             }
-            EntityKind::Source => {}
         }
     }
 

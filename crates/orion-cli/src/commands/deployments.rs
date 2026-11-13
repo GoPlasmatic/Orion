@@ -1,5 +1,5 @@
 //! `orion-cli deployments`: `capabilities`, `plan`, `apply`, `list`, `get`,
-//! `wait`, `rollback`, `edition-preflight`. Every call goes through
+//! `wait`, `rollback`. Every call goes through
 //! `orion_client::V2Admin`: the request and response types are
 //! `orion_api::v2`'s, and no command builds a body or a path.
 
@@ -10,8 +10,7 @@ use clap::{Args, Subcommand};
 use colored::Colorize;
 use orion_api::v2::{
     ApplyDeploymentRequest, ConvergenceStatusResponse, CreateDeploymentPlanRequest,
-    CreateDeploymentRequest, DeploymentPlanResponse, EditionTransitionPreflightRequest,
-    RollbackDeploymentRequest,
+    CreateDeploymentRequest, DeploymentPlanResponse, RollbackDeploymentRequest,
 };
 use orion_client::V2Admin;
 use tabled::Tabled;
@@ -22,7 +21,7 @@ use crate::output::{self, OutputFormat};
 
 #[derive(Args)]
 #[command(
-    long_about = "Manage immutable v2 deployments, candidate plans, CAS apply, convergence polling, rollback, and edition preflight."
+    long_about = "Manage immutable v2 deployments, candidate plans, CAS apply, convergence polling, and rollback."
 )]
 pub struct DeploymentsCmd {
     #[command(subcommand)]
@@ -31,7 +30,7 @@ pub struct DeploymentsCmd {
 
 #[derive(Subcommand)]
 pub enum DeploymentsSubcommand {
-    /// Discover server runtime capabilities and Community/Enterprise assembly boundary
+    /// Discover the server's runtime capabilities: edition, channel drivers, provider backends
     Capabilities,
     /// Plan and validate a candidate deployment against a base revision: a
     /// manifest file (-f), or a compiled deployment directory (-d)
@@ -125,12 +124,6 @@ pub enum DeploymentsSubcommand {
         /// Optional rollback reason
         #[arg(long)]
         reason: Option<String>,
-    },
-    /// Run Enterprise-to-Community edition transition preflight check
-    EditionPreflight {
-        /// Optional revision to inspect (defaults to active head revision)
-        #[arg(long)]
-        revision: Option<u64>,
     },
 }
 
@@ -356,16 +349,6 @@ impl DeploymentsCmd {
                 }
                 output::print_value(format, &serde_json::to_value(&resp)?)?;
                 Ok(0)
-            }
-            DeploymentsSubcommand::EditionPreflight { revision } => {
-                let resp = client
-                    .edition_transition_preflight(&EditionTransitionPreflightRequest {
-                        revision: *revision,
-                    })
-                    .await?;
-                let allowed = resp.transition_allowed;
-                output::print_value(format, &serde_json::to_value(&resp)?)?;
-                Ok(if allowed { 0 } else { 2 })
             }
         }
     }

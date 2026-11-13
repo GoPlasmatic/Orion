@@ -52,7 +52,7 @@ In `orion-cli`, `--offset`, `--sort-by` and `--sort-order` are removed; every `l
 
 - **Bind address.** The server listens on `127.0.0.1` unless `server.host` says otherwise. The container image and the Helm chart set `0.0.0.0`, so a containerised deployment is unchanged. A bare-metal deployment behind a proxy on another host must set `server.host`.
 - **Environment names.** Set `ORION_ENVIRONMENT` to a recognised name. An unrecognised one (`live`, `prd`, `eu-west`) used to behave as not-production and silently skip the production checks; it now stops the server at startup.
-- **Read-only admin keys** may also call the side-effect-free `POST` routes: `deployment-plans`, `authoring/scaffold`, `authoring/lint`, `authoring/pack` and `edition-transition-preflight`.
+- **Read-only admin keys** may also call the side-effect-free `POST` routes: `deployment-plans`, `authoring/scaffold`, `authoring/lint` and `authoring/pack`.
 
 ### Observability
 

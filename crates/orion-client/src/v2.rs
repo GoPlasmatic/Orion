@@ -15,8 +15,7 @@ use orion_api::v2::{
     ConnectorPackageResponse, ConnectorPackageSummary, ConvergenceStatusResponse,
     CreateConnectionRevisionRequest, CreateConnectionRevisionResponse, CreateDeploymentPlanRequest,
     CreateDeploymentRequest, CreateDeploymentResponse, Definition, DefinitionResponse,
-    DeploymentPlanResponse, DeploymentRevisionResponse, DeploymentsPage,
-    EditionTransitionPreflightRequest, EditionTransitionPreflightResponse, LintResponse,
+    DeploymentPlanResponse, DeploymentRevisionResponse, DeploymentsPage, LintResponse,
     PackResponse, RevokePackageRequest, RevokePackageResponse, RuntimeCapabilitiesResponse,
     ScaffoldRequest, ScaffoldResponse, TestDefinitionRequest, TestDefinitionResponse,
     UploadPackageRequest, UploadPackageResponse,
@@ -410,23 +409,6 @@ pub trait V2Admin: Sync {
             None,
         )
     }
-
-    fn edition_transition_preflight(
-        &self,
-        request: &EditionTransitionPreflightRequest,
-    ) -> impl Future<Output = Result<EditionTransitionPreflightResponse, Self::Error>> + Send {
-        let body = body(request);
-        async move {
-            call(
-                self,
-                Method::POST,
-                paths::V2_EDITION_TRANSITION_PREFLIGHT.into(),
-                body?,
-            )
-            .await
-        }
-    }
-
     // -- Provider package authoring --
 
     fn authoring_scaffold(

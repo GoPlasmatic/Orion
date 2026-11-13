@@ -7,7 +7,6 @@
 //! - Definitions, by digest (`/definitions`)
 //! - Candidate deployment plans (`/deployment-plans`), and deployments — an
 //!   apply or a rollback, both under CAS — with their convergence (`/deployments`)
-//! - Enterprise-to-Community edition transition preflight (`/edition-transition-preflight`)
 //! - Provider package authoring scaffold, lint & pack (`/authoring/*`)
 //!
 //! # Strict, and versioned
@@ -48,8 +47,8 @@ pub use manifest::{
     ManifestMember, ManifestProvider, RolloutInterval,
 };
 pub use vocab::{
-    ConnectorErrorClass, EditionFindingCode, EditionTier, EffectStatus, EntityKind,
-    ImplementationKind, PackageArtifactState, UnknownName,
+    ConnectorErrorClass, EditionTier, EffectStatus, EntityKind, ImplementationKind,
+    PackageArtifactState, UnknownName,
 };
 
 /// The revision of the `/api/v2/admin` contract this crate defines, which
@@ -741,46 +740,6 @@ pub struct PackResponse {
     pub package_digest: String,
     /// The package's files, `inventory.json` included, ready for upload.
     pub files: BTreeMap<String, String>,
-}
-
-// ============================================================
-// Edition transition preflight
-// ============================================================
-
-/// Request body for Enterprise-to-Community edition transition preflight
-/// (`POST /api/v2/admin/edition-transition-preflight`). The body is optional.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-#[serde(deny_unknown_fields)]
-pub struct EditionTransitionPreflightRequest {
-    /// The revision to inspect; the head when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub revision: Option<u64>,
-}
-
-/// Enterprise-to-Community edition transition preflight report (`POST /api/v2/admin/edition-transition-preflight`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct EditionTransitionPreflightResponse {
-    pub target_edition: EditionTier,
-    pub transition_allowed: bool,
-    pub inspected_revision: u64,
-    /// `publisher.provider_id` of each provider only Enterprise serves.
-    pub incompatible_providers: Vec<String>,
-    pub incompatible_channels: Vec<String>,
-    pub findings: Vec<EditionFinding>,
-    pub backup_retention_checklist: Vec<String>,
-}
-
-/// One reason a revision cannot move to the target edition.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct EditionFinding {
-    pub code: EditionFindingCode,
-    /// `publisher.provider_id`.
-    pub provider: String,
-    pub digest: String,
-    pub message: String,
 }
 
 // ============================================================
