@@ -81,6 +81,12 @@ pub enum SqlCommand {
         /// plus `ORION_*` overrides.
         #[arg(short = 'c', long = "server-config", value_name = "FILE")]
         server_config: Option<String>,
+        /// The target node's capabilities, as `orion-cli deployments
+        /// capabilities -o json` prints them: validates channels of an edition's
+        /// protocols (e.g. `kafka`) against that node's drivers instead of
+        /// refusing them as unknown
+        #[arg(long, value_name = "FILE")]
+        capabilities: Option<String>,
     },
 }
 
@@ -98,6 +104,7 @@ impl SqlCmd {
             requires_connectors,
             plugin_dirs,
             server_config,
+            capabilities,
         } = &self.command;
         let format = format.unwrap_or(match global_output {
             crate::output::OutputFormat::Json => ClippyFormat::Json,
@@ -116,7 +123,8 @@ impl SqlCmd {
             boundary: orion_authoring::definitions::Boundary {
                 channels: requires_channels.clone(),
                 connectors: requires_connectors.clone(),
-                channel_drivers: None,
+                channel_drivers: super::authoring::capabilities_drivers(capabilities.as_deref())
+                    .map_err(|e| anyhow::anyhow!("{e}"))?,
             },
             plugin_dirs,
             config: &config,

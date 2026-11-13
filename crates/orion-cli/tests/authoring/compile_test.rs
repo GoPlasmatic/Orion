@@ -674,6 +674,13 @@ fn an_edition_protocol_compiles_against_the_target_nodes_capabilities() {
         "{deployment}"
     );
 
+    // clippy reads the same set, so it needs the same description.
+    let dir = scratch.path().to_str().unwrap();
+    let (ok, report) = run(&["clippy", dir]);
+    assert!(!ok, "Community does not know the protocol: {report}");
+    let (ok, report) = run(&["clippy", dir, "--capabilities", caps]);
+    assert!(ok, "{report}");
+
     // The node's schema applies offline.
     std::fs::write(
         scratch.path().join("ch-queue.json"),

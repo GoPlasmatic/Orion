@@ -378,7 +378,7 @@ fn placeholder_entries(names: &[String]) -> Vec<orion_engine::FunctionEntry> {
 /// `/runtime-capabilities` answer, as `orion-cli deployments capabilities -o
 /// json` prints it (bare, or inside a `data` envelope). `None` without the
 /// flag, which leaves the offline tools on Community's drivers.
-pub(super) fn capabilities_drivers(
+pub(crate) fn capabilities_drivers(
     path: Option<&str>,
 ) -> Result<Option<orion_runtime::extensions::ChannelDriverRegistry>, Box<dyn std::error::Error>> {
     let Some(path) = path else {

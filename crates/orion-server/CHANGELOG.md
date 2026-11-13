@@ -42,7 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   driver under `channel_driver_info` (capabilities, ingress guards, transport
   schema), and `orion-cli lint`/`compile --capabilities <file>` validate a
   channel of a protocol this binary does not serve against that description
-  instead of refusing it as unknown.
+  instead of refusing it as unknown. `clippy` and `sql check` take the same
+  flag.
 - **Cross-channel checks.** `ChannelDriver::validate_set` judges every
   channel of its protocol in a candidate deployment together (one topic
   consumed by two channels, say). A problem refuses the candidate with

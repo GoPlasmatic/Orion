@@ -47,6 +47,12 @@ pub struct ClippyCmd {
     /// evaluates them. Repeatable.
     #[arg(long = "plugin-dir", value_name = "DIR")]
     pub plugin_dirs: Vec<String>,
+    /// The target node's capabilities, as `orion-cli deployments
+    /// capabilities -o json` prints them: validates channels of an edition's
+    /// protocols (e.g. `kafka`) against that node's drivers instead of
+    /// refusing them as unknown
+    #[arg(long, value_name = "FILE")]
+    pub capabilities: Option<String>,
     /// Apply the fixes the rules can prove — today, folding a run of
     /// steps that repeat one condition into a task group — to the source
     /// files, each verified by recompiling the edited file, then report
@@ -95,7 +101,8 @@ impl ClippyCmd {
             boundary: Boundary {
                 channels: self.requires_channels.clone(),
                 connectors: self.requires_connectors.clone(),
-                channel_drivers: None,
+                channel_drivers: super::capabilities_drivers(self.capabilities.as_deref())
+                    .map_err(|e| anyhow::anyhow!("{e}"))?,
             },
             config: config.as_ref(),
             fix: self.fix,

@@ -36,7 +36,7 @@ Needs no database or server. It takes the serving config with `-c` for the two r
 | `--check` | With `--fix`: print a diff of each file that would change, write nothing, and exit `1` when anything would. |
 | `--list` | Every rule with its level, scope and summary. |
 | `--explain RULE` | One rule's rationale, its proof and when it is silent. |
-| `--definitions`, `--requires-*`, `--plugin-dir` | As `lint` takes them. A plugin function's `template_at` fields are analysed as the server evaluates them once its manifest is in the set. |
+| `--definitions`, `--requires-*`, `--plugin-dir`, `--capabilities` | As `lint` takes them. A plugin function's `template_at` fields are analysed as the server evaluates them once its manifest is in the set. |
 | `-c, --server-config FILE` | The serving instance's config, the file `orion-server -c` reads. Only a config you name counts: the defaults say nothing about `[vars]` or `[secrets]`. |
 
 ## Returns
