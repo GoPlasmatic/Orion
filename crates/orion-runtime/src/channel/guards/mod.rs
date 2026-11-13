@@ -19,6 +19,10 @@
 //! | backpressure | ✅ | ✅ | ✅ | ✅ |
 //! | channel `timeout_ms` | ✅ | ✅¹ | ✅ | ✅ |
 //!
+//! An edition's channel driver ([`Transport::Extension`]) runs the row its
+//! driver declares, drawn from rate limit, `validation_logic`, deduplication
+//! and backpressure only; the HTTP-only guards are never on it.
+//!
 //! ¹ clamped to the transport's ceiling — see [`effective_timeout_ms`]. The
 //! async worker caps the channel value at `trace_queue.processing_timeout_ms`,
 //! because on that path the deadline protects a shared resource (a queue
@@ -94,6 +98,11 @@ pub enum Transport {
     /// One occurrence of a cron channel's schedule, claimed from the durable
     /// ledger by a worker.
     Cron,
+    /// A delivery from an edition's channel driver
+    /// ([`orion_extension_api::IngressHost::dispatch`]). The driver declares
+    /// which core guards its protocol runs; the HTTP-only guards are never
+    /// among them.
+    Extension(orion_extension_api::GuardSet),
 }
 
 /// The guards one transport applies.
@@ -220,6 +229,24 @@ impl Transport {
                 deduplication: false,
                 response_cache: false,
                 backpressure: true,
+                oauth2_login: false,
+            },
+            // The driver's declared row. Authentication, the origin allow-list,
+            // the response cache and the sign-in flow are off for the reason
+            // they are off on `Cron`: each answers a question about an HTTP
+            // request — who sent it, from which page, what to answer, where to
+            // redirect — and a delivery from a broker or a queue is not one.
+            // `validation::channels` refuses those blocks on such a channel,
+            // and the guards the driver leaves off, so none is accepted and
+            // then silently not applied.
+            Transport::Extension(declared) => GuardSet {
+                auth: false,
+                origin_allow_list: false,
+                rate_limit: declared.rate_limit,
+                validation: declared.validation,
+                deduplication: declared.deduplication,
+                response_cache: false,
+                backpressure: declared.backpressure,
                 oauth2_login: false,
             },
         }

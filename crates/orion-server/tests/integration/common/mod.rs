@@ -64,7 +64,19 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
 /// multi-node harnesses (tests/cluster) can hold the state itself — e.g. to
 /// spawn cluster tasks or inspect the channel registry directly.
 pub async fn test_state_with_config(config: AppConfig) -> AppState {
-    test_state_inner(config).await.0
+    test_state_inner(config, orion::extensions::CompositionRoot::community())
+        .await
+        .0
+}
+
+/// Like [`test_state_with_config`], over an edition's own composition: what a
+/// test of an extension seam (a channel driver, a provider backend) boots, so
+/// the extension runs through the same `assemble` production does.
+pub async fn test_state_with_composition(
+    config: AppConfig,
+    composition: orion::extensions::CompositionBuilder,
+) -> AppState {
+    test_state_inner(config, composition).await.0
 }
 
 /// Like [`test_state_with_config`], but also hands back the pool the state was
@@ -74,7 +86,8 @@ pub async fn test_state_with_config(config: AppConfig) -> AppState {
 /// reload path deliberately quarantines an unusable workflow or channel rather
 /// than erroring, so the database is what is left.
 pub async fn test_state_and_pool(config: AppConfig) -> (AppState, orion::storage::DbPool) {
-    let (state, _handles, pool) = test_state_inner(config).await;
+    let (state, _handles, pool) =
+        test_state_inner(config, orion::extensions::CompositionRoot::community()).await;
     (state, pool)
 }
 
@@ -84,7 +97,8 @@ pub async fn test_state_and_pool(config: AppConfig) -> (AppState, orion::storage
 pub async fn test_state_with_handles(
     config: AppConfig,
 ) -> (AppState, orion::bootstrap::TaskHandles) {
-    let (state, handles, _pool) = test_state_inner(config).await;
+    let (state, handles, _pool) =
+        test_state_inner(config, orion::extensions::CompositionRoot::community()).await;
     (state, handles)
 }
 
@@ -117,6 +131,7 @@ pub async fn test_state_with_handles(
 /// `boot_packages_test` drives `package::boot::run` directly.
 async fn test_state_inner(
     mut config: AppConfig,
+    composition: orion::extensions::CompositionBuilder,
 ) -> (
     AppState,
     orion::bootstrap::TaskHandles,
@@ -165,7 +180,7 @@ async fn test_state_inner(
             pool,
             metrics_handle,
         },
-        orion::extensions::CompositionRoot::community(),
+        composition,
     )
     .await
     .expect("assemble app state");

@@ -12,6 +12,11 @@
 //! | A provider's pool cache | [`ConnectionPoolCache`] | its `cache_id` |
 //! | Package admission | [`PackageVerifier`] | one per node |
 //!
+//! A channel driver whose messages do not arrive over the node's HTTP data
+//! plane also runs a listener: [`ChannelDriver::start`] returns a
+//! [`RunningDriver`], which hands each message to the node through
+//! [`IngressHost::dispatch`] (see [`ingress`]).
+//!
 //! A connector call answers `Result<`[`ConnectorOutput`]`, `[`ConnectorError`]`>`
 //! and is handed an [`AttemptContext`], a read-only view of the run the node
 //! admitted.
@@ -45,6 +50,7 @@ mod channel;
 mod compose;
 mod contract;
 mod identity;
+pub mod ingress;
 mod pool;
 mod provider;
 
@@ -53,9 +59,7 @@ pub use admission::{
     admission_codes,
 };
 pub use attempt::{AttemptContext, AttemptScope, ConnectionResolver, SecretValue};
-pub use channel::{
-    ChannelDriver, ChannelDriverCapabilities, ChannelProtocolFields, ChannelSubscriptionHandle,
-};
+pub use channel::{ChannelDriver, ChannelDriverCapabilities, ChannelProtocolFields};
 pub use compose::{CompositionError, DuplicateProvider, Registrar};
 pub use contract::{
     ConnectorError, ConnectorErrorClass, ConnectorOutput, EffectStatus, ErrorOrigin,
@@ -64,6 +68,10 @@ pub use contract::{
 pub use identity::{
     BackendKey, ConnectionId, ConnectionReference, EffectiveConnectionIdentity, ProviderId,
     ProviderRef, Revision,
+};
+pub use ingress::{
+    ChannelBinding, Delivery, DispatchOutcome, Dispatched, DriverError, DriverHealth, FailureKind,
+    GuardSet, IngressHost, NodeInfo, NothingToSettle, RunningDriver, Settle,
 };
 pub use pool::{ConnectionPoolCache, PoolEntry};
 pub use provider::{

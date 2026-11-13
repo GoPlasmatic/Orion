@@ -152,6 +152,11 @@ pub struct RuntimeHandle {
     /// readable without loading it — which is what lets a test assert that one
     /// reload performs exactly one publish.
     published: AtomicU64,
+    /// The id of the latest publish, for a consumer that must follow every
+    /// generation without polling — the channel drivers' reconcile loops.
+    /// A watch keeps only the latest value, so a slow consumer skips
+    /// intermediate generations but never sees one out of order.
+    published_tx: tokio::sync::watch::Sender<u64>,
 }
 
 /// The engine of the boot generation: no workflows and no functions. The
@@ -184,6 +189,7 @@ impl RuntimeHandle {
                 connector_authority: Default::default(),
             }),
             published: AtomicU64::new(0),
+            published_tx: tokio::sync::watch::Sender::new(0),
         }
     }
 
@@ -246,7 +252,15 @@ impl RuntimeHandle {
             connector_budget_limits,
             connector_authority,
         }));
+        self.published_tx.send_replace(id);
         id
+    }
+
+    /// Follow publishes: the receiver changes after every
+    /// [`Self::publish_parts`], carrying the new generation's id. Load the
+    /// generation itself with [`Self::load`].
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.published_tx.subscribe()
     }
 
     /// How many generations this node has published. `0` means it is still on

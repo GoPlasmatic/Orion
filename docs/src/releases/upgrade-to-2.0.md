@@ -66,7 +66,7 @@ The schema starts over with one baseline migration per backend. On MySQL, timest
 
 ### Extension authors and Rust consumers
 
-The `orion-extension-api` data types (`ChannelDriverCapabilities`, `ChannelProtocolFields`, `PackageAdmissionRequest`, `AdmissionVerdict`, `AdmissionRejection`, `ConnectorError` and the source batch types) are `#[non_exhaustive]` and built through constructors and builders. `ChannelDriver::protocol_id` and `PackageVerifier::policy_id` return `&str`. `ProviderBackend::literal_input_keys` returns `Vec<String>`. The bootstrap entry points return a typed `BootstrapError`. A plugin manifest's `abi` is accepted when it names the same major version and is no newer than the host's.
+The `orion-extension-api` data types (`ChannelDriverCapabilities`, `ChannelProtocolFields`, `PackageAdmissionRequest`, `AdmissionVerdict`, `AdmissionRejection`, `ConnectorError` and the source batch types) are `#[non_exhaustive]` and built through constructors and builders. `ChannelDriver::protocol_id` and `PackageVerifier::policy_id` return `&str`. `ProviderBackend::literal_input_keys` returns `Vec<String>`. A channel driver whose messages do not arrive over HTTP runs its own listener: `ChannelDriver::start` returns a `RunningDriver`, and it hands each message to the node through `IngressHost::dispatch` (the `ingress` module). This replaces `ChannelDriver::activate`, `ChannelDriver::allowed_functions` and `ChannelSubscriptionHandle`, which the node never called. The bootstrap entry points return a typed `BootstrapError`. A plugin manifest's `abi` is accepted when it names the same major version and is no newer than the host's.
 
 ## Related
 

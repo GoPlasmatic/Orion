@@ -109,6 +109,7 @@ All capabilities are compiled into the one binary; behaviour is controlled at ru
   - `channel/` — the registry and `ChannelLoader`, config, routing, request guards (`guards/apply_guards`), `cron.rs` (the schedule compiler: `CronDescriptor`, `plan_pass`).
   - `runtime/` — `generation.rs`, `load_issues.rs` (what a generation could not load; `/health`, applies and `GET /engine/status` read it), `tasks.rs` (the supervisor behind `/readyz`), `reload.rs` (`reconcile_deployment_revision`), `definitions.rs`, `authority.rs`, `functions/` (the engine's hosts), `state.rs`.
   - `cron/` — the reconciler (schedules → durable occurrences) and workers (claim → guards → `execute_admitted` → settle).
+  - `ingress.rs` — the host side of an edition's channel driver that runs its own listener (`IngressHost::dispatch`: one generation → guards via `Transport::Extension` → execute → trace), and the supervised start → reconcile-on-publish → shutdown loop per driver.
   - `cluster/` — `reconcile.rs` (the one cluster loop: the v2 reconciler, which also applies peers' circuit-breaker resets) and job leases.
   - `queue/` — async trace/audit processing, DLQ retry.
   - `extensions/` — the v2 extension boundary: `CompositionBuilder` → frozen `Composition`, `deployment_store/` (`ImmutableDeploymentStore`), `reconciler.rs` (`NodeReconciler`), `foundation.rs` (the built-in providers), `workflow_provider.rs`, `source_runner.rs`, `admission.rs`. Public surface: only the composition types; integration tests reach internals through `#[doc(hidden)] test_support`.

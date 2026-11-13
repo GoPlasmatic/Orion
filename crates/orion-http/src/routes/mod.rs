@@ -277,12 +277,17 @@ pub(crate) async fn health_check(
         .reload_degraded
         .load(std::sync::atomic::Ordering::Acquire);
 
+    // An edition's channel drivers: one component per protocol, under its
+    // protocol id unless that would shadow a core component.
+    let drivers = state.ingress.health();
+
     let overall_healthy = db_healthy;
     let fully_loaded = connector_issues.is_empty()
         && quarantined_channels.is_empty()
         && cron_state != Some("degraded")
         && tasks_state == "ok"
-        && !reload_degraded;
+        && !reload_degraded
+        && state.ingress.all_ready();
     let status_str = if overall_healthy && fully_loaded {
         "ok"
     } else {
@@ -339,6 +344,14 @@ pub(crate) async fn health_check(
     ]);
     if let Some(cron) = cron_state {
         components.insert("cron".to_string(), cron.to_string());
+    }
+    for (protocol, health) in &drivers {
+        let key = if components.contains_key(protocol) {
+            format!("channel_driver:{protocol}")
+        } else {
+            protocol.clone()
+        };
+        components.insert(key, health.component().to_string());
     }
     let mut body = orion_api::HealthResponse {
         status: status_str.to_string(),
@@ -581,7 +594,10 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
     let db_ping = state.ping_db().await;
     let db_healthy = db_ping.is_ok();
     let (tasks_state, _) = tasks_component(&state);
-    let all_ready = db_healthy && initialized && tasks_state != "error";
+    // A driver that is not consuming leaves its protocol's work undone while
+    // every other component reads `ok`, so it takes the node out of rotation.
+    let drivers_ready = state.ingress.all_ready();
+    let all_ready = db_healthy && initialized && tasks_state != "error" && drivers_ready;
     let http_status = if all_ready {
         StatusCode::OK
     } else {
@@ -596,6 +612,12 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
             engine: "ok".to_string(),
             initialized,
             background_tasks: tasks_state.to_string(),
+            channel_drivers: state
+                .ingress
+                .health()
+                .into_iter()
+                .map(|(protocol, health)| (protocol, health.component().to_string()))
+                .collect(),
         },
     };
 

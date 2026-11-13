@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Channel ingress for edition drivers.** A channel driver can run its own
+  listener: `ChannelDriver::start` returns a `RunningDriver`, which the node
+  reconciles after every published generation and stops at shutdown. Each
+  message goes through `IngressHost::dispatch`. Dispatch loads one generation,
+  applies the guards the driver declares (`ChannelDriverCapabilities::ingress`),
+  writes a trace under the protocol's `mode`, and runs the channel's workflow.
+  Each such driver reports a `/health` component, and `/readyz` reports it
+  under `components.channel_drivers`. A channel of such a protocol that
+  configures a guard its deliveries never pass, or an HTTP-only block (`auth`,
+  `cache`, `oauth2_login`, …), is refused at upload.
+
 ### Changed
 
 - **Deploy one complete v2 head.** Upload immutable definitions and connection
@@ -69,6 +82,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   storage capabilities, their commands and their old admin APIs. Enterprise
   provider implementation and benchmarks belong to Orion-ext; extracted
   reference code does not establish a runnable provider.
+- `ChannelDriver::activate`, `ChannelDriver::allowed_functions` and
+  `ChannelSubscriptionHandle` from the extension API. The node never called
+  them; `ChannelDriver::start` and `RunningDriver` replace them.
 
 ### Security
 

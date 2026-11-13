@@ -970,6 +970,8 @@ pub struct AppStateParams {
     pub tasks: Arc<crate::runtime::TaskRegistry>,
     /// The scheduler's own view of itself, for `/health`.
     pub cron_status: Arc<crate::cron::CronStatus>,
+    /// The edition's channel drivers that run their own listener.
+    pub ingress: Arc<crate::ingress::IngressDrivers>,
 }
 
 /// The two inputs [`assemble`] does not build itself, because its callers
@@ -1054,6 +1056,7 @@ pub async fn assemble(
             },
         tasks,
         cron_status,
+        ingress,
     } = start_background(&storage, &components);
 
     let Storage {
@@ -1080,6 +1083,7 @@ pub async fn assemble(
         cluster,
         tasks,
         cron_status,
+        ingress,
     });
 
     build_committed_head(&state).await?;
@@ -1186,6 +1190,8 @@ pub struct Background {
     pub queues: BackgroundQueues,
     pub tasks: Arc<crate::runtime::TaskRegistry>,
     pub cron_status: Arc<crate::cron::CronStatus>,
+    /// The edition's channel drivers that run their own listener.
+    pub ingress: Arc<crate::ingress::IngressDrivers>,
 }
 
 /// Boot phase 4: the background queues and their workers
@@ -1211,6 +1217,27 @@ pub fn start_background(storage: &Storage, components: &ServingComponents) -> Ba
     if let Some(sandbox) = &components.plugins {
         crate::plugin::ticker::start(&tasks, sandbox.clone());
     }
+    // After the trace queues, which every delivery writes to: a driver's
+    // listener may dispatch the moment it starts.
+    let ingress = crate::ingress::start(
+        &tasks,
+        components.composition.channels(),
+        crate::ingress::IngressDeps {
+            runtime: components.runtime.clone(),
+            trace_repo: storage.repos.traces.clone(),
+            persistence_queue: queues.trace_persistence_queue.clone(),
+            exprs: components.exprs.clone(),
+            vars: components.vars.clone(),
+            node: crate::extensions::NodeInfo::new(
+                storage.cluster.instance_id.clone(),
+                storage.cluster.enabled,
+            ),
+            max_result_size_bytes: storage.config.trace_queue.max_result_size_bytes,
+            shutdown_timeout: std::time::Duration::from_secs(
+                storage.config.server.shutdown_force_timeout_secs,
+            ),
+        },
+    );
     // The initial active-workflows gauge. After the recorder is installed
     // (the caller did that before `assemble`), or the write lands nowhere;
     // the head build moves it.
@@ -1219,6 +1246,7 @@ pub fn start_background(storage: &Storage, components: &ServingComponents) -> Ba
         queues,
         tasks,
         cron_status,
+        ingress,
     }
 }
 
@@ -1302,6 +1330,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::runtime::state::AppStat
         cluster,
         tasks,
         cron_status,
+        ingress,
     } = params;
     let ServingComponents {
         connector_registry,
@@ -1344,6 +1373,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::runtime::state::AppStat
         cluster,
         tasks,
         cron_status,
+        ingress,
         plugins,
         composition,
         deployments,

@@ -271,9 +271,116 @@ impl ChannelDriverRegistry {
         {
             out.push(problem);
         }
+        out.extend(ingress_problems(driver.as_ref(), fields, config));
         out.extend(driver.validate_transport(transport_config, config, channel_id));
         out
     }
+}
+
+/// `config` keys an ingress protocol's deliveries never pass through,
+/// whatever guards its driver declares: each answers a question about an HTTP
+/// request — who sent it, from which page, what to answer, where to redirect —
+/// and a delivery from a broker or a queue is not one.
+const HTTP_ONLY_CONFIG_KEYS: &[(&str, &str)] = &[
+    (
+        "auth",
+        "deliveries are authenticated by the transport's own connection, not per message",
+    ),
+    (
+        "principal_rate_limit",
+        "there is no authenticated caller to key it on",
+    ),
+    (
+        "origin_allow_list",
+        "the allow-list checks an HTTP `Origin` header, which a delivery does not carry",
+    ),
+    (
+        "cache",
+        "there is no caller waiting for a response to serve from a cache",
+    ),
+    (
+        "request",
+        "`request` shapes an HTTP body into `data`; the driver supplies `data`",
+    ),
+    (
+        "response",
+        "`response` shapes an HTTP reply, and a delivery has no reply to shape",
+    ),
+    (
+        "oauth2_login",
+        "both legs of the sign-in flow are browser redirects",
+    ),
+];
+
+/// A channel of an ingress protocol ([`ChannelDriverCapabilities::ingress`])
+/// may configure only the guards its driver runs. Anything else would be a
+/// setting Orion accepts and never applies — an `auth` block that reads like
+/// protection and protects nothing — so it is refused here, at upload and in
+/// `lint`, rather than ignored at runtime. The row this mirrors is
+/// `Transport::Extension`'s in `channel::guards`.
+fn ingress_problems(
+    driver: &dyn ChannelDriver,
+    fields: &ChannelProtocolFields<'_>,
+    config: &Value,
+) -> Vec<FieldError> {
+    let caps = driver.capabilities();
+    let Some(guards) = caps.ingress else {
+        return Vec::new();
+    };
+    let protocol = driver.protocol_id();
+    let mut out = Vec::new();
+    if let Some(map) = config.as_object() {
+        let declared_off: [(&str, bool); 4] = [
+            ("rate_limit", guards.rate_limit),
+            ("deduplication", guards.deduplication),
+            ("validation_logic", guards.validation),
+            ("backpressure", guards.backpressure),
+        ];
+        let set = |key: &str| map.get(key).is_some_and(|v| !v.is_null());
+        for (key, why) in HTTP_ONLY_CONFIG_KEYS {
+            if set(key) {
+                out.push(FieldError::new(
+                    format!("channel.config.{key}"),
+                    orion_api::error::field_codes::INVALID,
+                    format!("a '{protocol}' channel must not set {key}: {why}"),
+                ));
+            }
+        }
+        for (key, runs) in declared_off {
+            if !runs && set(key) {
+                out.push(FieldError::new(
+                    format!("channel.config.{key}"),
+                    orion_api::error::field_codes::INVALID,
+                    format!(
+                        "a '{protocol}' channel must not set {key}: the protocol's \
+                         deliveries do not pass that guard"
+                    ),
+                ));
+            }
+        }
+    }
+    if !caps.registers_http_routes {
+        if fields.methods.is_some_and(|m| !m.is_empty()) {
+            out.push(FieldError::new(
+                "channel.methods",
+                orion_api::error::field_codes::INVALID,
+                format!(
+                    "a '{protocol}' channel registers no HTTP route and must not declare methods"
+                ),
+            ));
+        }
+        if fields.route_pattern.is_some_and(|r| !r.trim().is_empty()) {
+            out.push(FieldError::new(
+                "channel.route_pattern",
+                orion_api::error::field_codes::INVALID,
+                format!(
+                    "a '{protocol}' channel registers no HTTP route and must not declare \
+                     route_pattern"
+                ),
+            ));
+        }
+    }
+    out
 }
 
 /// `channel_type` against what the driver serves: a sync channel on a driver
@@ -411,6 +518,76 @@ mod tests {
             1,
             "{errs:?}"
         );
+    }
+
+    /// A protocol whose driver runs its own listener and declares validation
+    /// and deduplication only.
+    struct QueueDriver;
+
+    impl ChannelDriver for QueueDriver {
+        fn protocol_id(&self) -> &'static str {
+            "queue"
+        }
+
+        fn capabilities(&self) -> ChannelDriverCapabilities {
+            ChannelDriverCapabilities::none().async_submit().ingress(
+                orion_extension_api::GuardSet::none()
+                    .validation()
+                    .deduplication(),
+            )
+        }
+
+        fn validate_fields(&self, _fields: &ChannelProtocolFields<'_>) -> Vec<FieldError> {
+            Vec::new()
+        }
+    }
+
+    fn with_queue() -> ChannelDriverRegistry {
+        let mut drivers = community_drivers();
+        drivers.push(Arc::new(QueueDriver));
+        ChannelDriverRegistry::new(drivers).expect("distinct protocols")
+    }
+
+    #[test]
+    fn an_ingress_channel_may_configure_only_the_guards_its_driver_runs() {
+        let reg = with_queue();
+        let accepted = json!({
+            "validation_logic": {"!!": [{"var": "data.id"}]},
+            "deduplication": {"header": "x-id", "window_secs": 60},
+            "timeout_ms": 1000,
+        });
+        let errs = reg.validate_channel(&fields("queue", "async"), &json!({}), &accepted, None);
+        assert!(errs.is_empty(), "{errs:?}");
+
+        let refused = json!({
+            "auth": {"type": "api_key", "keys": ["k"]},
+            "cache": {"enabled": true},
+            "rate_limit": {"requests_per_second": 5},
+            "backpressure": {"max_concurrent": 2},
+        });
+        let errs = reg.validate_channel(&fields("queue", "async"), &json!({}), &refused, None);
+        let mut paths: Vec<&str> = errs.iter().map(|e| e.path.as_str()).collect();
+        paths.sort_unstable();
+        assert_eq!(
+            paths,
+            [
+                "channel.config.auth",
+                "channel.config.backpressure",
+                "channel.config.cache",
+                "channel.config.rate_limit",
+            ],
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn an_ingress_channel_without_http_routes_declares_no_route() {
+        let reg = with_queue();
+        let mut f = fields("queue", "async");
+        f.route_pattern = Some("/orders");
+        let errs = reg.validate_channel(&f, &json!({}), &json!({}), None);
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].path, "channel.route_pattern");
     }
 
     #[test]

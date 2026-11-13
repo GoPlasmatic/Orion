@@ -42,6 +42,13 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
     // the wrong module.
     ("orion-runtime/src/channel", &["crate::cron::"]),
     ("orion-runtime/src/queue", &["crate::cron::"]),
+    // The channel-driver ingress host sits beside `cron`, for the same reason:
+    // it dispatches into the engine and writes to the trace queue, so the
+    // channel estate, the queue and the extension seams below it may not
+    // name it back.
+    ("orion-runtime/src/channel", &["crate::ingress::"]),
+    ("orion-runtime/src/queue", &["crate::ingress::"]),
+    ("orion-runtime/src/extensions", &["crate::ingress::"]),
     // `runtime::reload` and `runtime::handler_deps` take an `AppState`, so
     // nothing the node is built from may name them. `runtime::generation` is
     // deliberately *not* on this list: it is a leaf that depends on nothing

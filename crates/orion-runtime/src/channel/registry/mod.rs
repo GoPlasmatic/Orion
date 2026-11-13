@@ -463,6 +463,39 @@ impl ChannelSnapshot {
         Ok(self.by_name.get(name).cloned())
     }
 
+    /// Every serviceable channel of `protocol`, in stable-id order: what an
+    /// edition's channel driver is reconciled against. Quarantined channels
+    /// are absent by construction, as for [`Self::cron_descriptors`].
+    pub fn serviceable_of_protocol(&self, protocol: &str) -> Vec<Arc<ChannelRuntimeConfig>> {
+        let mut out: Vec<Arc<ChannelRuntimeConfig>> = self
+            .by_name
+            .values()
+            .filter(|runtime| runtime.channel.protocol == protocol)
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| a.channel.channel_id.cmp(&b.channel.channel_id));
+        out
+    }
+
+    /// One serviceable channel by its **stable id**, for an ingress whose
+    /// deliveries name the channel by id: a driver's listener outlives a
+    /// rename, as a cron occurrence does.
+    pub fn serviceable_by_id(&self, channel_id: &str) -> Option<Arc<ChannelRuntimeConfig>> {
+        self.by_name
+            .values()
+            .find(|runtime| runtime.channel.channel_id == channel_id)
+            .cloned()
+    }
+
+    /// Why the channel with stable id `channel_id` is quarantined, or `None`
+    /// when no quarantined channel carries that id.
+    pub fn quarantine_reason_by_id(&self, channel_id: &str) -> Option<String> {
+        self.quarantined
+            .values()
+            .find(|entry| entry.channel_id == channel_id)
+            .map(|entry| entry.reason.clone())
+    }
+
     /// Look up an active channel by name.
     pub fn get_by_name(&self, name: &str) -> Option<Arc<ChannelRuntimeConfig>> {
         self.by_name.get(name).cloned()

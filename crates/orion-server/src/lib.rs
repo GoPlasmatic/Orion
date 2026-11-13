@@ -49,6 +49,8 @@ pub use orion_engine::connector;
 pub use orion_runtime::channel;
 pub use orion_runtime::cluster;
 pub use orion_runtime::cron;
+#[doc(hidden)]
+pub use orion_runtime::ingress;
 /// The v2 extension boundary, as an edition binary composes a node: the
 /// [`extensions::CompositionBuilder`] it hands [`run`], and the frozen
 /// [`extensions::Composition`] the node serves with. One path per item; the

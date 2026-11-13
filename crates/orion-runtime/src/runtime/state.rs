@@ -182,6 +182,9 @@ pub struct AppStateInner {
     /// its two loops are alive — which the task registry above already reports.
     /// A reconciler erroring on every pass is alive and doing nothing.
     pub cron_status: Arc<crate::cron::CronStatus>,
+    /// The edition's channel drivers that run their own listener, and how each
+    /// is doing — a `/health` component per protocol, and part of `/readyz`.
+    pub ingress: Arc<crate::ingress::IngressDrivers>,
     /// The plugin sandbox, when `plugins.enabled`. `None` makes every stored
     /// plugin a load issue on this node rather than a running function.
     pub plugins: Option<Arc<crate::plugin::WasmRuntime>>,
@@ -249,6 +252,7 @@ pub struct AppStateParts {
     pub cluster: Arc<crate::cluster::ClusterRuntime>,
     pub tasks: Arc<crate::runtime::TaskRegistry>,
     pub cron_status: Arc<crate::cron::CronStatus>,
+    pub ingress: Arc<crate::ingress::IngressDrivers>,
     pub plugins: Option<Arc<crate::plugin::WasmRuntime>>,
     pub composition: crate::extensions::Composition,
     pub deployments: crate::extensions::ImmutableDeploymentStore,
@@ -281,6 +285,7 @@ impl AppStateInner {
             cluster,
             tasks,
             cron_status,
+            ingress,
             plugins,
             composition,
             deployments,
@@ -325,6 +330,7 @@ impl AppStateInner {
             cluster,
             tasks,
             cron_status,
+            ingress,
             plugins,
             admin_keys,
             admin_auth_failures: Arc::new(Default::default()),

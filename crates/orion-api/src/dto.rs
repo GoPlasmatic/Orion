@@ -553,6 +553,12 @@ pub struct ReadinessComponents {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub background_tasks: String,
+    /// Each channel driver that runs its own listener (an edition's protocol,
+    /// e.g. `kafka`), by protocol: `ok` | `degraded` | `disabled`. A
+    /// `degraded` driver makes the node not ready. Absent when the node
+    /// composes none.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub channel_drivers: std::collections::BTreeMap<String, String>,
 }
 
 /// `GET /health`: the detailed report. The fields after `components` are

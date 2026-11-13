@@ -47,13 +47,13 @@ pub mod workflow_provider;
 use std::sync::Arc;
 
 pub use orion_extension_api::{
-    AttemptContext, BackendKey, ChannelDriver, ChannelProtocolFields, ChannelSubscriptionHandle,
-    CompositionError, ConnectionId, ConnectionPoolCache, ConnectionReference, ConnectionResolver,
-    ConnectorError, ConnectorErrorClass, ConnectorOutput, Digest, EditionTier, EffectStatus,
-    EffectiveConnectionIdentity, ErrorOrigin, ImplementationKind, PackageAdmissionRequest,
-    PackageVerifier, PoolEntry, ProviderBackend, ProviderId, ProviderRef, Registrar, RetryAdvice,
-    Revision, SecretValue, SourceBatchItem, SourceConnectorFacet, SourcePollBatch,
-    SourceSettlement, ValidateContext, codes,
+    AttemptContext, BackendKey, ChannelDriver, ChannelProtocolFields, CompositionError,
+    ConnectionId, ConnectionPoolCache, ConnectionReference, ConnectionResolver, ConnectorError,
+    ConnectorErrorClass, ConnectorOutput, Digest, EditionTier, EffectStatus,
+    EffectiveConnectionIdentity, ErrorOrigin, ImplementationKind, NodeInfo,
+    PackageAdmissionRequest, PackageVerifier, PoolEntry, ProviderBackend, ProviderId, ProviderRef,
+    Registrar, RetryAdvice, Revision, SecretValue, SourceBatchItem, SourceConnectorFacet,
+    SourcePollBatch, SourceSettlement, ValidateContext, codes,
 };
 
 pub use admission::{Admission, CommunityPackageVerifier, RevocationLedger};

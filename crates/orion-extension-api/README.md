@@ -4,7 +4,12 @@ The extension surface of the [Orion](https://github.com/GoPlasmatic/Orion) runti
 edition implements to add channel protocols, connector providers, connection-pool caches and a
 package verifier to a node.
 
-- `ChannelDriver`: a channel protocol (`rest`, `http`, `cron` in Community).
+- `ChannelDriver`: a channel protocol (`rest`, `http`, `cron` in Community). A driver whose
+  messages do not arrive over HTTP declares `ChannelDriverCapabilities::ingress` and returns a
+  `RunningDriver` from `start`. The node reconciles it with the protocol's channels after every
+  published generation, and it dispatches each message through `IngressHost::dispatch`. Dispatch
+  applies the channel's guards, traces and runs the workflow, and answers a `DispatchOutcome`
+  plus a `Settle` handle for the deduplication claim. See the `ingress` module.
 - `ProviderBackend`: a connector provider (with an unstable `SourceConnectorFacet` hidden
   until the first source channel protocol ships), called with an `AttemptContext` and
   answering `Result<ConnectorOutput, ConnectorError>`.
@@ -24,17 +29,17 @@ The crate depends on `serde`, `serde_json`, `thiserror`, `async-trait` and `orio
 Extend these APIs with their first consumer. If an edition needs a capability for
 a release, include its implementation and validation in that release's work.
 
-- `AttemptContext` identifies the authorized connection and revision, but has no
-  public resolver for its resolved configuration and secrets. Add a node-owned
-  resolver scoped to that connection when a provider first needs it; exclude
-  resolved secrets from logs and traces.
+- `AttemptContext::connection_resolver` reads the authorized connection's public
+  configuration and resolves its secret locators. Resolved secrets stay out of
+  logs and traces (`SecretValue` redacts itself).
 - Community's built-in digest lookup uses a static table. An edition's first
   compiled-in provider needs extensible digest registration across validation,
   deployment and reload.
-- `ChannelDriver` validates fields and declares capabilities. It has no runner
-  start/stop hooks or way to supply a transport's own guard set. Its shared fields
-  still include Kafka's `topic` and `consumer_group`. Build those extensions with
-  a working transport, covering cancellation and deployment replacement.
+- A channel binding carries the channel's `transport_config` but no resolver for
+  a Connection the channel requires; a driver that consumes from a broker needs
+  one for its brokers and credentials.
+- Offline `lint` and `compile` validate channels against Community's drivers, so
+  they refuse an edition's protocol.
 - The runtime's pool registry exposes eviction methods without production
   callers. Check revision and secret identity before adding eviction for rotation
   or retirement; define how admitted runs drain their old resources.

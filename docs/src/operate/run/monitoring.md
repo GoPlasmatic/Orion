@@ -152,6 +152,18 @@ The retention jobs (trace cleanup, audit-log cleanup) are the non-essential ones
 
 With an admin credential, `/health` adds a `background_tasks` array naming each task, its state, and how many times the supervisor has restarted it. A running task with a non-zero restart count is the one worth alerting on: it is up now, and it has been failing.
 
+### Channel driver components
+
+An edition can add channel protocols whose messages arrive by another route than HTTP, such as a message broker. Each such protocol gets a `/health` component named after it (for example `components.kafka`), and `/readyz` lists the same values under `components.channel_drivers`. Community composes none, so neither appears on a Community node.
+
+| Value | Meaning | Effect on `/readyz` |
+|---|---|---|
+| `ok` | The driver is consuming. | ready |
+| `disabled` | No channel of the protocol is deployed. | ready |
+| `degraded` | The driver did not start, or cannot consume as configured (for example, it cannot reach its brokers). | **not ready** |
+
+`degraded` fails readiness because the rest of the node looks healthy while that protocol's messages wait unprocessed.
+
 For a running instance's own view, `GET /api/v2/admin/engine/status` returns the version, uptime, workflow counts, the generation served and its load issues.
 
 ## Verify

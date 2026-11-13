@@ -7574,6 +7574,16 @@
             "type": "string",
             "description": "`ok` | `degraded` | `error`."
           },
+          "channel_drivers": {
+            "type": "object",
+            "description": "Each channel driver that runs its own listener (an edition's protocol,\ne.g. `kafka`), by protocol: `ok` | `degraded` | `disabled`. A\n`degraded` driver makes the node not ready. Absent when the node\ncomposes none.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "database": {
             "type": "string",
             "description": "`ok` | `error`."

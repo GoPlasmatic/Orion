@@ -1,14 +1,18 @@
 //! The channel driver trait: what decides whether a channel of a protocol
-//! is valid on a node, and whether it claims an HTTP route.
+//! is valid on a node, whether it claims an HTTP route, and, for a protocol
+//! whose messages arrive some other way, how its listener starts.
 //!
 //! A channel's `protocol` names a driver. A node refuses a channel whose
 //! protocol no registered driver serves, at upload and at load.
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::FieldError;
+use crate::ingress::{DriverError, GuardSet, IngressHost, RunningDriver};
 
 /// Capabilities declared by a [`ChannelDriver`].
 ///
@@ -22,6 +26,10 @@ pub struct ChannelDriverCapabilities {
     pub supports_async: bool,
     pub registers_http_routes: bool,
     pub supports_oauth2_login: bool,
+    /// The driver runs its own listener ([`ChannelDriver::start`]) and its
+    /// deliveries pass these guards. `None` for a protocol served by the
+    /// node's own ingresses (the HTTP data plane, the cron scheduler).
+    pub ingress: Option<GuardSet>,
 }
 
 impl ChannelDriverCapabilities {
@@ -32,6 +40,7 @@ impl ChannelDriverCapabilities {
             supports_async: false,
             registers_http_routes: false,
             supports_oauth2_login: false,
+            ingress: None,
         }
     }
 
@@ -60,6 +69,14 @@ impl ChannelDriverCapabilities {
     #[must_use]
     pub const fn oauth2_login(mut self) -> Self {
         self.supports_oauth2_login = true;
+        self
+    }
+
+    /// Runs its own listener, whose deliveries pass `guards`. Authoring then
+    /// refuses a channel of this protocol that configures any other guard.
+    #[must_use]
+    pub const fn ingress(mut self, guards: GuardSet) -> Self {
+        self.ingress = Some(guards);
         self
     }
 }
@@ -91,15 +108,6 @@ impl<'a> ChannelProtocolFields<'a> {
     }
 }
 
-/// Active subscription or listener handle returned by
-/// [`ChannelDriver::activate`] for non-HTTP / event-driven channel protocols.
-#[async_trait]
-pub trait ChannelSubscriptionHandle: Send + Sync {
-    /// Gracefully drain and stop the active channel subscription when its
-    /// runtime generation is superseded or the node shuts down.
-    async fn drain(self: Box<Self>);
-}
-
 /// A native Rust channel driver: one channel protocol.
 ///
 /// A node registers a set of drivers through its composition; each serves one
@@ -126,20 +134,15 @@ pub trait ChannelDriver: Send + Sync {
         Vec::new()
     }
 
-    /// Optional allow-list of workflow function names permitted on channels of
-    /// this protocol (`None` allows all registered workflow functions).
-    fn allowed_functions(&self) -> Option<&[&str]> {
-        None
-    }
-
-    /// Optional activation lifecycle hook for event-driven or subscription-based
-    /// channel drivers.
-    async fn activate(
+    /// Start the driver's listener, once, at boot. `host` dispatches the
+    /// protocol's deliveries (see [`crate::ingress`]). A driver that declares
+    /// [`ChannelDriverCapabilities::ingress`] returns its running half; the
+    /// default serves none.
+    async fn start(
         &self,
-        _channel_id: &str,
-        _transport_config: &Value,
-        _config: &Value,
-    ) -> Result<Option<Box<dyn ChannelSubscriptionHandle>>, String> {
+        host: Arc<dyn IngressHost>,
+    ) -> Result<Option<Box<dyn RunningDriver>>, DriverError> {
+        let _ = host;
         Ok(None)
     }
 }
