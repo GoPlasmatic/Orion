@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   under `components.channel_drivers`. A channel of such a protocol that
   configures a guard its deliveries never pass, or an HTTP-only block (`auth`,
   `cache`, `oauth2_login`, …), is refused at upload.
+- **A channel can require connections.** A channel source document's
+  `connections` list compiles into the member's `requires`, and a driver that
+  runs its own listener gets a `ConnectionResolver` for each, at the revision
+  the deployment pins, on its `ChannelBinding`. `compile` and `lint` refuse a
+  connection the set does not carry; the build refuses one the node does not
+  hold.
 
 ### Changed
 

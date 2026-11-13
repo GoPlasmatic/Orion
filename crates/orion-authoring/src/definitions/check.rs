@@ -124,7 +124,15 @@ pub fn check(
 
     let connectors = check_connectors(set, &mut findings);
     let workflows = check_workflows(set, require_explicit_ids, functions, &mut findings);
-    let channels = check_channels(set, &workflows.ids, require_explicit_ids, &mut findings);
+    let known_connector =
+        |name: &str| connectors.contains_key(name) || boundary.allows_connector(name);
+    let channels = check_channels(
+        set,
+        &workflows.ids,
+        &known_connector,
+        require_explicit_ids,
+        &mut findings,
+    );
 
     check_closure(
         &workflows,
@@ -439,6 +447,7 @@ fn check_workflows(
 fn check_channels(
     set: &DefinitionSet,
     workflow_ids: &[String],
+    known_connector: &dyn Fn(&str) -> bool,
     require_explicit_ids: bool,
     findings: &mut Vec<Diagnostic>,
 ) -> Vec<String> {
@@ -547,6 +556,25 @@ fn check_channels(
                     ),
                 )),
                 None => routes.push((route, route_methods, req.priority, req.name.clone())),
+            }
+        }
+
+        // `connections`: what the channel's driver connects with. A set-document
+        // key like `workflow_id` — `compile` turns each into a requirement of
+        // the channel's member — so it is read from the document, not the
+        // definition.
+        if let Some(connections) = def.doc.get("connections").and_then(Value::as_array) {
+            for name in connections.iter().filter_map(Value::as_str) {
+                if !known_connector(name) {
+                    findings.push(Diagnostic::error(
+                        "closure.connector",
+                        format!("channel '{}'", req.name),
+                        format!(
+                            "connection '{name}' is neither in the set nor declared on the \
+                             boundary"
+                        ),
+                    ));
+                }
             }
         }
 

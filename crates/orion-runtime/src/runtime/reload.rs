@@ -87,6 +87,8 @@ struct ManifestDefinitions {
     workflows: Vec<crate::storage::models::Workflow>,
     plugins: Vec<crate::storage::models::Plugin>,
     plugin_components: std::collections::HashMap<String, Vec<u8>>,
+    /// The connection revisions each channel member requires, by channel id.
+    channel_connections: std::collections::BTreeMap<String, Vec<(String, u64)>>,
     /// What the manifest's connections over workflow packages may call as
     /// their dependencies.
     dependencies: std::collections::BTreeMap<
@@ -194,6 +196,7 @@ async fn manifest_definitions(
     };
 
     let mut active_channels = Vec::new();
+    let mut channel_connections = std::collections::BTreeMap::new();
     let mut active_workflows = Vec::new();
     let mut active_plugins = Vec::new();
     let mut plugin_components = HashMap::new();
@@ -223,6 +226,35 @@ async fn manifest_definitions(
                             i64::from(interval.end_bucket.saturating_sub(interval.start_bucket));
                         rollout_overrides.insert((wf_id.clone(), interval.workflow_revision), pct);
                     }
+                }
+                // The connections the channel's driver connects with. Each
+                // edge names an exact revision the manifest carries (plan and
+                // apply checked that); a node that does not hold it cannot
+                // hand the driver anything to connect with, so the build
+                // refuses rather than serving a channel that never consumes.
+                let mut required = Vec::new();
+                for edge in m
+                    .requires
+                    .iter()
+                    .filter(|r| r.kind == EntityKind::Connection)
+                {
+                    if state
+                        .deployments
+                        .get_connection(&edge.id, edge.revision)
+                        .is_none()
+                    {
+                        return Err(OrionError::validation(format!(
+                            "channel '{}' requires connection '{}' revision {}, which this \
+                             node does not hold",
+                            m.entity.id,
+                            edge.id,
+                            edge.revision.get()
+                        )));
+                    }
+                    required.push((edge.id.clone(), edge.revision.get()));
+                }
+                if !required.is_empty() {
+                    channel_connections.insert(m.entity.id.clone(), required);
                 }
                 active_channels.push(super::definitions::channel_row(
                     &def,
@@ -304,6 +336,7 @@ async fn manifest_definitions(
 
     Ok(ManifestDefinitions {
         channels: active_channels,
+        channel_connections,
         workflows: active_workflows,
         plugins: active_plugins,
         plugin_components,
@@ -531,6 +564,7 @@ async fn build_and_publish(
             .await;
         let ManifestDefinitions {
             channels,
+            channel_connections,
             workflows: active_workflows,
             plugins: plugin_rows,
             plugin_components,
@@ -594,7 +628,8 @@ async fn build_and_publish(
                 },
                 engine_issues,
             )
-            .await;
+            .await
+            .with_required_connections(channel_connections);
 
         // The publication barrier: a revision older than what this node
         // already desires or applied never replaces it.
@@ -877,6 +912,7 @@ pub async fn check_candidate(
     super::workflow_providers::sync(state).await;
     let ManifestDefinitions {
         channels,
+        channel_connections: _,
         workflows,
         plugins,
         plugin_components,

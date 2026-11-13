@@ -21,11 +21,16 @@
 //! 3. At shutdown, [`RunningDriver::shutdown`] is called before the trace
 //!    queues drain, so deliveries still in flight are traced.
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+
+use crate::attempt::ConnectionResolver;
+use crate::identity::EffectiveConnectionIdentity;
 
 /// The core guards a protocol's deliveries pass through.
 ///
@@ -88,7 +93,13 @@ impl GuardSet {
 
 /// One serviceable channel of a driver's protocol, as
 /// [`RunningDriver::reconcile`] hands it over. Built by the host.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// It carries a [`ConnectionResolver`] for every Connection the channel's
+/// deployment member requires, keyed by connection id: what a driver that
+/// consumes from a broker connects with. The revision is the one the
+/// deployment pins, so a new connection revision (rotated credentials, new
+/// brokers) arrives as a changed binding.
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ChannelBinding {
     channel_id: String,
@@ -96,6 +107,32 @@ pub struct ChannelBinding {
     fingerprint: String,
     transport_config: Value,
     timeout_ms: Option<u64>,
+    connections: BTreeMap<String, BoundConnection>,
+}
+
+/// A required connection: the revision's identity, and a resolver for it.
+#[derive(Debug, Clone)]
+struct BoundConnection {
+    identity: EffectiveConnectionIdentity,
+    resolver: Arc<dyn ConnectionResolver>,
+}
+
+/// Two bindings are equal when they describe the same channel over the same
+/// connection revisions; the resolvers themselves are not compared.
+impl PartialEq for ChannelBinding {
+    fn eq(&self, other: &Self) -> bool {
+        self.channel_id == other.channel_id
+            && self.name == other.name
+            && self.fingerprint == other.fingerprint
+            && self.transport_config == other.transport_config
+            && self.timeout_ms == other.timeout_ms
+            && self.connections.len() == other.connections.len()
+            && self
+                .connections
+                .iter()
+                .zip(other.connections.iter())
+                .all(|((a_id, a), (b_id, b))| a_id == b_id && a.identity == b.identity)
+    }
 }
 
 impl ChannelBinding {
@@ -113,7 +150,39 @@ impl ChannelBinding {
             fingerprint: fingerprint.into(),
             transport_config,
             timeout_ms: None,
+            connections: BTreeMap::new(),
         }
+    }
+
+    /// A Connection the channel requires, at the revision `identity` names.
+    #[must_use]
+    pub fn with_connection(
+        mut self,
+        identity: EffectiveConnectionIdentity,
+        resolver: Arc<dyn ConnectionResolver>,
+    ) -> Self {
+        self.connections.insert(
+            identity.connection_id.as_str().to_string(),
+            BoundConnection { identity, resolver },
+        );
+        self
+    }
+
+    /// The resolver for required connection `connection_id`: its public
+    /// configuration, and its secret locators resolved on demand.
+    pub fn connection(&self, connection_id: &str) -> Option<&Arc<dyn ConnectionResolver>> {
+        self.connections.get(connection_id).map(|c| &c.resolver)
+    }
+
+    /// The identity (provider digest, connection, revision, secret hash) of
+    /// required connection `connection_id`: the key a provider pools on.
+    pub fn connection_identity(&self, connection_id: &str) -> Option<&EffectiveConnectionIdentity> {
+        self.connections.get(connection_id).map(|c| &c.identity)
+    }
+
+    /// The ids of every Connection the channel requires, in order.
+    pub fn connection_ids(&self) -> impl Iterator<Item = &str> {
+        self.connections.keys().map(String::as_str)
     }
 
     /// The channel's own `timeout_ms`.

@@ -61,7 +61,7 @@ A *manifest* lists the members a deployment serves. Each member is an entity, me
 }
 ```
 
-`requires` is how members depend on each other. A channel requires its workflow, and a workflow requires every connection its tasks name. Every requirement must be a member of the same manifest, so a deployment cannot leave a dependency behind.
+`requires` is how members depend on each other. A channel requires its workflow, and a workflow requires every connection its tasks name. A channel can also require connections of its own: the ones its protocol's driver connects with, such as the cluster an edition's message-broker channel consumes from. Every requirement must be a member of the same manifest, so a deployment cannot leave a dependency behind.
 
 ### The head
 

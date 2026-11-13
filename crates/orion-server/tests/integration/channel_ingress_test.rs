@@ -303,6 +303,61 @@ async fn the_channels_guards_decide_the_outcome() {
 }
 
 #[tokio::test]
+async fn a_channel_hands_its_driver_the_connections_it_requires() {
+    let (_state, app, probe) = node().await;
+    let connection_id = common::create_connector(
+        &app,
+        json!({
+            "name": "events",
+            "connector_type": "http",
+            "config": { "type": "http", "url": "https://broker.example.com" }
+        }),
+    )
+    .await;
+    let workflow_id = common::create_and_activate_workflow(&app, echo_workflow()).await;
+    let channel_id = common::deploy_channel(
+        &app,
+        json!({
+            "name": "orders",
+            "channel_type": "async",
+            "protocol": PROTOCOL,
+            "workflow_id": workflow_id,
+            "transport_config": { "topic": "orders.placed", "connection": connection_id },
+            "connections": [connection_id],
+        }),
+    )
+    .await;
+
+    let bindings = probe
+        .wait_for(|set| {
+            set.iter()
+                .any(|b| b.channel_id() == channel_id && b.connection(&connection_id).is_some())
+        })
+        .await;
+    let binding = &bindings[0];
+    assert_eq!(
+        binding.connection_ids().collect::<Vec<_>>(),
+        [connection_id.as_str()]
+    );
+    let identity = binding
+        .connection_identity(&connection_id)
+        .expect("the identity travels with the resolver");
+    assert_eq!(identity.connection_id.as_str(), connection_id);
+    let resolver = binding.connection(&connection_id).expect("a resolver");
+    assert_eq!(
+        resolver.public_config().and_then(|c| c["url"].as_str()),
+        Some("https://broker.example.com"),
+        "the driver reads the revision the deployment pins"
+    );
+    let merged = resolver
+        .resolve_merged_config()
+        .await
+        .expect("resolves")
+        .expect("a governed connection has a config");
+    assert_eq!(merged["url"], "https://broker.example.com");
+}
+
+#[tokio::test]
 async fn a_changed_channel_reconciles_with_a_new_fingerprint() {
     let (_state, app, probe) = node().await;
     let channel_id = deploy_orders(&app, "orders.placed").await;

@@ -54,7 +54,7 @@ Once a deployment is committed, the node builds what it serves from the head man
 A definition is one deployable document and its kind: `{"kind": "workflow" | "channel" | "plugin", "definition": {…}}`. It holds no identity. The manifest member that names it says which entity and revision it is.
 
 - A **workflow** is the dataflow-rs workflow document without `id`, `version`, `channel`, `status` and `rollout`. A failing task stops the run unless `on_failure` is `continue`.
-- A **channel** is everything but its identity and its workflow. Its member `requires` the workflow.
+- A **channel** is everything but its identity and its workflow. Its member `requires` the workflow, plus any connection the channel's driver connects with (its source document's `connections`).
 - A **plugin** is its `plugin.toml` manifest as JSON and its component in base64, with an optional detached signature.
 
 The server validates a definition the way the node loads it, then stores its canonical bytes. The answered `digest` is `sha256:` and the hex of those bytes. Two spellings of one definition, such as a defaulted field written out, are one digest. Uploading again is a no-op that answers the same digest.
@@ -205,7 +205,7 @@ A manifest lists the members a deployment deploys:
 }
 ```
 
-A workflow, channel or plugin member's `definition_digest` names a stored definition. A connection member's is the revision's `configuration_digest`. A channel `requires` its workflow. A workflow `requires` the connections it uses. Through `connector_call` it may call only connections it requires, and only the operations its own `connector_call` tasks name; requiring a connection grants nothing else. A connection over a workflow provider package `requires` the connections its [bindings](#bindings) name; only that package's own calls reach them. Every requirement must be a member of the same manifest.
+A workflow, channel or plugin member's `definition_digest` names a stored definition. A connection member's is the revision's `configuration_digest`. A channel `requires` its workflow, and may require connections its protocol's driver connects with: a driver that runs its own listener is handed a resolver for each, at the revision the manifest pins. A workflow `requires` the connections it uses. Through `connector_call` it may call only connections it requires, and only the operations its own `connector_call` tasks name; requiring a connection grants nothing else. A connection over a workflow provider package `requires` the connections its [bindings](#bindings) name; only that package's own calls reach them. Every requirement must be a member of the same manifest.
 
 ## Plan and apply
 

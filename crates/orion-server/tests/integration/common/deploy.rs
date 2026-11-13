@@ -365,7 +365,9 @@ pub fn channel_definition(channel: &Value) -> (Value, Option<String>) {
     for (key, value) in channel.as_object().expect("a channel object") {
         match key.as_str() {
             "workflow_id" => workflow = value.as_str().map(str::to_string),
-            "channel_id" | "status" | "version" => {}
+            // Requirements of the member, not part of the definition:
+            // `deploy_channel` turns them into `connection` edges.
+            "channel_id" | "status" | "version" | "connections" => {}
             "topic" | "consumer_group" if value.is_null() => {}
             "name" | "description" | "channel_type" | "protocol" | "methods" | "route_pattern"
             | "transport_config" | "config" | "priority" | "tags" => {

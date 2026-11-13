@@ -583,6 +583,48 @@ fn tree(root: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
 }
 
 #[test]
+fn a_channel_requires_the_connections_it_names() {
+    let scratch = deployment_set("compile-channel-connections");
+    let channel = |connections: &str| {
+        format!(
+            r#"{{ "channel_id": "remember-api", "name": "remember-api", "channel_type": "sync",
+                 "protocol": "rest", "methods": ["POST"], "route_pattern": "/remember",
+                 "workflow_id": "remember", "connections": {connections} }}"#
+        )
+    };
+    std::fs::write(
+        scratch.path().join("ch.json"),
+        channel(r#"["partner-api"]"#),
+    )
+    .unwrap();
+    let out = scratch.path().join("dist");
+    let (ok, report) = compile_deployment(scratch.path(), &out);
+    assert!(ok, "{report}");
+    let deployment = read_json(&out.join("deployment.json"));
+    let channel_member = deployment["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["kind"] == "channel")
+        .expect("the channel member")
+        .clone();
+    let requires = channel_member["requires"].as_array().unwrap();
+    assert_eq!(requires.len(), 2, "{channel_member}");
+    assert!(requires.contains(&serde_json::json!({"kind": "workflow", "id": "remember"})));
+    assert!(requires.contains(&serde_json::json!({"kind": "connection", "id": "partner-api"})));
+
+    // A connection the set does not carry is a compile error, not a dangling edge.
+    std::fs::write(
+        scratch.path().join("ch.json"),
+        channel(r#"["no-such-cluster"]"#),
+    )
+    .unwrap();
+    let (ok, report) = compile_deployment(scratch.path(), &scratch.path().join("dist-2"));
+    assert!(!ok, "{report}");
+    assert!(report.contains("no-such-cluster"), "{report}");
+}
+
+#[test]
 fn a_deployment_is_written_without_revisions() {
     let scratch = deployment_set("compile-deployment");
     let out = scratch.path().join("dist");

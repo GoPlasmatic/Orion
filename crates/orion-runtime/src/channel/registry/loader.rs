@@ -898,6 +898,7 @@ impl ChannelLoader {
             quarantined,
             route_key,
             deps: fingerprint,
+            required_connections: std::sync::Arc::default(),
         };
 
         if refused > 0 {

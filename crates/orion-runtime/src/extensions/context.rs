@@ -950,37 +950,26 @@ impl ConnectionResolver for Invocation {
         let Some(conn) = self.connection_row.as_deref() else {
             return Ok(None);
         };
-        super::foundation::governed_secret(
+        super::governed_connection::resolve_secret(
             conn,
             path,
             &self.effective_identity,
             self.connection.provider.provider_id.as_str(),
         )
         .await
-        .map(|opt| opt.map(SecretValue::new))
     }
 
     async fn resolve_merged_config(&self) -> Result<Option<serde_json::Value>, ConnectorError> {
         let Some(conn) = self.connection_row.as_deref() else {
             return Ok(None);
         };
-        let mut resolved_locators = BTreeMap::new();
-        for path in conn.secret_locators.keys() {
-            if let Some(secret) = super::foundation::governed_secret(
-                conn,
-                path,
-                &self.effective_identity,
-                self.connection.provider.provider_id.as_str(),
-            )
-            .await?
-            {
-                resolved_locators.insert(path.clone(), secret);
-            }
-        }
-        Ok(Some(super::deployment_store::place_locators(
-            &conn.public_config,
-            &resolved_locators,
-        )))
+        super::governed_connection::merged_config(
+            conn,
+            &self.effective_identity,
+            self.connection.provider.provider_id.as_str(),
+        )
+        .await
+        .map(Some)
     }
 }
 

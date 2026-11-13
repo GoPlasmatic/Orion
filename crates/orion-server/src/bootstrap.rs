@@ -1236,6 +1236,7 @@ pub fn start_background(storage: &Storage, components: &ServingComponents) -> Ba
             shutdown_timeout: std::time::Duration::from_secs(
                 storage.config.server.shutdown_force_timeout_secs,
             ),
+            deployments: components.deployments.clone(),
         },
     );
     // The initial active-workflows gauge. After the recorder is installed

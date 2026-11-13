@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use dataflow_rs::Expr;
@@ -341,9 +341,33 @@ pub struct ChannelSnapshot {
     /// the key that decides whether it can be carried over.
     route_key: Vec<ChannelRow>,
     deps: DepsFingerprint,
+    /// The connection revisions each channel's deployment member requires, by
+    /// stable channel id: what an edition's channel driver is handed to
+    /// connect with (a Kafka channel's brokers and credentials). Published
+    /// with the rest of the snapshot, so a driver reconciled against this
+    /// generation sees the revisions this generation pins.
+    required_connections: Arc<BTreeMap<String, Vec<(String, u64)>>>,
 }
 
 impl ChannelSnapshot {
+    /// Attach what each channel's member requires (reload's
+    /// `manifest_definitions`), keyed by stable channel id.
+    #[must_use]
+    pub fn with_required_connections(
+        mut self,
+        required: BTreeMap<String, Vec<(String, u64)>>,
+    ) -> Self {
+        self.required_connections = Arc::new(required);
+        self
+    }
+
+    /// The `(connection id, revision)` pairs channel `channel_id` requires.
+    pub fn required_connections(&self, channel_id: &str) -> &[(String, u64)] {
+        self.required_connections
+            .get(channel_id)
+            .map_or(&[], Vec::as_slice)
+    }
+
     /// The empty generation a node boots on. Its fingerprint is deliberately
     /// unmatchable (`connectors: u64::MAX` is never drawn by
     /// `ConnectorRegistry::config_generation`), so the first build cannot
@@ -359,6 +383,7 @@ impl ChannelSnapshot {
                 trace_storage: TraceStorageConfig::default(),
                 cron_enabled: false,
             },
+            required_connections: Arc::default(),
         }
     }
 

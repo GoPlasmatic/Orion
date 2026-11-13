@@ -93,8 +93,8 @@ fragment task IDs and checks cross-file references.
 `compile` writes `deployment.json`, `definitions/<hex>.json` and
 `connections/<id>.json`. A workflow loses `workflow_id`, a channel loses
 `channel_id` and `workflow_id`; the manifest member supplies them. A channel
-`requires` its workflow, and a workflow `requires` every connection its tasks
-name.
+`requires` its workflow (and the connections its source document lists under
+`connections`), and a workflow `requires` every connection its tasks name.
 
 ## Minimal shapes
 

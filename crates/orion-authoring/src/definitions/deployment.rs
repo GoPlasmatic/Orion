@@ -166,13 +166,14 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
         .collect();
     let mut channel_members = Vec::new();
     for def in set.iter(Entity::Channel) {
-        let (id, workflow_id, channel) = match channel_definition(&def.doc, &def.origin) {
-            Ok(converted) => converted,
-            Err(e) => {
-                errors.push(e);
-                continue;
-            }
-        };
+        let (id, workflow_id, connections, channel) =
+            match channel_definition(&def.doc, &def.origin) {
+                Ok(converted) => converted,
+                Err(e) => {
+                    errors.push(e);
+                    continue;
+                }
+            };
         if !workflow_ids.contains(workflow_id.as_str()) {
             errors.push(format!(
                 "channel '{id}' ({}): its workflow '{workflow_id}' is not in the set",
@@ -180,10 +181,29 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
             ));
             continue;
         }
-        let requires = vec![CompiledRequirement {
+        let mut requires = vec![CompiledRequirement {
             kind: EntityKind::Workflow,
             id: workflow_id,
         }];
+        let mut missing = false;
+        for connection in connections {
+            if connection_ids.contains(&connection) {
+                requires.push(CompiledRequirement {
+                    kind: EntityKind::Connection,
+                    id: connection,
+                });
+            } else {
+                errors.push(format!(
+                    "channel '{id}' ({}): `connections` names '{connection}', and the set has \
+                     no connector of that name — a deployment carries every connection it uses",
+                    def.origin
+                ));
+                missing = true;
+            }
+        }
+        if missing {
+            continue;
+        }
         match definition_file(&Definition::Channel(channel)) {
             Ok((digest, path, bytes)) => {
                 out.files.insert(path, bytes);
@@ -406,12 +426,14 @@ pub fn workflow_definition(
     Ok((id, workflow))
 }
 
-/// A set's channel as a [`ChannelDefinition`], with its id and the id of
-/// the workflow it serves, which becomes its member's requirement.
+/// A set's channel as a [`ChannelDefinition`], with its id, the id of the
+/// workflow it serves and the connections its driver connects with (a Kafka
+/// channel's cluster). Both become its member's requirements; neither is part
+/// of the definition, so neither moves its digest.
 pub fn channel_definition(
     doc: &Value,
     origin: &str,
-) -> Result<(String, String, ChannelDefinition), String> {
+) -> Result<(String, String, Vec<String>, ChannelDefinition), String> {
     let obj = object(doc, "channel", origin)?;
     let id = entity_id(obj, "channel_id", "channel", origin)?;
     let what = format!("channel '{id}' ({origin})");
@@ -426,7 +448,11 @@ pub fn channel_definition(
     refuse_unknown_keys(
         &without_nulls,
         CHANNEL_KEYS,
-        &[CHANNEL_IDENTITY, &["workflow_id", "activate"]].concat(),
+        &[
+            CHANNEL_IDENTITY,
+            &["workflow_id", "activate", "connections"],
+        ]
+        .concat(),
         &what,
     )?;
     check_activate(obj, &what)?;
@@ -436,6 +462,32 @@ pub fn channel_definition(
         ));
     }
     let workflow_id = entity_id(obj, "workflow_id", "channel", origin)?;
+    let connections = match obj.get("connections") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => {
+            let mut ids = Vec::with_capacity(items.len());
+            for item in items {
+                match item.as_str() {
+                    Some(id) if is_member_id(id) => {
+                        if !ids.iter().any(|seen| seen == id) {
+                            ids.push(id.to_string());
+                        }
+                    }
+                    _ => {
+                        return Err(format!(
+                            "{what}: `connections` names connector ids, and {item} is not one"
+                        ));
+                    }
+                }
+            }
+            ids
+        }
+        Some(other) => {
+            return Err(format!(
+                "{what}: `connections` is a list of connector ids, not {other}"
+            ));
+        }
+    };
 
     let definition: Map<String, Value> = obj
         .iter()
@@ -444,7 +496,7 @@ pub fn channel_definition(
         .collect();
     let channel: ChannelDefinition =
         serde_json::from_value(Value::Object(definition)).map_err(|e| format!("{what}: {e}"))?;
-    Ok((id, workflow_id, channel))
+    Ok((id, workflow_id, connections, channel))
 }
 
 /// Every connection `workflow` uses, each with a function that names it:
@@ -762,7 +814,7 @@ mod tests {
 
     #[test]
     fn a_channel_requires_its_workflow_and_refuses_a_topic() {
-        let (id, wf, ch) = channel_definition(
+        let (id, wf, connections, ch) = channel_definition(
             &json!({"channel_id": "c", "name": "c", "protocol": "rest", "workflow_id": "w",
                     "topic": null}),
             "ch.json",
@@ -772,6 +824,7 @@ mod tests {
             (id.as_str(), wf.as_str(), ch.name.as_str()),
             ("c", "w", "c")
         );
+        assert!(connections.is_empty());
         let err = channel_definition(
             &json!({"channel_id": "c", "name": "c", "protocol": "rest", "workflow_id": "w",
                     "topic": "orders"}),
@@ -779,6 +832,31 @@ mod tests {
         )
         .expect_err("refused");
         assert!(err.contains("`topic`"), "{err}");
+    }
+
+    #[test]
+    fn a_channel_names_the_connections_its_driver_connects_with() {
+        let (_, _, connections, ch) = channel_definition(
+            &json!({"channel_id": "c", "name": "c", "protocol": "kafka", "workflow_id": "w",
+                    "connections": ["events", "events"]}),
+            "ch.json",
+        )
+        .expect("converts");
+        assert_eq!(connections, ["events"], "named once, in order");
+        assert!(
+            !serde_json::to_value(&ch)
+                .expect("serializes")
+                .to_string()
+                .contains("events"),
+            "the requirement is the member's, not the definition's"
+        );
+        let err = channel_definition(
+            &json!({"channel_id": "c", "name": "c", "protocol": "kafka", "workflow_id": "w",
+                    "connections": "events"}),
+            "ch.json",
+        )
+        .expect_err("refused");
+        assert!(err.contains("`connections`"), "{err}");
     }
 
     #[test]

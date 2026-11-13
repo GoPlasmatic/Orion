@@ -620,6 +620,14 @@ pub async fn deploy_channel(app: &axum::Router, channel: serde_json::Value) -> S
         .expect("a channel name")
         .to_string();
     let (definition, workflow) = deploy::channel_definition(&channel);
+    let connections: Vec<String> = channel["connections"]
+        .as_array()
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|id| id.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
     let digest = deploy::upload(app, definition).await;
     deploy::deploy(
         app,
@@ -628,7 +636,11 @@ pub async fn deploy_channel(app: &axum::Router, channel: serde_json::Value) -> S
             id: name.clone(),
             digest,
             revision: None,
-            requires: workflow.into_iter().map(|id| ("workflow", id)).collect(),
+            requires: workflow
+                .into_iter()
+                .map(|id| ("workflow", id))
+                .chain(connections.into_iter().map(|id| ("connection", id)))
+                .collect(),
         }],
     )
     .await;

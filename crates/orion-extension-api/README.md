@@ -35,9 +35,10 @@ a release, include its implementation and validation in that release's work.
 - Community's built-in digest lookup uses a static table. An edition's first
   compiled-in provider needs extensible digest registration across validation,
   deployment and reload.
-- A channel binding carries the channel's `transport_config` but no resolver for
-  a Connection the channel requires; a driver that consumes from a broker needs
-  one for its brokers and credentials.
+- A channel binding carries a `ConnectionResolver` (and the revision's identity)
+  for every Connection the channel's member requires. Unlike a connector call's
+  attempt, the resolver does not re-check the node's revocation ledger; a driver
+  holds it until its next reconcile.
 - Offline `lint` and `compile` validate channels against Community's drivers, so
   they refuse an edition's protocol.
 - The runtime's pool registry exposes eviction methods without production

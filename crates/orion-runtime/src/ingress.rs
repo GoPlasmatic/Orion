@@ -70,6 +70,9 @@ pub struct IngressDeps {
     pub max_result_size_bytes: usize,
     /// How long a driver's `shutdown` is given.
     pub shutdown_timeout: Duration,
+    /// The node's deployment store: where the connection revisions a
+    /// channel requires are resolved for its driver.
+    pub deployments: crate::extensions::ImmutableDeploymentStore,
 }
 
 /// The [`IngressHost`] for one protocol.
@@ -343,29 +346,72 @@ async fn record_trace(
     .await;
 }
 
-/// The bindings `protocol`'s driver is reconciled against in `generation`.
-fn bindings(generation: &RuntimeGeneration, protocol: &str) -> Vec<ChannelBinding> {
+/// The bindings `protocol`'s driver is reconciled against in `generation`,
+/// each with a resolver for every connection revision its member requires.
+fn bindings(
+    generation: &RuntimeGeneration,
+    protocol: &str,
+    deployments: &crate::extensions::ImmutableDeploymentStore,
+) -> Vec<ChannelBinding> {
     generation
         .channels
         .serviceable_of_protocol(protocol)
         .iter()
         .map(|runtime| {
             let channel = &runtime.channel;
-            ChannelBinding::new(
+            let mut connections = Vec::new();
+            for (connection_id, revision) in generation
+                .channels
+                .required_connections(&channel.channel_id)
+            {
+                let governed = orion_extension_api::Revision::new(*revision).and_then(|rev| {
+                    crate::extensions::GovernedConnection::from_store(
+                        deployments,
+                        connection_id,
+                        rev,
+                    )
+                });
+                match governed {
+                    Some(governed) => connections.push(governed),
+                    // The build refused a channel whose connection this node
+                    // does not hold; reaching here means the revision was
+                    // collected since. The driver gets the binding without it
+                    // and reports what it cannot connect to.
+                    None => tracing::warn!(
+                        protocol,
+                        channel = %channel.name,
+                        connection = %connection_id,
+                        revision,
+                        "A channel's required connection revision is no longer held"
+                    ),
+                }
+            }
+            let identities: Vec<&orion_extension_api::EffectiveConnectionIdentity> =
+                connections.iter().map(|c| c.identity()).collect();
+            let mut binding = ChannelBinding::new(
                 channel.channel_id.clone(),
                 channel.name.clone(),
-                fingerprint(runtime),
+                fingerprint(runtime, &identities),
                 serde_json::from_str(&channel.transport_config_json).unwrap_or(Value::Null),
             )
-            .with_timeout_ms(runtime.parsed_config.timeout_ms)
+            .with_timeout_ms(runtime.parsed_config.timeout_ms);
+            for governed in connections {
+                let identity = governed.identity().clone();
+                binding = binding.with_connection(identity, Arc::new(governed));
+            }
+            binding
         })
         .collect()
 }
 
-/// A hash of everything in the stored channel a driver could act on, so a
-/// change to any of it — a topic moved to another channel, a new workflow —
+/// A hash of everything in the stored channel a driver could act on, and of
+/// the connection revisions it requires, so a change to any of it — a topic
+/// moved to another channel, a new workflow, rotated broker credentials —
 /// reads as a changed binding.
-fn fingerprint(runtime: &ChannelRuntimeConfig) -> String {
+fn fingerprint(
+    runtime: &ChannelRuntimeConfig,
+    connections: &[&orion_extension_api::EffectiveConnectionIdentity],
+) -> String {
     let channel = &runtime.channel;
     let mut hasher = Sha256::new();
     for part in [
@@ -381,6 +427,17 @@ fn fingerprint(runtime: &ChannelRuntimeConfig) -> String {
     ] {
         hasher.update(part.as_bytes());
         hasher.update([0u8]);
+    }
+    for identity in connections {
+        for part in [
+            identity.connection_id.as_str(),
+            &identity.revision.get().to_string(),
+            identity.provider_digest.as_ref(),
+            &identity.secret_hash,
+        ] {
+            hasher.update(part.as_bytes());
+            hasher.update([0u8]);
+        }
     }
     let digest = hasher.finalize();
     let mut out = String::with_capacity(7 + digest.len() * 2);
@@ -512,7 +569,11 @@ impl DriverTask {
         published.borrow_and_update();
         let protocol = self.slot.protocol.as_str();
         running
-            .reconcile(bindings(&self.deps.runtime.load(), protocol))
+            .reconcile(bindings(
+                &self.deps.runtime.load(),
+                protocol,
+                &self.deps.deployments,
+            ))
             .await;
         loop {
             tokio::select! {
@@ -524,7 +585,11 @@ impl DriverTask {
                     }
                     published.borrow_and_update();
                     running
-                        .reconcile(bindings(&self.deps.runtime.load(), protocol))
+                        .reconcile(bindings(
+                &self.deps.runtime.load(),
+                protocol,
+                &self.deps.deployments,
+            ))
                         .await;
                 }
             }
