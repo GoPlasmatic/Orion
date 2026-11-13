@@ -40,6 +40,15 @@ A `[secrets]` reference that cannot be resolved stops the boot. That is the poin
 
 See [Environment Variables](../environment-variables.md) for how these fit with the other ways a value reaches Orion, and [Expressions](../expressions.md#secrets) for the `secret` operator's rules.
 
+### `[extensions.<id>]`
+
+A third free-form section, for settings an edition's own drivers and providers read: an Enterprise build's `kafka` driver, say. Community stores each table and never interprets it. The edition that composed the extension reads its table before the node starts, and holds it to its own type. Like the other two, it has no `ORION_EXTENSIONS__` override; write `${VAR}` in a value. `validate-config` prints it as written, so keep credentials behind `env://` / `vault://` references or in `[secrets]`.
+
+```toml
+[extensions.kafka]
+lag_poll_interval_secs = 30
+```
+
 ## Related
 
 - [Environment variables](../environment-variables.md): how these fit with `${VAR}`, `env://` and `var://`.

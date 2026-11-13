@@ -230,10 +230,12 @@ impl CompositionBuilder {
     }
 
     /// Register the providers (and their pools) `setup` builds once the
-    /// node's services exist: a backend that resolves governed connections
-    /// needs the node's deployment store, and one that calls out needs its
-    /// HTTP client. `setup` runs once, in [`Self::build`].
-    pub(crate) fn with_providers(
+    /// node's services exist: a backend that calls out needs the node's
+    /// shared HTTP client (SSRF-pinned DNS, redirects off) and its response
+    /// caps, both on [`ProviderRegistrar::options`]. `setup` runs once, in
+    /// [`Self::build`]. An edition uses it for a provider that should reach
+    /// the network the way Community's do.
+    pub fn with_providers(
         mut self,
         setup: impl FnOnce(&mut ProviderRegistrar<'_>) + Send + 'static,
     ) -> Self {

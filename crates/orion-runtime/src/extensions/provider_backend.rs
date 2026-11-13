@@ -20,8 +20,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use arc_swap::ArcSwap;
 use orion_extension_api::{
-    ConnectorError, ConnectorOutput, DuplicateProvider, EffectStatus, ImplementationKind,
-    ProviderBackend,
+    ConnectorError, ConnectorOutput, Digest, DuplicateProvider, EffectStatus,
+    EffectiveConnectionIdentity, ImplementationKind, ProviderBackend,
 };
 use serde_json::Value;
 
@@ -116,6 +116,9 @@ pub struct ProviderRegistry {
     admitted: Arc<AdmittedProviders>,
     deployments: ImmutableDeploymentStore,
     ledger: Arc<RevocationLedger>,
+    /// The connection revisions the last published generation pins, so the
+    /// next build can tell which ones it retired ([`Self::retire_unserved`]).
+    served: Arc<Mutex<BTreeSet<EffectiveConnectionIdentity>>>,
 }
 
 /// The admitted layer: readers load the table lock-free, writers serialise
@@ -148,6 +151,74 @@ impl ProviderRegistry {
             admitted: Arc::new(AdmittedProviders::default()),
             deployments,
             ledger,
+            served: Arc::default(),
+        }
+    }
+
+    /// The backend a connection revision naming `provider_digest` runs on: a
+    /// driver compiled into this binary (Community's, or one an edition
+    /// composed), else the stored package's backend.
+    pub fn backend_for_provider(
+        &self,
+        provider_digest: &Digest,
+    ) -> Option<Arc<dyn ProviderBackend>> {
+        if let Some(driver) = super::foundation::builtin_driver(provider_digest) {
+            return self.get(ImplementationKind::Rust, driver);
+        }
+        if let Some(driver) = self.deployments.composed_rust_driver(provider_digest) {
+            return self.get(ImplementationKind::Rust, driver.as_str());
+        }
+        let package = self.deployments.get_package(provider_digest)?;
+        self.get(package.implementation, package.backend_id())
+    }
+
+    /// Record the connection revisions the generation just published pins,
+    /// and [`ProviderBackend::dispose`] every one the previous generation
+    /// pinned that this one does not. Called by each build after its publish,
+    /// so a provider learns a revision is retired only once nothing new can
+    /// be admitted on it.
+    pub async fn retire_unserved(&self, now_served: BTreeSet<EffectiveConnectionIdentity>) {
+        let retired: Vec<EffectiveConnectionIdentity> = {
+            let mut served = self.served.lock().unwrap_or_else(PoisonError::into_inner);
+            let retired = served.difference(&now_served).cloned().collect();
+            *served = now_served;
+            retired
+        };
+        for identity in retired {
+            match self.backend_for_provider(&identity.provider_digest) {
+                Some(backend) => backend.dispose(&identity).await,
+                None => tracing::debug!(
+                    connection = %identity.connection_id.as_str(),
+                    revision = identity.revision.get(),
+                    "Retired connection revision's provider is no longer registered; nothing to dispose"
+                ),
+            }
+        }
+    }
+
+    /// [`ProviderBackend::shutdown`] on every registered backend, both
+    /// layers, concurrently, bounded by `deadline`. Names any that did not
+    /// finish rather than waiting past it.
+    pub async fn shutdown(&self, deadline: std::time::Instant) {
+        let backends: Vec<(String, Arc<dyn ProviderBackend>)> = self
+            .registered_drivers()
+            .into_iter()
+            .filter_map(|(kind, id)| self.get(kind, &id).map(|backend| (id, backend)))
+            .collect();
+        if backends.is_empty() {
+            return;
+        }
+        let all = futures::future::join_all(
+            backends
+                .iter()
+                .map(|(_, backend)| backend.shutdown(deadline)),
+        );
+        if tokio::time::timeout_at(deadline.into(), all).await.is_err() {
+            let ids: Vec<&str> = backends.iter().map(|(id, _)| id.as_str()).collect();
+            tracing::warn!(
+                providers = ?ids,
+                "Connector providers did not all finish shutting down by the deadline"
+            );
         }
     }
 

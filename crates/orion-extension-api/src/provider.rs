@@ -11,6 +11,7 @@
 //! [`ProviderBackend::as_source`].
 
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use orion_api::Digest;
@@ -205,9 +206,22 @@ pub trait ProviderBackend: Send + Sync {
         Ok(())
     }
 
-    /// Dispose any provider-held resources for `identity`.
+    /// Release what the provider holds for `identity` (a pooled client, a
+    /// producer). The node calls it once the generation it publishes no longer
+    /// pins that connection revision: the connection was removed, or replaced
+    /// by a new revision. A call already admitted on the old generation may
+    /// still hold what it acquired, so release idle resources rather than
+    /// tearing down ones in use.
     async fn dispose(&self, identity: &EffectiveConnectionIdentity) {
         let _ = identity;
+    }
+
+    /// Flush and close, by `deadline`: the node is shutting down. Called once,
+    /// after the channel drivers have stopped and before the trace queues
+    /// drain, so a provider that buffers writes (a Kafka producer) can deliver
+    /// them. Nothing is dispatched to the provider after it.
+    async fn shutdown(&self, deadline: Instant) {
+        let _ = deadline;
     }
 
     /// Input keys of `operation` that must be authored as literal strings:

@@ -59,6 +59,20 @@ pub use orion_runtime::ingress;
 pub mod extensions {
     pub(crate) use orion_runtime::extensions::*;
     pub use orion_runtime::extensions::{Composition, CompositionBuilder, CompositionRoot};
+
+    /// What an edition's provider builds on, so it does not copy Community's
+    /// internals: the registrar a [`CompositionBuilder::with_providers`]
+    /// setup is handed and the node options on it (the shared HTTP client and
+    /// caps), the version-fenced session pool the foundation SQL providers
+    /// key on `EffectiveConnectionIdentity`, and the
+    /// address checks every egress runs before it connects.
+    pub mod kit {
+        pub use orion_common::ssrf::{
+            is_private_ip, validate_hostport_not_private, validate_url_not_private,
+        };
+        pub use orion_runtime::extensions::resource_pool::{SessionHandle, VersionedSessionPool};
+        pub use orion_runtime::extensions::{FoundationOptions, ProviderRegistrar, SqlLimits};
+    }
 }
 #[doc(hidden)]
 pub use orion_common::http_body;

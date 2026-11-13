@@ -46,8 +46,17 @@ a release, include its implementation and validation in that release's work.
   `--capabilities` (a node's `/runtime-capabilities`): its capabilities, guard
   row and `transport_schema`. A driver's own `validate_fields` and
   `validate_transport` run only on the node.
-- The runtime's pool registry exposes eviction methods without production
-  callers. Check revision and secret identity before adding eviction for rotation
-  or retirement; define how admitted runs drain their old resources.
+- Lifecycle: `ProviderBackend::dispose(identity)` is called once a published
+  generation no longer pins that connection revision (removed, or replaced by a
+  new revision); calls already admitted on the old generation may still hold
+  what they acquired, so release idle resources only. `ProviderBackend::shutdown`
+  is called once at node shutdown, after the channel drivers stop and before the
+  trace queues drain. `ConnectionPoolCache::evict_all` still has no production
+  caller.
+- An edition binary builds its providers with the `orion` library's
+  `extensions::kit` (`VersionedSessionPool`, the SSRF address checks, and
+  `FoundationOptions` with the node's shared HTTP client, handed to a
+  `CompositionBuilder::with_providers` setup), and reads node-wide settings from
+  its own `[extensions.<id>]` config table (`AppConfig::extensions.section`).
 - Community does not register a `source` protocol. A source provider, its driver
   lifecycle and runner wiring must ship together before Community accepts it.

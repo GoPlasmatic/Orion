@@ -4,6 +4,7 @@ mod cron;
 mod engine;
 mod env_overrides;
 pub mod env_substitute;
+pub mod extensions;
 mod jwt;
 mod logging;
 mod oauth2_login;
@@ -27,6 +28,7 @@ pub use cluster::ClusterConfig;
 pub use cron::CronConfig;
 pub use engine::{CircuitBreakerConfig, ConnectorBudgetLimits, EngineConfig, RunBudgetLimits};
 pub use env_overrides::known_env_override_keys;
+pub use extensions::ExtensionsConfig;
 pub use jwt::JwtConfig;
 pub use logging::{LogFormat, LoggingConfig};
 pub use oauth2_login::{InstanceProviderConfig, OAuth2LoginConfig};
@@ -100,6 +102,10 @@ pub struct AppConfig {
     pub secrets: SecretsConfig,
     /// The WebAssembly plugin sandbox and its ceilings. Off by default.
     pub plugins: PluginsConfig,
+    /// `[extensions.<id>]`: an edition's own settings, free-form and
+    /// uninterpreted here — see [`ExtensionsConfig`]. No env override, like
+    /// `vars`.
+    pub extensions: ExtensionsConfig,
 }
 
 fn default_environment() -> String {
@@ -133,6 +139,7 @@ impl Default for AppConfig {
             vars: VarsConfig::default(),
             secrets: SecretsConfig::default(),
             plugins: PluginsConfig::default(),
+            extensions: ExtensionsConfig::default(),
         }
     }
 }

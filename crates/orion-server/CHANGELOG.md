@@ -19,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   under `components.channel_drivers`. A channel of such a protocol that
   configures a guard its deliveries never pass, or an HTTP-only block (`auth`,
   `cache`, `oauth2_login`, …), is refused at upload.
+- **Provider lifecycle, edition config and the provider kit.**
+  `ProviderBackend::dispose` is now called when a published generation stops
+  pinning a connection revision, and the new `ProviderBackend::shutdown` is
+  called at node shutdown, after the channel drivers stop and before the trace
+  queues drain, so a buffering provider can flush. A free-form
+  `[extensions.<id>]` config table holds an edition's own settings
+  (`ExtensionsConfig::section::<T>`; no env override, like `[vars]`).
+  `CompositionBuilder::with_providers` is public, and `orion::extensions::kit`
+  re-exports `VersionedSessionPool`, the SSRF address checks, `FoundationOptions`
+  and `ProviderRegistrar` for an edition's providers.
 - **An edition's compiled-in providers work like Community's.** A `rust`
   provider an edition composes answers to a digest derived from its id, which
   `/runtime-capabilities` now reports for every `rust` backend. Connection

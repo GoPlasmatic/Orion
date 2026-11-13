@@ -629,6 +629,15 @@ pub async fn run(
         );
     }
 
+    // Connector providers flush what they buffer (a producer's pending
+    // sends) while the trace queues can still record what it did: after the
+    // channel drivers stopped (the supervised tasks above), before the drain.
+    state
+        .composition
+        .providers()
+        .shutdown(std::time::Instant::now() + remaining())
+        .await;
+
     // Release the state's trace-queue sender before draining the workers —
     // they exit when the last sender closes, and holding `state` here would
     // stall the drain until its timeout.

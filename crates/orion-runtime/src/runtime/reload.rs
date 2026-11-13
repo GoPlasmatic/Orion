@@ -725,6 +725,23 @@ async fn build_and_publish(
             }
         }
 
+        // The connection revisions this generation pins; a provider is told
+        // about every one the previous generation pinned and this one does not.
+        let served: std::collections::BTreeSet<_> = manifest
+            .members
+            .iter()
+            .filter(|m| {
+                m.entity.kind == crate::extensions::deployment_store::EntityKind::Connection
+            })
+            .filter_map(|m| {
+                state
+                    .deployments
+                    .get_connection(&m.entity.id, m.entity.revision)
+                    .map(|row| row.effective_identity())
+            })
+            .collect();
+        state.composition.providers().retire_unserved(served).await;
+
         // Update active workflows gauge
         crate::metrics::set_active_workflows(active_workflows.len() as f64);
 

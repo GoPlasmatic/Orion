@@ -575,3 +575,12 @@
 # be resolved stops the boot rather than reaching a backend as its own text.
 #   partner_hmac = "env://PARTNER_HMAC_KEY"
 #   signing_key = "vault://secret/data/orion#signing_key"
+
+# [extensions.<id>]
+# Settings for an edition's own drivers and providers (an Enterprise build's
+# `kafka` driver, say). Community stores each table and never reads it; the
+# edition that composed the extension does, and decides how strict to be.
+# Free-form like [vars], so there is no ORION_EXTENSIONS__ override; write
+# ${VAR} in a value. Keep credentials behind references, not literals.
+#   [extensions.kafka]
+#   lag_poll_interval_secs = 30
