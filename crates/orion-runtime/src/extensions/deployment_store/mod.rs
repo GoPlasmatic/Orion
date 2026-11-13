@@ -484,35 +484,57 @@ pub struct CandidatePlan {
     pub external_effect_warnings: Vec<String>,
 }
 
+/// The deterministic identity of a commit request, over `(operation,
+/// base_revision, candidate digest, reason)`.
+///
+/// It is computed from the request alone — the candidate digest comes from the
+/// manifest, never from a plan — so a retry can be recognised before the node
+/// plans or builds anything. Removals are not part of it: they are a function
+/// of the base revision's immutable manifest and the candidate's, both already
+/// covered.
+pub fn request_hash(
+    operation: &str,
+    base_revision: u64,
+    candidate_digest: &str,
+    reason: &str,
+) -> Result<String, DeploymentError> {
+    let doc = json!({
+        "base_revision": base_revision,
+        "candidate_digest": candidate_digest,
+        "operation": operation,
+        "reason": reason,
+    });
+    let bytes = canonical_bytes(&doc)
+        .map_err(|e| DeploymentError::new(Kind::RequestHashInvalid, e.code))?;
+    Ok(sha256_digest(&bytes).into_string())
+}
+
+/// [`request_hash`] for a request that names `candidate` directly, before it
+/// is planned: canonicalizing the manifest is all the digest needs.
+pub fn candidate_request_hash(
+    operation: &str,
+    base_revision: u64,
+    candidate: &CanonicalManifest,
+    reason: &str,
+) -> Result<String, DeploymentError> {
+    let (_, candidate_digest) = candidate.canonicalize_and_verify()?;
+    request_hash(operation, base_revision, &candidate_digest, reason)
+}
+
 impl CandidatePlan {
-    /// Compute the deterministic request hash over `(operation, base_revision,
-    /// candidate_digest, removals, reason)`.
+    /// This plan's request identity, as
+    /// [`request_hash`] computes it from the same inputs.
     pub fn compute_request_hash(
         &self,
         operation: &str,
         reason: &str,
     ) -> Result<String, DeploymentError> {
-        let removals: Vec<Value> = self
-            .removed_entities
-            .iter()
-            .map(|r| {
-                json!({
-                    "id": r.id,
-                    "kind": r.kind.as_str(),
-                    "revision": r.revision,
-                })
-            })
-            .collect();
-        let doc = json!({
-            "base_revision": self.base_revision,
-            "candidate_digest": self.candidate_digest,
-            "operation": operation,
-            "reason": reason,
-            "removals": removals,
-        });
-        let bytes = canonical_bytes(&doc)
-            .map_err(|e| DeploymentError::new(Kind::RequestHashInvalid, e.code))?;
-        Ok(sha256_digest(&bytes).into_string())
+        request_hash(
+            operation,
+            self.base_revision,
+            &self.candidate_digest,
+            reason,
+        )
     }
 }
 

@@ -67,7 +67,7 @@ async fn apply(app: &Router, manifest: &Value, base: u64, key: &str) -> Value {
 #[tokio::test]
 async fn a_replay_answers_its_receipt_and_a_stale_base_conflicts() {
     let app = test_app().await;
-    let (_, manifest) = deployed_package(&app).await;
+    let (digest, manifest) = deployed_package(&app).await;
 
     let (status, first) = send(
         &app,
@@ -79,6 +79,26 @@ async fn a_replay_answers_its_receipt_and_a_stale_base_conflicts() {
     assert_eq!(status, StatusCode::ACCEPTED, "{first}");
     assert_eq!(first["committed_revision"], 1);
 
+    let (status, stale) = send(
+        &app,
+        "POST",
+        DEPLOYMENTS,
+        apply(&app, &manifest, 0, "k2").await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{stale}");
+
+    // The package is revoked, so this request could not be committed now.
+    // A retry of the first request still answers the receipt it committed.
+    let (status, revoked) = send(
+        &app,
+        "POST",
+        &format!("{PACKAGES}/{digest}/revocations"),
+        json!({"reason": "drill"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{revoked}");
+
     let (status, replay) = send(
         &app,
         "POST",
@@ -89,17 +109,8 @@ async fn a_replay_answers_its_receipt_and_a_stale_base_conflicts() {
     assert_eq!(status, StatusCode::ACCEPTED, "{replay}");
     assert_eq!(
         replay["committed_revision"], 1,
-        "a replay commits nothing new"
+        "a replay commits nothing new and is not re-validated as a new apply"
     );
-
-    let (status, stale) = send(
-        &app,
-        "POST",
-        DEPLOYMENTS,
-        apply(&app, &manifest, 0, "k2").await,
-    )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{stale}");
 }
 
 /// A revoked provider package cannot be deployed.
@@ -232,4 +243,77 @@ async fn authoring_lint_returns_200_with_report_and_400_envelope_on_bad_encoding
         bad_encoding["error"]["code"], "INVALID_PACKAGE_ENCODING",
         "{bad_encoding}"
     );
+}
+
+/// A path segment that is not a revision must answer the error envelope, not
+/// axum's plain-text `Path` rejection. The extractor is shared, so this covers
+/// the connection revision and probe routes too.
+#[tokio::test]
+async fn a_malformed_path_parameter_answers_the_error_envelope() {
+    let app = test_app().await;
+    for (method, uri) in [
+        ("GET", "/api/v2/admin/deployments/not-a-number"),
+        ("GET", "/api/v2/admin/deployments/not-a-number/convergence"),
+        (
+            "GET",
+            "/api/v2/admin/connections/crm/revisions/not-a-number",
+        ),
+        (
+            "POST",
+            "/api/v2/admin/connections/crm/revisions/not-a-number/probes",
+        ),
+    ] {
+        let (status, body) = send(&app, method, uri, json!(null)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+        assert_eq!(body["error"]["code"], "VALIDATION_ERROR", "{uri}: {body}");
+    }
+}
+
+/// An unknown convergence scope is refused rather than silently answered as
+/// `this-node` — a typo must not look like a cluster-wide verdict.
+#[tokio::test]
+async fn an_unknown_convergence_target_is_refused() {
+    let app = test_app().await;
+    let (status, body) = send(
+        &app,
+        "GET",
+        "/api/v2/admin/deployments/1/convergence?target=observd",
+        json!(null),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR", "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("observd")),
+        "the refusal names the bad value: {body}"
+    );
+}
+
+/// The authoring tools take the files and nothing else: `admit`/`lock` on
+/// `/authoring/lint` or `/authoring/pack` are unknown fields now, not accepted
+/// and silently dropped.
+#[tokio::test]
+async fn authoring_tools_refuse_upload_only_fields() {
+    let app = test_app().await;
+    for uri in [
+        "/api/v2/admin/authoring/lint",
+        "/api/v2/admin/authoring/pack",
+    ] {
+        let (status, body) = send(&app, "POST", uri, json!({"files": {}, "admit": true})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+        assert_eq!(body["error"]["code"], "VALIDATION_ERROR", "{uri}: {body}");
+    }
+
+    // And an upload that sends a lock it will not read is refused by name.
+    let (status, body) = send(
+        &app,
+        "POST",
+        PACKAGES,
+        json!({"files": {}, "lock": {"provider": "x"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR", "{body}");
 }

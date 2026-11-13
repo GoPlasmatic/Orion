@@ -522,7 +522,7 @@ async fn a_package_admission_connection_and_revocation_read_back(backend: &str, 
     );
 
     let before = fresh.current_head();
-    node.revoke_package_in_db(pool, &pkg.package_digest)
+    node.revoke_package_in_db(pool, &pkg.package_digest, None)
         .await
         .expect("revoke");
     fresh.load_from_db_pool(pool).await.expect("load");
@@ -542,6 +542,7 @@ async fn a_package_admission_connection_and_revocation_read_back(backend: &str, 
         .revoke_package_in_db(
             pool,
             "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            None,
         )
         .await
         .expect_err("no admission");

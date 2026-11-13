@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use axum::Json;
 use base64::Engine as _;
 use orion_api::v2::{
-    LintResponse, PackResponse, ScaffoldRequest, ScaffoldResponse, UploadPackageRequest,
+    LintResponse, PackResponse, PackageFilesRequest, ScaffoldRequest, ScaffoldResponse,
 };
 
 use super::{V2Error, V2Result, decode_files_map};
@@ -72,14 +72,14 @@ pub(crate) async fn authoring_scaffold(
     tag = "Providers",
     summary = "Pack a provider package into a deterministic content-addressed bundle",
     description = "Validates the package files, computes canonical SHA-256 digests and `inventory.json`, and returns the packed bundle ready for upload.",
-    request_body = UploadPackageRequest,
+    request_body = PackageFilesRequest,
     responses(
         (status = 200, description = "Deterministically packed provider package", body = PackResponse),
         (status = 400, description = "A file is not valid `base64:` (`INVALID_PACKAGE_ENCODING`), or the files do not pack (`PACK_VALIDATION_FAILED`)"),
     )
 )]
 pub(crate) async fn authoring_pack(
-    OrionJson(req): OrionJson<UploadPackageRequest>,
+    OrionJson(req): OrionJson<PackageFilesRequest>,
 ) -> V2Result<Json<PackResponse>> {
     let mut raw_files = req.files;
     let files = decode_files_map(&raw_files)?;
@@ -106,14 +106,14 @@ pub(crate) async fn authoring_pack(
     tag = "Providers",
     summary = "Lint a provider package manifest and schema bundle",
     description = "Validates `connector.json`, `distribution.json`, and implementation files, returning the lint report (`valid` and `errors`).",
-    request_body = UploadPackageRequest,
+    request_body = PackageFilesRequest,
     responses(
         (status = 200, description = "Lint report (`valid` indicates whether all checks passed)", body = LintResponse),
         (status = 400, description = "A file is not valid `base64:` (`INVALID_PACKAGE_ENCODING`), or the request body did not parse (`VALIDATION_ERROR`)"),
     )
 )]
 pub(crate) async fn authoring_lint(
-    OrionJson(req): OrionJson<UploadPackageRequest>,
+    OrionJson(req): OrionJson<PackageFilesRequest>,
 ) -> V2Result<Json<LintResponse>> {
     let files = decode_files_map(&req.files)?;
     let report = lint_provider_package(&files);

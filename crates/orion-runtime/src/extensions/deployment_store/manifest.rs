@@ -205,6 +205,17 @@ impl CanonicalManifest {
                 "deployment manifest schema_version must be 2",
             ));
         }
+        // The digest is folded into the canonical bytes and protects the lock
+        // from GC; an unparseable one protects nothing, so refuse it at the
+        // wire instead of storing an opaque string.
+        if let Some(lock) = &self.provider_lock_digest {
+            Digest::parse(lock).map_err(|e| {
+                DeploymentError::new(
+                    DeploymentErrorKind::ManifestShapeInvalid,
+                    format!("provider_lock_digest: {e}"),
+                )
+            })?;
+        }
 
         let mut provider_keys = HashSet::new();
         let mut provider_digests = HashSet::new();

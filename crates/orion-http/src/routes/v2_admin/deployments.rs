@@ -1,7 +1,7 @@
 //! V2 candidate deployment plans, and deployments — an apply or a rollback,
 //! each one CAS commit — with their convergence (`/api/v2/admin/deployment*`).
 
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use orion_api::v2::{
@@ -19,11 +19,12 @@ use crate::extensions::deployment_store::{
     DeploymentRevisionRow, EntityRef,
 };
 use crate::extensions::reconciler::ConvergenceTarget;
-use crate::extract::{OrionJson, OrionQuery};
+use crate::extract::{OrionJson, OrionPath, OrionQuery};
 use crate::runtime::state::AppState;
 
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
 pub struct ConvergenceQuery {
     /// Convergence evaluation scope (`this-node` or `observed`).
     pub target: Option<String>,
@@ -262,13 +263,53 @@ pub(crate) async fn create_deployment(
 
 /// Plan `req`'s manifest again, refuse it unless it plans to the reviewed
 /// digest, and commit it.
+/// Both commits are idempotent and audited: an empty key would make every
+/// request by a principal share one namespace, and an empty reason would
+/// leave the revision's audit row saying nothing.
+fn check_commit_identity(
+    idempotency_key: &str,
+    reason: &str,
+) -> Result<(), crate::errors::OrionError> {
+    if idempotency_key.trim().is_empty() {
+        return Err(crate::errors::OrionError::invalid_field(
+            "idempotency_key",
+            orion_api::error::field_codes::REQUIRED,
+            "an idempotency_key is required",
+        ));
+    }
+    if reason.trim().is_empty() {
+        return Err(crate::errors::OrionError::invalid_field(
+            "reason",
+            orion_api::error::field_codes::REQUIRED,
+            "a reason is required",
+        ));
+    }
+    Ok(())
+}
+
 async fn apply_deployment(
     state: &AppState,
     principal: &Option<Extension<AdminPrincipal>>,
     req: ApplyDeploymentRequest,
-) -> Result<DeploymentReceipt, DeploymentError> {
+) -> V2Result<DeploymentReceipt> {
+    check_commit_identity(&req.idempotency_key, &req.reason)?;
     let actor = principal_id(principal);
     let manifest = CanonicalManifest::from_wire(&req.manifest)?;
+    // A replay answers the receipt the first request committed, before this
+    // node re-plans or re-checks whether it could build the candidate now.
+    let request_hash = crate::extensions::deployment_store::candidate_request_hash(
+        "apply",
+        req.base_revision,
+        &manifest,
+        &req.reason,
+    )?;
+    if let Some(receipt) = state
+        .deployments
+        .replay_receipt(&state.db_pool, &actor, &req.idempotency_key, &request_hash)
+        .await?
+    {
+        return Ok(receipt);
+    }
     let plan = state
         .deployments
         .plan_candidate_in_db(&state.db_pool, req.base_revision, manifest)
@@ -281,7 +322,8 @@ async fn apply_deployment(
                 "reviewed_manifest_digest '{}' does not match candidate manifest digest '{}'",
                 req.reviewed_manifest_digest, plan.candidate_digest
             ),
-        ));
+        )
+        .into());
     }
     // The audit row is written in the commit's transaction: it lands with
     // the head move or not at all, and a replay that commits nothing writes
@@ -318,7 +360,8 @@ async fn rollback_deployment(
     state: &AppState,
     principal: &Option<Extension<AdminPrincipal>>,
     req: RollbackDeploymentRequest,
-) -> Result<(DeploymentReceipt, Vec<String>), DeploymentError> {
+) -> V2Result<(DeploymentReceipt, Vec<String>)> {
+    check_commit_identity(&req.idempotency_key, &req.reason)?;
     let actor = principal_id(principal);
     let ((receipt, warnings), recorded) = state
         .deployments
@@ -405,12 +448,13 @@ async fn reconcile_locally(
     ),
     responses(
         (status = 200, description = "Committed deployment revision", body = DeploymentRevisionResponse),
+        (status = 400, description = "A malformed path parameter (`VALIDATION_ERROR`)"),
         (status = 404, description = "No revision has that number (`REVISION_NOT_FOUND`)"),
     )
 )]
 pub(crate) async fn get_deployment_revision(
     State(state): State<AppState>,
-    Path(revision): Path<u64>,
+    OrionPath(revision): OrionPath<u64>,
 ) -> V2Result<Json<DeploymentRevisionResponse>> {
     let row = state
         .deployments
@@ -441,14 +485,36 @@ pub(crate) async fn get_deployment_revision(
     ),
     responses(
         (status = 200, description = "Convergence evaluation report", body = ConvergenceStatusResponse),
+        (status = 400, description = "A malformed path parameter or an unknown `target` (`VALIDATION_ERROR`)"),
         (status = 404, description = "No revision has that number (`REVISION_NOT_FOUND`)"),
     )
 )]
 pub(crate) async fn get_deployment_convergence(
     State(state): State<AppState>,
-    Path(revision): Path<u64>,
-    Query(query): Query<ConvergenceQuery>,
+    OrionPath(revision): OrionPath<u64>,
+    OrionQuery(query): OrionQuery<ConvergenceQuery>,
 ) -> V2Result<Json<ConvergenceStatusResponse>> {
+    // The query is the caller's to get right whatever the revision is: an
+    // unknown target must not read as a missing revision, and must never
+    // fall back to the other scope.
+    let local_node_id = state.reconciler.local_status().identity.node_id;
+    let target = match query.target.as_deref().unwrap_or("this-node") {
+        "this-node" => ConvergenceTarget::ThisNode(local_node_id),
+        "observed" => {
+            let observed = state
+                .reconciler
+                .refresh_observed_nodes(state.repos.runtime_nodes.as_ref())
+                .await
+                .unwrap_or_else(|_| state.reconciler.observed_node_ids());
+            ConvergenceTarget::ObservedNodes(observed)
+        }
+        other => {
+            return Err(crate::errors::OrionError::validation(format!(
+                "unknown convergence target '{other}': expected 'this-node' or 'observed'"
+            ))
+            .into());
+        }
+    };
     state
         .deployments
         .revision(&state.db_pool, revision)
@@ -459,18 +525,6 @@ pub(crate) async fn get_deployment_convergence(
                 format!("deployment revision {revision} not found"),
             )
         })?;
-    let local_node_id = state.reconciler.local_status().identity.node_id;
-    let target = match query.target.as_deref().unwrap_or("this-node") {
-        "observed" => {
-            let observed = state
-                .reconciler
-                .refresh_observed_nodes(state.repos.runtime_nodes.as_ref())
-                .await
-                .unwrap_or_else(|_| state.reconciler.observed_node_ids());
-            ConvergenceTarget::ObservedNodes(observed)
-        }
-        _ => ConvergenceTarget::ThisNode(local_node_id),
-    };
     let report = state.reconciler.evaluate_convergence(revision, &target);
     let dto = ConvergenceStatusResponse {
         converged: report.converged,

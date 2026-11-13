@@ -16,9 +16,9 @@ use orion_api::v2::{
     CreateConnectionRevisionRequest, CreateConnectionRevisionResponse, CreateDeploymentPlanRequest,
     CreateDeploymentRequest, CreateDeploymentResponse, Definition, DefinitionResponse,
     DeploymentPlanResponse, DeploymentRevisionResponse, DeploymentsPage, LintResponse,
-    PackResponse, RevokePackageRequest, RevokePackageResponse, RuntimeCapabilitiesResponse,
-    ScaffoldRequest, ScaffoldResponse, TestDefinitionRequest, TestDefinitionResponse,
-    UploadPackageRequest, UploadPackageResponse,
+    PackResponse, PackageFilesRequest, RevokePackageRequest, RevokePackageResponse,
+    RuntimeCapabilitiesResponse, ScaffoldRequest, ScaffoldResponse, TestDefinitionRequest,
+    TestDefinitionResponse, UploadPackageRequest, UploadPackageResponse,
 };
 use reqwest::Method;
 use serde::Serialize;
@@ -429,7 +429,7 @@ pub trait V2Admin: Sync {
 
     fn authoring_lint(
         &self,
-        request: &UploadPackageRequest,
+        request: &PackageFilesRequest,
     ) -> impl Future<Output = Result<LintResponse, Self::Error>> + Send {
         let body = body(request);
         async move { call(self, Method::POST, paths::V2_AUTHORING_LINT.into(), body?).await }
@@ -437,7 +437,7 @@ pub trait V2Admin: Sync {
 
     fn authoring_pack(
         &self,
-        request: &UploadPackageRequest,
+        request: &PackageFilesRequest,
     ) -> impl Future<Output = Result<PackResponse, Self::Error>> + Send {
         let body = body(request);
         async move { call(self, Method::POST, paths::V2_AUTHORING_PACK.into(), body?).await }

@@ -11,12 +11,12 @@
 //! diagnostic detail only when one occurrence is asked for by id.
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::{Extension, http::StatusCode};
 
 use crate::admin_auth::AdminPrincipal;
 use crate::errors::OrionError;
-use crate::extract::OrionQuery;
+use crate::extract::{OrionPath, OrionQuery};
 use crate::routes::openapi::ErrorResponse;
 use crate::routes::response_helpers::{data_response, page_response};
 use crate::runtime::state::AppState;
@@ -70,7 +70,7 @@ pub(crate) async fn list_occurrences(
 #[tracing::instrument(skip(state))]
 pub(crate) async fn get_occurrence(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    OrionPath(id): OrionPath<String>,
 ) -> Result<Json<Data<CronOccurrenceResponse>>, OrionError> {
     let occurrence = state.repos.cron.get_by_id(&id).await?;
     Ok(data_response(CronOccurrenceResponse::from(&occurrence)))
@@ -92,7 +92,7 @@ pub(crate) async fn get_occurrence(
 pub(crate) async fn retry_occurrence(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    Path(id): Path<String>,
+    OrionPath(id): OrionPath<String>,
 ) -> Result<Json<Data<CronOccurrenceResponse>>, OrionError> {
     // The retry keeps the occurrence's identity and its `scheduled_for`: it is
     // another attempt at the work that was due then, not a new piece of work.
@@ -126,7 +126,7 @@ pub(crate) async fn retry_occurrence(
 pub(crate) async fn cancel_occurrence(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    Path(id): Path<String>,
+    OrionPath(id): OrionPath<String>,
 ) -> Result<Json<Data<CronOccurrenceResponse>>, OrionError> {
     // Read first only to name the holder in the record. The cancel itself is
     // conditional on the status, so a run that settles in between is a 409,
@@ -259,7 +259,7 @@ pub(crate) async fn cron_status(
 pub(crate) async fn trigger_channel(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    Path(id): Path<String>,
+    OrionPath(id): OrionPath<String>,
 ) -> Result<(StatusCode, Json<Data<CronOccurrenceResponse>>), OrionError> {
     let generation = state.runtime.load();
     let Some(runtime) = generation.channels.cron_by_channel_id(&id) else {

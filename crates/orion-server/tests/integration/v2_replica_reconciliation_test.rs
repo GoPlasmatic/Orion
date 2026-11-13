@@ -349,7 +349,7 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
     // Revoke package on Replica A and verify Replica B refreshes revocations on reconcile
     state_a
         .deployments
-        .revoke_package_in_db(&state_a.db_pool, &pkg.package_digest)
+        .revoke_package_in_db(&state_a.db_pool, &pkg.package_digest, None)
         .await
         .unwrap();
     let _ = orion::cluster::reconcile_v2_state_once(&state_b).await;

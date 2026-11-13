@@ -1,6 +1,6 @@
 //! V2 Connector package ingestion, admission & revocation routes (`/api/v2/admin/connector-packages*`).
 
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use orion_api::Page;
@@ -18,7 +18,7 @@ use crate::extensions::authoring::pack_provider_package;
 use crate::extensions::deployment_store::{
     ArchiveEntryInput, ArtifactState, DeploymentErrorKind, ProviderAdmissionRow, ProviderPackageRow,
 };
-use crate::extract::{OrionJson, OrionQuery};
+use crate::extract::{OrionJson, OrionPath, OrionQuery};
 use crate::runtime::state::AppState;
 
 fn admission_dto(adm: &ProviderAdmissionRow) -> ProviderAdmissionDto {
@@ -135,7 +135,7 @@ pub(crate) async fn list_connector_packages(
 )]
 pub(crate) async fn get_connector_package(
     State(state): State<AppState>,
-    Path(digest): Path<String>,
+    OrionPath(digest): OrionPath<String>,
 ) -> V2Result<Json<ConnectorPackageResponse>> {
     let package = state.deployments.get_package(&digest).ok_or_else(|| {
         V2Error::new(
@@ -179,6 +179,14 @@ pub(crate) async fn upload_connector_package(
     principal: Option<Extension<AdminPrincipal>>,
     OrionJson(req): OrionJson<UploadPackageRequest>,
 ) -> V2Result<(StatusCode, Json<UploadPackageResponse>)> {
+    if req.lock.is_some() && !req.admit {
+        return Err(crate::errors::OrionError::invalid_field(
+            "lock",
+            orion_api::error::field_codes::INVALID,
+            "`lock` is only read with `admit: true`; it has no effect otherwise",
+        )
+        .into());
+    }
     let mut files = decode_files_map(&req.files)?;
     // A workflow package is held to the hermetic rules before anything is
     // stored.
@@ -271,7 +279,7 @@ pub(crate) async fn upload_connector_package(
 pub(crate) async fn admit_connector_package(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    Path(digest): Path<String>,
+    OrionPath(digest): OrionPath<String>,
     req: Option<OrionJson<AdmitPackageRequest>>,
 ) -> V2Result<Json<AdmitPackageResponse>> {
     let lock = req.and_then(|OrionJson(r)| r.lock);
@@ -320,13 +328,13 @@ pub(crate) async fn admit_connector_package(
 pub(crate) async fn revoke_connector_package(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    Path(digest): Path<String>,
+    OrionPath(digest): OrionPath<String>,
     req: Option<OrionJson<RevokePackageRequest>>,
 ) -> V2Result<(StatusCode, Json<RevokePackageResponse>)> {
     let reason = req.and_then(|OrionJson(r)| r.reason);
     state
         .deployments
-        .revoke_package_in_db(&state.db_pool, &digest)
+        .revoke_package_in_db(&state.db_pool, &digest, reason.as_deref())
         .await?;
     // The store revoked a package stored under `digest`, so it is one.
     if let Ok(revoked) = Digest::parse(&digest) {

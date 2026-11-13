@@ -324,6 +324,7 @@ impl ImmutableDeploymentStore {
         &self,
         pool: &DbPool,
         package_digest: &str,
+        reason: Option<&str>,
     ) -> Result<(), DeploymentError> {
         let _guard = self.write_lock.lock().await;
         let mut tx = begin_write(pool).await?;
@@ -338,7 +339,7 @@ impl ImmutableDeploymentStore {
                 package_digest,
             ));
         };
-        sql::revoke(&mut tx, package_digest).await?;
+        sql::revoke(&mut tx, package_digest, reason).await?;
         let (head, epoch) = observed.unwrap_or((0, 0));
         let next = (head, epoch + 1);
         sql::write_head(&mut tx, observed, next).await?;
@@ -471,6 +472,39 @@ impl ImmutableDeploymentStore {
     /// Plan `candidate_manifest` on `base_revision` — its closure
     /// over what is stored and its diff against the base — in one read-only
     /// snapshot, outside any write transaction.
+    /// The receipt this exact request already committed, read before any
+    /// planning or building.
+    ///
+    /// A replay must answer what the first request committed even when the
+    /// node can no longer build the candidate now — a provider revoked since,
+    /// an artifact the collector drained, a target revision compacted. The
+    /// commit re-checks all of that under the head lock for a *new* request;
+    /// a replay has nothing left to check. A key reused for a different
+    /// request is [`Kind::IdempotencyKeyConflict`].
+    pub async fn replay_receipt(
+        &self,
+        pool: &DbPool,
+        principal: &str,
+        idempotency_key: &str,
+        request_hash: &str,
+    ) -> Result<Option<DeploymentReceipt>, DeploymentError> {
+        let mut tx = pool.begin_snapshot_tx().await.map_err(|e| {
+            DeploymentError::new(Kind::DbTransaction, format!("failed to begin tx: {e}"))
+        })?;
+        let stored = sql::receipt(&mut tx, principal, idempotency_key).await?;
+        tx.commit().await.map_err(DeploymentError::read)?;
+        match stored {
+            Some(stored) if stored.request_hash == request_hash => {
+                Ok(Some(stored.into_receipt(&self.node_id())))
+            }
+            Some(_) => Err(DeploymentError::new(
+                Kind::IdempotencyKeyConflict,
+                "idempotency_key already used by principal with different request parameters",
+            )),
+            None => Ok(None),
+        }
+    }
+
     pub async fn plan_candidate_in_db(
         &self,
         pool: &DbPool,
@@ -522,7 +556,9 @@ impl ImmutableDeploymentStore {
         let _guard = self.write_lock.lock().await;
         let mut tx = begin_write(pool).await?;
         let observed = sql::lock_head(&mut tx).await?;
-        let committed = self.commit_plan(&mut tx, observed, apply, policy).await?;
+        let committed = self
+            .commit_plan(&mut tx, observed, apply, policy, "apply")
+            .await?;
         self.finish_commit(pool, tx, committed, |r| audit(r).into())
             .await
     }
@@ -571,6 +607,26 @@ impl ImmutableDeploymentStore {
             ));
         };
         let target = target.into_row()?;
+        // A replay answers the receipt the first request committed, before
+        // the checks a *new* rollback must pass: the target may have been
+        // compacted, or its artifacts drained, since it was committed.
+        let replay_hash = super::request_hash(
+            "rollback",
+            expected_head_revision,
+            &target.manifest_digest,
+            reason,
+        )?;
+        if let Some(stored) = sql::receipt(&mut tx, principal, idempotency_key).await? {
+            if stored.request_hash != replay_hash {
+                return Err(DeploymentError::new(
+                    Kind::IdempotencyKeyConflict,
+                    "idempotency_key already used by principal with different request parameters",
+                ));
+            }
+            let receipt = stored.into_receipt(&self.node_id());
+            commit(tx).await?;
+            return Ok(((receipt, Vec::new()), None));
+        }
         if target.members_compacted {
             return Err(DeploymentError::new(
                 Kind::RollbackTargetCompacted,
@@ -600,6 +656,7 @@ impl ImmutableDeploymentStore {
                     reason,
                 },
                 policy,
+                "rollback",
             )
             .await?;
         let (receipt, event) = self
@@ -619,6 +676,7 @@ impl ImmutableDeploymentStore {
         observed: Option<(u64, u64)>,
         apply: &Apply<'_>,
         policy: &Admission,
+        operation: &str,
     ) -> Result<Committed, DeploymentError> {
         let &Apply {
             principal,
@@ -626,7 +684,7 @@ impl ImmutableDeploymentStore {
             plan,
             reason,
         } = apply;
-        let request_hash = plan.compute_request_hash("apply", reason)?;
+        let request_hash = plan.compute_request_hash(operation, reason)?;
         if let Some(stored) = sql::receipt(tx, principal, idempotency_key).await? {
             if stored.request_hash == request_hash {
                 return Ok(Committed {

@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use orion_api::v2::{
@@ -21,7 +21,7 @@ use crate::extensions::{
     AdmittedRun, AuthorityGrant, BudgetLimits, ConnectionId, ConnectionReference,
     EffectiveConnectionIdentity, ProviderRef, Revision, ValidateContext,
 };
-use crate::extract::{OrionJson, OrionQuery};
+use crate::extract::{OrionJson, OrionPath, OrionQuery};
 use crate::runtime::state::AppState;
 use orion_api::Page;
 use orion_api::error::field_codes;
@@ -106,7 +106,7 @@ pub(crate) async fn list_connections(
 )]
 pub(crate) async fn list_connection_revisions(
     State(state): State<AppState>,
-    Path(connection_id): Path<String>,
+    OrionPath(connection_id): OrionPath<String>,
     OrionQuery(query): OrionQuery<ListQuery>,
 ) -> V2Result<Json<Page<ConnectionRevisionResponse>>> {
     let rows = state
@@ -130,12 +130,13 @@ pub(crate) async fn list_connection_revisions(
     ),
     responses(
         (status = 200, description = "The connection revision", body = ConnectionRevisionResponse),
+        (status = 400, description = "A malformed path parameter (`VALIDATION_ERROR`)"),
         (status = 404, description = "No such revision is stored (`CONNECTION_REVISION_NOT_FOUND`)"),
     )
 )]
 pub(crate) async fn get_connection_revision(
     State(state): State<AppState>,
-    Path((connection_id, revision)): Path<(String, u64)>,
+    OrionPath((connection_id, revision)): OrionPath<(String, u64)>,
 ) -> V2Result<Json<ConnectionRevisionResponse>> {
     let row = stored_revision(&state, &connection_id, revision)?;
     Ok(Json(connection_row_to_dto(&row)))
@@ -159,7 +160,7 @@ pub(crate) async fn get_connection_revision(
 pub(crate) async fn create_connection_revision(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    Path(connection_id): Path<String>,
+    OrionPath(connection_id): OrionPath<String>,
     OrionJson(req): OrionJson<CreateConnectionRevisionRequest>,
 ) -> V2Result<(StatusCode, Json<CreateConnectionRevisionResponse>)> {
     // The store refuses these too; first here so a raw secret is named as
@@ -343,6 +344,7 @@ fn field_root(path: &str, locators: &BTreeMap<String, String>) -> String {
     ),
     responses(
         (status = 200, description = "The probe ran; `healthy` says what it found", body = ConnectionProbeResponse),
+        (status = 400, description = "A malformed path parameter (`VALIDATION_ERROR`)"),
         (status = 403, description = "The revision's provider package is revoked (`PROVIDER_REVOKED`)"),
         (status = 404, description = "No such revision (`CONNECTION_REVISION_NOT_FOUND`), its package is not stored (`PACKAGE_NOT_FOUND`), or this node has no backend for it (`PROVIDER_NOT_FOUND`)"),
     )
@@ -350,7 +352,7 @@ fn field_root(path: &str, locators: &BTreeMap<String, String>) -> String {
 pub(crate) async fn probe_connection(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    Path((connection_id, revision)): Path<(String, u64)>,
+    OrionPath((connection_id, revision)): OrionPath<(String, u64)>,
 ) -> V2Result<Json<ConnectionProbeResponse>> {
     let started = Instant::now();
     let conn_row = stored_revision(&state, &connection_id, revision)?;

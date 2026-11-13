@@ -39,6 +39,7 @@ pub enum ProviderAdmissions {
     PolicyId,
     AdmissionFingerprint,
     Revoked,
+    RevokedReason,
     UpdatedAt,
 }
 

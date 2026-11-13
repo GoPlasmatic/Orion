@@ -353,12 +353,14 @@ pub(in super::super) async fn upsert_admission(
 pub(in super::super) async fn revoke(
     tx: &mut DbTransaction,
     digest: &str,
+    reason: Option<&str>,
 ) -> Result<(), DeploymentError> {
     let (sql, values) = build_sqlx(
         tx.backend(),
         Query::update()
             .table(ProviderAdmissions::Table)
             .value(ProviderAdmissions::Revoked, true)
+            .value(ProviderAdmissions::RevokedReason, reason)
             .value(ProviderAdmissions::UpdatedAt, Expr::current_timestamp())
             .and_where(Expr::col(ProviderAdmissions::PackageDigest).eq(digest)),
     );

@@ -118,7 +118,9 @@ pub mod codes {
     /// deeper than the configured maximum (`508 Loop Detected`). The loop is
     /// in the deployed channels, not in the request.
     pub const LOOP_DETECTED: &str = super::ErrorCode::LoopDetected.as_str();
-    /// A package declares a tier above the node's edition.
+    /// A package declares a tier above the node's edition. A [`V2Code`]
+    /// refusal, exposed here because the admission API raises it through the
+    /// general error surface too; it is not in [`ErrorCode::ALL`].
     pub const TIER_NOT_ENABLED: &str = super::V2Code::TierNotEnabled.as_str();
 }
 
@@ -305,8 +307,10 @@ v2_codes! {
     /// A package whose declared tier is above the node's edition (a
     /// `standard` or `enterprise` package on a Community node).
     TierNotEnabled = "TIER_NOT_ENABLED" => Forbidden,
-    PackageInvalidProviderId = "PACKAGE_INVALID_PROVIDER_ID" => Forbidden,
-    PackageInvalidTarget = "PACKAGE_INVALID_TARGET" => Forbidden,
+    /// A package's provider id or target is malformed — the caller's input,
+    /// not an admission decision.
+    PackageInvalidProviderId = "PACKAGE_INVALID_PROVIDER_ID" => Invalid,
+    PackageInvalidTarget = "PACKAGE_INVALID_TARGET" => Invalid,
     /// The edition's admission policy refused the package for a reason of
     /// its own; the message carries the policy's code.
     AdmissionRejected = "ADMISSION_REJECTED" => Forbidden,

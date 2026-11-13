@@ -194,9 +194,8 @@ async fn cli_and_server_contract_end_to_end_against_running_server() {
         .unwrap();
     assert!(!scaffold.files.is_empty());
     assert_eq!(scaffold.implementation, ImplementationKind::Rust);
-    let bundle = UploadPackageRequest {
+    let bundle = PackageFilesRequest {
         files: scaffold.files.clone(),
-        ..Default::default()
     };
     assert!(client.authoring_lint(&bundle).await.unwrap().valid);
     let packed = client.authoring_pack(&bundle).await.unwrap();

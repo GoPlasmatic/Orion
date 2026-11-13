@@ -6,7 +6,7 @@
 //! response's `digest` is what a member's `definition_digest` names. Upload
 //! is idempotent: the same definition, however it is spelled, is one digest.
 
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::{Json, Router};
 use orion_api::v2::{
@@ -18,7 +18,7 @@ use serde_json::Value;
 use super::V2Result;
 use crate::admin_auth::AdminPrincipal;
 use crate::errors::{FieldError, OrionError};
-use crate::extract::OrionJson;
+use crate::extract::{OrionJson, OrionPath};
 use crate::runtime::definitions;
 use crate::runtime::state::AppState;
 
@@ -82,7 +82,7 @@ pub(crate) async fn upload_definition(
 )]
 pub(crate) async fn get_definition(
     State(state): State<AppState>,
-    Path(digest): Path<String>,
+    OrionPath(digest): OrionPath<String>,
 ) -> V2Result<Json<Definition>> {
     let bytes = state
         .deployments

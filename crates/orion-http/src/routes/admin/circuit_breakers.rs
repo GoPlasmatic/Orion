@@ -1,7 +1,8 @@
 //! Circuit breakers: one per `(channel, connector)` pairing, node-local, and
 //! a reset that fans out to every node in a cluster.
 
-use axum::extract::{Path, State};
+use crate::extract::OrionPath;
+use axum::extract::State;
 use axum::{Extension, Json};
 use orion_api::{CircuitBreakerResetResponse, CircuitBreakerStatesResponse, Data};
 
@@ -51,7 +52,7 @@ pub(crate) async fn list_circuit_breakers(
 pub(crate) async fn reset_circuit_breaker(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    Path(key): Path<String>,
+    OrionPath(key): OrionPath<String>,
 ) -> Result<Json<Data<CircuitBreakerResetResponse>>, OrionError> {
     let found = state.connector_registry.reset_circuit_breaker(&key).await;
 

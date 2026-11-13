@@ -10,12 +10,36 @@
 use axum::extract::FromRequest;
 use axum::extract::FromRequestParts;
 use axum::extract::Request;
-use axum::extract::rejection::{JsonRejection, QueryRejection};
+use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::http::request::Parts;
 
 use crate::errors::OrionError;
 
 pub struct OrionJson<T>(pub T);
+
+/// Path-parameter counterpart of [`OrionJson`]: axum's own `Path` rejection is
+/// a plain-text body (a revision segment that is not a `u64`, say), which
+/// breaks the `{"error": {...}}` envelope every other response uses.
+pub struct OrionPath<T>(pub T);
+
+impl<T, S> FromRequestParts<S> for OrionPath<T>
+where
+    T: serde::de::DeserializeOwned + Send,
+    S: Send + Sync,
+{
+    type Rejection = OrionError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        match axum::extract::Path::<T>::from_request_parts(parts, state).await {
+            Ok(axum::extract::Path(value)) => Ok(OrionPath(value)),
+            Err(rej) => Err(map_path_rejection(rej)),
+        }
+    }
+}
+
+fn map_path_rejection(rej: PathRejection) -> OrionError {
+    OrionError::validation(format!("Invalid path parameter: {}", rej.body_text()))
+}
 
 /// Query-string counterpart of [`OrionJson`]: axum's own `Query` rejection is
 /// a plain-text body, which breaks the `{"error": {...}}` envelope every other

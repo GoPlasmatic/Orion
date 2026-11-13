@@ -1,4 +1,5 @@
-use axum::extract::{Path, State};
+use crate::extract::OrionPath;
+use axum::extract::State;
 use axum::{Extension, Json};
 
 use crate::admin_auth::AdminPrincipal;
@@ -34,7 +35,7 @@ use super::audit_log;
 pub(crate) async fn invalidate_namespace(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    Path(namespace): Path<String>,
+    OrionPath(namespace): OrionPath<String>,
 ) -> Result<Json<Data<orion_api::CacheInvalidatedResponse>>, OrionError> {
     crate::channel::cache_namespace::check_name(&namespace).map_err(OrionError::validation)?;
     let stores = state

@@ -2,13 +2,13 @@
 //! token- or admin-gated single-trace read.
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::errors::OrionError;
-use crate::extract::{OrionQuery, PeerAddr};
+use crate::extract::{OrionPath, OrionQuery, PeerAddr};
 // Referenced by the `#[utoipa::path]` `body = ErrorResponse` annotations below.
 use crate::routes::openapi::ErrorResponse;
 use crate::routes::response_helpers::{data_response, page_response};
@@ -120,7 +120,7 @@ nothing else stops a shared cache storing it.",
 #[tracing::instrument(skip(state, headers, query))]
 pub(crate) async fn get_trace(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    OrionPath(id): OrionPath<String>,
     OrionQuery(query): OrionQuery<TraceAccessQuery>,
     PeerAddr(peer): PeerAddr,
     headers: axum::http::HeaderMap,

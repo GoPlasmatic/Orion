@@ -365,7 +365,7 @@ async fn end_to_end_archive_admit_plan_apply_rollback_and_gc() {
     assert!(!pass.compacted.is_empty());
     // Revoked and referenced by no retained revision, it is.
     store
-        .revoke_package_in_db(&pool, &pkg.package_digest)
+        .revoke_package_in_db(&pool, &pkg.package_digest, None)
         .await
         .unwrap();
     let pass = store
@@ -735,7 +735,7 @@ async fn cross_replica_db_transactional_cas_and_revocation_enforcement() {
         .await
         .unwrap();
     store_a
-        .revoke_package_in_db(&db_pool, &pkg.package_digest)
+        .revoke_package_in_db(&db_pool, &pkg.package_digest, None)
         .await
         .unwrap();
 
@@ -1268,4 +1268,164 @@ async fn an_answer_is_held_to_the_operation_output_schema() {
             EffectStatus::Completed,
         )
         .expect("no stored package, nothing to check");
+}
+
+/// A replay is recognised from the request alone, before a candidate is
+/// planned or built. That is what lets a retry answer the committed receipt
+/// after a revocation (or a drained artifact) has made the same request
+/// unbuildable now.
+#[tokio::test]
+async fn a_replay_is_answered_before_the_candidate_is_planned() {
+    let pool = pool().await;
+    let store = ImmutableDeploymentStore::new("node-replay");
+    let policy = Admission::community();
+    let pkg = store
+        .ingest_verified_archive_in_db(&pool, &sample_archive_entries())
+        .await
+        .unwrap();
+    store
+        .admit_package_in_db(&pool, &pkg.package_digest, &policy, None)
+        .await
+        .unwrap();
+
+    let mut manifest = workflow_manifest(
+        "replay-wf",
+        1,
+        &definition(&store, &pool, b"replay-wf-v1").await,
+    );
+    manifest.providers.push(provider_ref(&pkg));
+    let plan = store
+        .plan_candidate_in_db(&pool, 0, manifest.clone())
+        .await
+        .expect("planned");
+    let receipt = store
+        .apply_candidate_in_db(
+            &pool,
+            &Apply {
+                principal: "alice",
+                idempotency_key: "replay-1",
+                plan: &plan,
+                reason: "first",
+            },
+            &policy,
+        )
+        .await
+        .expect("applied");
+    assert_eq!(receipt.committed_revision, 1);
+
+    // The provider is revoked, so the same request could not be committed now.
+    store
+        .revoke_package_in_db(&pool, &pkg.package_digest, Some("drill"))
+        .await
+        .unwrap();
+    let recorded: Option<String> = sqlx::query_scalar(
+        "SELECT revoked_reason FROM provider_admissions WHERE package_digest = ?",
+    )
+    .bind(pkg.package_digest.as_str())
+    .fetch_one(sqlite(&pool))
+    .await
+    .unwrap();
+    assert_eq!(
+        recorded.as_deref(),
+        Some("drill"),
+        "the revocation's stated reason is the audit record"
+    );
+
+    let first_hash = candidate_request_hash("apply", 0, &manifest, "first").unwrap();
+    let replay = store
+        .replay_receipt(&pool, "alice", "replay-1", &first_hash)
+        .await
+        .expect("the replay is read without planning");
+    assert_eq!(
+        replay.as_ref().map(|r| r.committed_revision),
+        Some(receipt.committed_revision)
+    );
+
+    // The same key with different parameters is still a conflict, not a replay.
+    let other_hash = candidate_request_hash("apply", 0, &manifest, "other").unwrap();
+    let err = store
+        .replay_receipt(&pool, "alice", "replay-1", &other_hash)
+        .await
+        .expect_err("a reused key with another reason is a conflict");
+    assert_eq!(err.code(), "IDEMPOTENCY_KEY_CONFLICT");
+}
+
+/// A rollback retry answers its receipt even after the target revision has
+/// been compacted by retention: the compaction check is for a new rollback,
+/// and a replay has nothing left to check.
+#[tokio::test]
+async fn a_rollback_replay_is_answered_after_its_target_is_compacted() {
+    let pool = pool().await;
+    let store = ImmutableDeploymentStore::new("node-rollback-replay");
+    let policy = Admission::community();
+
+    let manifest_v1 = workflow_manifest("rb-wf", 1, &definition(&store, &pool, b"rb-wf-v1").await);
+    let plan_v1 = store
+        .plan_candidate_in_db(&pool, 0, manifest_v1)
+        .await
+        .expect("planned v1");
+    store
+        .apply_candidate_in_db(
+            &pool,
+            &Apply {
+                principal: "alice",
+                idempotency_key: "rb-apply-1",
+                plan: &plan_v1,
+                reason: "v1",
+            },
+            &policy,
+        )
+        .await
+        .expect("applied v1");
+
+    let manifest_v2 = workflow_manifest("rb-wf", 2, &definition(&store, &pool, b"rb-wf-v2").await);
+    let plan_v2 = store
+        .plan_candidate_in_db(&pool, 1, manifest_v2)
+        .await
+        .expect("planned v2");
+    store
+        .apply_candidate_in_db(
+            &pool,
+            &Apply {
+                principal: "alice",
+                idempotency_key: "rb-apply-2",
+                plan: &plan_v2,
+                reason: "v2",
+            },
+            &policy,
+        )
+        .await
+        .expect("applied v2");
+
+    let rollback = Rollback {
+        principal: "alice",
+        idempotency_key: "rb-1",
+        expected_head_revision: 2,
+        target_revision: 1,
+        reason: "undo",
+    };
+    let (receipt, _) = store
+        .rollback_to_revision_in_db(&pool, &rollback, &policy)
+        .await
+        .expect("rolled back");
+    assert_eq!(receipt.committed_revision, 3);
+
+    // Keep the head whole and compact everything else, target revision
+    // included.
+    let pass = store
+        .mark_and_collect_garbage_in_db(&pool, 1, 0)
+        .await
+        .expect("collected");
+    assert!(
+        pass.compacted.contains(&1),
+        "revision 1 is compacted: {:?}",
+        pass.compacted
+    );
+
+    let (replayed, warnings) = store
+        .rollback_to_revision_in_db(&pool, &rollback, &policy)
+        .await
+        .expect("a replay answers the receipt, not ROLLBACK_TARGET_COMPACTED");
+    assert_eq!(replayed, receipt);
+    assert!(warnings.is_empty());
 }

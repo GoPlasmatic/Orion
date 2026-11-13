@@ -1,10 +1,10 @@
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::{Extension, Json};
 use serde::Deserialize;
 
 use crate::admin_auth::AdminPrincipal;
 use crate::errors::OrionError;
-use crate::extract::{OrionJson, OrionQuery};
+use crate::extract::{OrionJson, OrionPath, OrionQuery};
 use crate::routes::openapi::ErrorResponse;
 use crate::routes::response_helpers::{data_response, page_response};
 use crate::runtime::state::AppState;
@@ -72,7 +72,7 @@ pub(crate) async fn list_trace_dlq(
 #[tracing::instrument(skip(state))]
 pub(crate) async fn get_trace_dlq_entry(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    OrionPath(id): OrionPath<String>,
 ) -> Result<Json<Data<TraceDlqEntryResponse>>, OrionError> {
     let entry = state.repos.trace_dlq.get_by_id(&id).await?;
     Ok(data_response(TraceDlqEntryResponse::from(&entry)))
@@ -92,7 +92,7 @@ pub(crate) async fn get_trace_dlq_entry(
 pub(crate) async fn requeue_trace_dlq_entry(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    Path(id): Path<String>,
+    OrionPath(id): OrionPath<String>,
 ) -> Result<Json<Data<TraceDlqEntryResponse>>, OrionError> {
     let entry = state.repos.trace_dlq.requeue(&id).await?;
     audit_log(&state.audit_queue, &principal, "requeue", "trace_dlq", &id);

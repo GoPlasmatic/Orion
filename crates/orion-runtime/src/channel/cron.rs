@@ -141,9 +141,6 @@ pub enum ConcurrencyPolicy {
     /// contending occurrence is recorded `skipped_singleton` rather than
     /// deferred or dropped.
     Forbid,
-    /// At most one running and at most one deferred. Not implemented yet —
-    /// validation refuses it, and the storage model already supports it.
-    QueueOne,
 }
 
 impl ConcurrencyPolicy {
@@ -151,7 +148,6 @@ impl ConcurrencyPolicy {
         match self {
             Self::Allow => "allow",
             Self::Forbid => "forbid",
-            Self::QueueOne => "queue_one",
         }
     }
 }
@@ -501,14 +497,6 @@ fn compile_concurrency(
         }
         Some(slots) => slots,
     };
-    if concurrency.policy == ConcurrencyPolicy::QueueOne {
-        errors.push(invalid(
-            "channel.transport_config.concurrency.policy",
-            "\"queue_one\" is not implemented yet — use \"forbid\" to run at most \
-             one at a time, or \"allow\" to let occurrences overlap"
-                .to_string(),
-        ));
-    }
     let key = match concurrency.key.as_deref().map(str::trim) {
         None | Some("") => channel_id.to_string(),
         Some(key) => {
@@ -1012,23 +1000,6 @@ mod tests {
                 "{expected} missing from {fields:?}"
             );
         }
-    }
-
-    #[test]
-    fn queue_one_is_refused_until_it_is_implemented() {
-        let cfg = CronTransportConfig {
-            concurrency: Some(ConcurrencyConfig {
-                policy: ConcurrencyPolicy::QueueOne,
-                key: None,
-                slots: None,
-            }),
-            ..config("0 15 2 * * *", None)
-        };
-        let errors = cfg.compile(identity()).expect_err("not implemented");
-        assert_eq!(
-            errors[0].path,
-            "channel.transport_config.concurrency.policy"
-        );
     }
 
     #[test]

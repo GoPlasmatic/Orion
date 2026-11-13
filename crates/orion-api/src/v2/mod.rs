@@ -55,6 +55,11 @@ pub use vocab::{
 /// a server reports as [`RuntimeCapabilitiesResponse::api_version`]. A
 /// client speaks exactly one; see the module documentation for what moves
 /// it.
+///
+/// `1` is the first *published* v2 contract: the 2.0 candidates before it
+/// were local builds, never tagged or distributed, so no client exists that
+/// was written against an earlier revision. The next change that moves the
+/// number therefore moves it to `2`.
 pub const API_VERSION: u32 = 1;
 
 // ============================================================
@@ -76,8 +81,7 @@ pub struct RuntimeCapabilitiesResponse {
     pub channel_drivers: Vec<String>,
     /// What each of those protocols' drivers declares: what an offline tool
     /// (`orion-cli lint`/`compile --capabilities`) validates a channel of an
-    /// edition's protocol against. Absent from a server that predates it.
-    #[serde(default)]
+    /// edition's protocol against.
     pub channel_driver_info: Vec<ChannelDriverInfo>,
     pub schema_profiles: Vec<String>,
     /// The WebAssembly plugin worlds this node runs.
@@ -192,12 +196,14 @@ pub struct NodeStatus {
     /// The revision the node serves; `0` before it served any.
     pub applied_revision: u64,
     /// The manifest digest of the applied revision; absent before one.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub applied_manifest_digest: Option<String>,
     /// Whether some member of the applied revision is quarantined.
     pub configuration_degraded: bool,
     pub quarantined_entities: Vec<QuarantinedEntity>,
     /// Why the last attempt to build the desired revision failed, while it
     /// does.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
     pub backoff_attempt: u32,
     pub backoff_delay_ms: u64,
@@ -263,23 +269,37 @@ pub struct ConnectorPackageResponse {
     pub package: ConnectorPackageSummary,
     /// The admission recorded for the package; absent while it was never
     /// admitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub admission: Option<ProviderAdmissionDto>,
 }
 
-/// A provider package's files: the body of `POST /api/v2/admin/connector-packages`,
-/// `/authoring/lint` and `/authoring/pack`.
+/// A provider package's files, for the authoring tools that only read them
+/// (`POST /api/v2/admin/authoring/lint` and `/authoring/pack`).
+///
+/// Separate from [`UploadPackageRequest`] so `admit` and `lock` cannot be sent
+/// to an endpoint that has no admission to perform and would silently drop
+/// them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct PackageFilesRequest {
+    /// Relative path → the file, as UTF-8 text or `base64:<…>`.
+    pub files: BTreeMap<String, String>,
+}
+
+/// A provider package's files, and optionally its admission, for
+/// `POST /api/v2/admin/connector-packages`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct UploadPackageRequest {
     /// Relative path → the file, as UTF-8 text or `base64:<…>`.
     pub files: BTreeMap<String, String>,
-    /// Upload only: admit the package in the same request. Absent means
-    /// `false`.
+    /// Admit the package in the same request. Absent means `false`.
     #[serde(default)]
     pub admit: bool,
-    /// Upload only, with `admit`: the provider lock the admission must
-    /// verify against.
+    /// With `admit`: the provider lock the admission must verify against.
+    /// Without `admit` it has no effect and is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lock: Option<Value>,
 }
@@ -290,6 +310,7 @@ pub struct UploadPackageRequest {
 pub struct UploadPackageResponse {
     pub package: ConnectorPackageSummary,
     /// The admission, when the upload asked for one.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub admission: Option<ProviderAdmissionDto>,
 }
 
@@ -330,6 +351,7 @@ pub struct RevokePackageRequest {
 pub struct RevokePackageResponse {
     pub package_digest: String,
     /// The reason the request gave, if it gave one.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
@@ -722,12 +744,15 @@ pub struct LintResponse {
     pub valid: bool,
     /// The provider id `connector.json` declares; absent when it could not
     /// be read.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_id: Option<String>,
     /// The version `connector.json` declares; absent when it could not be
     /// read.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     /// The implementation kind `connector.json` declares; absent when it
     /// could not be read or is not one of the kinds.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub implementation: Option<ImplementationKind>,
     /// Each problem, `CODE: where`.
     pub errors: Vec<String>,
@@ -942,6 +967,14 @@ pub struct TestDefinitionResponse {
 #[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// The contract revision is part of the wire, so moving it is a release
+    /// decision with a client to negotiate with — never a side effect of a
+    /// type change. This pin makes that decision visible in the diff.
+    #[test]
+    fn the_contract_revision_is_pinned() {
+        assert_eq!(API_VERSION, 1);
+    }
 
     /// An answer missing a field is a decode error, not a silent default:
     /// a server that drops one is caught by its client.
