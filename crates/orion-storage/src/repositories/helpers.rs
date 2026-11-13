@@ -716,6 +716,21 @@ pub async fn delete_chunked(
 
 #[cfg(test)]
 mod tests {
+    /// Every clock helper is UTC. A literal `LOCALTIMESTAMP` (or a bare
+    /// `CURRENT_TIMESTAMP` on a non-UTC session) shifts cron, DLQ retry and
+    /// retention by the server's offset.
+    #[test]
+    fn every_backends_clock_is_utc() {
+        use crate::DbBackend::{Mysql, Postgres, Sqlite};
+        assert_eq!(sql_now(Sqlite), "datetime('now')");
+        assert!(sql_now(Postgres).contains("UTC"), "{}", sql_now(Postgres));
+        assert_eq!(sql_now(Mysql), "UTC_TIMESTAMP()");
+        assert!(!sql_now_plus_secs(Postgres, 5).contains("LOCALTIMESTAMP"));
+        assert!(sql_now_minus_secs(Postgres, 5).contains("UTC"));
+        assert!(sql_now_plus_secs(Mysql, 5).contains("UTC_TIMESTAMP"));
+        assert!(sql_now_minus_secs(Sqlite, 5).contains("datetime('now'"));
+    }
+
     use super::*;
 
     #[test]

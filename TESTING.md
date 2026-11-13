@@ -210,11 +210,12 @@ The examples are executable, and two repositories gate them:
 
 ## Layer 6 — meta-suites (quality of the tests themselves)
 
-- **Coverage ratchet** — `coverage` job, `cargo llvm-cov` with
-  `--fail-under-lines 88` (measured ~89.5%). **Scoped to the default members**
-  (`orion-server` and `orion-docs-check`), so the library crates' own unit
-  suites do not run under it. Raise the floor when
-  the real number moves up; never lower it to make a red build green.
+- **Coverage ratchet** — `coverage` job, `cargo llvm-cov --workspace` with
+  `--fail-under-lines 88` (88.68% on the 2.0 tree). `--workspace` is load-
+  bearing: the split-out crates keep their unit suites in their own targets,
+  and a default-member run instruments them without running those tests.
+  Raise the floor when the real number moves up; never lower it to make a red
+  build green.
 - **Mutation testing** — `mutants` job (PRs only): `cargo mutants --in-diff`
   over the security/correctness-critical globs in `.cargo/mutants.toml`
   (SSRF, admin auth, masking, circuit breaker, query dialect, error

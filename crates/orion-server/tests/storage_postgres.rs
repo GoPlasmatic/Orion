@@ -639,3 +639,31 @@ async fn postgres_cron_cancel_frees_a_dead_holders_slots() {
         AttemptStart::Started { held: Some(_) }
     ));
 }
+
+/// PostgreSQL sessions are pinned to UTC. The schema's defaults and both
+/// clocks (Rust's `Utc::now()` and the database's `now()`) must be the same
+/// one, or cron firing, DLQ retry and retention shift by the server's zone.
+#[tokio::test]
+#[ignore = "needs Docker; run with: cargo test --test storage_postgres -- --ignored"]
+async fn postgres_sessions_and_defaults_run_in_utc() {
+    let (_container, pool) = postgres_pool().await;
+    let DbPool::Postgres(pg) = &pool else {
+        panic!("postgres expected");
+    };
+    let zone: String = sqlx::query_scalar("SHOW TimeZone")
+        .fetch_one(pg)
+        .await
+        .expect("read the session zone");
+    assert_eq!(zone, "UTC", "the pool must pin the session zone");
+
+    // The default on a timestamp column and `now() AT TIME ZONE 'UTC'` are
+    // the same instant, to the microsecond the column stores.
+    let (default_at, utc_at): (chrono::NaiveDateTime, chrono::NaiveDateTime) = sqlx::query_as(
+        "SELECT (now() AT TIME ZONE current_setting('TimeZone'))::timestamp,
+                (now() AT TIME ZONE 'UTC')::timestamp",
+    )
+    .fetch_one(pg)
+    .await
+    .expect("compare the two clocks");
+    assert_eq!(default_at, utc_at);
+}

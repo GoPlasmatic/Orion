@@ -547,10 +547,13 @@ jobs:
       # Raise the floor when the real number moves up; never lower it to make
       # a red build green. Blocking since T42 (the job earned it — see the
       # note on `coverage:` above).
-      # Scoped to the default members (orion-server), so this percentage
-      # describes the server. TESTING.md's layer-6 note says the same.
+      # --workspace, not the default members: orion-authoring, orion-runtime
+      # and the other split-out crates keep their unit suites in their own
+      # targets, and a default-member run instruments them without executing
+      # those tests (61.8% on the 2.0 tree, against 88.7% with them).
+      # TESTING.md's layer-6 note says the same.
       - name: Generate coverage report
-        run: cargo llvm-cov --lcov --output-path lcov.info -j 2 --fail-under-lines 88
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info -j 2 --fail-under-lines 88
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -781,9 +781,20 @@ async fn init_sqlite_pool(config: &StorageConfig) -> Result<DbPool, OrionError> 
     Ok(DbPool::Sqlite(pool))
 }
 
-async fn init_postgres_pool(config: &StorageConfig) -> Result<DbPool, OrionError> {
-    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+/// The one place a PostgreSQL URL becomes connect options, so the UTC
+/// session zone cannot be lost on a second construction path.
+fn postgres_connect_options(url: &str) -> Result<sqlx::postgres::PgConnectOptions, OrionError> {
     use std::str::FromStr;
+
+    sqlx::postgres::PgConnectOptions::from_str(url)
+        .map(|options| options.options([("timezone", "UTC")]))
+        .map_err(|e| OrionError::Config {
+            message: format!("invalid PostgreSQL storage URL: {e}"),
+        })
+}
+
+async fn init_postgres_pool(config: &StorageConfig) -> Result<DbPool, OrionError> {
+    use sqlx::postgres::PgPoolOptions;
 
     let mut pool_opts = PgPoolOptions::new()
         .max_connections(config.max_connections)
@@ -797,11 +808,7 @@ async fn init_postgres_pool(config: &StorageConfig) -> Result<DbPool, OrionError
     // whatever the server's `TimeZone` happens to be. Without this, cron
     // scheduling, DLQ retry and retention windows shift by the server's UTC
     // offset.
-    let options = PgConnectOptions::from_str(&config.url)
-        .map_err(|e| OrionError::Config {
-            message: format!("invalid PostgreSQL storage URL: {e}"),
-        })?
-        .options([("timezone", "UTC")]);
+    let options = postgres_connect_options(&config.url)?;
     let pool = pool_opts
         .connect_with(options)
         .await
@@ -835,6 +842,14 @@ async fn init_mysql_pool(config: &StorageConfig) -> Result<DbPool, OrionError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn postgres_options_accept_a_url_and_refuse_a_bad_one() {
+        let options = postgres_connect_options("postgres://user:pass@db.example:5432/orion")
+            .expect("a PostgreSQL URL");
+        assert_eq!(options.get_host(), "db.example");
+        assert!(postgres_connect_options("not a url").is_err());
+    }
 
     #[test]
     fn test_detect_backend_sqlite() {
