@@ -306,8 +306,8 @@ pub(crate) async fn health_check(
     // The coarse per-component states stay public so a monitor can see
     // *that* something is degraded without learning *what*.
     let auth_cfg = &state.config.admin_auth;
-    let show_detail =
-        !auth_cfg.enabled || crate::admin_auth::headers_present_valid_key(&headers, auth_cfg);
+    let show_detail = !auth_cfg.enabled
+        || crate::admin_auth::headers_present_valid_key(&headers, auth_cfg, &state.admin_keys);
 
     let ok_or = |fine: bool, otherwise: &str| if fine { "ok" } else { otherwise }.to_string();
     let mut components = std::collections::BTreeMap::from([

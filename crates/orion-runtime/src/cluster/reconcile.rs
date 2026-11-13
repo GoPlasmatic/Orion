@@ -223,6 +223,17 @@ async fn run_v2_reconciler(state: AppState, mut shutdown: crate::runtime::Shutdo
         if reconcile_v2_state_once(&state).await {
             crate::metrics::record_job_success("v2_reconciler");
         }
+        // A revision the node cannot build records an exponential backoff in
+        // its status. Wait it out here: without this the loop would re-read
+        // the manifest, re-resolve its secrets and recompile every workflow on
+        // every poll, indefinitely, exactly while the node is degraded.
+        let backoff_ms = state.reconciler.local_status().backoff_delay_ms;
+        if backoff_ms > 0 {
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(backoff_ms)) => {}
+                _ = shutdown.signalled() => return,
+            }
+        }
     }
 }
 

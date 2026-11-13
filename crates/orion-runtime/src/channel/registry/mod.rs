@@ -227,16 +227,20 @@ pub struct ClusterBackends {
 
 /// The identity of one stored channel row.
 ///
-/// `channel_id` + `version` names the row and `updated_at` moves whenever it
-/// is edited, so two equal keys mean the same bytes — which is what makes
-/// reusing a whole [`ChannelRuntimeConfig`] across a reload sound (N17).
-/// Active rows are immutable by DB trigger, so in practice a serving channel's
-/// key only ever changes by gaining a new version.
+/// `channel_id` + `version` names the row, and the fingerprint covers every
+/// field the compiled runtime is built from. Two equal keys therefore mean the
+/// same bytes — which is what makes reusing a whole
+/// [`ChannelRuntimeConfig`] across a reload sound (N17).
+///
+/// The fingerprint deliberately ignores `created_at`/`updated_at`: a v2 row is
+/// built from the manifest member's immutable definition on every reload, so
+/// those move on every build. Keying on `updated_at` (as the 1.x row did) made
+/// the reuse cache unreachable — every channel was recompiled on every apply.
 #[derive(Clone, PartialEq, Eq)]
 struct ChannelRow {
     channel_id: String,
     version: i64,
-    updated_at: chrono::NaiveDateTime,
+    fingerprint: u64,
 }
 
 impl ChannelRow {
@@ -246,17 +250,40 @@ impl ChannelRow {
         Self {
             channel_id: channel.channel_id.clone(),
             version: channel.version,
-            updated_at: channel.updated_at,
+            fingerprint: row_fingerprint(channel),
         }
     }
 
     /// Whether two rows are the same row, without building either identity.
     /// The reuse check runs once per channel per reload and is the hot path
-    /// N17 exists for; `ChannelRow::of(a) == ChannelRow::of(b)` allocated two
-    /// `String`s per channel just to throw them away.
+    /// N17 exists for.
     fn same_row(a: &Channel, b: &Channel) -> bool {
-        a.channel_id == b.channel_id && a.version == b.version && a.updated_at == b.updated_at
+        a.channel_id == b.channel_id
+            && a.version == b.version
+            && row_fingerprint(a) == row_fingerprint(b)
     }
+}
+
+/// Every [`Channel`] field the runtime is built from, hashed in order. The
+/// timestamps are left out (see [`ChannelRow`]).
+fn row_fingerprint(channel: &Channel) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    channel.channel_id.hash(&mut hasher);
+    channel.version.hash(&mut hasher);
+    channel.name.hash(&mut hasher);
+    channel.description.hash(&mut hasher);
+    channel.channel_type.hash(&mut hasher);
+    channel.protocol.hash(&mut hasher);
+    channel.methods_json.hash(&mut hasher);
+    channel.route_pattern.hash(&mut hasher);
+    channel.transport_config_json.hash(&mut hasher);
+    channel.workflow_id.hash(&mut hasher);
+    channel.config_json.hash(&mut hasher);
+    channel.status.hash(&mut hasher);
+    channel.priority.hash(&mut hasher);
+    channel.tags_json.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// The inputs to [`ChannelLoader::build`] that are *not* channel rows.

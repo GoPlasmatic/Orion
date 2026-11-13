@@ -1095,9 +1095,34 @@ async fn test_reload_reuses_runtime_config_when_nothing_changed() {
     );
 }
 
+/// A v2 reload rebuilds each row from the manifest's immutable definition, so
+/// `created_at`/`updated_at` move even when nothing about the channel did.
+/// The reuse identity must ignore them, or it never hits in production.
+#[tokio::test]
+async fn test_reload_reuses_runtime_config_when_only_the_row_timestamp_moved() {
+    let registry = TestRegistry::new();
+    let deps = TestDeps::new();
+    let channel = test_channel("stamp-ch", r#"{"rate_limit": {"requests_per_second": 10}}"#);
+
+    deps.reload(&registry, std::slice::from_ref(&channel)).await;
+    let first = registry.get_by_name("stamp-ch").expect("loaded");
+
+    let rebuilt = Channel {
+        updated_at: channel.updated_at + chrono::Duration::seconds(30),
+        created_at: channel.created_at + chrono::Duration::seconds(30),
+        ..channel
+    };
+    deps.reload(&registry, std::slice::from_ref(&rebuilt)).await;
+    let second = registry.get_by_name("stamp-ch").expect("loaded");
+
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "a fresh row timestamp is not a content change"
+    );
+}
+
 /// The counterpart: an edited row is a new row, and gets a fresh runtime
-/// config. `updated_at` alone is enough — it is what moves when the stored
-/// bytes change.
+/// config. Its content fingerprint is what moves when the stored bytes change.
 #[tokio::test]
 async fn test_reload_rebuilds_runtime_config_when_the_row_changes() {
     let registry = TestRegistry::new();

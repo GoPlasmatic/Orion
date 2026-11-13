@@ -563,11 +563,39 @@ pub fn start(
     Arc::new(IngressDrivers { slots })
 }
 
+/// An extension's `start` must answer within this bound: the supervised task
+/// runs forever otherwise, `/readyz` keeps reporting the last health it saw,
+/// and no later generation is ever reconciled.
+const DRIVER_START_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// One `reconcile` is a rebuild of the driver's own listener state. A driver
+/// that hangs is skipped rather than wedging the loop; the next publish
+/// reconciles against the newest generation.
+const DRIVER_RECONCILE_TIMEOUT: Duration = Duration::from_secs(60);
+
 struct DriverTask {
     driver: Arc<dyn ChannelDriver>,
     host: Arc<dyn IngressHost>,
     slot: Arc<DriverSlot>,
     deps: Arc<IngressDeps>,
+}
+
+/// Reconcile one driver under the bound, logging rather than propagating a
+/// timeout: the loop owns no error channel, and the next publish retries.
+async fn reconcile_driver(
+    running: &dyn RunningDriver,
+    channels: Vec<ChannelBinding>,
+    protocol: &str,
+) {
+    if tokio::time::timeout(DRIVER_RECONCILE_TIMEOUT, running.reconcile(channels))
+        .await
+        .is_err()
+    {
+        tracing::error!(
+            protocol,
+            "Channel driver reconcile exceeded its bound; the next publish retries"
+        );
+    }
 }
 
 impl DriverTask {
@@ -585,14 +613,17 @@ impl DriverTask {
         // that lands after this line is a change the loop below receives.
         published.borrow_and_update();
         let protocol = self.slot.protocol.as_str();
-        running
-            .reconcile(bindings(
+        reconcile_driver(
+            running.as_ref(),
+            bindings(
                 &self.deps.runtime.load(),
                 protocol,
                 &self.deps.deployments,
                 &self.deps.ledger,
-            ))
-            .await;
+            ),
+            protocol,
+        )
+        .await;
         loop {
             tokio::select! {
                 _ = shutdown.signalled() => break,
@@ -602,14 +633,17 @@ impl DriverTask {
                         break;
                     }
                     published.borrow_and_update();
-                    running
-                        .reconcile(bindings(
-                &self.deps.runtime.load(),
-                protocol,
-                &self.deps.deployments,
-                &self.deps.ledger,
-            ))
-                        .await;
+                    reconcile_driver(
+                        running.as_ref(),
+                        bindings(
+                            &self.deps.runtime.load(),
+                            protocol,
+                            &self.deps.deployments,
+                            &self.deps.ledger,
+                        ),
+                        protocol,
+                    )
+                    .await;
                 }
             }
         }
@@ -624,7 +658,25 @@ impl DriverTask {
             return Some(running);
         }
         let protocol = self.slot.protocol.as_str();
-        match self.driver.start(self.host.clone()).await {
+        let started =
+            match tokio::time::timeout(DRIVER_START_TIMEOUT, self.driver.start(self.host.clone()))
+                .await
+            {
+                Ok(answer) => answer,
+                Err(_) => {
+                    *lock(&self.slot.start_error) = Some(format!(
+                        "start exceeded {}s",
+                        DRIVER_START_TIMEOUT.as_secs()
+                    ));
+                    tracing::error!(
+                        protocol,
+                        timeout_secs = DRIVER_START_TIMEOUT.as_secs(),
+                        "Channel driver start exceeded its bound"
+                    );
+                    return None;
+                }
+            };
+        match started {
             Ok(Some(running)) => {
                 let running: Arc<dyn RunningDriver> = Arc::from(running);
                 *lock(&self.slot.start_error) = None;

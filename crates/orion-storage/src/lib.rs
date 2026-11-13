@@ -783,7 +783,8 @@ async fn init_sqlite_pool(config: &StorageConfig) -> Result<DbPool, OrionError> 
 }
 
 async fn init_postgres_pool(config: &StorageConfig) -> Result<DbPool, OrionError> {
-    use sqlx::postgres::PgPoolOptions;
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+    use std::str::FromStr;
 
     let mut pool_opts = PgPoolOptions::new()
         .max_connections(config.max_connections)
@@ -792,8 +793,18 @@ async fn init_postgres_pool(config: &StorageConfig) -> Result<DbPool, OrionError
     if config.idle_timeout_secs > 0 {
         pool_opts = pool_opts.idle_timeout(Duration::from_secs(config.idle_timeout_secs));
     }
+    // Every timestamp Orion writes is UTC-naive, and the schema's defaults
+    // must be the same clock: pin the session zone rather than inheriting
+    // whatever the server's `TimeZone` happens to be. Without this, cron
+    // scheduling, DLQ retry and retention windows shift by the server's UTC
+    // offset.
+    let options = PgConnectOptions::from_str(&config.url)
+        .map_err(|e| OrionError::Config {
+            message: format!("invalid PostgreSQL storage URL: {e}"),
+        })?
+        .options([("timezone", "UTC")]);
     let pool = pool_opts
-        .connect(&config.url)
+        .connect_with(options)
         .await
         .map_err(|e| OrionError::Internal {
             context: "Failed to connect to database".to_string(),

@@ -391,6 +391,9 @@ impl TraceQueue {
         let total = prev + payload_size;
         if self.max_memory_bytes > 0 && total > self.max_memory_bytes {
             self.memory_bytes.fetch_sub(payload_size, Ordering::AcqRel);
+            // The reservation was published above; take it back out of the
+            // gauge too, or sustained shedding over-reports memory forever.
+            metrics::set_trace_queue_memory_bytes(prev as f64);
             metrics::record_trace_queue_rejected("memory");
             return Err(crate::errors::OrionError::unavailable(
                 crate::errors::Unavailable::AtCapacity,
@@ -409,8 +412,13 @@ impl TraceQueue {
             Ok(()) => Ok(()),
             Err(rejected) => {
                 // The item never entered the queue, so nothing downstream will
-                // subtract the bytes reserved for it.
-                self.memory_bytes.fetch_sub(payload_size, Ordering::AcqRel);
+                // subtract the bytes reserved for it. The gauge follows the
+                // counter back down for the same reason.
+                let remaining = self
+                    .memory_bytes
+                    .fetch_sub(payload_size, Ordering::AcqRel)
+                    .saturating_sub(payload_size);
+                metrics::set_trace_queue_memory_bytes(remaining as f64);
                 Err(match rejected {
                     // The rejected message is dropped here, releasing the
                     // backpressure permit it carried — a shed submission must

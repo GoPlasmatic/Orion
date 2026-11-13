@@ -654,8 +654,29 @@ async fn execute(
         deps.max_result_size_bytes,
         &occurrence.id,
     );
-    let has_errors = !execution.outcome.is_ok();
     let result_json = serde_json::to_string(&execution.data()).unwrap_or_else(|_| "{}".to_string());
+    // The same ceiling every other transport applies to a stored result. A
+    // cron run that produces more is not failed (its work happened), but its
+    // trace records the refusal instead of writing an unbounded row.
+    let result_error = (deps.max_result_size_bytes > 0
+        && result_json.len() > deps.max_result_size_bytes)
+        .then(|| {
+            format!(
+                "Result size {} bytes exceeds trace_queue.max_result_size_bytes ({} bytes)",
+                result_json.len(),
+                deps.max_result_size_bytes
+            )
+        });
+    if result_error.is_some() {
+        crate::metrics::record_error("result_size_exceeded");
+        tracing::warn!(
+            occurrence_id = %occurrence.id,
+            result_bytes = result_json.len(),
+            limit_bytes = deps.max_result_size_bytes,
+            "Cron result exceeds trace_queue.max_result_size_bytes; the trace keeps no result"
+        );
+    }
+    let has_errors = !execution.outcome.is_ok() || result_error.is_some();
 
     let (occurrence_status, error_message) = match execution.outcome {
         crate::engine::RunOutcome::Ok => (status::COMPLETED, None),
@@ -666,34 +687,40 @@ async fn execute(
         crate::engine::RunOutcome::EngineError(e) => (status::FAILED, Some(e.to_string())),
     };
     if let Some(ref id) = trace_id {
-        let trace_status = if occurrence_status == status::COMPLETED {
-            crate::storage::models::TRACE_STATUS_COMPLETED
-        } else {
+        let trace_failed = occurrence_status != status::COMPLETED || result_error.is_some();
+        let trace_status = if trace_failed {
             crate::storage::models::TRACE_STATUS_FAILED
+        } else {
+            crate::storage::models::TRACE_STATUS_COMPLETED
         };
+        let trace_error = result_error.as_deref().or(error_message.as_deref());
         // The result and the terminal status in one write; a trace whose
-        // result the plan drops still gets its status.
-        let trace_write =
-            if crate::queue::trace_record::TracePlan::decide(&effective_trace, has_errors)
-                .persists()
-            {
-                deps.trace_repo
-                    .complete(
-                        id,
-                        crate::storage::repositories::traces::TraceCompletion {
-                            result_json: &result_json,
-                            duration_ms: duration.as_secs_f64() * 1000.0,
-                            task_trace_json: task_trace_json.as_deref(),
-                            status: trace_status,
-                            error_message: error_message.as_deref(),
-                        },
-                    )
-                    .await
-            } else {
-                deps.trace_repo
-                    .update_status(id, trace_status, error_message.as_deref())
-                    .await
-            };
+        // result the plan drops still gets its status. A result over the
+        // ceiling is not written at all, as the async path does.
+        let trace_write = if result_error.is_some() {
+            deps.trace_repo
+                .update_status(id, trace_status, trace_error)
+                .await
+        } else if crate::queue::trace_record::TracePlan::decide(&effective_trace, has_errors)
+            .persists()
+        {
+            deps.trace_repo
+                .complete(
+                    id,
+                    crate::storage::repositories::traces::TraceCompletion {
+                        result_json: &result_json,
+                        duration_ms: duration.as_secs_f64() * 1000.0,
+                        task_trace_json: task_trace_json.as_deref(),
+                        status: trace_status,
+                        error_message: trace_error,
+                    },
+                )
+                .await
+        } else {
+            deps.trace_repo
+                .update_status(id, trace_status, trace_error)
+                .await
+        };
         if let Err(e) = trace_write {
             crate::metrics::record_error("cron_trace_write");
             tracing::warn!(

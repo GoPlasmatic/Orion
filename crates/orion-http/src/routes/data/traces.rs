@@ -164,8 +164,8 @@ pub(crate) async fn get_trace(
     // admin-guarded, and its rows carry no payloads — S14), and the
     // distinction is what makes a wrong-id-vs-wrong-token mistake debuggable.
     let auth_cfg = &state.config.admin_auth;
-    let is_admin =
-        auth_cfg.enabled && crate::admin_auth::headers_present_valid_key(&headers, auth_cfg);
+    let is_admin = auth_cfg.enabled
+        && crate::admin_auth::headers_present_valid_key(&headers, auth_cfg, &state.admin_keys);
     // Which lane answered, tracked rather than inferred: the response says
     // `Deprecation` only when the query parameter is what got the caller in,
     // and a caller who sends both is using the supported one.

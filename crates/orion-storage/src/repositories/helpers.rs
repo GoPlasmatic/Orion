@@ -121,13 +121,15 @@ pub fn optional_string_value(opt: Option<&str>) -> sea_query::Value {
 
 /// The database's own current time, per backend. Lease and claim comparisons
 /// use this (never node clocks) so every replica agrees with the DB.
-/// SQLite `datetime('now')` and MySQL `UTC_TIMESTAMP()` are UTC; Postgres
-/// `LOCALTIMESTAMP` matches the session timezone (UTC by convention here),
-/// staying in timestamp-without-tz land like the stored columns.
+///
+/// All three are UTC, matching the UTC-naive values Rust writes and the
+/// columns' defaults. Postgres spells it out rather than trusting the session
+/// zone (the pool pins it to UTC as well, but the SQL is what a replica using
+/// another client must agree with).
 pub fn sql_now(backend: crate::DbBackend) -> &'static str {
     match backend {
         crate::DbBackend::Sqlite => "datetime('now')",
-        crate::DbBackend::Postgres => "LOCALTIMESTAMP",
+        crate::DbBackend::Postgres => "(now() AT TIME ZONE 'UTC')",
         crate::DbBackend::Mysql => "UTC_TIMESTAMP()",
     }
 }
@@ -148,7 +150,7 @@ pub fn sql_now_plus_secs(backend: crate::DbBackend, secs: u64) -> String {
     match backend {
         crate::DbBackend::Sqlite => format!("datetime('now', '+{secs} seconds')"),
         crate::DbBackend::Postgres => {
-            format!("LOCALTIMESTAMP + interval '{secs} seconds'")
+            format!("(now() AT TIME ZONE 'UTC') + interval '{secs} seconds'")
         }
         crate::DbBackend::Mysql => {
             format!("DATE_ADD(UTC_TIMESTAMP(), INTERVAL {secs} SECOND)")
@@ -161,7 +163,7 @@ pub fn sql_now_minus_secs(backend: crate::DbBackend, secs: u64) -> String {
     match backend {
         crate::DbBackend::Sqlite => format!("datetime('now', '-{secs} seconds')"),
         crate::DbBackend::Postgres => {
-            format!("LOCALTIMESTAMP - interval '{secs} seconds'")
+            format!("(now() AT TIME ZONE 'UTC') - interval '{secs} seconds'")
         }
         crate::DbBackend::Mysql => {
             format!("DATE_SUB(UTC_TIMESTAMP(), INTERVAL {secs} SECOND)")

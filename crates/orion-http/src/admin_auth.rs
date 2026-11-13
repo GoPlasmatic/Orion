@@ -243,12 +243,13 @@ pub(crate) fn read_only_may_call(method: &Method, path: &str) -> bool {
 pub(crate) fn headers_present_valid_key(
     headers: &axum::http::HeaderMap,
     config: &AdminAuthConfig,
+    keys: &[crate::config::AdminKey],
 ) -> bool {
     let Ok(token) = extract_api_key(headers, config) else {
         return false;
     };
     let presented: [u8; 32] = Sha256::digest(token.as_bytes()).into();
-    match_key(&config.admin_keys(), &presented).is_some()
+    match_key(keys, &presented).is_some()
 }
 
 /// SHA-256 hex of an async-trace capability token (R12). The trace row

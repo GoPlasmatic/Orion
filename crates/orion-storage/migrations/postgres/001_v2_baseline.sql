@@ -23,8 +23,8 @@ CREATE TABLE traces (
     duration_ms double precision,
     started_at timestamp without time zone,
     completed_at timestamp without time zone,
-    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    created_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
+    updated_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
     task_trace_json text,
     access_token_hash text,
     PRIMARY KEY (id)
@@ -51,9 +51,9 @@ CREATE TABLE trace_dlq (
     error_message text NOT NULL,
     retry_count bigint DEFAULT 0 NOT NULL,
     max_retries bigint DEFAULT 5 NOT NULL,
-    next_retry_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    next_retry_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
+    created_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
+    updated_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
     claimed_by text,
     claimed_until timestamp without time zone,
     PRIMARY KEY (id)
@@ -78,7 +78,7 @@ CREATE TABLE audit_logs (
     resource_type text NOT NULL,
     resource_id text NOT NULL,
     details text,
-    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    created_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
     PRIMARY KEY (id)
 );
 
@@ -100,7 +100,7 @@ CREATE TABLE cron_schedule_state (
     config_hash text NOT NULL,
     next_fire_at timestamp without time zone NOT NULL,
     paused_at timestamp without time zone,
-    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
     PRIMARY KEY (channel_id)
 );
 
@@ -123,8 +123,8 @@ CREATE TABLE cron_occurrences (
     error_message text,
     started_at timestamp without time zone,
     completed_at timestamp without time zone,
-    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    created_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
+    updated_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
     singleton_slot bigint,
     PRIMARY KEY (id)
 );
@@ -145,7 +145,7 @@ CREATE TABLE cron_singletons (
     holder text NOT NULL,
     fencing_token bigint NOT NULL,
     lease_until timestamp without time zone NOT NULL,
-    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
     PRIMARY KEY (singleton_key)
 );
 
@@ -158,7 +158,7 @@ CREATE TABLE cron_singleton_slots (
     holder text NOT NULL,
     fencing_token bigint NOT NULL,
     lease_until timestamp without time zone NOT NULL,
-    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
     PRIMARY KEY (singleton_key, slot)
 );
 
@@ -172,7 +172,7 @@ CREATE TABLE config_epoch (
     id integer NOT NULL,
     breaker_epoch bigint DEFAULT 0 NOT NULL,
     breaker_key text DEFAULT ''::text NOT NULL,
-    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
     PRIMARY KEY (id),
     CONSTRAINT config_epoch_id_check CHECK ((id = 1))
 );
@@ -190,7 +190,7 @@ CREATE TABLE connector_oauth_state (
     connector_name text NOT NULL,
     fingerprint text NOT NULL,
     state_json text NOT NULL,
-    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
     PRIMARY KEY (connector_name)
 );
 
@@ -221,7 +221,7 @@ CREATE TABLE artifact_objects (
     drain_epoch bigint,
     draining_since timestamp without time zone,
     payload_bytes bytea,
-    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    created_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
     PRIMARY KEY (digest)
 );
 
@@ -236,7 +236,7 @@ CREATE TABLE provider_packages (
     tier text NOT NULL,
     manifest_json text NOT NULL,
     inventory_json text NOT NULL,
-    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    created_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
     PRIMARY KEY (digest)
 );
 
@@ -248,8 +248,8 @@ CREATE TABLE provider_admissions (
     admission_fingerprint text NOT NULL,
     revoked boolean DEFAULT false NOT NULL,
     revoked_reason text,
-    admitted_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    admitted_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
+    updated_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
     PRIMARY KEY (package_digest)
 );
 
@@ -260,7 +260,7 @@ CREATE TABLE connection_revisions (
     public_config_json text NOT NULL,
     secret_locators_json text,
     bindings_json text,
-    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    created_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
     PRIMARY KEY (connection_id, revision)
 );
 
@@ -272,7 +272,7 @@ CREATE TABLE deployment_revisions (
     principal text NOT NULL,
     reason text NOT NULL,
     members_compacted boolean DEFAULT false NOT NULL,
-    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    created_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
     PRIMARY KEY (revision)
 );
 
@@ -294,7 +294,7 @@ CREATE TABLE deployment_head (
     singleton_id bigint NOT NULL,
     head_revision bigint NOT NULL,
     epoch bigint NOT NULL,
-    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
     PRIMARY KEY (singleton_id)
 );
 
@@ -304,7 +304,7 @@ CREATE TABLE deployment_operations (
     request_hash text NOT NULL,
     committed_revision bigint NOT NULL,
     manifest_digest text NOT NULL,
-    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    created_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
     operation_id text,
     epoch bigint,
     receiving_node_id text,
@@ -320,7 +320,7 @@ CREATE TABLE runtime_nodes (
     configuration_degraded boolean DEFAULT false NOT NULL,
     retained_revisions_json text NOT NULL,
     security_lease_until timestamp without time zone NOT NULL,
-    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
     PRIMARY KEY (node_id)
 );
 
@@ -338,7 +338,7 @@ CREATE TABLE source_claims (
     checkpoint_namespace text NOT NULL,
     fence_token bigint NOT NULL,
     lease_until timestamp without time zone NOT NULL,
-    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
     PRIMARY KEY (channel_id, partition_id)
 );
 
@@ -351,6 +351,6 @@ CREATE TABLE source_checkpoints (
     fence_token bigint NOT NULL,
     contiguous_offset bigint NOT NULL,
     cursor_json text NOT NULL,
-    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') NOT NULL,
     PRIMARY KEY (channel_id, partition_id, checkpoint_namespace)
 );
