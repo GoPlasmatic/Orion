@@ -308,6 +308,18 @@ async fn apply_deployment(
         .replay_receipt(&state.db_pool, &actor, &req.idempotency_key, &request_hash)
         .await?
     {
+        // The review guard holds on a replay too: the digest the caller
+        // names must still be the one that was committed.
+        if req.reviewed_manifest_digest != receipt.manifest_digest {
+            return Err(DeploymentError::new(
+                DeploymentErrorKind::ReviewedDigestMismatch,
+                format!(
+                    "reviewed_manifest_digest '{}' does not match the committed manifest digest '{}'",
+                    req.reviewed_manifest_digest, receipt.manifest_digest
+                ),
+            )
+            .into());
+        }
         return Ok(receipt);
     }
     let plan = state

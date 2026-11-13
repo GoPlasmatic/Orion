@@ -69,13 +69,9 @@ async fn a_replay_answers_its_receipt_and_a_stale_base_conflicts() {
     let app = test_app().await;
     let (digest, manifest) = deployed_package(&app).await;
 
-    let (status, first) = send(
-        &app,
-        "POST",
-        DEPLOYMENTS,
-        apply(&app, &manifest, 0, "k1").await,
-    )
-    .await;
+    // The exact body a client would retry: the plan, then the apply.
+    let first_body = apply(&app, &manifest, 0, "k1").await;
+    let (status, first) = send(&app, "POST", DEPLOYMENTS, first_body.clone()).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{first}");
     assert_eq!(first["committed_revision"], 1);
 
@@ -99,13 +95,7 @@ async fn a_replay_answers_its_receipt_and_a_stale_base_conflicts() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{revoked}");
 
-    let (status, replay) = send(
-        &app,
-        "POST",
-        DEPLOYMENTS,
-        apply(&app, &manifest, 0, "k1").await,
-    )
-    .await;
+    let (status, replay) = send(&app, "POST", DEPLOYMENTS, first_body).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{replay}");
     assert_eq!(
         replay["committed_revision"], 1,
