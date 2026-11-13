@@ -1,11 +1,13 @@
 # cargo-audit configuration. deny.toml's [advisories] ignore list is the
 # source of truth and is enforced by CI (`cargo deny check`); this file exists
 # so a developer's `cargo audit` reaches the same verdict instead of flagging
-# an advisory the project has already assessed.
+# an advisory the project has already assessed. Keep the two lists identical.
 
 [advisories]
-# Empty: the two entries that lived here named `rsa` (via sqlx-mysql) and
-# `proc-macro-error2` (via orion-cli's tabled), neither of which is in the
-# dependency graph any more. Add a justified entry here only when deny.toml
-# gains the same one.
-ignore = []
+ignore = [
+    # Dev-only testcontainers dependency, unmaintained, no replacement release.
+    "RUSTSEC-2026-0440",
+    # sqlx-sqlite 0.9.0 pins libsqlite3-sys < 0.38; the fix needs sqlx's bump.
+    # Local-file attack only; see deny.toml for the assessment.
+    "RUSTSEC-2026-0459",
+]

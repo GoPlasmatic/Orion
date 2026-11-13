@@ -311,8 +311,8 @@ jobs:
         run: cargo test --doc
 
   # Advisories AND license compatibility / bans / source policy over the
-  # whole tree (proposal T12) — deny.toml is the policy, including the one
-  # documented advisory ignore. cargo-deny reads manifests and the lockfile
+  # whole tree (proposal T12) — deny.toml is the policy, including the
+  # documented advisory ignores. cargo-deny reads manifests and the lockfile
   # and compiles nothing, so it carries no rust-cache: its entry was 124MB of
   # pure eviction pressure on a shared 10GB budget for no build to warm.
   deny:
