@@ -395,10 +395,6 @@ impl<V: Clone + Send + Sync + 'static> orion_extension_api::ConnectionPoolCache 
     async fn evict(&self, connector_name: &str) {
         LruCache::evict(self, connector_name).await
     }
-
-    async fn evict_all(&self) {
-        LruCache::evict_all(self).await
-    }
 }
 
 #[cfg(test)]

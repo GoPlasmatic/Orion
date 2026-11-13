@@ -81,13 +81,6 @@ impl ResourcePoolRegistry {
             entry.cache().evict(connector_name).await;
         }
     }
-
-    /// Evict all entries across all registered provider pool caches.
-    pub async fn evict_all(&self) {
-        for entry in self.entries.values() {
-            entry.cache().evict_all().await;
-        }
-    }
 }
 
 /// A leased session holding a permit from the stable `(provider_digest, connection_id)`
@@ -119,9 +112,6 @@ struct SessionPoolState<S> {
     /// Shared capacity semaphores keyed by stable `(provider_digest, connection_id)` so
     /// retained revisions and rotated secrets share one capacity ceiling.
     capacity: BTreeMap<(Digest, ConnectionId), Arc<Semaphore>>,
-    /// Monotonic global eviction epoch incremented on `evict_all` so in-flight creators
-    /// started before blanket eviction cannot populate the cache.
-    global_eviction_epoch: u64,
     /// Per-connector eviction epochs incremented on `evict(connector_name)`.
     connector_eviction_epochs: BTreeMap<String, u64>,
 }
@@ -151,7 +141,6 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
                 invalidated: BTreeSet::new(),
                 min_revision: BTreeMap::new(),
                 capacity: BTreeMap::new(),
-                global_eviction_epoch: 0,
                 connector_eviction_epochs: BTreeMap::new(),
             }),
         }
@@ -236,7 +225,7 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<S, ConnectorError>>,
     {
-        let (semaphore, cached, start_global_epoch, start_connector_epoch) = {
+        let (semaphore, cached, start_connector_epoch) = {
             let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if Self::is_fenced(&guard, identity) {
                 return Err(ConnectorError::capability_invalid(
@@ -254,13 +243,12 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
                 .or_insert_with(|| Arc::new(Semaphore::new(self.max_capacity_per_connection)))
                 .clone();
             let existing = guard.sessions.get(identity).cloned();
-            let g_epoch = guard.global_eviction_epoch;
             let c_epoch = guard
                 .connector_eviction_epochs
                 .get(identity.connection_id.as_str())
                 .copied()
                 .unwrap_or(0);
-            (sem, existing, g_epoch, c_epoch)
+            (sem, existing, c_epoch)
         };
 
         // Non-blocking capacity check so a suspended parent holding the only permit
@@ -301,9 +289,7 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
             .get(identity.connection_id.as_str())
             .copied()
             .unwrap_or(0);
-        if guard.global_eviction_epoch != start_global_epoch
-            || current_c_epoch != start_connector_epoch
-        {
+        if current_c_epoch != start_connector_epoch {
             return Err(ConnectorError::capability_invalid(
                 "Connection session was evicted during creation",
                 EffectStatus::NotStarted,
@@ -353,15 +339,6 @@ impl<S: Clone + Send + Sync + 'static> ConnectionPoolCache for VersionedSessionP
             .retain(|k, _| k.connection_id != connector_name);
         Self::retire_idle_capacity(&mut guard);
         orion_common::metrics::set_session_pool_entries(&self.cache_id, guard.sessions.len());
-    }
-
-    async fn evict_all(&self) {
-        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        guard.global_eviction_epoch = guard.global_eviction_epoch.saturating_add(1);
-        guard.connector_eviction_epochs.clear();
-        guard.sessions.clear();
-        Self::retire_idle_capacity(&mut guard);
-        orion_common::metrics::set_session_pool_entries(&self.cache_id, 0);
     }
 }
 

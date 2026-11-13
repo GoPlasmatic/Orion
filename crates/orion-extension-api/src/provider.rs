@@ -5,10 +5,6 @@
 //! [`ProviderBackend::driver_id`]): a `rust` backend under its driver id
 //! (`org.orion.http`), a `workflow` or `wasm` package under its digest. The
 //! node dispatches each attempt of a call to it with an [`AttemptContext`].
-//!
-//! Providers that support `source` channel polling also implement
-//! [`SourceConnectorFacet`] and return `Some(self)` from
-//! [`ProviderBackend::as_source`].
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -21,92 +17,6 @@ use serde_json::Value;
 use crate::attempt::AttemptContext;
 use crate::contract::{ConnectorError, ConnectorOutput, ImplementationKind};
 use crate::identity::{BackendKey, EffectiveConnectionIdentity, ProviderId, Revision};
-
-/// Source batch item emitted by [`SourceConnectorFacet::poll`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct SourceBatchItem {
-    pub delivery_id: String,
-    pub payload: Value,
-    #[serde(default)]
-    pub metadata: BTreeMap<String, Value>,
-}
-
-impl SourceBatchItem {
-    pub fn new(delivery_id: impl Into<String>, payload: Value) -> Self {
-        Self {
-            delivery_id: delivery_id.into(),
-            payload,
-            metadata: BTreeMap::new(),
-        }
-    }
-
-    #[must_use]
-    pub fn with_metadata(mut self, metadata: BTreeMap<String, Value>) -> Self {
-        self.metadata = metadata;
-        self
-    }
-}
-
-/// Source poll batch returned by [`SourceConnectorFacet::poll`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct SourcePollBatch {
-    pub items: Vec<SourceBatchItem>,
-    pub next_checkpoint: Option<Value>,
-}
-
-impl SourcePollBatch {
-    pub fn new(items: Vec<SourceBatchItem>, next_checkpoint: Option<Value>) -> Self {
-        Self {
-            items,
-            next_checkpoint,
-        }
-    }
-}
-
-/// Settlement disposition reported by the native Rust `source` channel runner
-/// back to [`SourceConnectorFacet::settle`] after workflow execution completes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum SourceSettlement {
-    Ack,
-    NackRetryable,
-    DeadLetter,
-}
-
-/// Optional source facet (`open` / `poll` / `settle` / `close`) implemented by
-/// source-capable connectors of any backend kind (`rust`, `workflow`, `wasm`)
-/// and driven by the native Rust `source` channel runner.
-#[async_trait]
-pub trait SourceConnectorFacet: Send + Sync {
-    /// Open or resume a source cursor from `checkpoint`.
-    async fn open(
-        &self,
-        ctx: &AttemptContext,
-        checkpoint: Option<Value>,
-    ) -> Result<Value, ConnectorError>;
-
-    /// Poll up to `max_items` records starting from `cursor`.
-    async fn poll(
-        &self,
-        ctx: &AttemptContext,
-        cursor: &Value,
-        max_items: u32,
-    ) -> Result<SourcePollBatch, ConnectorError>;
-
-    /// Settle a delivered item (`Ack`, `NackRetryable`, or `DeadLetter`).
-    async fn settle(
-        &self,
-        ctx: &AttemptContext,
-        delivery_id: &str,
-        settlement: SourceSettlement,
-    ) -> Result<(), ConnectorError>;
-
-    /// Close the source cursor and release any cursor-specific state.
-    async fn close(&self, ctx: &AttemptContext, cursor: Value) -> Result<(), ConnectorError>;
-}
 
 /// One operation a provider declares ([`ProviderDescription`]): the names a
 /// `connector_call` may give it, and the `orion-json-schema/1` documents its
@@ -322,12 +232,6 @@ pub trait ProviderBackend: Send + Sync {
     /// declared schema is checked on every call. `/runtime-capabilities`
     /// serves it.
     fn describe(&self) -> Option<ProviderDescription> {
-        None
-    }
-
-    /// Return the optional [`SourceConnectorFacet`] if this provider supports
-    /// `source` channel polling.
-    fn as_source(&self) -> Option<&dyn SourceConnectorFacet> {
         None
     }
 }

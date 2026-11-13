@@ -704,38 +704,6 @@ impl RunContext {
             effect_ledger: Arc::new(Mutex::new(EffectStatus::NotStarted)),
         })
     }
-
-    /// Start a host-authorized source lifecycle invocation (`orion.internal.source.*`).
-    ///
-    /// Restricted to `pub(crate)` so only the host [`super::source_runner::SourceChannelRunner`]
-    /// can mint privileged source facet calls while application workflows are blocked by
-    /// [`Self::start_invocation`].
-    pub(crate) fn start_privileged_source_invocation(
-        &self,
-        connection: ConnectionReference,
-        effective_identity: EffectiveConnectionIdentity,
-        facet_step: &str,
-        max_invocation_attempts: u32,
-    ) -> Result<Invocation, ConnectorError> {
-        self.check_live(EffectStatus::NotStarted)?;
-        let connection_row =
-            super::foundation::governed_connection(self.deployments.as_ref(), &effective_identity);
-        let operation = format!("orion.internal.source.{facet_step}");
-        let invocation_id = next_unique_id();
-        Ok(Invocation {
-            invocation_id,
-            parent_invocation_id: None,
-            context: self.clone(),
-            connection,
-            effective_identity,
-            connection_row,
-            operation,
-            idempotency_key: None,
-            max_attempts: max_invocation_attempts.max(1),
-            attempt_counter: Arc::new(AtomicU64::new(0)),
-            effect_ledger: Arc::new(Mutex::new(EffectStatus::NotStarted)),
-        })
-    }
 }
 
 /// Logical connector invocation spanning retries and nested dependency calls.

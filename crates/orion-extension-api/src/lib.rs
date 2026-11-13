@@ -74,10 +74,7 @@ pub use ingress::{
     GuardSet, IngressHost, NodeInfo, NothingToSettle, RunningDriver, Settle,
 };
 pub use pool::{ConnectionPoolCache, PoolEntry};
-pub use provider::{
-    OperationDescription, ProviderBackend, ProviderDescription, SourceBatchItem,
-    SourceConnectorFacet, SourcePollBatch, SourceSettlement, ValidateContext,
-};
+pub use provider::{OperationDescription, ProviderBackend, ProviderDescription, ValidateContext};
 
 /// The wire types a contract shares with `orion-api`. The vocabularies
 /// ([`ImplementationKind`], [`ConnectorErrorClass`], [`EffectStatus`],

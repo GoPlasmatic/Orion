@@ -15,11 +15,10 @@ package verifier to a node.
   `/runtime-capabilities`), and its `validate_connection` judges a revision's configuration at
   upload. A definition set names it with `"provider": "<driver id>"`. Its optional `describe`
   declares its operations (names, aliases, input/output schemas): undeclared operations are
-  refused at workflow load and offline, and declared schemas are checked on every call (with an unstable `SourceConnectorFacet` hidden
-  until the first source channel protocol ships), called with an `AttemptContext` and
-  answering `Result<ConnectorOutput, ConnectorError>`.
-- `ConnectionPoolCache`: a provider's pool cache, with per-connector and whole-cache
-  eviction methods. Production lifecycle wiring is pending.
+  refused at workflow load and offline, and declared schemas are checked on every call. It is
+  called with an `AttemptContext` and answers `Result<ConnectorOutput, ConnectorError>`.
+- `ConnectionPoolCache`: a provider's pool cache, evicted per connector when a deployment
+  changes that connection.
 - `PackageVerifier`: whether a provider package may be admitted on the node.
 - `Registrar`: the registration surface. `orion-server`'s `CompositionBuilder` implements it,
   so an edition's registration code depends on this crate alone; its binary hands the builder
@@ -54,12 +53,12 @@ a release, include its implementation and validation in that release's work.
   new revision); calls already admitted on the old generation may still hold
   what they acquired, so release idle resources only. `ProviderBackend::shutdown`
   is called once at node shutdown, after the channel drivers stop and before the
-  trace queues drain. `ConnectionPoolCache::evict_all` still has no production
-  caller.
+  trace queues drain.
 - An edition binary builds its providers with the `orion` library's
   `extensions::kit` (`VersionedSessionPool`, the SSRF address checks, and
   `FoundationOptions` with the node's shared HTTP client, handed to a
   `CompositionBuilder::with_providers` setup), and reads node-wide settings from
   its own `[extensions.<id>]` config table (`AppConfig::extensions.section`).
-- Community does not register a `source` protocol. A source provider, its driver
-  lifecycle and runner wiring must ship together before Community accepts it.
+- There is no polling-source hook. A protocol that consumes from a queue or log
+  is a `ChannelDriver` that runs its own listener (`start`) and dispatches each
+  message through `IngressHost::dispatch`.

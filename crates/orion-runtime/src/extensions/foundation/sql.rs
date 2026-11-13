@@ -482,11 +482,6 @@ impl<D: RemoteSqlDialect> orion_extension_api::ConnectionPoolCache for RemoteSql
         self.sessions.evict(connector_name).await;
         self.live_pools.evict(connector_name).await;
     }
-
-    async fn evict_all(&self) {
-        self.sessions.evict_all().await;
-        self.live_pools.evict_all().await;
-    }
 }
 
 #[async_trait::async_trait]
@@ -800,11 +795,6 @@ impl orion_extension_api::ConnectionPoolCache for SqliteProviderBackend {
     async fn evict(&self, connector_name: &str) {
         self.sessions.evict(connector_name).await;
         self.live_pools.evict(connector_name).await;
-    }
-
-    async fn evict_all(&self) {
-        self.sessions.evict_all().await;
-        self.live_pools.evict_all().await;
     }
 }
 

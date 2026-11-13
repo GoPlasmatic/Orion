@@ -21,4 +21,3 @@ pub use crate::extensions::foundation::{
 pub use crate::extensions::owned_native_work::NativeWorkScheduler;
 pub use crate::extensions::package_identity::canonical_bytes;
 pub use crate::extensions::provider_backend::ProviderRegistry;
-pub use crate::extensions::source_runner::{SourceLeaseCoordinator, SourcePartitionKey};

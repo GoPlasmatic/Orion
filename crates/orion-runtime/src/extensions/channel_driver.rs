@@ -20,9 +20,9 @@
 //! protocol enum or per-protocol match arms in core: the protocol is a string
 //! id resolved here. What stays closed is `channel::guards::Transport`, which
 //! names core's own ingress paths (the HTTP data plane, `channel_call`, the
-//! cron worker) and the guards each applies, not which protocols exist. There is
-//! no `"source"` driver: the source runner has no Community source provider to
-//! drive, so a protocol for it would accept channels nothing runs.
+//! cron worker) and the guards each applies, not which protocols exist. A
+//! protocol that runs its own listener (a queue consumer) starts through
+//! `ChannelDriver::start` and dispatches through the ingress host.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

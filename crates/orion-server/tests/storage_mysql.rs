@@ -10,9 +10,9 @@
 //!
 //! Run with: `cargo test --test storage_mysql -- --ignored`
 
-// Tests unwrap and panic on what they did not expect; the workspace's
-// lints against both are for production code.
-#![expect(clippy::unwrap_used, clippy::panic)]
+// Tests panic on what they did not expect; the workspace's
+// lint against it is for production code.
+#![expect(clippy::panic)]
 
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::mysql::Mysql;

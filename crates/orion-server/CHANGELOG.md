@@ -157,6 +157,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ChannelDriver::activate`, `ChannelDriver::allowed_functions` and
   `ChannelSubscriptionHandle` from the extension API. The node never called
   them; `ChannelDriver::start` and `RunningDriver` replace them.
+- `SourceConnectorFacet`, `ProviderBackend::as_source`, `SourcePollBatch`,
+  `SourceBatchItem` and `SourceSettlement` from the extension API, and the
+  `source` channel runner behind them. No `source` protocol was registered and
+  the runner never started, so a provider implementing the facet was never
+  polled. A protocol that consumes a queue or log is a `ChannelDriver` that
+  runs its own listener. The `source_claims` and `source_checkpoints` tables
+  stay until a later migration drops them.
+- `ConnectionPoolCache::evict_all`. Nothing called it; pool caches are evicted
+  per connector when a deployment changes that connection.
 
 ### Security
 

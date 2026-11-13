@@ -239,10 +239,6 @@ impl orion_extension_api::ConnectionPoolCache for SqlPoolCache {
     async fn evict(&self, connector_name: &str) {
         SqlPoolCache::evict(self, connector_name).await
     }
-
-    async fn evict_all(&self) {
-        SqlPoolCache::evict_all(self).await
-    }
 }
 
 /// What a write reports back: rows affected, and an auto-increment id where the

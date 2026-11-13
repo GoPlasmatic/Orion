@@ -176,12 +176,6 @@ impl ConnectionPoolCache for PartitionedMemoryCache {
         guard.retain(|k, _| k.connection_id != connector_name);
         orion_common::metrics::set_memory_cache_partitions(guard.len());
     }
-
-    async fn evict_all(&self) {
-        let mut guard = self.partitions.lock().unwrap_or_else(|e| e.into_inner());
-        guard.clear();
-        orion_common::metrics::set_memory_cache_partitions(0);
-    }
 }
 
 /// Community foundation in-memory cache connector provider (`org.orion.memory-cache`).

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 /// A provider's connection-pool cache, evicted per connector when a
-/// connection changes and wholesale on a cluster resync. Implement it with
+/// connection changes. Implement it with
 /// `#[async_trait]`.
 #[async_trait]
 pub trait ConnectionPoolCache: Send + Sync {
@@ -15,9 +15,6 @@ pub trait ConnectionPoolCache: Send + Sync {
 
     /// Evict all cached sessions/pools belonging to `connector_name`.
     async fn evict(&self, connector_name: &str);
-
-    /// Evict every cached session/pool in this cache (used on cluster epoch resync).
-    async fn evict_all(&self);
 }
 
 /// One pool cache as a composition registers it: erased for eviction, and

@@ -90,7 +90,7 @@ async fn execute_connector_call(
         return Err(HandlerError::new(
             ErrorClass::CallerInput,
             format!(
-                "CONNECTOR_OPERATION_FORBIDDEN: operation '{operation}' is reserved for host lifecycle/source facets"
+                "CONNECTOR_OPERATION_FORBIDDEN: operation '{operation}' is reserved for the host"
             ),
         ));
     }

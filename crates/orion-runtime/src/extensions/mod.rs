@@ -24,7 +24,7 @@
 //! registry (composed backends frozen, runtime-admitted workflow packages in
 //! a separate layer that cannot shadow them), the run context and budgets
 //! an attempt is a view of, the deployment store, the reconciler, the
-//! Community foundation drivers and the source runner. Tests that drive
+//! Community foundation drivers. Tests that drive
 //! them from outside the crate go through `crate::test_support`.
 
 pub mod admission;
@@ -42,7 +42,6 @@ pub mod provider_backend;
 pub mod reconciler;
 pub mod resource_pool;
 pub mod schema_profile;
-pub mod source_runner;
 pub mod workflow_provider;
 
 use std::sync::Arc;
@@ -53,8 +52,7 @@ pub use orion_extension_api::{
     ConnectorErrorClass, ConnectorOutput, Digest, EditionTier, EffectStatus,
     EffectiveConnectionIdentity, ErrorOrigin, ImplementationKind, NodeInfo, OperationDescription,
     PackageAdmissionRequest, PackageVerifier, PoolEntry, ProviderBackend, ProviderDescription,
-    ProviderId, ProviderRef, Registrar, RetryAdvice, Revision, SecretValue, SourceBatchItem,
-    SourceConnectorFacet, SourcePollBatch, SourceSettlement, ValidateContext, codes,
+    ProviderId, ProviderRef, Registrar, RetryAdvice, Revision, SecretValue, ValidateContext, codes,
 };
 
 pub use admission::{Admission, CommunityPackageVerifier, RevocationLedger};
