@@ -375,33 +375,3 @@ CREATE TABLE "runtime_nodes" (
 
 CREATE INDEX "idx_runtime_nodes_security_lease"
     ON "runtime_nodes" ("security_lease_until");
-
--- ============================================================
--- Source channels: partition claims and checkpoints
--- ============================================================
-
-CREATE TABLE "source_claims" (
-    "channel_id" text NOT NULL,
-    "partition_id" text NOT NULL,
-    "owner_id" text NOT NULL,
-    "revision" integer NOT NULL,
-    "checkpoint_namespace" text NOT NULL,
-    "fence_token" integer NOT NULL,
-    "lease_until" timestamp NOT NULL,
-    "updated_at" timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY ("channel_id", "partition_id")
-);
-
-CREATE INDEX "idx_source_claims_lease_until"
-    ON "source_claims" ("lease_until");
-
-CREATE TABLE "source_checkpoints" (
-    "channel_id" text NOT NULL,
-    "partition_id" text NOT NULL,
-    "checkpoint_namespace" text NOT NULL,
-    "fence_token" integer NOT NULL,
-    "contiguous_offset" integer NOT NULL,
-    "cursor_json" text NOT NULL,
-    "updated_at" timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY ("channel_id", "partition_id", "checkpoint_namespace")
-);

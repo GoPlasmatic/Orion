@@ -261,8 +261,6 @@ pub(crate) async fn create_deployment(
     ))
 }
 
-/// Plan `req`'s manifest again, refuse it unless it plans to the reviewed
-/// digest, and commit it.
 /// Both commits are idempotent and audited: an empty key would make every
 /// request by a principal share one namespace, and an empty reason would
 /// leave the revision's audit row saying nothing.
@@ -287,6 +285,8 @@ fn check_commit_identity(
     Ok(())
 }
 
+/// Plan `req`'s manifest again, refuse it unless it plans to the reviewed
+/// digest, and commit it.
 async fn apply_deployment(
     state: &AppState,
     principal: &Option<Extension<AdminPrincipal>>,

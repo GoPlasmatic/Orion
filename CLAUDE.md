@@ -27,7 +27,7 @@ A cargo workspace of fourteen crates, layered bottom-up. The server re-exports e
 | `orion-plugin-sdk` | The guest crate a plugin author links against: the `orion:plugin` bindings, a `Plugin` trait, `export_plugin!`. Depends on nothing else here; its copy of the WIT is kept byte-identical to `orion-plugin-host/wit/` by `plugin_sdk_test.rs` | — |
 | `orion-docs-check` | Never published: its test binary, `tests/drift`, holds the drift guards (see *Docs and code are kept in sync by tests*) | — |
 
-Test-support features: `orion-common`, `orion-storage`, `orion-engine` and `orion-runtime` each have a `test-support` feature carrying the helpers other crates' tests call — notably the engine's twin records (`twin::pinned`, records under the calling crate's `tests/fixtures/function-records/<module>.json`, blessed with `ORION_BLESS=1`) and `loader::testing`.
+Test-support features: `orion-common`, `orion-storage` and `orion-engine` each have a `test-support` feature carrying the helpers other crates' tests call — notably the engine's twin records (`twin::pinned`, records under the calling crate's `tests/fixtures/function-records/<module>.json`, blessed with `ORION_BLESS=1`) and `loader::testing`.
 
 The plugin test fixture (`crates/orion-server/tests/fixtures/plugins/guest`) and the two example guests (`examples/plugins/fixed-width`, `examples/plugins/c4-rules`) are built on the SDK. After changing any of them, the SDK or the WIT, run the `build.sh` beside them and commit the rebuilt component; the `plugin-sdk` CI job rebuilds all three and runs the ABI cases and the sandbox suites against the fresh bytes.
 
@@ -172,7 +172,7 @@ HTTP request → router → dynamic_handler (State<DataPlane>)
 
 ### Database
 
-SQLite (default), PostgreSQL or MySQL, chosen from the `storage.url` scheme; all three migration sets are embedded and the matching one runs. Each starts at `001_v2_baseline.sql`; a 1.x database is refused by name rather than upgraded. Tables: the deployment store (`deployment_revisions`, `deployment_head`, `deployment_members`, `deployment_operations`, `artifact_objects`, `connection_revisions`, `provider_packages`, `provider_admissions`), `runtime_nodes`, `traces`, `trace_dlq`, `audit_logs`, the cron ledger (`cron_schedule_state`, `cron_occurrences`, `cron_singletons` — slot 0 of every `forbid` key — and `cron_singleton_slots`), and the cluster tables (`config_epoch`, `job_leases`, `connector_oauth_state`, `cluster_kv`, `cluster_rate_windows`; `source_claims` and `source_checkpoints` remain from the baseline with no reader, to be dropped by a later migration), judged on the database's clock.
+SQLite (default), PostgreSQL or MySQL, chosen from the `storage.url` scheme; all three migration sets are embedded and the matching one runs. Each starts at `001_v2_baseline.sql`; a 1.x database is refused by name rather than upgraded. Tables: the deployment store (`deployment_revisions`, `deployment_head`, `deployment_members`, `deployment_operations`, `artifact_objects`, `connection_revisions`, `provider_packages`, `provider_admissions`), `runtime_nodes`, `traces`, `trace_dlq`, `audit_logs`, the cron ledger (`cron_schedule_state`, `cron_occurrences`, `cron_singletons` — slot 0 of every `forbid` key — and `cron_singleton_slots`), and the cluster tables (`config_epoch`, `job_leases`, `connector_oauth_state`, `cluster_kv`, `cluster_rate_windows`), judged on the database's clock (pinned to UTC; see `repositories/helpers.rs`).
 
 **Migration rules** (details in `CONTRIBUTING.md#database-migrations`):
 

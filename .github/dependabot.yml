@@ -26,15 +26,11 @@ updates:
         patterns:
           - "*"
 
-  # Two Dockerfiles, two entries. Docker updates are per-directory, so the
-  # root entry only ever sees the server image — the CLI's Dockerfile arrived
-  # with the monorepo restructure and was silently unwatched, which would have
-  # shown up the first time the root image took a base bump and this one did
-  # not follow. They currently share a base; nothing enforces that, so each
-  # gets its own watch rather than an assumption.
+  # The server image. The CLI has its own Dockerfile and its own Dependabot
+  # entry in the Orion-cli repository; Docker updates are per-directory, so a
+  # base bump here never follows it there by itself.
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
       day: monday
-

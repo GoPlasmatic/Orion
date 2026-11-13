@@ -2,9 +2,9 @@ name: CodeQL
 
 on:
   push:
-    branches: [main, "release/**", "v[0-9]+.[0-9]+.[0-9]+"]
+    branches: [main, "release/**"]
   pull_request:
-    branches: [main, "release/**", "v[0-9]+.[0-9]+.[0-9]+"]
+    branches: [main, "release/**"]
   schedule:
     # Weekly full scan (Mondays 06:00 UTC) to pick up new query-pack releases.
     - cron: "0 6 * * 1"

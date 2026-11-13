@@ -24,11 +24,12 @@ name: Cross-OS Build
 
 on:
   push:
-    branches: [main, "release/**", "v[0-9]+.[0-9]+.[0-9]+"]
+    branches: [main, "release/**"]
     paths:
       - "crates/orion-server/src/**"
       # The crates the server is split into.
       - "crates/orion-common/**"
+      - "crates/orion-definitions/**"
       - "crates/orion-storage/**"
       - "crates/orion-engine/**"
       - "crates/orion-plugin-host/**"
@@ -49,6 +50,7 @@ on:
       - "crates/orion-server/src/**"
       # The crates the server is split into.
       - "crates/orion-common/**"
+      - "crates/orion-definitions/**"
       - "crates/orion-storage/**"
       - "crates/orion-engine/**"
       - "crates/orion-plugin-host/**"

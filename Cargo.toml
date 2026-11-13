@@ -6,7 +6,7 @@
 # commands (`cargo run`, `cargo test`, `cargo build`) pointed at the server,
 # matching the pre-workspace muscle memory; CI covers the rest with
 # `--workspace`. The CLI and the documentation site live in their own
-# repositories (GoPlasmatic/Orion-cli, GoPlasmatic/Orion-docs) and depend on
+# repositories (codetiger/Orion-cli, GoPlasmatic/Orion-docs) and depend on
 # these crates by tag.
 [workspace]
 resolver = "3"

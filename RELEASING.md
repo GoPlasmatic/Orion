@@ -1,7 +1,7 @@
 # Releasing Orion
 
 Cut releases from `main` (or a `release/X.Y` maintenance branch) after the workspace gate and the current release
-matrix pass. Long-lived integration branches (such as `dataflow-4`) must merge to `main` before tagging because `ci.yml`, `ha-drill.yml` and `release.yml` trigger on `main`, `release/**` and `v*` tags; `main` tracks the active 2.x line, and any maintenance release for an older line is cut from a `release/X.Y` branch. The v2 migration changes the API, deployment model and state
+matrix pass. Long-lived integration branches (such as `dataflow-4`) must merge to `main` before tagging because `ci.yml` and `ha-drill.yml` trigger on pushes to `main` and `release/**`, while `release.yml`, `docker-release.yml` and `crates-publish.yml` trigger on `v*` tags. A tag mints no CI run of its own, so the tagged commit must already have a successful push run; `main` tracks the active 2.x line, and any maintenance release for an older line is cut from a `release/X.Y` branch. The v2 migration changes the API, deployment model and state
 schema; use the [v2 release evidence](RELEASE-EVIDENCE/release-v2-evidence.md) to track the
 remaining gates and their owners.
 

@@ -70,9 +70,9 @@ impl Workflow {
 // ============================================================
 
 /// One version of a plugin: the manifest it was uploaded with and the
-/// digest of the component it names. The bytes live in
-/// [`PluginArtifact`], keyed by that digest, so a version is small and an
-/// artifact is stored once however many versions name it.
+/// digest of the component it names. The bytes live in the deployment
+/// store's content-addressed artifacts, keyed by that digest, so a version is
+/// small and a component is stored once however many versions name it.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Plugin {
     pub plugin_id: String,
@@ -89,16 +89,6 @@ pub struct Plugin {
     pub signature: Option<String>,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
-}
-
-/// A component's bytes, addressed by their digest. Immutable: a row is
-/// inserted once and deleted only when no plugin version names it.
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct PluginArtifact {
-    pub digest: String,
-    pub bytes: Vec<u8>,
-    pub size: i64,
-    pub created_at: NaiveDateTime,
 }
 
 // ============================================================
@@ -173,23 +163,6 @@ pub struct RuntimeNodeRow {
     pub applied_manifest_digest: Option<String>,
     pub configuration_degraded: bool,
     pub retained_revisions_json: String,
-}
-
-// ============================================================
-// Connector
-// ============================================================
-
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct Connector {
-    pub id: String,
-    pub name: String,
-    pub connector_type: String,
-    pub config_json: String,
-    pub enabled: bool,
-    /// JSON array of tag strings; the wire says `tags`.
-    pub tags_json: String,
-    pub created_at: NaiveDateTime,
-    pub updated_at: NaiveDateTime,
 }
 
 // ============================================================

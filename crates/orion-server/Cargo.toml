@@ -110,16 +110,13 @@ hmac = "0.13"
 hex = "0.4"
 base64 = "0.23"
 tower = { version = "0.5", default-features = false, features = ["util"] }
-utoipa = { version = "6", features = ["axum_extras", "chrono"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 jsonwebtoken = { version = "11.1.0", features = ["aws_lc_rs"] }
-# fmt_examples_test prints the diff an unformatted example needs.
-similar = "3"
 # The test helpers orion-common keeps for this crate's unit tests.
 orion-common = { workspace = true, features = ["test-support"] }
 orion-storage = { workspace = true, features = ["test-support"] }
 orion-engine = { workspace = true, features = ["test-support"] }
-orion-runtime = { workspace = true, features = ["test-support"] }
+orion-runtime.workspace = true
 # test-util (paused clocks, time::advance) is test-only; feature unification
 # gives the in-crate #[cfg(test)] modules access without shipping it in release.
 tokio = { version = "1", features = ["test-util"] }
@@ -138,6 +135,3 @@ rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "
 # Pre-main initializer: the one place `std::env::set_var` is sound in a
 # multi-threaded test binary (secret_references_test's env:// fixture).
 ctor = "1.0"
-# Property-based tests: the SQL renderer's value-independence invariant and
-# route-matching totality (in-crate #[cfg(test)] modules).
-proptest = "1"

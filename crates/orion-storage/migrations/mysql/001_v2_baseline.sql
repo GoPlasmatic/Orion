@@ -298,31 +298,3 @@ CREATE TABLE `runtime_nodes` (
   PRIMARY KEY (`node_id`),
   KEY `idx_runtime_nodes_security_lease` (`security_lease_until`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- ============================================================
--- Source channels: partition claims and checkpoints
--- ============================================================
-
-CREATE TABLE `source_claims` (
-  `channel_id` varchar(128) NOT NULL,
-  `partition_id` varchar(128) NOT NULL,
-  `owner_id` varchar(128) NOT NULL,
-  `revision` bigint NOT NULL,
-  `checkpoint_namespace` varchar(128) NOT NULL,
-  `fence_token` bigint NOT NULL,
-  `lease_until` datetime(6) NOT NULL,
-  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-  PRIMARY KEY (`channel_id`,`partition_id`),
-  KEY `idx_source_claims_lease_until` (`lease_until`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE `source_checkpoints` (
-  `channel_id` varchar(128) NOT NULL,
-  `partition_id` varchar(128) NOT NULL,
-  `checkpoint_namespace` varchar(128) NOT NULL,
-  `fence_token` bigint NOT NULL,
-  `contiguous_offset` bigint NOT NULL,
-  `cursor_json` mediumtext NOT NULL,
-  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-  PRIMARY KEY (`channel_id`,`partition_id`,`checkpoint_namespace`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

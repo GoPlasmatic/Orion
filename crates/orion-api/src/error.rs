@@ -118,9 +118,9 @@ pub mod codes {
     /// deeper than the configured maximum (`508 Loop Detected`). The loop is
     /// in the deployed channels, not in the request.
     pub const LOOP_DETECTED: &str = super::ErrorCode::LoopDetected.as_str();
-    /// A package declares a tier above the node's edition. A [`V2Code`]
+    /// A package declares a tier above the node's edition. A `V2Code`
     /// refusal, exposed here because the admission API raises it through the
-    /// general error surface too; it is not in [`ErrorCode::ALL`].
+    /// general error surface too; it is not in `ErrorCode::ALL`.
     pub const TIER_NOT_ENABLED: &str = super::V2Code::TierNotEnabled.as_str();
 }
 

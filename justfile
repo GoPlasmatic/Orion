@@ -8,7 +8,7 @@
 check:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
-    cargo test --workspace
+    cargo test --workspace --all-targets
     cargo test --doc
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --lib
 

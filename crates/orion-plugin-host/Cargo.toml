@@ -21,7 +21,6 @@ workspace = true
 # The same requirements orion-server states, so the lockfile carries one copy
 # of each.
 [dependencies]
-orion-api = { workspace = true, features = ["utoipa"] }
 orion-common.workspace = true
 orion-engine.workspace = true
 orion-storage.workspace = true

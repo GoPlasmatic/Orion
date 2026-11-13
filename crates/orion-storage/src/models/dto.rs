@@ -145,7 +145,7 @@ mod tests {
     }
 
     // -- D27/D28: the conversions must reproduce the pre-split wire shape
-    // exactly. These pin the field sets that `Connector`, `AuditLogEntry`,
+    // exactly. These pin the field sets that `AuditLogEntry`,
     // `TraceDlqEntry` and `TraceDlqSummary` published when they were row
     // structs that derived `Serialize` themselves.
 

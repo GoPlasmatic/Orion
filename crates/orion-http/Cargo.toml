@@ -57,7 +57,6 @@ socket2 = "0.6"
 [dev-dependencies]
 orion-common = { workspace = true, features = ["test-support"] }
 orion-engine = { workspace = true, features = ["test-support"] }
-orion-runtime = { workspace = true, features = ["test-support"] }
+orion-runtime.workspace = true
 orion-storage = { workspace = true, features = ["test-support"] }
 tokio = { version = "1", features = ["test-util"] }
-rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }

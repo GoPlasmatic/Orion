@@ -6,12 +6,11 @@
 //! `grep REFERENCES migrations/` returns nothing, on any backend, and that is
 //! deliberate rather than an oversight:
 //!
-//! - **`workflows` and `channels` are version-keyed.** Both have a composite
-//!   primary key `(id, version)`, and `channels.workflow_id` references a
-//!   workflow *id*, never a specific version. There is no key to point an FK
-//!   at, and adding one to `(workflow_id, version)` would freeze a channel to
-//!   the workflow version current when it was authored — the opposite of the
-//!   rollout model.
+//! - **Deployments are immutable revisions.** A deployment names its members
+//!   by `(kind, id, revision)` and its definition digests; the store is
+//!   content-addressed, so a revision is never rewritten and there is no
+//!   mutable entity row to point an FK at. Referential integrity is checked
+//!   in the deployment store's transaction instead.
 //! - **`traces` outlive what they reference.** A trace records what ran, so it
 //!   must survive the deletion of its channel or workflow. An FK would either
 //!   block that delete or cascade away the audit record.

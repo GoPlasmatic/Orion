@@ -2,10 +2,11 @@ name: CI
 
 on:
   push:
-    # Release branches are included so the tag-time `ci-gate` job can find a
-    # successful run at the tag SHA. Without them, cutting a release from a
-    # `v*` branch either blocks the release workflows or ships unverified.
-    branches: [main, "release/**", "v[0-9]+.[0-9]+.[0-9]+"]
+    # `release/**` is included so a maintenance line can be verified before it
+    # is tagged. A tag push does not trigger this workflow: `ci-gate` looks for
+    # a successful push run at the tagged SHA, so the commit must already have
+    # one from `main` or a release branch.
+    branches: [main, "release/**"]
   pull_request:
   # T34: without this, the only way to mint a fresh CI run for a SHA (to
   # satisfy the release-time ci-gate after e.g. a transient failure) was to
@@ -27,7 +28,7 @@ permissions:
   contents: read
 
 # One group per PR: superseded pushes cancel the in-flight run — around
-# twenty jobs including a full test suite, a Docker build, and a seven-leg
+# twenty jobs including a full test suite, a Docker build, and a six-leg
 # container matrix.
 # Branch pushes (main, release/**, v*) group by COMMIT instead, so no two
 # pushes ever share a group and every pushed SHA runs to completion. This

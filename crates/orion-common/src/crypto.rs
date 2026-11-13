@@ -157,9 +157,9 @@ pub fn sha256_digest(bytes: &[u8]) -> Digest {
 /// An incremental [`sha256_digest`]: fed the bytes as they arrive, it yields
 /// the same `sha256:<hex>` string at the end.
 ///
-/// So a large artifact — a model file up to `models.max_artifact_bytes` — is
-/// hashed while it streams to disk rather than held whole in memory only to be
-/// hashed once. `Self::finish` produces exactly what `sha256_digest` would
+/// So a large artifact is hashed while it streams rather than held whole in
+/// memory only to be hashed once. `Self::finish` produces exactly what
+/// `sha256_digest` would
 /// over the same bytes, so the two are interchangeable and a digest hashed one
 /// way verifies against one hashed the other.
 #[derive(Default)]
@@ -192,10 +192,9 @@ impl Sha256Stream {
 /// needs the bytes in memory to do it. Keys and signatures travel as standard
 /// base64.
 ///
-/// Two surfaces consume this with the same policy shape: `[plugins.trust]`
-/// (verified at upload and again by every node that loads the version) and
-/// `[models.trust]` (verified by the node that admits the artifact). A node
-/// with no keys configured checks nothing and stores what it was sent.
+/// `[plugins.trust]` consumes this: a component's signature is verified at
+/// upload and again by every node that loads the version. A node with no keys
+/// configured checks nothing and stores what it was sent.
 pub mod ed25519 {
     use aws_lc_rs::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
     use base64::Engine as _;

@@ -54,8 +54,6 @@ const NO_DEFAULT: &[&str] = &[
     // Option<u64>: unset omits Access-Control-Max-Age entirely, which is not
     // the same as `Some(0)` — that emits the header with value 0.
     "cors.max_age_secs",
-    // Option<String>: unset attaches no signatures to a startup apply.
-    "packages.signatures_dir",
     // Free-form map keyed by an arbitrary provider slug (#355): deployment-supplied
     // identity providers, documented with an illustrative entry.
     "oauth2_login.providers",

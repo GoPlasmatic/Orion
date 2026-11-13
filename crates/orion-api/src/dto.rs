@@ -545,7 +545,7 @@ pub struct ReadinessComponents {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub engine: String,
-    /// Whether startup has completed, `[packages] apply` included.
+    /// Whether startup has completed.
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub initialized: bool,

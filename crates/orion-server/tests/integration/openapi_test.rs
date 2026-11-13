@@ -69,11 +69,36 @@ async fn test_openapi_spec_all_endpoints() {
         "/api/v2/admin/authoring/scaffold",
         "/api/v2/admin/authoring/pack",
         "/api/v2/admin/authoring/lint",
+        // Deployable definitions:
+        "/api/v2/admin/definitions",
+        "/api/v2/admin/definitions/{digest}",
+        "/api/v2/admin/definitions/test",
+        // The operational admin groups:
+        "/api/v2/admin/engine/status",
+        "/api/v2/admin/cron/occurrences",
+        "/api/v2/admin/cron/occurrences/{id}",
+        "/api/v2/admin/cron/occurrences/{id}/retry",
+        "/api/v2/admin/cron/occurrences/{id}/cancel",
+        "/api/v2/admin/cron/status",
+        "/api/v2/admin/channels/{id}/trigger",
+        "/api/v2/admin/cache/namespaces/{namespace}/invalidate",
+        "/api/v2/admin/connectors/circuit-breakers",
+        "/api/v2/admin/connectors/circuit-breakers/{key}",
     ];
 
     for path in &expected {
         assert!(paths.contains_key(*path), "Missing path: {}", path);
     }
+    // Set equality, not a subset: a route that is added or removed without
+    // this list (and the Orion-docs spec) moving is a contract change the
+    // release notes and the CLI must see.
+    assert_eq!(
+        paths.len(),
+        expected.len(),
+        "the documented path set changed: {} documented, {} expected",
+        paths.len(),
+        expected.len()
+    );
     for key in paths.keys() {
         assert!(
             !key.starts_with("/api/v1/"),

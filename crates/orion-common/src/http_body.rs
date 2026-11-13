@@ -152,8 +152,7 @@ impl std::error::Error for StreamError {}
 
 /// Stream the whole body under `limit`, handing each chunk to `sink` as it
 /// arrives — the streaming counterpart of [`read_bounded`] for a body a caller
-/// wants to write somewhere (a model artifact to its disk cache) rather than
-/// hold in memory.
+/// wants to write somewhere rather than hold in memory.
 ///
 /// The cap is enforced *before* each chunk reaches the sink, exactly as
 /// [`read_bounded`] enforces it before appending, so the sink never sees a
