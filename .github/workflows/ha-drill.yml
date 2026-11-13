@@ -50,6 +50,22 @@ jobs:
         with:
           persist-credentials: false
 
+      # The plugin and cron drills change what the stack serves the way an
+      # operator does: compile a definition set with `orion-cli` and apply it.
+      # The CLI is released from Orion-cli, so it is installed from there when
+      # that repository has a revision; until it does, the two drills are
+      # skipped (the rolling drill needs no CLI).
+      - name: Install orion-cli
+        id: cli
+        run: |
+          if [ -n "$(git ls-remote https://github.com/codetiger/Orion-cli HEAD 2>/dev/null)" ]; then
+            cargo install --git https://github.com/codetiger/Orion-cli --locked
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=orion-cli unavailable::The plugin and cron drills need orion-cli, and the Orion-cli repository has no revision yet; skipping them."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -103,6 +119,7 @@ jobs:
       # load through the LB produces zero non-2xx. Runs after the rolling
       # drill has restarted the victim, against the same two-node stack.
       - name: Run the plugin drill
+        if: steps.cli.outputs.available == 'true'
         run: deploy/ha/plugin-drill.sh
 
       # The cron half: two reconcilers against one database produce one
@@ -110,9 +127,11 @@ jobs:
       # non-overlapping across a node restart — the lease-expiry takeover path
       # the in-process cluster tests cannot reach.
       - name: Run the cron drill
+        if: steps.cli.outputs.available == 'true'
         run: deploy/ha/cron-drill.sh
 
       - name: Verify the plugin on three nodes
+        if: steps.cli.outputs.available == 'true'
         env:
           ORION_ADMIN_API_KEYS: drill-only-throwaway-admin-key-padded-past-32
           HA_NGINX: nginx.n3.conf
