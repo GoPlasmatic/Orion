@@ -75,6 +75,11 @@ pub struct RuntimeCapabilitiesResponse {
     pub admission_policy_id: String,
     /// The channel protocols this node serves (`rest`, `http`, `cron`, …).
     pub channel_drivers: Vec<String>,
+    /// What each of those protocols' drivers declares: what an offline tool
+    /// (`orion-cli lint`/`compile --capabilities`) validates a channel of an
+    /// edition's protocol against. Absent from a server that predates it.
+    #[serde(default)]
+    pub channel_driver_info: Vec<ChannelDriverInfo>,
     pub schema_profiles: Vec<String>,
     /// The WebAssembly plugin worlds this node runs.
     pub wasm_worlds: Vec<String>,
@@ -84,6 +89,41 @@ pub struct RuntimeCapabilitiesResponse {
     pub native_scheduler: NativeSchedulerStatus,
     /// This node's reconciler: what it serves and how it got there.
     pub node_status: NodeStatus,
+}
+
+/// One channel driver, as `/runtime-capabilities` describes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct ChannelDriverInfo {
+    /// The protocol id a channel names.
+    pub protocol: String,
+    /// Serves `channel_type: "sync"` channels.
+    pub supports_sync: bool,
+    /// Serves `channel_type: "async"` channels.
+    pub supports_async: bool,
+    /// Its channels claim routes on the HTTP data plane.
+    pub registers_http_routes: bool,
+    /// Its channels may configure `oauth2_login`.
+    pub supports_oauth2_login: bool,
+    /// For a driver that runs its own listener, the guards its deliveries
+    /// pass. Absent for a protocol the node's own ingresses serve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingress_guards: Option<IngressGuards>,
+    /// The `orion-json-schema/1` document its channels' `transport_config`
+    /// must satisfy, when the driver publishes one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<Object>))]
+    pub transport_schema: Option<Value>,
+}
+
+/// The guards an ingress driver's deliveries pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct IngressGuards {
+    pub rate_limit: bool,
+    pub validation: bool,
+    pub deduplication: bool,
+    pub backpressure: bool,
 }
 
 /// One registered provider backend.

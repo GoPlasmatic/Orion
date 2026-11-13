@@ -26,6 +26,12 @@ pub struct CompileCmd {
     /// its component inlined. Repeatable.
     #[arg(long = "plugin-dir", value_name = "DIR")]
     pub plugin_dirs: Vec<String>,
+    /// The target node's capabilities, as `orion-cli deployments
+    /// capabilities -o json` prints them: validates channels of an edition's
+    /// protocols (e.g. `kafka`) against that node's drivers instead of
+    /// refusing them as unknown
+    #[arg(long, value_name = "FILE")]
+    pub capabilities: Option<String>,
 }
 
 impl CompileCmd {
@@ -36,6 +42,7 @@ impl CompileCmd {
             format: self.format,
             deny_warnings: self.deny_warnings,
             plugin_dirs: &self.plugin_dirs,
+            capabilities: self.capabilities.as_deref(),
         })
         .map_err(boxed)?;
         Ok(0)
@@ -69,6 +76,8 @@ pub(crate) struct CompileRequest<'a> {
     pub(crate) deny_warnings: bool,
     /// Directories of plugin manifests beyond the set's own tree.
     pub(crate) plugin_dirs: &'a [String],
+    /// `--capabilities`: the target node's drivers, for an edition's channels.
+    pub(crate) capabilities: Option<&'a str>,
 }
 
 pub(crate) fn run_compile(req: CompileRequest<'_>) -> Result<(), Box<dyn std::error::Error>> {
@@ -78,7 +87,10 @@ pub(crate) fn run_compile(req: CompileRequest<'_>) -> Result<(), Box<dyn std::er
     // references may live outside it: the boundary is empty.
     let (set, _) = load_and_gate(
         req.dir,
-        orion_authoring::definitions::Boundary::default(),
+        orion_authoring::definitions::Boundary {
+            channel_drivers: super::capabilities_drivers(req.capabilities)?,
+            ..Default::default()
+        },
         true,
         req.deny_warnings,
         req.plugin_dirs,

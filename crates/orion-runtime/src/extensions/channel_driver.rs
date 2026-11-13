@@ -27,7 +27,10 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use orion_extension_api::{ChannelDriver, ChannelDriverCapabilities, ChannelProtocolFields};
+use orion_api::v2::{ChannelDriverInfo, IngressGuards};
+use orion_extension_api::{
+    ChannelDriver, ChannelDriverCapabilities, ChannelProtocolFields, GuardSet,
+};
 use serde_json::Value;
 
 use crate::errors::FieldError;
@@ -185,6 +188,50 @@ pub fn community_drivers() -> Vec<Arc<dyn ChannelDriver>> {
 }
 
 impl ChannelDriverRegistry {
+    /// Community's drivers plus, for every protocol `described` names that
+    /// Community does not serve, a stand-in built from its description:
+    /// what the offline tools validate an edition's channels against
+    /// (`orion-cli compile --capabilities`). A stand-in holds a channel to the
+    /// driver's capabilities, its guard row and its transport schema; the
+    /// driver's own field checks run when the node receives the channel.
+    pub fn with_described(described: &[ChannelDriverInfo]) -> Result<Self, String> {
+        let mut drivers = community_drivers();
+        let served: Vec<String> = drivers
+            .iter()
+            .map(|d| d.protocol_id().to_ascii_lowercase())
+            .collect();
+        for info in described {
+            if !served.contains(&info.protocol.to_ascii_lowercase()) {
+                drivers.push(Arc::new(DescribedChannelDriver { info: info.clone() }));
+            }
+        }
+        Self::new(drivers)
+    }
+
+    /// What each driver declares, as `/runtime-capabilities` serves it.
+    pub fn describe(&self) -> Vec<ChannelDriverInfo> {
+        self.drivers
+            .values()
+            .map(|driver| {
+                let caps = driver.capabilities();
+                ChannelDriverInfo {
+                    protocol: driver.protocol_id().to_string(),
+                    supports_sync: caps.supports_sync,
+                    supports_async: caps.supports_async,
+                    registers_http_routes: caps.registers_http_routes,
+                    supports_oauth2_login: caps.supports_oauth2_login,
+                    ingress_guards: caps.ingress.map(|g| IngressGuards {
+                        rate_limit: g.rate_limit,
+                        validation: g.validation,
+                        deduplication: g.deduplication,
+                        backpressure: g.backpressure,
+                    }),
+                    transport_schema: driver.transport_schema(),
+                }
+            })
+            .collect()
+    }
+
     /// A registry of `drivers`, refusing the first protocol id seen twice
     /// (compared case-insensitively).
     pub fn new(drivers: impl IntoIterator<Item = Arc<dyn ChannelDriver>>) -> Result<Self, String> {
@@ -272,8 +319,115 @@ impl ChannelDriverRegistry {
             out.push(problem);
         }
         out.extend(ingress_problems(driver.as_ref(), fields, config));
+        out.extend(transport_schema_problems(driver.as_ref(), transport_config));
         out.extend(driver.validate_transport(transport_config, config, channel_id));
         out
+    }
+}
+
+/// A protocol the offline tools know only by its description from a node's
+/// `/runtime-capabilities` ([`ChannelDriverRegistry::with_described`]).
+struct DescribedChannelDriver {
+    info: ChannelDriverInfo,
+}
+
+impl ChannelDriver for DescribedChannelDriver {
+    fn protocol_id(&self) -> &str {
+        &self.info.protocol
+    }
+
+    fn capabilities(&self) -> ChannelDriverCapabilities {
+        let info = &self.info;
+        let mut caps = ChannelDriverCapabilities::none();
+        if info.supports_sync {
+            caps = caps.sync();
+        }
+        if info.supports_async {
+            caps = caps.async_submit();
+        }
+        if info.registers_http_routes {
+            caps = caps.http_routes();
+        }
+        if info.supports_oauth2_login {
+            caps = caps.oauth2_login();
+        }
+        if let Some(g) = info.ingress_guards {
+            let mut guards = GuardSet::none();
+            if g.rate_limit {
+                guards = guards.rate_limit();
+            }
+            if g.validation {
+                guards = guards.validation();
+            }
+            if g.deduplication {
+                guards = guards.deduplication();
+            }
+            if g.backpressure {
+                guards = guards.backpressure();
+            }
+            caps = caps.ingress(guards);
+        }
+        caps
+    }
+
+    fn validate_fields(&self, _fields: &ChannelProtocolFields<'_>) -> Vec<FieldError> {
+        Vec::new()
+    }
+
+    fn transport_schema(&self) -> Option<Value> {
+        self.info.transport_schema.clone()
+    }
+}
+
+/// `transport_config` against the driver's published schema, when it
+/// publishes one. The same check runs at upload on the node and offline over
+/// a described driver, so the two cannot disagree about a channel's shape.
+fn transport_schema_problems(
+    driver: &dyn ChannelDriver,
+    transport_config: &Value,
+) -> Vec<FieldError> {
+    const SCHEMA_PATH: &str = "transport_config.schema.json";
+    let Some(schema) = driver.transport_schema() else {
+        return Vec::new();
+    };
+    let protocol = driver.protocol_id();
+    let bundle = match super::schema_profile::CompiledSchemaBundle::compile(
+        BTreeMap::from([(SCHEMA_PATH.to_string(), schema)]),
+        super::schema_profile::SchemaProfileLimits::default(),
+    ) {
+        Ok(bundle) => bundle,
+        Err(finding) => {
+            return vec![FieldError::new(
+                "channel.protocol",
+                orion_api::error::field_codes::INVALID,
+                format!(
+                    "the '{protocol}' driver's transport schema is not a valid {} schema \
+                     ({} at {})",
+                    super::schema_profile::PROFILE_ID,
+                    finding.code,
+                    finding.location
+                ),
+            )];
+        }
+    };
+    match bundle.validate_instance(SCHEMA_PATH, transport_config) {
+        Ok(()) => Vec::new(),
+        Err(finding) => {
+            let field = finding.instance_field();
+            let path = if field.is_empty() {
+                "channel.transport_config".to_string()
+            } else {
+                format!("channel.transport_config.{field}")
+            };
+            vec![FieldError::new(
+                path,
+                orion_api::error::field_codes::INVALID,
+                format!(
+                    "transport_config does not match the '{protocol}' driver's schema ({} at {})",
+                    finding.code, finding.location
+                ),
+            )]
+        }
     }
 }
 
@@ -588,6 +742,120 @@ mod tests {
         let errs = reg.validate_channel(&f, &json!({}), &json!({}), None);
         assert_eq!(errs.len(), 1, "{errs:?}");
         assert_eq!(errs[0].path, "channel.route_pattern");
+    }
+
+    fn kafka_like() -> ChannelDriverInfo {
+        ChannelDriverInfo {
+            protocol: "queue".into(),
+            supports_sync: false,
+            supports_async: true,
+            registers_http_routes: false,
+            supports_oauth2_login: false,
+            ingress_guards: Some(IngressGuards {
+                rate_limit: false,
+                validation: true,
+                deduplication: true,
+                backpressure: false,
+            }),
+            transport_schema: Some(json!({
+                "$schema": crate::extensions::schema_profile::DIALECT_URI,
+                "type": "object",
+                "required": ["topics"],
+                "properties": {
+                    "topics": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+                },
+                "additionalProperties": false
+            })),
+        }
+    }
+
+    #[test]
+    fn a_described_protocol_is_validated_offline_as_its_node_would() {
+        let reg = ChannelDriverRegistry::with_described(&[kafka_like()]).expect("distinct");
+        assert!(reg.get("queue").is_some());
+
+        let ok = reg.validate_channel(
+            &fields("queue", "async"),
+            &json!({ "topics": ["orders"] }),
+            &json!({ "deduplication": { "header": "x-id" } }),
+            None,
+        );
+        assert!(ok.is_empty(), "{ok:?}");
+
+        // The transport schema, the guard row and channel_type all apply.
+        let errs = reg.validate_channel(
+            &fields("queue", "sync"),
+            &json!({ "topics": [] }),
+            &json!({ "auth": { "type": "api_key" }, "rate_limit": { "requests_per_second": 1 } }),
+            None,
+        );
+        let paths: Vec<&str> = errs.iter().map(|e| e.path.as_str()).collect();
+        for expected in [
+            "channel.channel_type",
+            "channel.config.auth",
+            "channel.config.rate_limit",
+        ] {
+            assert!(
+                paths.contains(&expected),
+                "{expected} missing from {errs:?}"
+            );
+        }
+        assert!(
+            paths
+                .iter()
+                .any(|p| p.starts_with("channel.transport_config")),
+            "an empty topic list breaks the schema: {errs:?}"
+        );
+
+        // A protocol nobody described is still unknown.
+        let errs = reg.validate_channel(&fields("other", "async"), &json!({}), &json!({}), None);
+        assert_eq!(errs[0].path, "channel.protocol", "{errs:?}");
+    }
+
+    #[test]
+    fn a_description_never_replaces_a_community_driver() {
+        let mut rest = kafka_like();
+        rest.protocol = "rest".into();
+        let reg = ChannelDriverRegistry::with_described(&[rest]).expect("distinct");
+        // Community's own `rest` still answers: a sync REST channel is valid,
+        // which the described stand-in (async only) would have refused.
+        let mut f = fields("rest", "sync");
+        f.route_pattern = Some("/orders");
+        f.methods = None;
+        let errs = reg.validate_channel(&f, &json!({}), &json!({}), None);
+        assert!(
+            !errs.iter().any(|e| e.path == "channel.channel_type"),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn describe_reports_what_each_driver_declares() {
+        let described = with_queue().describe();
+        let queue = described
+            .iter()
+            .find(|d| d.protocol == "queue")
+            .expect("the composed driver");
+        assert_eq!(
+            queue.ingress_guards,
+            Some(IngressGuards {
+                rate_limit: false,
+                validation: true,
+                deduplication: true,
+                backpressure: false,
+            })
+        );
+        let cron = described
+            .iter()
+            .find(|d| d.protocol == "cron")
+            .expect("cron");
+        assert!(
+            cron.ingress_guards.is_none(),
+            "cron is the node's own ingress"
+        );
+        // Round trip: a description rebuilds a registry that validates alike.
+        let rebuilt = ChannelDriverRegistry::with_described(&described).expect("distinct");
+        assert_eq!(rebuilt.protocol_ids(), with_queue().protocol_ids());
     }
 
     #[test]

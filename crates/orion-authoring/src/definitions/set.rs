@@ -62,6 +62,10 @@ impl Entity {
 pub struct Boundary {
     pub channels: Vec<String>,
     pub connectors: Vec<String>,
+    /// The channel drivers of the node the set deploys to, when the caller
+    /// knows them (`--capabilities`, a node's `/runtime-capabilities`).
+    /// `None` is Community's: what a node built from this binary serves.
+    pub channel_drivers: Option<crate::extensions::ChannelDriverRegistry>,
 }
 
 impl Boundary {

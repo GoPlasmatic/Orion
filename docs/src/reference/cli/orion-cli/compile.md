@@ -9,7 +9,7 @@ Compiles a definition set into a deployment directory, resolving its authoring c
 ## Synopsis
 
 ```bash
-orion-cli compile <dir> -o <DIR> [--format deployment] [--deny-warnings] [--plugin-dir <DIR>]...
+orion-cli compile <dir> -o <DIR> [--format deployment] [--deny-warnings] [--plugin-dir <DIR>]... [--capabilities <FILE>]
 ```
 
 ## Description
@@ -30,6 +30,7 @@ Every entity must carry an explicit id. A deployment member is identified by its
 | `--format` | `deployment`, the default and only format. |
 | `--deny-warnings` | Exit non-zero on advisory findings too, not only errors. |
 | `--plugin-dir` | Directory of plugin manifests beyond the set's own tree. Repeatable. |
+| `--capabilities` | The target node's `/runtime-capabilities` answer, as `orion-cli deployments capabilities -o json` writes it. Channels of a protocol this binary does not serve (an edition's, such as `kafka`) are then validated against that node's description of its driver: its capabilities, the guards its deliveries pass and its `transport_config` schema. Without it, such a channel is refused as an unknown protocol. |
 
 ## Deployment directories
 

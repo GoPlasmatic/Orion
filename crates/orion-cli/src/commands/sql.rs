@@ -116,6 +116,7 @@ impl SqlCmd {
             boundary: orion_authoring::definitions::Boundary {
                 channels: requires_channels.clone(),
                 connectors: requires_connectors.clone(),
+                channel_drivers: None,
             },
             plugin_dirs,
             config: &config,

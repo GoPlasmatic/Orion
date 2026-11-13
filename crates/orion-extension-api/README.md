@@ -39,8 +39,10 @@ a release, include its implementation and validation in that release's work.
   for every Connection the channel's member requires. Unlike a connector call's
   attempt, the resolver does not re-check the node's revocation ledger; a driver
   holds it until its next reconcile.
-- Offline `lint` and `compile` validate channels against Community's drivers, so
-  they refuse an edition's protocol.
+- Offline `lint` and `compile` know an edition's protocol only through
+  `--capabilities` (a node's `/runtime-capabilities`): its capabilities, guard
+  row and `transport_schema`. A driver's own `validate_fields` and
+  `validate_transport` run only on the node.
 - The runtime's pool registry exposes eviction methods without production
   callers. Check revision and secret identity before adding eviction for rotation
   or retirement; define how admitted runs drain their old resources.

@@ -583,6 +583,91 @@ fn tree(root: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
 }
 
 #[test]
+fn an_edition_protocol_compiles_against_the_target_nodes_capabilities() {
+    let scratch = deployment_set("compile-capabilities");
+    let channel = |transport: &str| {
+        format!(
+            r#"{{ "channel_id": "remember-events", "name": "remember-events", "channel_type": "async",
+                 "protocol": "queue", "workflow_id": "remember", "connections": ["partner-api"],
+                 "transport_config": {transport} }}"#
+        )
+    };
+    std::fs::write(
+        scratch.path().join("ch-queue.json"),
+        channel(r#"{ "topics": ["orders"] }"#),
+    )
+    .unwrap();
+    let capabilities = scratch.path().join("caps.json");
+    std::fs::write(
+        &capabilities,
+        serde_json::json!({
+            "api_version": 1,
+            "edition": "enterprise",
+            "channel_drivers": ["cron", "http", "queue", "rest"],
+            "channel_driver_info": [{
+                "protocol": "queue",
+                "supports_sync": false,
+                "supports_async": true,
+                "registers_http_routes": false,
+                "supports_oauth2_login": false,
+                "ingress_guards": { "rate_limit": false, "validation": true,
+                                    "deduplication": true, "backpressure": true },
+                "transport_schema": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "type": "object",
+                    "required": ["topics"],
+                    "properties": { "topics": { "type": "array", "minItems": 1,
+                                                "items": { "type": "string" } } },
+                    "additionalProperties": false
+                }
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // Without the target's capabilities, Community does not know the protocol.
+    let (ok, report) = compile_deployment(scratch.path(), &scratch.path().join("dist-community"));
+    assert!(!ok, "{report}");
+    assert!(report.contains("queue"), "{report}");
+
+    let caps = capabilities.to_str().unwrap();
+    let compile = |out: &str| {
+        run(&[
+            "--output",
+            "json",
+            "compile",
+            scratch.path().to_str().unwrap(),
+            "--capabilities",
+            caps,
+            "-o",
+            scratch.path().join(out).to_str().unwrap(),
+        ])
+    };
+    let (ok, report) = compile("dist");
+    assert!(ok, "{report}");
+    let deployment = read_json(&scratch.path().join("dist").join("deployment.json"));
+    assert!(
+        deployment["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["kind"] == "channel" && m["id"] == "remember-events"),
+        "{deployment}"
+    );
+
+    // The node's schema applies offline.
+    std::fs::write(
+        scratch.path().join("ch-queue.json"),
+        channel(r#"{ "topics": [] }"#),
+    )
+    .unwrap();
+    let (ok, report) = compile("dist-bad");
+    assert!(!ok, "{report}");
+    assert!(report.contains("transport_config"), "{report}");
+}
+
+#[test]
 fn a_channel_requires_the_connections_it_names() {
     let scratch = deployment_set("compile-channel-connections");
     let channel = |connections: &str| {

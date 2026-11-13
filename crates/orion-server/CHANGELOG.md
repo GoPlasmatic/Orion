@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   under `components.channel_drivers`. A channel of such a protocol that
   configures a guard its deliveries never pass, or an HTTP-only block (`auth`,
   `cache`, `oauth2_login`, …), is refused at upload.
+- **Offline tools validate an edition's channels.** A channel driver can
+  publish its `transport_config` schema (`ChannelDriver::transport_schema`),
+  which the node enforces at upload. `/runtime-capabilities` describes every
+  driver under `channel_driver_info` (capabilities, ingress guards, transport
+  schema), and `orion-cli lint`/`compile --capabilities <file>` validate a
+  channel of a protocol this binary does not serve against that description
+  instead of refusing it as unknown.
 - **A channel can require connections.** A channel source document's
   `connections` list compiles into the member's `requires`, and a driver that
   runs its own listener gets a `ConnectionResolver` for each, at the revision

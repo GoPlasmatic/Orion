@@ -134,6 +134,16 @@ pub trait ChannelDriver: Send + Sync {
         Vec::new()
     }
 
+    /// An `orion-json-schema/1` document for this protocol's
+    /// `transport_config`. The node validates every channel of the protocol
+    /// against it at upload, and serves it in `/runtime-capabilities` so the
+    /// offline tools (`lint`, `compile --capabilities`) validate an edition's
+    /// channels without the edition's binary. `None` leaves the shape to
+    /// [`Self::validate_transport`] alone.
+    fn transport_schema(&self) -> Option<Value> {
+        None
+    }
+
     /// Start the driver's listener, once, at boot. `host` dispatches the
     /// protocol's deliveries (see [`crate::ingress`]). A driver that declares
     /// [`ChannelDriverCapabilities::ingress`] returns its running half; the

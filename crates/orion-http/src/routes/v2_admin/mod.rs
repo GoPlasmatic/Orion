@@ -308,6 +308,7 @@ pub(crate) async fn get_runtime_capabilities(
         edition: comp.edition(),
         admission_policy_id: comp.admission().policy_id().to_string(),
         channel_drivers: comp.channels().protocol_ids(),
+        channel_driver_info: comp.channels().describe(),
         schema_profiles: vec![crate::extensions::PROFILE_ID.to_string()],
         wasm_worlds: vec![crate::plugin::manifest::ABI.to_string()],
         provider_backends,

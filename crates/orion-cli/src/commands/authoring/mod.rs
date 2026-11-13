@@ -374,6 +374,39 @@ fn placeholder_entries(names: &[String]) -> Vec<orion_engine::FunctionEntry> {
 /// that wrote out a set its own linter would reject is how a deployment comes
 /// to fail at apply having passed CI. The two differ in their boundary and in
 /// `require_ids`, and in nothing else, on purpose.
+/// The channel drivers `--capabilities FILE` describes: a target node's
+/// `/runtime-capabilities` answer, as `orion-cli deployments capabilities -o
+/// json` prints it (bare, or inside a `data` envelope). `None` without the
+/// flag, which leaves the offline tools on Community's drivers.
+pub(super) fn capabilities_drivers(
+    path: Option<&str>,
+) -> Result<Option<orion_runtime::extensions::ChannelDriverRegistry>, Box<dyn std::error::Error>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let raw = std::fs::read_to_string(path).map_err(|e| format!("--capabilities {path}: {e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("--capabilities {path}: {e}"))?;
+    let answer = value
+        .get("data")
+        .filter(|d| d.is_object())
+        .unwrap_or(&value);
+    let Some(info) = answer.get("channel_driver_info") else {
+        return Err(format!(
+            "--capabilities {path}: names no `channel_driver_info`; write it with \
+             `orion-cli deployments capabilities -o json` against a server that reports it"
+        )
+        .into());
+    };
+    let described: Vec<orion_api::v2::ChannelDriverInfo> = serde_json::from_value(info.clone())
+        .map_err(|e| format!("--capabilities {path}: `channel_driver_info`: {e}"))?;
+    let registry = orion_runtime::extensions::ChannelDriverRegistry::with_described(&described)
+        .map_err(|protocol| {
+            format!("--capabilities {path}: protocol '{protocol}' is described twice")
+        })?;
+    Ok(Some(registry))
+}
+
 fn load_and_gate(
     dir: &str,
     boundary: orion_authoring::definitions::Boundary,

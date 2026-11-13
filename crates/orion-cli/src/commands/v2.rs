@@ -57,6 +57,7 @@ mod tests {
             edition: EditionTier::Community,
             admission_policy_id: "community".into(),
             channel_drivers: vec!["rest".into()],
+            channel_driver_info: vec![],
             schema_profiles: vec![],
             wasm_worlds: vec![],
             provider_backends: backends,

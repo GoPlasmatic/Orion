@@ -82,6 +82,19 @@ impl ChannelDriver for QueueDriver {
         Vec::new()
     }
 
+    fn transport_schema(&self) -> Option<Value> {
+        Some(json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "required": ["topic"],
+            "properties": {
+                "topic": { "type": "string", "minLength": 1 },
+                "connection": { "type": "string" }
+            },
+            "additionalProperties": false
+        }))
+    }
+
     async fn start(
         &self,
         host: Arc<dyn IngressHost>,
@@ -405,6 +418,63 @@ async fn the_driver_is_reported_on_health_and_readiness_and_stopped_at_shutdown(
 
     state.tasks.shutdown(Duration::from_secs(5)).await;
     assert!(probe.shut_down.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn runtime_capabilities_describe_the_driver_and_upload_enforces_its_schema() {
+    let (_state, app, _probe) = node().await;
+    let caps = body_json(
+        app.clone()
+            .oneshot(json_request(
+                "GET",
+                "/api/v2/admin/runtime-capabilities",
+                None,
+            ))
+            .await
+            .expect("capabilities answer"),
+    )
+    .await;
+    let info = caps["channel_driver_info"]
+        .as_array()
+        .expect("drivers described")
+        .iter()
+        .find(|d| d["protocol"] == PROTOCOL)
+        .cloned()
+        .unwrap_or_else(|| panic!("the composed driver is described: {caps}"));
+    assert_eq!(info["supports_async"], true);
+    assert_eq!(
+        info["ingress_guards"],
+        json!({ "rate_limit": false, "validation": true, "deduplication": true, "backpressure": true })
+    );
+    assert_eq!(info["transport_schema"]["required"], json!(["topic"]));
+
+    // The node holds a channel to the schema it publishes.
+    let response = app
+        .oneshot(json_request(
+            "POST",
+            "/api/v2/admin/definitions",
+            Some(json!({
+                "kind": "channel",
+                "definition": {
+                    "name": "orders",
+                    "channel_type": "async",
+                    "protocol": PROTOCOL,
+                    "transport_config": { "topics": ["orders"] }
+                }
+            })),
+        ))
+        .await
+        .expect("definition upload answers");
+    assert!(response.status().is_client_error(), "{}", response.status());
+    let body = body_json(response).await;
+    assert!(
+        body["error"]["details"]
+            .as_array()
+            .is_some_and(|d| d.iter().any(|e| e["path"]
+                .as_str()
+                .is_some_and(|p| p.contains("transport_config")))),
+        "the refusal names transport_config: {body}"
+    );
 }
 
 #[tokio::test]

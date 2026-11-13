@@ -11,6 +11,7 @@ Statically validates a workflow JSON file with the same checks the server runs w
 ```bash
 orion-cli lint <workflow.json | dir> [--deny-warnings]
                   [--requires-channel NAME]... [--requires-connector NAME]...
+                  [--capabilities FILE]
 ```
 
 ## Description
@@ -47,6 +48,7 @@ A fourth id, `[engine.advisory]`, is the catch-all. An engine newer than this Or
 | `--requires-connector` | Connector name that may be referenced without being in the set. Repeatable, directory mode only. |
 | `--definitions` | Directory holding the set's shared `constants`, `errors` and `fragments`. Implicit when linting a directory. |
 | `--plugin-dir` | Directory of plugin manifests (`plugin.toml`) beyond the set's own tree, so a workflow naming a plugin function is checked against the manifest's field table. Repeatable. A `plugin.toml` inside the linted directory is found without it. |
+| `--capabilities` | The target node's `/runtime-capabilities` answer, as `orion-cli deployments capabilities -o json` writes it. A channel of an edition's protocol is validated against that node's driver description instead of being refused as unknown. Directory mode. |
 
 ## Examples
 

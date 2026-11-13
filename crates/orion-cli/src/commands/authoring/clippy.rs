@@ -95,6 +95,7 @@ impl ClippyCmd {
             boundary: Boundary {
                 channels: self.requires_channels.clone(),
                 connectors: self.requires_connectors.clone(),
+                channel_drivers: None,
             },
             config: config.as_ref(),
             fix: self.fix,

@@ -4238,6 +4238,57 @@
         },
         "additionalProperties": false
       },
+      "ChannelDriverInfo": {
+        "type": "object",
+        "description": "One channel driver, as `/runtime-capabilities` describes it.",
+        "required": [
+          "protocol",
+          "supports_sync",
+          "supports_async",
+          "registers_http_routes",
+          "supports_oauth2_login"
+        ],
+        "properties": {
+          "ingress_guards": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/IngressGuards",
+                "description": "For a driver that runs its own listener, the guards its deliveries\npass. Absent for a protocol the node's own ingresses serve."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "protocol": {
+            "type": "string",
+            "description": "The protocol id a channel names."
+          },
+          "registers_http_routes": {
+            "type": "boolean",
+            "description": "Its channels claim routes on the HTTP data plane."
+          },
+          "supports_async": {
+            "type": "boolean",
+            "description": "Serves `channel_type: \"async\"` channels."
+          },
+          "supports_oauth2_login": {
+            "type": "boolean",
+            "description": "Its channels may configure `oauth2_login`."
+          },
+          "supports_sync": {
+            "type": "boolean",
+            "description": "Serves `channel_type: \"sync\"` channels."
+          },
+          "transport_schema": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The `orion-json-schema/1` document its channels' `transport_config`\nmust satisfy, when the driver publishes one."
+          }
+        }
+      },
       "ChannelLoadIssueResponse": {
         "type": "object",
         "description": "A channel a generation refused to serve.",
@@ -6555,6 +6606,30 @@
           "wasm"
         ]
       },
+      "IngressGuards": {
+        "type": "object",
+        "description": "The guards an ingress driver's deliveries pass.",
+        "required": [
+          "rate_limit",
+          "validation",
+          "deduplication",
+          "backpressure"
+        ],
+        "properties": {
+          "backpressure": {
+            "type": "boolean"
+          },
+          "deduplication": {
+            "type": "boolean"
+          },
+          "rate_limit": {
+            "type": "boolean"
+          },
+          "validation": {
+            "type": "boolean"
+          }
+        }
+      },
       "LintResponse": {
         "type": "object",
         "description": "A provider package's lint report (`POST /api/v2/admin/authoring/lint`):\n`200` when linting ran (`valid` indicates whether all checks passed),\n`400` (`ErrorEnvelope`) when a file does not decode.",
@@ -7731,6 +7806,13 @@
             "format": "int32",
             "description": "The contract revision this server speaks: [`API_VERSION`] of the\n`orion-api` it was built with. A client that speaks another must\nnot read the rest of this answer, or any other v2 answer.",
             "minimum": 0
+          },
+          "channel_driver_info": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChannelDriverInfo"
+            },
+            "description": "What each of those protocols' drivers declares: what an offline tool\n(`orion-cli lint`/`compile --capabilities`) validates a channel of an\nedition's protocol against. Absent from a server that predates it."
           },
           "channel_drivers": {
             "type": "array",

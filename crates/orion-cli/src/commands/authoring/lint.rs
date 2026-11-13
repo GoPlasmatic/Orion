@@ -47,6 +47,12 @@ pub struct LintCmd {
     /// reported as unverifiable, never as an error.
     #[arg(long = "plugin-dir", value_name = "DIR")]
     pub plugin_dirs: Vec<String>,
+    /// The target node's capabilities, as `orion-cli deployments
+    /// capabilities -o json` prints them: validates channels of an edition's
+    /// protocols (e.g. `kafka`) against that node's drivers instead of
+    /// refusing them as unknown
+    #[arg(long, value_name = "FILE")]
+    pub capabilities: Option<String>,
 }
 
 impl LintCmd {
@@ -54,6 +60,8 @@ impl LintCmd {
         let boundary = Boundary {
             channels: self.requires_channels.clone(),
             connectors: self.requires_connectors.clone(),
+            channel_drivers: super::capabilities_drivers(self.capabilities.as_deref())
+                .map_err(boxed)?,
         };
         run_lint(
             &self.workflow,
