@@ -181,8 +181,8 @@ impl std::fmt::Debug for CompositionBuilder {
 
 impl CompositionBuilder {
     /// An empty composition for `edition`: no drivers, no providers, no
-    /// pools, and Community's package verifier (which refuses
-    /// `tier: "enterprise"` packages, so an edition that forgets its own
+    /// pools, and Community's package verifier (which refuses `standard` and
+    /// `enterprise` packages, so an edition that forgets its own
     /// verifier fails closed).
     pub fn new(edition: EditionTier) -> Self {
         Self {
@@ -200,7 +200,8 @@ impl CompositionBuilder {
     /// - the foundational Direct Rust connector providers (`org.orion.http`,
     ///   `org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite`,
     ///   `org.orion.memory-cache`) and their version-fenced session/cache pools
-    /// - Community's package verifier, which refuses `tier: "enterprise"` packages
+    /// - Community's package verifier, which refuses `standard` and `enterprise`
+    ///   packages
     pub fn community() -> Self {
         let mut builder = Self::new(EditionTier::Community);
         for driver in channel_driver::community_drivers() {
@@ -486,7 +487,7 @@ mod tests {
             .admission()
             .verify_package(&ent_req)
             .expect_err("enterprise package must be rejected by Community policy");
-        assert_eq!(err.code, "ENTERPRISE_TIER_NOT_ENABLED");
+        assert_eq!(err.code, "TIER_NOT_ENABLED");
 
         // Verify valid Community package passes admission.
         let comm_req = PackageAdmissionRequest::new(

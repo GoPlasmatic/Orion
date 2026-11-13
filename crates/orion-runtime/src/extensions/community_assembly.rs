@@ -11,8 +11,8 @@
 //!    `org.orion.postgresql`, `org.orion.sqlite`) and zero non-Community
 //!    Direct Rust providers.
 //! 3. Uses [`CommunityPackageVerifier`](super::admission::CommunityPackageVerifier)
-//!    (`orion.community.admission/1`) which rejects `tier: "enterprise"` packages
-//!    with `ENTERPRISE_TIER_NOT_ENABLED`.
+//!    (`orion.community.admission/1`), which rejects `standard` and
+//!    `enterprise` packages with `TIER_NOT_ENABLED`.
 //! 4. Supports registering and executing a custom `workflow` connector package
 //!    on top of the Community foundation without modifying core enums.
 

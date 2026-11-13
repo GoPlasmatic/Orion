@@ -12,7 +12,7 @@ use crate::identity::ProviderRef;
 pub mod admission_codes {
     pub const INVALID_PROVIDER_ID: &str = "PACKAGE_INVALID_PROVIDER_ID";
     pub const INVALID_TARGET: &str = "PACKAGE_INVALID_TARGET";
-    pub const TIER_NOT_ENABLED: &str = "ENTERPRISE_TIER_NOT_ENABLED";
+    pub const TIER_NOT_ENABLED: &str = "TIER_NOT_ENABLED";
     pub const PROVIDER_REVOKED: &str = "PROVIDER_REVOKED";
 }
 

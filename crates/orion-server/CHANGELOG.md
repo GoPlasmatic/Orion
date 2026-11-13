@@ -72,6 +72,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Three edition tiers.** `EditionTier` (a node's `edition` in
+  `/runtime-capabilities`, a provider package's `tier`) is `community`,
+  `standard` or `enterprise`, a ladder: a node admits a package at or below
+  its own edition (`EditionTier::admits`). Community refuses `standard` and
+  `enterprise` packages with `TIER_NOT_ENABLED`, which replaces
+  `ENTERPRISE_TIER_NOT_ENABLED`.
 - **Deploy one complete v2 head.** Upload immutable definitions and connection
   revisions, then plan and apply a manifest under compare-and-swap. A node serves
   only its committed deployment. Apply and rollback build a complete runtime

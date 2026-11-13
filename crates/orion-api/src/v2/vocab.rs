@@ -193,18 +193,33 @@ impl EffectStatus {
 }
 
 /// An edition, and the distribution tier a provider package declares.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// The tiers are a ladder in declaration order (`community` < `standard` <
+/// `enterprise`): a node admits a package whose tier is at or below its own
+/// edition ([`Self::admits`]). Community is built here; Standard and
+/// Enterprise are editions composed outside this repository.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum EditionTier {
     Community,
+    Standard,
     Enterprise,
 }
 
 names!(EditionTier {
     Community => "community",
+    Standard => "standard",
     Enterprise => "enterprise",
 });
+
+impl EditionTier {
+    /// Whether a node of this edition may admit a package declaring
+    /// `package` as its tier.
+    pub fn admits(self, package: EditionTier) -> bool {
+        package <= self
+    }
+}
 
 /// The kind of a deployment member.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -249,6 +264,18 @@ names!(PackageArtifactState {
 #[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// Each edition admits its own tier and those below it, never one above.
+    #[test]
+    fn an_edition_admits_its_tier_and_below() {
+        use EditionTier::{Community, Enterprise, Standard};
+        assert!(Community.admits(Community));
+        assert!(!Community.admits(Standard));
+        assert!(!Community.admits(Enterprise));
+        assert!(Standard.admits(Community) && Standard.admits(Standard));
+        assert!(!Standard.admits(Enterprise));
+        assert!(EditionTier::ALL.iter().all(|t| Enterprise.admits(*t)));
+    }
 
     /// `as_str`, `parse` and serde agree on every name.
     #[test]

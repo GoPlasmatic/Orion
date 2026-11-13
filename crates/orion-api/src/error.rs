@@ -118,8 +118,8 @@ pub mod codes {
     /// deeper than the configured maximum (`508 Loop Detected`). The loop is
     /// in the deployed channels, not in the request.
     pub const LOOP_DETECTED: &str = super::ErrorCode::LoopDetected.as_str();
-    /// Enterprise tier package or feature rejected on Community Edition.
-    pub const ENTERPRISE_TIER_NOT_ENABLED: &str = super::V2Code::EnterpriseTierNotEnabled.as_str();
+    /// A package declares a tier above the node's edition.
+    pub const TIER_NOT_ENABLED: &str = super::V2Code::TierNotEnabled.as_str();
 }
 
 /// The closed vocabulary of [`FieldError::code`].
@@ -302,8 +302,9 @@ v2_codes! {
     ProviderNotAdmitted = "PROVIDER_NOT_ADMITTED" => Forbidden,
     ProviderRevoked = "PROVIDER_REVOKED" => Forbidden,
     AdmissionInvalidated = "ADMISSION_INVALIDATED" => Forbidden,
-    /// An Enterprise-tier package on a Community node.
-    EnterpriseTierNotEnabled = "ENTERPRISE_TIER_NOT_ENABLED" => Forbidden,
+    /// A package whose declared tier is above the node's edition (a
+    /// `standard` or `enterprise` package on a Community node).
+    TierNotEnabled = "TIER_NOT_ENABLED" => Forbidden,
     PackageInvalidProviderId = "PACKAGE_INVALID_PROVIDER_ID" => Forbidden,
     PackageInvalidTarget = "PACKAGE_INVALID_TARGET" => Forbidden,
     /// The edition's admission policy refused the package for a reason of

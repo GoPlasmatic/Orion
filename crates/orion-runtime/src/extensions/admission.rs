@@ -19,7 +19,8 @@ use orion_extension_api::{
 ///
 /// - Verifies a non-empty provider id and target (the digest is a checked
 ///   [`Digest`] by type).
-/// - Rejects packages explicitly marked `tier: "enterprise"`.
+/// - Rejects a package whose declared tier is above Community
+///   (`standard`, `enterprise`).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CommunityPackageVerifier;
 
@@ -48,12 +49,13 @@ impl PackageVerifier for CommunityPackageVerifier {
                 "Implementation target_id must not be empty",
             ));
         }
-        if request.tier == EditionTier::Enterprise {
+        if !EditionTier::Community.admits(request.tier) {
             return Err(AdmissionRejection::new(
                 admission_codes::TIER_NOT_ENABLED,
                 format!(
-                    "Provider '{}' requires Enterprise admission policy",
-                    request.provider.provider_id
+                    "Provider '{}' declares tier '{}', which this Community node does not admit",
+                    request.provider.provider_id,
+                    request.tier.as_str()
                 ),
             ));
         }
@@ -281,11 +283,12 @@ mod tests {
     }
 
     #[test]
-    fn a_tier_is_one_of_two_names() {
+    fn a_tier_is_one_of_three_names() {
         assert_eq!(
             EditionTier::parse("community"),
             Some(EditionTier::Community)
         );
+        assert_eq!(EditionTier::parse("standard"), Some(EditionTier::Standard));
         assert_eq!(
             EditionTier::parse("enterprise"),
             Some(EditionTier::Enterprise)
