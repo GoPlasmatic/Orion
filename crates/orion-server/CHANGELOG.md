@@ -112,6 +112,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   storage capabilities, their commands and their old admin APIs. Enterprise
   provider implementation and benchmarks belong to Orion-ext; extracted
   reference code does not establish a runnable provider.
+- The v1 Kafka channel fields `topic` and `consumer_group` from the channel
+  row, `CreateChannelRequest` and the formatter's key order. `lint` now refuses
+  them as upload and `compile` already did; a protocol that consumes topics
+  names them in its `transport_config`.
 - `ChannelDriver::activate`, `ChannelDriver::allowed_functions` and
   `ChannelSubscriptionHandle` from the extension API. The node never called
   them; `ChannelDriver::start` and `RunningDriver` replace them.

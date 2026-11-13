@@ -84,8 +84,6 @@ impl Chan {
             protocol: if self.cron { "cron" } else { "http" }.to_string(),
             methods_json: None,
             route_pattern: None,
-            topic: None,
-            consumer_group: None,
             transport_config_json: if self.cron {
                 json!({"schedule": "0 15 2 * * *"}).to_string()
             } else {

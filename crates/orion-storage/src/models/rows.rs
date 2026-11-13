@@ -117,8 +117,6 @@ pub struct Channel {
     /// channels.
     pub methods_json: Option<String>,
     pub route_pattern: Option<String>,
-    pub topic: Option<String>,
-    pub consumer_group: Option<String>,
     pub transport_config_json: String,
     pub workflow_id: Option<String>,
     pub config_json: String,

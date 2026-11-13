@@ -138,8 +138,6 @@ impl ChannelDriver for CronChannelDriver {
             fields.channel_type,
             fields.methods,
             fields.route_pattern,
-            None,
-            None,
         )
     }
 

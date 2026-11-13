@@ -500,6 +500,21 @@ fn check_channels(
     // (`--capabilities`), and otherwise Community's: what a node built from
     // this binary serves.
     for def in set.iter(Entity::Channel) {
+        // v1's Kafka routing fields. A channel definition has no place for
+        // them (upload refuses them as unknown, and so does `compile`); a
+        // protocol that consumes topics names them in its `transport_config`.
+        for key in ["topic", "consumer_group"] {
+            if def.doc.get(key).is_some_and(|v| !v.is_null()) {
+                findings.push(Diagnostic::error(
+                    "schema.channel",
+                    &def.origin,
+                    format!(
+                        "`{key}` is not a channel field; a protocol that consumes topics \
+                         names them in its transport_config"
+                    ),
+                ));
+            }
+        }
         let req: CreateChannelRequest = match serde_json::from_value(def.doc.clone()) {
             Ok(req) => req,
             Err(e) => {
@@ -598,11 +613,10 @@ fn check_channels(
         }
 
         // `connections`: what the channel's driver connects with. A set-document
-        // key like `workflow_id` — `compile` turns each into a requirement of
-        // the channel's member — so it is read from the document, not the
-        // definition.
-        if let Some(connections) = def.doc.get("connections").and_then(Value::as_array) {
-            for name in connections.iter().filter_map(Value::as_str) {
+        // key like `workflow_id`: `compile` turns each into a requirement of
+        // the channel's member.
+        {
+            for name in &req.connections {
                 if !known_connector(name) {
                     findings.push(Diagnostic::error(
                         "closure.connector",

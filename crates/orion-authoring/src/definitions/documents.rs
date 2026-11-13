@@ -43,11 +43,14 @@ pub struct CreateChannelRequest {
     pub protocol: String,
     pub methods: Option<Vec<String>>,
     pub route_pattern: Option<String>,
-    pub topic: Option<String>,
-    pub consumer_group: Option<String>,
     #[serde(default = "default_empty_object")]
     pub transport_config: Value,
     pub workflow_id: Option<String>,
+    /// The connections the channel's driver connects with (a Kafka
+    /// channel's cluster): a set-document key like `workflow_id`, which
+    /// `compile` turns into requirements of the channel's member.
+    #[serde(default)]
+    pub connections: Vec<String>,
     #[serde(default = "default_empty_object")]
     pub config: Value,
     #[serde(default)]

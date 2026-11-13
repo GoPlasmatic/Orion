@@ -90,8 +90,6 @@ pub fn channel_row(
             .map(serde_json::to_string)
             .transpose()?,
         route_pattern: definition.route_pattern.clone(),
-        topic: None,
-        consumer_group: None,
         transport_config_json: serde_json::to_string(&definition.transport_config)?,
         workflow_id,
         config_json: serde_json::to_string(&definition.config)?,

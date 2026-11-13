@@ -588,8 +588,6 @@ pub mod testing {
             protocol: "http".to_string(),
             methods_json: Some("POST".to_string()),
             workflow_id: None,
-            topic: None,
-            consumer_group: None,
             route_pattern: None,
             description: None,
             transport_config_json: "{}".to_string(),

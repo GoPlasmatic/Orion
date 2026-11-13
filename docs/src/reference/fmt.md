@@ -71,7 +71,7 @@ Known keys of known shapes are written in the order in the table. Keys not in a 
 | Validation rule | `logic`, `message` |
 | `loop` | `counter`, `init`, `max`, `increment`, `over`, `as`, `scratch`, `setup` |
 | `for_each` | `over`, `as`, `max_concurrency`, `collect`, `into` |
-| Channel | `channel_id`, `name`, `description`, `tags`, `channel_type`, `protocol`, `methods`, `route_pattern`, `topic`, `consumer_group`, `priority`, `workflow_id`, `activate`, `transport_config`, `config` |
+| Channel | `channel_id`, `name`, `description`, `tags`, `channel_type`, `protocol`, `methods`, `route_pattern`, `priority`, `workflow_id`, `connections`, `activate`, `transport_config`, `config` |
 | Connector | `id`, `name`, `connector_type`, `enabled`, `tags`, `config` |
 | Shared document | `package`, `constants`, `errors`, `fragments` |
 | Package declaration | `name`, `requires` |

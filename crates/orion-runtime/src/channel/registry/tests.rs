@@ -103,8 +103,6 @@ fn test_channel(name: &str, config_json: &str) -> Channel {
         protocol: "http".to_string(),
         methods_json: None,
         route_pattern: None,
-        topic: None,
-        consumer_group: None,
         transport_config_json: "{}".to_string(),
         workflow_id: None,
         config_json: config_json.to_string(),

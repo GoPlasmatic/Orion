@@ -84,8 +84,6 @@ const REFUSED_CONFIG_KEYS: &[(&str, &str)] = &[
 const REFUSED_ROUTING_FIELDS: &[(&str, &str)] = &[
     ("channel.methods", "methods"),
     ("channel.route_pattern", "route_pattern"),
-    ("channel.topic", "topic"),
-    ("channel.consumer_group", "consumer_group"),
 ];
 
 /// The routing fields a cron channel must leave unset, plus the `channel_type`
@@ -94,14 +92,10 @@ pub fn cron_routing_errors(
     channel_type: Option<&str>,
     methods: Option<&[String]>,
     route_pattern: Option<&str>,
-    topic: Option<&str>,
-    consumer_group: Option<&str>,
 ) -> Vec<FieldError> {
-    let present: [bool; 4] = [
+    let present: [bool; 2] = [
         methods.is_some_and(|m| !m.is_empty()),
         route_pattern.is_some_and(|r| !r.trim().is_empty()),
-        topic.is_some_and(|t| !t.trim().is_empty()),
-        consumer_group.is_some_and(|c| !c.trim().is_empty()),
     ];
     let mut out: Vec<FieldError> = REFUSED_ROUTING_FIELDS
         .iter()
@@ -282,36 +276,24 @@ mod tests {
 
     #[test]
     fn routing_fields_of_other_protocols_are_refused() {
-        let errors = cron_routing_errors(
-            Some("async"),
-            Some(&["POST".to_string()]),
-            Some("/nightly"),
-            Some("orders"),
-            Some("group-a"),
-        );
+        let errors =
+            cron_routing_errors(Some("async"), Some(&["POST".to_string()]), Some("/nightly"));
         assert_eq!(
             paths(&errors),
-            vec![
-                "channel.methods",
-                "channel.route_pattern",
-                "channel.topic",
-                "channel.consumer_group",
-            ]
+            vec!["channel.methods", "channel.route_pattern"]
         );
     }
 
     #[test]
     fn an_empty_routing_field_is_not_a_declaration() {
-        assert!(
-            cron_routing_errors(Some("async"), Some(&[]), Some("  "), None, Some("")).is_empty()
-        );
+        assert!(cron_routing_errors(Some("async"), Some(&[]), Some("  ")).is_empty());
     }
 
     #[test]
     fn a_sync_cron_channel_is_refused() {
-        let errors = cron_routing_errors(Some("sync"), None, None, None, None);
+        let errors = cron_routing_errors(Some("sync"), None, None);
         assert_eq!(paths(&errors), vec!["channel.channel_type"]);
-        assert!(cron_routing_errors(Some("ASYNC"), None, None, None, None).is_empty());
+        assert!(cron_routing_errors(Some("ASYNC"), None, None).is_empty());
     }
 
     #[test]

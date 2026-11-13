@@ -49,8 +49,6 @@ pub fn validate_create_channel(
             channel_type: Some(req.channel_type.as_str()),
             methods: req.methods.as_deref(),
             route_pattern: req.route_pattern.as_deref(),
-            topic: req.topic.as_deref(),
-            consumer_group: req.consumer_group.as_deref(),
         },
         &req.transport_config,
         &req.config,
@@ -161,8 +159,6 @@ struct ProtocolFields<'a> {
     channel_type: Option<&'a str>,
     methods: Option<&'a [String]>,
     route_pattern: Option<&'a str>,
-    topic: Option<&'a str>,
-    consumer_group: Option<&'a str>,
 }
 
 /// Cap a channel's free-text routing fields at the validation boundary.
@@ -198,38 +194,14 @@ fn check_protocol_fields(
     driver_fields.methods = fields.methods;
     driver_fields.route_pattern = fields.route_pattern;
     let mut out = drivers.validate_channel(&driver_fields, transport_config, config, channel_id);
-    if fields.protocol == crate::extensions::channel_driver::PROTOCOL_CRON {
-        for (path, name, value) in [
-            ("channel.topic", "topic", fields.topic),
-            (
-                "channel.consumer_group",
-                "consumer_group",
-                fields.consumer_group,
-            ),
-        ] {
-            if value.is_some_and(|v| !v.trim().is_empty()) {
-                out.push(crate::errors::FieldError::new(
-                    path,
-                    orion_api::error::field_codes::INVALID,
-                    format!(
-                        "a cron channel must not declare {name}: it is started by its \
-                         schedule and registers no HTTP route"
-                    ),
-                ));
-            }
-        }
-    }
-    // The caps are deliberately outside the driver: all three fields are
-    // optional and kept whatever the protocol says, so an over-long `topic` on
-    // a REST channel (or `route_pattern` on a cron one) must be refused too.
-    for (path, value) in [
-        ("channel.route_pattern", fields.route_pattern),
-        ("channel.topic", fields.topic),
-        ("channel.consumer_group", fields.consumer_group),
-    ] {
-        if let Some(e) = value.and_then(|v| check_varchar_len(path, v)) {
-            out.push(e);
-        }
+    // The cap is deliberately outside the driver: the field is optional and
+    // kept whatever the protocol says, so an over-long `route_pattern` on a
+    // cron channel must be refused too.
+    if let Some(e) = fields
+        .route_pattern
+        .and_then(|v| check_varchar_len("channel.route_pattern", v))
+    {
+        out.push(e);
     }
     if out.is_empty() {
         return Ok(());
@@ -769,10 +741,10 @@ mod tests {
         let over = format!("/{}", "a".repeat(255));
 
         // Multi-byte safety: 255 two-byte chars is 510 bytes but 255 chars.
-        assert!(check_varchar_len("channel.topic", &"é".repeat(255)).is_none());
-        assert!(check_varchar_len("channel.topic", &"é".repeat(256)).is_some());
+        assert!(check_varchar_len("channel.route_pattern", &"é".repeat(255)).is_none());
+        assert!(check_varchar_len("channel.route_pattern", &"é".repeat(256)).is_some());
 
-        let rest_req = |route_pattern: String, topic: Option<String>| CreateChannelRequest {
+        let rest_req = |route_pattern: String| CreateChannelRequest {
             tags: vec![],
             channel_id: None,
             name: "rest-ch".to_string(),
@@ -781,43 +753,19 @@ mod tests {
             protocol: "rest".to_string(),
             methods: Some(vec!["POST".to_string()]),
             route_pattern: Some(route_pattern),
-            topic,
-            consumer_group: None,
             transport_config: json!({}),
             workflow_id: None,
+            connections: Vec::new(),
             config: json!({}),
             priority: 0,
         };
         assert!(
-            validate_create_channel(&rest_req(at_limit, None), &community()).is_ok(),
+            validate_create_channel(&rest_req(at_limit), &community()).is_ok(),
             "at-limit route_pattern accepted"
         );
         assert!(
-            validate_create_channel(&rest_req(over, None), &community()).is_err(),
+            validate_create_channel(&rest_req(over), &community()).is_err(),
             "long route_pattern refused"
-        );
-        let with_group = |group: String| CreateChannelRequest {
-            consumer_group: Some(group),
-            ..rest_req("/orders".to_string(), None)
-        };
-        assert!(
-            validate_create_channel(&with_group("g".repeat(256)), &community()).is_err(),
-            "long consumer_group refused"
-        );
-        assert!(
-            validate_create_channel(&with_group("g".repeat(255)), &community()).is_ok(),
-            "at-limit consumer_group accepted"
-        );
-
-        // The caps are protocol-independent: the over-long value is refused
-        // on a protocol that does not read it too.
-        assert!(
-            validate_create_channel(
-                &rest_req("/orders".to_string(), Some("t".repeat(256))),
-                &community()
-            )
-            .is_err(),
-            "long topic on a REST channel refused"
         );
     }
 
@@ -832,10 +780,9 @@ mod tests {
             protocol: "rest".to_string(),
             methods: Some(vec!["POST".to_string()]),
             route_pattern: Some("/orders".to_string()),
-            topic: None,
-            consumer_group: None,
             transport_config: json!({}),
             workflow_id: None,
+            connections: Vec::new(),
             config: json!({}),
             priority: 0,
         };
@@ -853,10 +800,9 @@ mod tests {
             protocol: "rest".to_string(),
             methods: None,
             route_pattern: Some("/orders".to_string()),
-            topic: None,
-            consumer_group: None,
             transport_config: json!({}),
             workflow_id: None,
+            connections: Vec::new(),
             config: json!({}),
             priority: 0,
         };
@@ -874,10 +820,9 @@ mod tests {
             protocol: "rest".to_string(),
             methods: Some(vec!["POST".to_string()]),
             route_pattern: None,
-            topic: None,
-            consumer_group: None,
             transport_config: json!({}),
             workflow_id: None,
+            connections: Vec::new(),
             config: json!({}),
             priority: 0,
         };
@@ -895,10 +840,9 @@ mod tests {
             protocol: "rest".to_string(),
             methods: Some(vec!["POST".to_string()]),
             route_pattern: Some("/orders".to_string()),
-            topic: None,
-            consumer_group: None,
             transport_config: json!({}),
             workflow_id: None,
+            connections: Vec::new(),
             config: json!({}),
             priority: 0,
         };
@@ -919,10 +863,9 @@ mod tests {
             protocol: protocol.to_string(),
             methods: None,
             route_pattern: None,
-            topic: None,
-            consumer_group: None,
             transport_config: json!({}),
             workflow_id: None,
+            connections: Vec::new(),
             config: json!({}),
             priority: 0,
         };
