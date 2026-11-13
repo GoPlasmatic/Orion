@@ -114,7 +114,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (toolchain from `with`)
         with:
-          toolchain: "stable"
+          toolchain: "1.100"
           components: rustfmt
 
       - name: Check formatting
@@ -132,7 +132,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (toolchain from `with`)
         with:
-          toolchain: "stable"
+          toolchain: "1.100"
           components: clippy
 
       # Restores the shared `linux-stable` entry written by `test`; never
@@ -212,7 +212,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (toolchain from `with`)
         with:
-          toolchain: "stable"
+          toolchain: "1.100"
 
       # Restores the shared `linux-stable` entry written by `test`; never
       # writes, so one cache serves every stable-Linux job instead of ten.
@@ -306,7 +306,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (toolchain from `with`)
         with:
-          toolchain: "stable"
+          toolchain: "1.100"
           targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
@@ -362,7 +362,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (toolchain from `with`)
         with:
-          toolchain: "stable"
+          toolchain: "1.100"
 
       # The single writer of the `linux-stable` cache.
       #
@@ -415,7 +415,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (toolchain from `with`)
         with:
-          toolchain: "stable"
+          toolchain: "1.100"
 
       # Restores the shared `linux-stable` entry written by `test`; never
       # writes, so one cache serves every stable-Linux job instead of ten.
@@ -451,7 +451,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (toolchain from `with`)
         with:
-          toolchain: "stable"
+          toolchain: "1.100"
 
       - name: Install cargo-deny
         uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2 (tool from `with`)
@@ -484,7 +484,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (toolchain from `with`)
         with:
-          toolchain: "stable"
+          toolchain: "1.100"
 
       # Restores the shared `linux-stable` entry written by `test`; never
       # writes, so one cache serves every stable-Linux job instead of ten.
@@ -716,7 +716,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (toolchain from `with`)
         with:
-          toolchain: "stable"
+          toolchain: "1.100"
           components: llvm-tools-preview
 
       # Its own entry, not `linux-stable`: instrumented builds carry different
@@ -799,7 +799,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (toolchain from `with`)
         with:
-          toolchain: "stable"
+          toolchain: "1.100"
 
       # Restores the shared `linux-stable` entry written by `test`; never
       # writes, so one cache serves every stable-Linux job instead of ten.
@@ -912,7 +912,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (toolchain from `with`)
         with:
-          toolchain: "stable"
+          toolchain: "1.100"
 
       # Restores the shared `linux-stable` entry written by `test`; never
       # writes, so one cache serves every stable-Linux job instead of ten.

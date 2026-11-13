@@ -37,7 +37,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (toolchain from `with`)
         with:
-          toolchain: "stable"
+          toolchain: "1.100"
 
       # P14: one dependency list, maintained in the composite action.
       - name: Install system dependencies
