@@ -1246,6 +1246,7 @@ pub fn start_background(storage: &Storage, components: &ServingComponents) -> Ba
                 storage.config.server.shutdown_force_timeout_secs,
             ),
             deployments: components.deployments.clone(),
+            ledger: components.composition.providers().ledger().clone(),
         },
     );
     // The initial active-workflows gauge. After the recorder is installed

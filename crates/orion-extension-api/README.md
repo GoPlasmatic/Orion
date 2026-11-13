@@ -39,9 +39,10 @@ a release, include its implementation and validation in that release's work.
   compiled-in provider needs extensible digest registration across validation,
   deployment and reload.
 - A channel binding carries a `ConnectionResolver` (and the revision's identity)
-  for every Connection the channel's member requires. Unlike a connector call's
-  attempt, the resolver does not re-check the node's revocation ledger; a driver
-  holds it until its next reconcile.
+  for every Connection the channel's member requires. Like a connector call's
+  attempt, each resolution first consults the node's revocation ledger (the
+  security lease, a revoked connection, provider or package), so a driver
+  holding a resolver past a revocation is refused.
 - Offline `lint` and `compile` know an edition's protocol only through
   `--capabilities` (a node's `/runtime-capabilities`): its capabilities, guard
   row and `transport_schema`. A driver's own `validate_fields` and

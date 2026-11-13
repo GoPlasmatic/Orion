@@ -135,6 +135,7 @@ fn refuse_conflicting_channels(
                         .get(&channel.channel_id)
                         .map_or(&[][..], Vec::as_slice),
                     &state.deployments,
+                    state.composition.providers().ledger(),
                 )
             })
             .collect();

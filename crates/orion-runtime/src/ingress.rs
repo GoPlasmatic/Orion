@@ -73,6 +73,9 @@ pub struct IngressDeps {
     /// The node's deployment store: where the connection revisions a
     /// channel requires are resolved for its driver.
     pub deployments: crate::extensions::ImmutableDeploymentStore,
+    /// The node's revocation ledger, which every resolver handed to a driver
+    /// consults before it resolves.
+    pub ledger: Arc<crate::extensions::RevocationLedger>,
 }
 
 /// The [`IngressHost`] for one protocol.
@@ -352,6 +355,7 @@ fn bindings(
     generation: &RuntimeGeneration,
     protocol: &str,
     deployments: &crate::extensions::ImmutableDeploymentStore,
+    ledger: &Arc<crate::extensions::RevocationLedger>,
 ) -> Vec<ChannelBinding> {
     generation
         .channels
@@ -365,6 +369,7 @@ fn bindings(
                     .channels
                     .required_connections(&runtime.channel.channel_id),
                 deployments,
+                ledger,
             )
         })
         .collect()
@@ -378,11 +383,13 @@ pub fn binding_of(
     timeout_ms: Option<u64>,
     required: &[(String, u64)],
     deployments: &crate::extensions::ImmutableDeploymentStore,
+    ledger: &Arc<crate::extensions::RevocationLedger>,
 ) -> ChannelBinding {
     let mut connections = Vec::new();
     for (connection_id, revision) in required {
         let governed = orion_extension_api::Revision::new(*revision).and_then(|rev| {
             crate::extensions::GovernedConnection::from_store(deployments, connection_id, rev)
+                .map(|governed| governed.with_ledger(ledger.clone()))
         });
         match governed {
             Some(governed) => connections.push(governed),
@@ -583,6 +590,7 @@ impl DriverTask {
                 &self.deps.runtime.load(),
                 protocol,
                 &self.deps.deployments,
+                &self.deps.ledger,
             ))
             .await;
         loop {
@@ -599,6 +607,7 @@ impl DriverTask {
                 &self.deps.runtime.load(),
                 protocol,
                 &self.deps.deployments,
+                &self.deps.ledger,
             ))
                         .await;
                 }

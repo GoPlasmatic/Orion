@@ -336,7 +336,7 @@ async fn the_channels_guards_decide_the_outcome() {
 
 #[tokio::test]
 async fn a_channel_hands_its_driver_the_connections_it_requires() {
-    let (_state, app, probe) = node().await;
+    let (state, app, probe) = node().await;
     let connection_id = common::create_connector(
         &app,
         json!({
@@ -387,6 +387,17 @@ async fn a_channel_hands_its_driver_the_connections_it_requires() {
         .expect("resolves")
         .expect("a governed connection has a config");
     assert_eq!(merged["url"], "https://broker.example.com");
+
+    // A revocation reaches a resolver the driver already holds: a listener
+    // that outlives it cannot keep reading the connection.
+    state.composition.providers().ledger().revoke_connection(
+        &orion_extension_api::ConnectionId::new(connection_id.as_str()),
+    );
+    let refused = resolver
+        .resolve_merged_config()
+        .await
+        .expect_err("a revoked connection does not resolve");
+    assert!(refused.message.contains("revoked"), "{refused:?}");
 }
 
 #[tokio::test]

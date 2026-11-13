@@ -9,7 +9,11 @@
 //! so the two can never disagree about what a connection says.
 //!
 //! Secrets are resolved per call and never cached, exactly as for an attempt:
-//! a rotated `env://` or `vault://` value is what the next call sees.
+//! a rotated `env://` or `vault://` value is what the next call sees. And
+//! like an attempt, each resolution first consults the node's revocation
+//! ledger when the resolver carries it ([`GovernedConnection::with_ledger`]):
+//! a listener that outlives a revocation cannot keep reading the credentials
+//! of a revoked connection or provider.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -19,7 +23,8 @@ use serde_json::Value;
 
 use super::deployment_store::{ConnectionRevisionRow, ImmutableDeploymentStore};
 use super::{
-    ConnectionResolver, ConnectorError, EffectiveConnectionIdentity, Revision, SecretValue,
+    ConnectionResolver, ConnectorError, EffectStatus, EffectiveConnectionIdentity, ProviderId,
+    Revision, RevocationLedger, SecretValue, codes,
 };
 
 /// One connection revision the deployment pins, as a resolver.
@@ -27,8 +32,10 @@ use super::{
 pub struct GovernedConnection {
     row: Arc<ConnectionRevisionRow>,
     identity: EffectiveConnectionIdentity,
-    /// The provider's id, for error text.
+    /// The provider's id, for error text and the ledger.
     provider: String,
+    /// The node's revocation ledger, consulted before every resolution.
+    ledger: Option<Arc<RevocationLedger>>,
 }
 
 impl GovernedConnection {
@@ -49,7 +56,40 @@ impl GovernedConnection {
             row,
             identity,
             provider,
+            ledger: None,
         })
+    }
+
+    /// Consult `ledger` before every resolution: the security lease, and
+    /// whether the connection, its provider or its package was revoked.
+    #[must_use]
+    pub fn with_ledger(mut self, ledger: Arc<RevocationLedger>) -> Self {
+        self.ledger = Some(ledger);
+        self
+    }
+
+    fn check_not_revoked(&self) -> Result<(), ConnectorError> {
+        let Some(ledger) = &self.ledger else {
+            return Ok(());
+        };
+        ledger.check_runtime_lease(
+            0,
+            &ProviderId::from(self.provider.as_str()),
+            &self.row.connection_id,
+            EffectStatus::NotStarted,
+        )?;
+        if ledger.is_digest_revoked(self.row.provider_digest.as_str()) {
+            return Err(ConnectorError::forbidden(
+                codes::CONNECTION_FORBIDDEN,
+                "admission",
+                format!(
+                    "The provider package of connection '{}' has been revoked",
+                    self.row.connection_id
+                ),
+                EffectStatus::NotStarted,
+            ));
+        }
+        Ok(())
     }
 
     /// The revision's identity: provider digest, connection, revision and
@@ -66,10 +106,12 @@ impl ConnectionResolver for GovernedConnection {
     }
 
     async fn resolve_secret(&self, path: &str) -> Result<Option<SecretValue>, ConnectorError> {
+        self.check_not_revoked()?;
         resolve_secret(&self.row, path, &self.identity, &self.provider).await
     }
 
     async fn resolve_merged_config(&self) -> Result<Option<Value>, ConnectorError> {
+        self.check_not_revoked()?;
         merged_config(&self.row, &self.identity, &self.provider)
             .await
             .map(Some)
