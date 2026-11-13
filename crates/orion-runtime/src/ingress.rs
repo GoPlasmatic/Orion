@@ -358,50 +358,61 @@ fn bindings(
         .serviceable_of_protocol(protocol)
         .iter()
         .map(|runtime| {
-            let channel = &runtime.channel;
-            let mut connections = Vec::new();
-            for (connection_id, revision) in generation
-                .channels
-                .required_connections(&channel.channel_id)
-            {
-                let governed = orion_extension_api::Revision::new(*revision).and_then(|rev| {
-                    crate::extensions::GovernedConnection::from_store(
-                        deployments,
-                        connection_id,
-                        rev,
-                    )
-                });
-                match governed {
-                    Some(governed) => connections.push(governed),
-                    // The build refused a channel whose connection this node
-                    // does not hold; reaching here means the revision was
-                    // collected since. The driver gets the binding without it
-                    // and reports what it cannot connect to.
-                    None => tracing::warn!(
-                        protocol,
-                        channel = %channel.name,
-                        connection = %connection_id,
-                        revision,
-                        "A channel's required connection revision is no longer held"
-                    ),
-                }
-            }
-            let identities: Vec<&orion_extension_api::EffectiveConnectionIdentity> =
-                connections.iter().map(|c| c.identity()).collect();
-            let mut binding = ChannelBinding::new(
-                channel.channel_id.clone(),
-                channel.name.clone(),
-                fingerprint(runtime, &identities),
-                serde_json::from_str(&channel.transport_config_json).unwrap_or(Value::Null),
+            binding_of(
+                &runtime.channel,
+                runtime.parsed_config.timeout_ms,
+                generation
+                    .channels
+                    .required_connections(&runtime.channel.channel_id),
+                deployments,
             )
-            .with_timeout_ms(runtime.parsed_config.timeout_ms);
-            for governed in connections {
-                let identity = governed.identity().clone();
-                binding = binding.with_connection(identity, Arc::new(governed));
-            }
-            binding
         })
         .collect()
+}
+
+/// One channel as its driver sees it: the row, its `timeout_ms`, and a
+/// resolver for each connection revision it requires. What reconcile hands a
+/// running driver, and what `validate_set` judges a candidate deployment by.
+pub fn binding_of(
+    channel: &crate::storage::models::Channel,
+    timeout_ms: Option<u64>,
+    required: &[(String, u64)],
+    deployments: &crate::extensions::ImmutableDeploymentStore,
+) -> ChannelBinding {
+    let mut connections = Vec::new();
+    for (connection_id, revision) in required {
+        let governed = orion_extension_api::Revision::new(*revision).and_then(|rev| {
+            crate::extensions::GovernedConnection::from_store(deployments, connection_id, rev)
+        });
+        match governed {
+            Some(governed) => connections.push(governed),
+            // The build refused a channel whose connection this node does not
+            // hold; reaching here means the revision was collected since. The
+            // driver gets the binding without it and reports what it cannot
+            // connect to.
+            None => tracing::warn!(
+                protocol = %channel.protocol,
+                channel = %channel.name,
+                connection = %connection_id,
+                revision,
+                "A channel's required connection revision is no longer held"
+            ),
+        }
+    }
+    let identities: Vec<&orion_extension_api::EffectiveConnectionIdentity> =
+        connections.iter().map(|c| c.identity()).collect();
+    let mut binding = ChannelBinding::new(
+        channel.channel_id.clone(),
+        channel.name.clone(),
+        fingerprint(channel, &identities),
+        serde_json::from_str(&channel.transport_config_json).unwrap_or(Value::Null),
+    )
+    .with_timeout_ms(timeout_ms);
+    for governed in connections {
+        let identity = governed.identity().clone();
+        binding = binding.with_connection(identity, Arc::new(governed));
+    }
+    binding
 }
 
 /// A hash of everything in the stored channel a driver could act on, and of
@@ -409,10 +420,9 @@ fn bindings(
 /// moved to another channel, a new workflow, rotated broker credentials —
 /// reads as a changed binding.
 fn fingerprint(
-    runtime: &ChannelRuntimeConfig,
+    channel: &crate::storage::models::Channel,
     connections: &[&orion_extension_api::EffectiveConnectionIdentity],
 ) -> String {
-    let channel = &runtime.channel;
     let mut hasher = Sha256::new();
     for part in [
         channel.channel_id.as_str(),

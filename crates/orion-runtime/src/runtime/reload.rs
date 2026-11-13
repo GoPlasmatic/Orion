@@ -100,6 +100,64 @@ struct ManifestDefinitions {
     >,
 }
 
+/// Each channel driver's [`ChannelDriver::validate_set`] over its protocol's
+/// channels in the manifest: a rule that spans channels (one topic consumed
+/// twice in one group). Part of every build, so plan and apply refuse what a
+/// node would not serve.
+///
+/// [`ChannelDriver::validate_set`]: crate::extensions::ChannelDriver::validate_set
+fn refuse_conflicting_channels(
+    state: &AppState,
+    channels: &[crate::storage::models::Channel],
+    required: &std::collections::BTreeMap<String, Vec<(String, u64)>>,
+) -> Result<(), crate::errors::OrionError> {
+    let drivers = state.composition.channels();
+    let mut details = Vec::new();
+    for protocol in drivers.protocol_ids() {
+        let of_protocol: Vec<&crate::storage::models::Channel> =
+            channels.iter().filter(|c| c.protocol == protocol).collect();
+        let Some(driver) = drivers.get(&protocol) else {
+            continue;
+        };
+        if of_protocol.is_empty() {
+            continue;
+        }
+        let bindings: Vec<_> = of_protocol
+            .iter()
+            .map(|channel| {
+                let timeout_ms = serde_json::from_str::<serde_json::Value>(&channel.config_json)
+                    .ok()
+                    .and_then(|c| c.get("timeout_ms").and_then(serde_json::Value::as_u64));
+                crate::ingress::binding_of(
+                    channel,
+                    timeout_ms,
+                    required
+                        .get(&channel.channel_id)
+                        .map_or(&[][..], Vec::as_slice),
+                    &state.deployments,
+                )
+            })
+            .collect();
+        details.extend(driver.validate_set(&bindings));
+    }
+    if details.is_empty() {
+        return Ok(());
+    }
+    let summary: Vec<String> = details
+        .iter()
+        .map(|e| format!("{}: {}", e.path, e.message))
+        .collect();
+    let mut refused =
+        crate::errors::OrionError::validation(format!("channels conflict: {}", summary.join("; ")));
+    if let crate::errors::OrionError::Validation {
+        details: fields, ..
+    } = &mut refused
+    {
+        *fields = details;
+    }
+    Err(refused)
+}
+
 async fn manifest_definitions(
     state: &AppState,
     manifest: &crate::extensions::deployment_store::CanonicalManifest,
@@ -333,6 +391,8 @@ async fn manifest_definitions(
     let dependencies =
         crate::extensions::workflow_provider::manifest_dependencies(&state.deployments, manifest)
             .map_err(OrionError::validation)?;
+
+    refuse_conflicting_channels(state, &active_channels, &channel_connections)?;
 
     Ok(ManifestDefinitions {
         channels: active_channels,

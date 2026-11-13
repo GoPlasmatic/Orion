@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::FieldError;
-use crate::ingress::{DriverError, GuardSet, IngressHost, RunningDriver};
+use crate::ingress::{ChannelBinding, DriverError, GuardSet, IngressHost, RunningDriver};
 
 /// Capabilities declared by a [`ChannelDriver`].
 ///
@@ -131,6 +131,17 @@ pub trait ChannelDriver: Send + Sync {
         _config: &Value,
         _channel_id: Option<&str>,
     ) -> Vec<FieldError> {
+        Vec::new()
+    }
+
+    /// Every channel of this protocol in a candidate deployment, together:
+    /// for a rule no single channel can break alone (two Kafka channels
+    /// consuming one topic in one group). Each problem refuses the candidate
+    /// with `DEPLOYMENT_WOULD_NOT_BUILD`, at plan, at apply and on every node
+    /// that builds it. Name the channel in each path
+    /// (`channel.<id>.transport_config.topics`).
+    fn validate_set(&self, channels: &[ChannelBinding]) -> Vec<FieldError> {
+        let _ = channels;
         Vec::new()
     }
 

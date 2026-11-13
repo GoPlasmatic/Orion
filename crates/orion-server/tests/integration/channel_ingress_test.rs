@@ -82,6 +82,25 @@ impl ChannelDriver for QueueDriver {
         Vec::new()
     }
 
+    /// One topic, one channel: the rule `validate_set` exists for.
+    fn validate_set(&self, channels: &[ChannelBinding]) -> Vec<FieldError> {
+        let mut seen: std::collections::BTreeMap<String, String> = Default::default();
+        let mut out = Vec::new();
+        for channel in channels {
+            let Some(topic) = channel.transport_config()["topic"].as_str() else {
+                continue;
+            };
+            if let Some(first) = seen.insert(topic.to_string(), channel.channel_id().to_string()) {
+                out.push(FieldError::new(
+                    format!("channel.{}.transport_config.topic", channel.channel_id()),
+                    "CONFLICT",
+                    format!("topic '{topic}' is already consumed by channel '{first}'"),
+                ));
+            }
+        }
+        out
+    }
+
     fn transport_schema(&self) -> Option<Value> {
         Some(json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -368,6 +387,52 @@ async fn a_channel_hands_its_driver_the_connections_it_requires() {
         .expect("resolves")
         .expect("a governed connection has a config");
     assert_eq!(merged["url"], "https://broker.example.com");
+}
+
+#[tokio::test]
+async fn a_deployment_whose_channels_conflict_is_refused() {
+    let (_state, app, _probe) = node().await;
+    let workflow_id = common::create_and_activate_workflow(&app, echo_workflow()).await;
+    common::deploy_channel(
+        &app,
+        json!({
+            "name": "orders",
+            "channel_type": "async",
+            "protocol": PROTOCOL,
+            "workflow_id": workflow_id,
+            "transport_config": { "topic": "orders.placed" }
+        }),
+    )
+    .await;
+
+    // A second channel on the same topic: each is valid alone.
+    let copy = common::deploy::upload(
+        &app,
+        common::deploy::channel_definition(&json!({
+            "name": "orders-copy",
+            "channel_type": "async",
+            "protocol": PROTOCOL,
+            "transport_config": { "topic": "orders.placed" }
+        }))
+        .0,
+    )
+    .await;
+    let (base, members) = common::deploy::merged(
+        &app,
+        vec![common::deploy::Upsert {
+            kind: "channel",
+            id: "orders-copy".into(),
+            digest: copy,
+            revision: None,
+            requires: vec![("workflow", workflow_id)],
+        }],
+    )
+    .await;
+    let (status, body) = common::deploy::apply(&app, base, members).await;
+    assert!(status.is_client_error(), "{status}: {body}");
+    let text = body.to_string();
+    assert!(text.contains("DEPLOYMENT_WOULD_NOT_BUILD"), "{body}");
+    assert!(text.contains("already consumed by channel"), "{body}");
 }
 
 #[tokio::test]
