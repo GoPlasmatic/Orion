@@ -29,7 +29,7 @@ If all tests pass, you're ready to go.
 cargo build                        # Build (all capabilities compiled in — no feature flags)
 cargo build --release              # Release build
 cargo test                         # Run the server suite (default-members)
-cargo test --workspace             # Server + CLI suites — what CI runs
+cargo test --workspace             # Every crate's suites — what CI runs
 cargo test <test_name>             # Run a single test by name
 cargo test --test integration      # Run the consolidated integration test binary
 cargo clippy --workspace --all-targets  # Lint (matches CI)
@@ -41,7 +41,7 @@ Run `cargo clippy` and `cargo fmt` before committing — both must pass cleanly.
 ## Project Structure
 
 The repo is a cargo workspace: `crates/orion-server` (the
-runtime), `crates/orion-cli` (the CLI — see its own `CLAUDE.md`), three shared
+runtime), three shared
 library crates — `crates/orion-api` (the wire contract),
 `crates/orion-client` (the HTTP transport) and `crates/orion-definitions`
 (the static definition primitives) — `crates/orion-extension-api` (the
@@ -58,9 +58,15 @@ cron, the trace queues, cluster coordination, the v2 extensions),
 validation every definition passes), `crates/orion-http` (the HTTP layer:
 the Axum router, every route, the middleware stack and the OpenAPI document) and
 `crates/orion-plugin-sdk` (the guest crate a plugin author links against; it
-depends on nothing else here). The end-to-end suite that drives the server with the CLI lives at the
-repo root (`tests/e2e/`). Bare cargo commands target the server via
+depends on nothing else here). Bare cargo commands target the server via
 `default-members`.
+
+Two companions live in their own repositories, because the Community and
+Enterprise editions share them: the CLI, with its offline authoring tools and
+the end-to-end suite that drives the server with it, in
+[Orion-cli](https://github.com/codetiger/Orion-cli), and the documentation
+site in [GoPlasmatic/Orion-docs](https://github.com/GoPlasmatic/Orion-docs).
+Both build against this repository's crates at a release tag.
 
 ```
 crates/orion-server/
@@ -86,15 +92,11 @@ crates/orion-runtime/  # Serving node: channel/, runtime/, cron/, queue/, cluste
 crates/orion-authoring/ # Authoring: definitions/ (check, compile, fmt, clippy), validation/
 crates/orion-http/     # HTTP layer: routes/ (admin, v2_admin, data, openapi), middleware, rate limiting
  migrations/           # SQLite / Postgres / MySQL migrations (embedded at compile time)
-crates/orion-cli/
- src/commands/         # clap subcommands (one file per command group)
 crates/orion-api/      # Shared wire contract (DTOs, enums, error envelope)
 crates/orion-client/   # Shared HTTP transport (OrionClient, endpoint paths)
 crates/orion-plugin-sdk/ # Guest SDK for plugin authors (WIT bindings, export macro)
-tests/e2e/             # Shell end-to-end suites: orion-cli against orion-server (`just e2e`)
-examples/              # Deployable packages, plugin sources, offline workflow tests, e2e use cases
+examples/              # Deployable packages, plugin sources, offline workflow tests, e2e use cases (run by Orion-cli's CI)
 deploy/                # Helm chart (helm/orion), HA compose drill (ha/)
-docs/                  # mdBook documentation (published to docs.goplasmatic.io)
 ```
 
 ## Your First Contribution
@@ -105,8 +107,9 @@ are scoped to be finishable without knowing the whole codebase, and
 marks work we'd love a hand with. Not sure where something lives? Ask in
 [Discussions](https://github.com/GoPlasmatic/Orion/discussions) and a
 maintainer will point you at the right module. Documentation fixes are real
-contributions — the book under `docs/src/` ships with the same review bar as
-code.
+contributions — the book, in
+[GoPlasmatic/Orion-docs](https://github.com/GoPlasmatic/Orion-docs), ships with
+the same review bar as code.
 
 ## Making Changes
 
@@ -122,20 +125,20 @@ code.
    Without `just`, the equivalent is the four commands it wraps. Note the
    `--workspace` flags: bare `cargo clippy` / `cargo test` only cover the
    server, because `default-members` points at it, so they silently skip
-   `orion-cli` — which CI does not.
+   the library crates' own suites — which CI does not.
    ```bash
    cargo fmt --all --check
    cargo clippy --workspace --all-targets -- -D warnings
    cargo test --workspace
    cargo test --doc
    ```
-   The `justfile` at the repo root also carries `just test-containers`,
-   `just openapi`, `just docs` and `just e2e`.
-   If you changed the HTTP API (routes or request/response schemas), regenerate
-   the checked-in OpenAPI spec — a test fails if it's stale:
-   ```bash
-   cargo run -- dump-openapi > docs/openapi.json
-   ```
+   The `justfile` at the repo root also carries `just test-containers` and
+   `just openapi` (which prints the spec this build serves).
+   If you changed the HTTP API (routes or request/response schemas), or
+   anything else the documentation describes, open the matching change in
+   [GoPlasmatic/Orion-docs](https://github.com/GoPlasmatic/Orion-docs): the
+   committed OpenAPI spec and the reference pages live there, and its drift
+   checks hold them to the Orion release it pins.
 5. **Submit a pull request** with a clear description of what changed and why
 
 ### Database migrations
@@ -238,17 +241,12 @@ from CI's name filters fails the build, in both directions.
 
 ### End-to-end suite
 
-`tests/e2e/` at the repo root drives a real `orion-server` binary over HTTP
-with the `orion-cli` binary — both built from your tree — through 12 shell
-suites. The last suite is data-driven: scenario cases in
-`examples/use-cases/` deploy the shipped example packages, and
-runtime-behaviour cases live in `tests/e2e/cases/`. It needs `jq` and
-`curl`; CI runs it on every PR (the `cli-e2e` job):
-
-```bash
-just e2e                    # or: ./tests/e2e/run.sh
-./tests/e2e/run.sh 03 04    # a subset, by suite-number prefix
-```
+The shell suites that drive a real `orion-server` over HTTP with the
+`orion-cli` binary live in the
+[Orion-cli](https://github.com/codetiger/Orion-cli) repository, together
+with the CLI. They run against a server built from an Orion tag; their
+scenario cases are this repo's `examples/use-cases/`, which deploy the shipped
+example packages.
 
 ### Doc tests
 
@@ -287,7 +285,8 @@ inventory in `functions/mod.rs`. That inventory registers the handler and
 builds its catalogue entry. Declare its offline stub target when it needs a backend; use the
 declaration's `output_path` helper so real calls and stubs share null handling.
 Add behavior tests beside the implementation and document the function under
-`docs/src/reference/functions/`.
+`src/reference/functions/` in
+[GoPlasmatic/Orion-docs](https://github.com/GoPlasmatic/Orion-docs).
 
 ### Comments citing an item ID
 
@@ -304,9 +303,9 @@ Releases are tag-driven. Pushing a version tag runs three workflows —
 (multi-arch image, Helm chart, signing/attestation), and
 `crates-publish.yml` (crates.io; skips prerelease tags) — and all three
 gate on a successful CI run for the tagged commit (`ci-gate`), so a tag can
-never outrun a red build. Note that crates.io carries `orion-server` and the
-rider crates only — `orion-cli` ships through the installers, the Homebrew
-tap and GHCR, because its crates.io name belongs to an unrelated crate. The
+never outrun a red build. Note that this repository releases `orion-server` and the
+rider crates only — `orion-cli` is released from its own repository through
+the installers, the Homebrew tap and GHCR. The
 secrets they need and the full procedure are in `RELEASING.md`.
 
 1. **Version bump.** Every crate shares `workspace.package.version` in the

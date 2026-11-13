@@ -34,7 +34,6 @@ mod channel_oauth2_login_test;
 mod channel_response_cache_test;
 mod circuit_breaker_test;
 mod cluster_epoch_test;
-mod compiled_deployment_test;
 mod composed_provider_test;
 mod concurrency_test;
 mod config_references_test;

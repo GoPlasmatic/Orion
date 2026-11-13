@@ -10,21 +10,17 @@
 // lints against both are for production code.
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-mod audit_actions_drift_test;
 mod ci_filter_drift_test;
-mod clippy_docs_drift_test;
 mod config_docs_drift_test;
-mod docs_routes_drift_test;
+mod crate_license_test;
 mod field_codes_drift_test;
 mod fmt_style_drift_test;
 mod function_records_test;
 mod functions_docs_drift_test;
-mod mdbook_pin_drift_test;
 mod metrics_docs_drift_test;
 mod release_stamps_drift_test;
 mod v2_error_codes_drift_test;
 
-mod docs_link_test;
 mod extension_api_test;
 mod module_layering_test;
 mod user_facing_ids_test;

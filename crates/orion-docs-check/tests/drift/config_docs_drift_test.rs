@@ -36,11 +36,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use orion_common::config::AppConfig;
 
-// The docs tree lives at the repo root, two levels above this crate.
-const REFERENCE_DIR: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/src/reference/configuration"
-);
 const EXAMPLE_TOML: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../orion-server/config.toml.example"
@@ -97,9 +92,6 @@ const NO_DEFAULT: &[&str] = &[
 /// validation. Both structs now implement `Default` by hand in terms of their
 /// `default_*` functions.
 const SERDE_DEFAULT_DIFFERS: &[&str] = &[];
-
-/// Marker for "this setting has no env override" in the reference table.
-const NONE_MARKER: &str = "—";
 
 fn is_no_default(path: &str) -> bool {
     NO_DEFAULT.contains(&path) || path.starts_with("oauth2_login.providers.")
@@ -189,19 +181,6 @@ fn flatten(prefix: &str, value: &toml::Value, out: &mut BTreeMap<String, toml::V
     }
 }
 
-/// Use the same serde-derived catalogue as the runtime unknown-variable guard.
-fn env_override_names() -> BTreeSet<String> {
-    orion_common::config::known_env_override_keys()
-}
-
-/// The env var that overrides a setting: `ORION_SECTION__KEY`, uppercased with
-/// `__` between levels. No exceptions since C22 retired the `ORION_ENV` alias
-/// — retired names live in `src/config/retired_env.rs` and are refused at
-/// startup rather than ignored.
-fn expected_env_name(path: &str) -> String {
-    format!("ORION_{}", path.to_uppercase().replace('.', "__"))
-}
-
 // ---------------------------------------------------------------------------
 // Every ORION_* name this repository writes down (C4d)
 // ---------------------------------------------------------------------------
@@ -213,7 +192,7 @@ fn expected_env_name(path: &str) -> String {
 /// `CHANGELOG.md` is deliberately out: a historical record that quotes names
 /// precisely because they were wrong or have since been renamed, and
 /// rewriting history to satisfy a lint would defeat the point of keeping it.
-const PROSE_DIRS: &[&str] = &["docs", "examples", "deploy", ".github"];
+const PROSE_DIRS: &[&str] = &["examples", "deploy", ".github"];
 const PROSE_FILES: &[&str] = &[
     "README.md",
     "CONTRIBUTING.md",
@@ -241,6 +220,9 @@ const PROSE_EXTENSIONS: &[&str] = &[
 /// `ORION_SERVER_URL`, the kubelet's `ORION_SERVICE_HOST`, `ORION_DIR` in a
 /// shell script.
 ///
+/// The documentation's own counter-examples moved with it to the Orion-docs
+/// repository, whose drift checks scan its pages.
+///
 /// `only_in` scopes the excuse to one path when the name is a deliberate
 /// *counter*-example — a wrong name a page quotes on purpose. Those must not
 /// buy an exemption anywhere else, which is precisely the hole this test was
@@ -253,77 +235,11 @@ const NOT_A_SERVER_SETTING: &[(&str, &str, &str)] = &[
         "the naming rule itself, written as a placeholder wherever it is quoted",
     ),
     (
-        "ORION_SERVER__PORTT",
-        "docs/src/reference/configuration/how-settings-are-resolved.md",
-        "the worked example of the misspelling C4d refuses",
-    ),
-    (
-        "ORION_ENVIRONMEN",
-        "docs/src/reference/configuration/how-settings-are-resolved.md",
-        "the worked example of the top-level near-miss C4d also refuses",
-    ),
-    (
-        "ORION_SERVER_PORT",
-        "docs/src/reference/configuration/how-settings-are-resolved.md",
-        "the worked example of the one shape C4d cannot refuse — a setting typed \
-         with a single underscore, which is also exactly the service link a \
-         Service named `orion-server` produces",
-    ),
-    (
         "ORION_CORS_ALLOWED_ORIGINS",
         "",
         "compose interpolation, resolved by `docker compose` in the operator's \
          shell; the container's environment block spells out the real \
          ORION_CORS__ALLOWED_ORIGINS it fills",
-    ),
-    // The upgrade guide teaches the same rule the reference page does, so it
-    // quotes the same counter-examples. Scoped per path rather than blanket,
-    // for the reason the doc comment above gives.
-    (
-        "ORION_SERVER__PORTT",
-        "docs/src/releases/upgrade-to-1.0/config-keys.md",
-        "the misspelling C4d refuses, quoted in the error message the section \
-         shows an operator",
-    ),
-    (
-        "ORION_SERVER_PORT",
-        "docs/src/releases/upgrade-to-1.0/config-keys.md",
-        "the one shape C4d cannot refuse, quoted as the caveat: a setting typed \
-         with a single underscore is indistinguishable from a service link",
-    ),
-    (
-        "ORION_ADMIN_AUTH__API_KEY",
-        "docs/src/releases/upgrade-to-1.0/config-keys.md",
-        "quoted as the mistake, telling readers who copied it that the real \
-         name is the plural ORION_ADMIN_AUTH__API_KEYS",
-    ),
-    (
-        "ORION_DB__PASSWORD",
-        "docs/src/releases/upgrade-to-1.0/config-keys.md",
-        "a connector's `env://` secret, not a setting — the example of the one \
-         class of name that has to move under ORION_SECRET_* because it \
-         follows the override grammar",
-    ),
-    (
-        "ORION_QUEUE__WORKERS",
-        "docs/src/releases/upgrade-to-1.0/config-keys.md",
-        "quoted in the historical 1.0 upgrade guide as the pre-1.0 name replaced by \
-         ORION_TRACE_QUEUE__WORKERS",
-    ),
-    (
-        "ORION_KAFKA__MAX_INFLIGHT",
-        "docs/src/releases/upgrade-to-1.0/config-keys.md",
-        "quoted in the historical 1.0 upgrade guide as the pre-1.0 setting removed in K4",
-    ),
-    (
-        "ORION_KAFKA__MAX_INFLIGHT",
-        "docs/src/releases/upgrade-to-1.0/index.md",
-        "quoted in the historical 1.0 upgrade guide as the pre-1.0 setting removed in K4",
-    ),
-    (
-        "ORION_ENGINE__RELOAD_TIMEOUT_SECS",
-        "docs/src/releases/upgrade-to-1.0/renames-and-removals.md",
-        "quoted in the historical 1.0 upgrade guide as the pre-1.0 setting removed in 1.0",
     ),
 ];
 
@@ -591,63 +507,6 @@ fn example_settings() -> Vec<Documented> {
     found
 }
 
-/// Every page of the configuration reference, sorted by name.
-fn reference_pages() -> Vec<std::path::PathBuf> {
-    let mut pages: Vec<_> = std::fs::read_dir(REFERENCE_DIR)
-        .expect("list docs/src/reference/configuration")
-        .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|e| e == "md"))
-        .collect();
-    pages.sort();
-    pages
-}
-
-/// Settings parsed out of the reference pages' tables, paired with the env
-/// override each row claims.
-fn reference_settings() -> Vec<(Documented, Option<String>)> {
-    let mut found = Vec::new();
-
-    for page in reference_pages() {
-        let source = std::fs::read_to_string(&page).unwrap();
-        let file = format!(
-            "docs/src/reference/configuration/{}",
-            page.file_name().unwrap().to_string_lossy()
-        );
-        for (index, line) in source.lines().enumerate() {
-            let Some(cells) = table_cells(line) else {
-                continue;
-            };
-            if cells.len() < 3 {
-                continue;
-            }
-            let Some(path) = backticked(cells[0]).filter(|p| is_setting_path(p)) else {
-                continue;
-            };
-            let default = backticked(cells[1]).map(str::to_string);
-            if default.is_none() && cells[1] != NONE_MARKER {
-                continue; // not a settings row after all
-            }
-            let env = backticked(cells[2]).map(str::to_string);
-            found.push((
-                Documented {
-                    path: path.to_string(),
-                    value: default,
-                    file: file.clone(),
-                    line: index + 1,
-                },
-                env,
-            ));
-        }
-    }
-
-    assert!(
-        found.len() > 50,
-        "only {} settings parsed out of docs/src/reference/configuration/ — the parser is broken",
-        found.len()
-    );
-    found
-}
-
 /// Strip an optional single `#` comment marker. Returns `None` for payloads
 /// indented two or more spaces past the marker: those are illustrative
 /// snippets, not documented settings.
@@ -702,30 +561,6 @@ fn strip_inline_comment(value: &str) -> &str {
         }
     }
     value.trim_end()
-}
-
-fn table_cells(line: &str) -> Option<Vec<&str>> {
-    let trimmed = line.trim();
-    let inner = trimmed.strip_prefix('|')?.strip_suffix('|')?;
-    Some(inner.split('|').map(str::trim).collect())
-}
-
-fn backticked(cell: &str) -> Option<&str> {
-    cell.strip_prefix('`')?.strip_suffix('`')
-}
-
-/// `storage.max_connections`, `environment` — but not prose or metric names.
-fn is_setting_path(candidate: &str) -> bool {
-    if candidate == "environment" {
-        return true;
-    }
-    candidate.contains('.')
-        && candidate.split('.').all(|segment| {
-            !segment.is_empty()
-                && segment
-                    .chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-        })
 }
 
 fn read(path: &str) -> String {
@@ -810,68 +645,6 @@ fn config_example_matches_struct_defaults() {
 #[test]
 fn config_example_documents_every_setting() {
     assert_coverage("config.toml.example", &example_settings());
-}
-
-#[test]
-fn reference_page_matches_struct_defaults() {
-    let settings: Vec<Documented> = reference_settings().into_iter().map(|(s, _)| s).collect();
-    assert_values_match(&settings);
-}
-
-#[test]
-fn reference_page_documents_every_setting() {
-    let settings: Vec<Documented> = reference_settings().into_iter().map(|(s, _)| s).collect();
-    assert_coverage("docs/src/reference/configuration/", &settings);
-}
-
-/// The env-var column is checked three ways: the name must be the one the
-/// `ORION_SECTION__KEY` scheme produces, it must exist in the runtime catalogue,
-/// and a `—` ("no override") must still be true.
-#[test]
-fn reference_page_matches_env_overrides() {
-    let names = env_override_names();
-    let mut problems = Vec::new();
-    let mut documented = BTreeSet::new();
-
-    for (setting, env) in reference_settings() {
-        let expected = expected_env_name(&setting.path);
-        match env {
-            Some(name) => {
-                if name != expected {
-                    problems.push(format!(
-                        "{}:{} documents `{name}` for `{}`, but the \
-                         override for that setting is `{expected}`",
-                        setting.file, setting.line, setting.path
-                    ));
-                } else if !names.contains(&name) {
-                    problems.push(format!(
-                        "{}:{} documents `{name}` for `{}`, but no such \
-                         override exists in the runtime catalogue",
-                        setting.file, setting.line, setting.path
-                    ));
-                }
-                documented.insert(name);
-            }
-            None => {
-                if names.contains(&expected) {
-                    problems.push(format!(
-                        "{}:{} says `{}` has no env override, but \
-                         `{expected}` exists in the runtime catalogue",
-                        setting.file, setting.line, setting.path
-                    ));
-                }
-            }
-        }
-    }
-
-    let undocumented: Vec<&String> = names.difference(&documented).collect();
-    assert!(
-        undocumented.is_empty(),
-        "the runtime catalogue defines {} override(s) the reference page \
-         does not list: {undocumented:?}",
-        undocumented.len()
-    );
-    assert!(problems.is_empty(), "{}", problems.join("\n  "));
 }
 
 /// Every setting must mean the same thing whether or not the config file

@@ -3,7 +3,7 @@
 The other examples are deliberately zero-dependency. This one shows the part
 of Orion they can't: a workflow talking to a real database through a
 **connector**, using the portable data dialect
-([`data_query` / `data_write`](../../../docs/src/reference/data-dialect.md)).
+([`data_query` / `data_write`](https://docs.goplasmatic.io/reference/data-dialect.html)).
 
 `POST /record-order` does two things in one pipeline:
 
@@ -34,7 +34,7 @@ orion-cli deployments apply -d dist/postgres-orders
 ```
 
 > Requires Orion ≥ 1.0.0 — the dialect envelope changed shape for 1.0 (see
-> the [upgrade guide](../../../docs/src/operate/upgrading-to-1.0.md)), and this
+> the [upgrade guide](https://docs.goplasmatic.io/releases/upgrade-to-1.0/)), and this
 > example is written against the 1.0 form.
 
 Then send the sample request:

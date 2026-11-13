@@ -13,9 +13,9 @@
 //! 3. The errors reference page documents exactly the registered set, each
 //!    with the status its kind answers.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
-use orion_api::{ErrorCode, V2Code};
+use orion_api::V2Code;
 
 /// The sources of every crate the runtime is built from. Not `orion-api`:
 /// it defines the registry, so scanning it would find every code raised.
@@ -32,11 +32,6 @@ const SRC_DIRS: &[&str] = &[
 
 /// Where [`PRODUCERS`] live.
 const PRODUCERS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-runtime/src");
-const ERRORS_MD: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/src/reference/errors.md"
-);
-
 /// The files whose findings reach a v2 refusal under their own code.
 const PRODUCERS: &[&str] = &[
     "extensions/schema_profile/mod.rs",
@@ -154,76 +149,6 @@ fn every_registered_code_is_reachable() {
         unreachable.is_empty(),
         "v2 codes registered but never raised by src/: {unreachable:?} — a code \
          no call site produces is one clients would wait forever for"
-    );
-}
-
-#[test]
-fn the_errors_reference_documents_the_general_code_registry() {
-    let md = std::fs::read_to_string(ERRORS_MD).expect("read docs/src/reference/errors.md");
-    let heading = "## The code registry";
-    let start = md
-        .find(heading)
-        .expect("errors.md must carry a '## The code registry' table");
-    let section = &md[start + heading.len()..];
-    let end = section.find("\n## ").unwrap_or(section.len());
-
-    let mut documented = BTreeMap::new();
-    for line in section[..end].lines() {
-        let cells: Vec<&str> = line.trim().split('|').map(str::trim).collect();
-        if cells.len() < 4 {
-            continue;
-        }
-        let (Some(code), Ok(status)) = (
-            cells[1].strip_prefix('`').and_then(|c| c.strip_suffix('`')),
-            cells[2].parse::<u16>(),
-        ) else {
-            continue;
-        };
-        documented.insert(code.to_string(), status);
-    }
-    let expected: BTreeMap<String, u16> = ErrorCode::ALL
-        .iter()
-        .map(|c| (c.as_str().to_string(), c.status()))
-        .collect();
-    assert_eq!(
-        documented, expected,
-        "docs/src/reference/errors.md's general code table and orion_api::ErrorCode \
-         disagree (code or status)"
-    );
-}
-
-#[test]
-fn the_errors_reference_documents_the_registry() {
-    let md = std::fs::read_to_string(ERRORS_MD).expect("read docs/src/reference/errors.md");
-    let heading = "## The v2 admin code registry";
-    let start = md
-        .find(heading)
-        .expect("errors.md must carry a '## The v2 admin code registry' table");
-    let section = &md[start + heading.len()..];
-    let end = section.find("\n## ").unwrap_or(section.len());
-
-    let mut documented = BTreeMap::new();
-    for line in section[..end].lines() {
-        let cells: Vec<&str> = line.trim().split('|').map(str::trim).collect();
-        if cells.len() < 4 {
-            continue;
-        }
-        let (Some(code), Ok(status)) = (
-            cells[1].strip_prefix('`').and_then(|c| c.strip_suffix('`')),
-            cells[2].parse::<u16>(),
-        ) else {
-            continue;
-        };
-        documented.insert(code.to_string(), status);
-    }
-    let expected: BTreeMap<String, u16> = V2Code::ALL
-        .iter()
-        .map(|c| (c.as_str().to_string(), c.kind().status()))
-        .collect();
-    assert_eq!(
-        documented, expected,
-        "docs/src/reference/errors.md's v2 admin code table and orion_api::V2Code \
-         disagree (code or status)"
     );
 }
 

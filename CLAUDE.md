@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Orion is a declarative services runtime written in Rust. It exposes business logic through channels (service endpoints) and workflows (task pipelines run by dataflow-rs), managed through a REST API. The server ships as a single binary with an embedded SQLite database; `orion-cli` deploys to it and carries the offline authoring tools. Only the UI lives in a separate repo (Orion-ui).
+Orion is a declarative services runtime written in Rust. It exposes business logic through channels (service endpoints) and workflows (task pipelines run by dataflow-rs), managed through a REST API. The server ships as a single binary with an embedded SQLite database; `orion-cli` deploys to it and carries the offline authoring tools. The CLI and the documentation site live in their own repositories, because the Community and Enterprise editions share them: the CLI in Orion-cli (https://github.com/codetiger/Orion-cli), built from this repo's crates pinned by git tag, and the mdBook site in GoPlasmatic/Orion-docs (published at https://docs.goplasmatic.io/). The UI lives in Orion-ui.
 
 ### Crates
 
-A cargo workspace of fifteen crates, layered bottom-up. The server re-exports each library under its pre-split `crate::` path (`crate::engine`, `crate::server`, …), so `orion::<module>` paths in tests and editions keep working.
+A cargo workspace of fourteen crates, layered bottom-up. The server re-exports each library under its pre-split `crate::` path (`crate::engine`, `crate::server`, …), so `orion::<module>` paths in tests and editions keep working.
 
 | Crate | What it is | Re-exported as |
 |---|---|---|
@@ -24,20 +24,19 @@ A cargo workspace of fifteen crates, layered bottom-up. The server re-exports ea
 | `orion-http` | The HTTP layer: `build_router`, admin/v2 admin/data routes, the middleware stack, TLS serving, the OpenAPI document | `crate::server` |
 | `orion-server` | `bootstrap.rs`, `main.rs`, the operator subcommands (`cli/`) | the `orion` lib |
 | `orion-client` | The one HTTP transport over the contract: `OrionClient` and the `paths` module. The only crate that owns reqwest for API calls | — |
-| `orion-cli` | The CLI (its own `CLAUDE.md`): the admin client and the offline authoring tools | — |
 | `orion-plugin-sdk` | The guest crate a plugin author links against: the `orion:plugin` bindings, a `Plugin` trait, `export_plugin!`. Depends on nothing else here; its copy of the WIT is kept byte-identical to `orion-plugin-host/wit/` by `plugin_sdk_test.rs` | — |
 | `orion-docs-check` | Never published: its test binary, `tests/drift`, holds the drift guards (see *Docs and code are kept in sync by tests*) | — |
 
 Test-support features: `orion-common`, `orion-storage`, `orion-engine` and `orion-runtime` each have a `test-support` feature carrying the helpers other crates' tests call — notably the engine's twin records (`twin::pinned`, records under the calling crate's `tests/fixtures/function-records/<module>.json`, blessed with `ORION_BLESS=1`) and `loader::testing`.
 
-The plugin test fixture (`crates/orion-server/tests/fixtures/plugins/guest`) and the two example guests (`examples/plugins/fixed-width`, `examples/plugins/c4-rules`) are built on the SDK. After changing any of them, the SDK or the WIT, run the `build.sh` beside them and commit the rebuilt component; the `plugin-sdk` CI job rebuilds all three and runs the ABI cases and the examples' offline cases against the fresh bytes.
+The plugin test fixture (`crates/orion-server/tests/fixtures/plugins/guest`) and the two example guests (`examples/plugins/fixed-width`, `examples/plugins/c4-rules`) are built on the SDK. After changing any of them, the SDK or the WIT, run the `build.sh` beside them and commit the rebuilt component; the `plugin-sdk` CI job rebuilds all three and runs the ABI cases and the sandbox suites against the fresh bytes.
 
 ### Versioning and release
 
 - **All crates share one version**, `workspace.package.version` in the root `Cargo.toml`, inherited with `version.workspace = true` and repeated only in the `[workspace.dependencies]` requirements. Bump it with `cargo release`, never by hand in a member manifest.
 - The library crates have no release cycle of their own: `crates-publish.yml` publishes them as **riders** (skip-if-present, dependency order) right before `orion-server`. Lockstep versioning is what makes skip-if-present safe. A new library crate joins the rider list in `crates-publish.yml` and `.github/scripts/publish-crates.sh`.
-- `orion-server` is the only binary crate on crates.io (the `orion-cli` name there is an unrelated crate); the CLI ships through the dist installers, the Homebrew tap, GHCR and `cargo install --git`. See `RELEASING.md`.
-- `default-members` is `orion-server` and `orion-docs-check`; use `--workspace` or `-p orion-cli` for the rest.
+- `orion-server` is the only binary crate this repo releases, and the only one on crates.io. The CLI is released from the Orion-cli repository (dist installers, the Homebrew tap, GHCR, `cargo install --git`), versioned with the Orion tag it is built from. See `RELEASING.md`.
+- `default-members` is `orion-server` and `orion-docs-check`; use `--workspace` or `-p <crate>` for the rest.
 
 ### Wire contract (`orion-api`)
 
@@ -72,14 +71,13 @@ cargo test <test_name>             # One test by name
 cargo clippy --workspace --all-targets  # Lint (matches CI)
 cargo fmt --all                    # Format
 
-just e2e                           # End-to-end suite (tests/e2e): the CLI against a real orion-server
 ```
 
-**`just check` is the pre-PR gate** — exactly what the CI PR jobs run: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo test --doc`, and `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --lib`. Bare `cargo test`/`cargo clippy` skip `orion-cli` and the library crates' own suites — CI does not. Other recipes: `just openapi` (regenerate the committed spec), `just test-containers` (the Docker-gated suites), `just workflow-tests`, `just docs` / `just docs-preview`, `just fmt`.
+**`just check` is the pre-PR gate** — exactly what the CI PR jobs run: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo test --doc`, and `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --lib`. Bare `cargo test`/`cargo clippy` skip the library crates' own suites — CI does not. Other recipes: `just openapi` (print the spec this build serves), `just test-containers` (the Docker-gated suites), `just fmt` (`cargo fmt --all`).
 
-**After changing routes or request/response schemas, regenerate the committed spec** — `cargo run -- dump-openapi > docs/openapi.json` (or `just openapi`); `openapi_test` fails while it is stale.
+**After changing routes or request/response schemas, update the committed spec in Orion-docs** — `openapi.json` lives there, regenerated by its `drift` crate's `dump-openapi` and held to the pinned Orion tag by its `openapi_drift_test`. `just openapi` prints what this build serves; here `openapi_test` checks only the served document and its route list.
 
-Docker: `docker build -t orion .` for the server; `docker build -f crates/orion-cli/Dockerfile -t orion-cli .` for the CLI.
+Docker: `docker build -t orion .` for the server. The CLI's image is built in the Orion-cli repository.
 
 Lint suppressions are `#[expect(...)]`, so a stale one fails the build; `#[allow]` only where a lint fires in some targets and not others (test helpers shared through `#[path]`), with the reason.
 
@@ -168,7 +166,7 @@ HTTP request → router → dynamic_handler (State<DataPlane>)
   - **Cron:** `GET /cron/occurrences[/{id}]`, `POST /cron/occurrences/{id}/retry`, `GET /cron/status`.
   - **Cache:** `POST /cache/namespaces/{namespace}/invalidate` (the workflow form is `cache_invalidate`).
   - **Traces:** `GET /traces` (admin), `GET /traces/{id}` (admin credential or the per-submission `trace_token`).
-  - **Audit logs** (the `X-Orion-Change-Context` header lands in `details`), **trace DLQ**, **backups** (SQLite `VACUUM INTO`, refused in cluster mode; no restore endpoint — see `docs/src/operate/backup-restore.md`).
+  - **Audit logs** (the `X-Orion-Change-Context` header lands in `details`), **trace DLQ**, **backups** (SQLite `VACUUM INTO`, refused in cluster mode; no restore endpoint — see https://docs.goplasmatic.io/operate/maintain/backup-restore.html).
 - **Data** (`/api/v2/data/{*path}`): REST route match or channel name; a trailing `/async` submits asynchronously.
 - **Operational:** `GET /health`, `/healthz`, `/readyz`, `/metrics`. **API docs:** `/docs`, `/api/v2/openapi.json` (gated by `server.docs.enabled`).
 
@@ -185,33 +183,38 @@ SQLite (default), PostgreSQL or MySQL, chosen from the `storage.url` scheme; all
 ## Testing
 
 - **Integration tests** (`crates/orion-server/tests/integration/`): one binary, each file a module declared in `main.rs`. `common::test_app()` builds an in-memory SQLite node through the real `bootstrap::assemble`; drive it with `tower::ServiceExt::oneshot(json_request(…))` and read with `body_json()`. Deploy fixtures through `common::deploy` / `create_connector` etc. — the v2 path, as an operator would.
-- **Other server binaries:** `tests/cluster/` (multi-node), `storage_postgres.rs`, `storage_mysql.rs`, `schema_parity.rs` (container-gated), `metrics_exposition.rs` (its own process for the global recorder). Container-gated modules in the integration binary and in `orion-cli`'s `authoring` binary are selected by name in `.github/workflows/ci.yml` (kept in sync by `ci_filter_drift_test`).
-- **The offline tools** are tested through the `orion-cli` binary (`crates/orion-cli/tests/authoring/`). A server test that needs one finds `orion-cli` beside its own binary (`common::orion_cli_bin`) and skips with a note when a non-workspace build lacks it.
+- **Other server binaries:** `tests/cluster/` (multi-node), `storage_postgres.rs`, `storage_mysql.rs`, `schema_parity.rs` (container-gated), `metrics_exposition.rs` (its own process for the global recorder). Container-gated modules in the integration binary are selected by name in `.github/workflows/ci.yml` (kept in sync by `ci_filter_drift_test`).
+- **The offline tools** are tested here as library code (`orion-authoring`'s own suites); the suites that run them through the `orion-cli` binary, and the tests that drive the CLI against a server, live in the Orion-cli repository.
 - **Library unit tests** run per crate; large test modules sit beside their code (`tests.rs` beside a `mod.rs`, `foo_tests.rs` beside `foo.rs` via `#[path]`).
 - **Benchmarks:** `crates/orion-server/tests/benchmark/bench.sh` — `hey`-driven scenarios (`baseline`, `simple`, `complex`, `multi`, `concurrency`, `reload`, `plugin`, opt-in `cluster`).
-- **End-to-end:** `tests/e2e/run.sh` (`just e2e`; the `cli-e2e` CI job) — shell suites driving a real server with the CLI; scenario cases in `examples/use-cases/`, runtime cases in `tests/e2e/cases/`. An apply replaces the head, so a test needing several services deploys them as one set. `TESTING.md` maps the whole estate.
+- **End-to-end:** the shell suites driving a real server with the CLI (`tests/e2e`) live in the Orion-cli repository and run against an `orion-server` installed from an Orion tag; their scenario cases are this repo's `examples/use-cases/`, and Orion-cli's CI also lints, tests and deploys `examples/` at that tag. An apply replaces the head, so a test needing several services deploys them as one set. `TESTING.md` maps the estate here.
 
 ## Docs and code are kept in sync by tests
 
-Drift guards in `crates/orion-docs-check/tests/drift/` (and a few integration tests) make the code authoritative and fail the build when a document disagrees. They run in the default `cargo test`, so these edits are part of the change:
+Drift guards make the code authoritative and fail the build when a document disagrees. They run in two places:
+
+- **Here**, in the default `cargo test`: the code-only guards in `crates/orion-docs-check/tests/drift/` (`module_layering`, `ci_filter`, `crate_license`, `extension_api`, `function_records`, `release_stamps` for the README and Helm stamps, `user_facing_ids` for crate rustdoc, and the code-side halves of the config, field-code, v2-code, fmt-style, functions and metrics guards) plus a few integration tests.
+- **In [GoPlasmatic/Orion-docs](https://github.com/GoPlasmatic/Orion-docs)**, in its `drift/` crate: every guard that reads the book or its committed `openapi.json`, run against a pinned Orion tag. The book's source is there too, so **a docs change is a pull request to Orion-docs**, and it lands when Orion-docs moves its pin to the release carrying the code.
+
+So these edits are part of the change ("Orion-docs" marks the half that is a pull request there):
 
 | Change | Also update |
 |---|---|
-| A config field or its `Default` | the section's page under `docs/src/reference/configuration/` + `config.toml.example` (`config_docs_drift_test`) |
-| A metric name or label key (`orion-common/src/metrics.rs`) | `docs/src/reference/metrics.md` (`metrics_docs_drift_test`) |
-| A task function or its input schema | `docs/src/reference/functions/` — the hub's summary and retry-safety tables plus the function's own page (`functions_docs_drift_test`) |
-| A route, method or query parameter | the book's `curl` examples + `docs/openapi.json` (`docs_routes_drift_test`, `openapi_test`) |
-| An audit `action` / `resource_type` | `docs/src/operate/audit-logs.md` (`audit_actions_drift_test`) |
-| A `FieldError` code | `orion_api::error::field_codes::ALL` **and** `docs/src/reference/errors.md` — `field_codes_drift_test` also fails on a registered code nothing emits |
-| A v2 error code | `orion_api::V2Code` and `docs/src/reference/errors.md` (`v2_error_codes_drift_test`) |
-| A JSONLogic operator | `docs/src/reference/expressions.md` only — the vocabulary comes from the live engine; `jsonlogic_operators_test` checks both directions |
+| A config field or its `Default` | `config.toml.example` (`config_docs_drift_test` here) + Orion-docs: the section's page under `src/reference/configuration/` (its `config_docs_drift_test`) |
+| A metric name or label key (`orion-common/src/metrics.rs`) | Orion-docs: `src/reference/metrics.md` (its `metrics_docs_drift_test`; the one here holds only the `orion_` prefix and the renames) |
+| A task function or its input schema | Orion-docs: `src/reference/functions/` — the hub's summary and retry-safety tables plus the function's own page (its `functions_docs_drift_test`; the one here holds the catalogue to the engine) |
+| A route, method or query parameter | the route list in `openapi_test` + Orion-docs: the book's `curl` examples and `openapi.json` (its `docs_routes_drift_test`, `openapi_drift_test`) |
+| An audit `action` / `resource_type` | Orion-docs: `src/operate/run/audit-logs.md` (its `audit_actions_drift_test`) |
+| A `FieldError` code | `orion_api::error::field_codes::ALL` (`field_codes_drift_test` here also fails on a registered code nothing emits) **and** Orion-docs: `src/reference/errors.md` (its `field_codes_drift_test`) |
+| A v2 error code | `orion_api::V2Code` (`v2_error_codes_drift_test` here) and Orion-docs: `src/reference/errors.md` (its `v2_error_codes_drift_test`) |
+| A JSONLogic operator | `OPERATORS` in `jsonlogic_operators_test` (each must evaluate to its documented result) + Orion-docs: `src/reference/expressions.md` (its `jsonlogic_operators_docs_test`, against the live engine's vocabulary) |
 | A workflow-shape rule (task, group, `terminal`) | `validation/workflows/mod.rs::validate_workflow_tasks_schema` — its catch-all is `engine::compile_row`, so a rule the engine enforces needs no mirror, only a better message if wanted |
 | A cross-reference check over a definition set | `definitions/check.rs` — one pass shared by `lint <dir>` and `compile`; give it a stable `check` id |
-| An authoring convenience (new source-form syntax) | `definitions/compile.rs` — a `Pass` registered in `passes()` with a stable id, whose `residue()` mirrors the rewrite **exactly** (detect more and the admin API refuses what `compile` accepts; detect less and source form reaches the runtime). Document it under `docs/src/reference/cli/shared-definitions.md` |
-| A crate's version | `workspace.package.version` and the `[workspace.dependencies]` requirements together — `cargo release` does it |
-| The formatter's style | `docs/src/reference/fmt.md` (`fmt_style_drift_test`), the fixture pair under `tests/fixtures/fmt/`, **and** `examples/` + `tests/e2e/` reformatted in the same commit (`fmt_examples_test`; `just fmt`) |
-| A function's input field table (order included) | the field table on `docs/src/reference/functions/<name>.md` (`fmt_style_drift_test` — `fmt` orders inputs by it) |
-| A clippy rule (new, or its level/summary) | `rules::ALL`, `tests/fixtures/clippy/<id>/{fires,quiet}/` (`clippy_cases_test`; `quiet` must trip no rule), the table on `docs/src/reference/clippy/index.md` and the rule's own page (`clippy_docs_drift_test`), and `clippy_examples_test` stays empty. A rule with a `Fix` ships a `tests/fixtures/clippy-fix/<case>/{before,after}/` pair. Certain-only: `explain()` names an admitted proof source (engine evaluation, an ingress fact, engine semantics read from source, the registry, structural identity, the `-c` config) and when the rule is silent; a heuristic goes on `docs/src/reference/clippy/not-a-rule.md` instead |
+| An authoring convenience (new source-form syntax) | `definitions/compile.rs` — a `Pass` registered in `passes()` with a stable id, whose `residue()` mirrors the rewrite **exactly** (detect more and the admin API refuses what `compile` accepts; detect less and source form reaches the runtime). Document it in Orion-docs under `src/reference/cli/shared-definitions.md` |
+| A crate's version | `workspace.package.version` and the `[workspace.dependencies]` requirements together — `cargo release` does it; the README and Helm chart stamps follow (`release_stamps_drift_test`) |
+| The formatter's style | the fixture pair under `tests/fixtures/fmt/` **and** `examples/` reformatted in the same commit (`fmt_examples_test`; `orion-cli fmt examples`), + Orion-docs: `src/reference/fmt.md` (its `fmt_style_drift_test`) |
+| A function's input field table (order included) | Orion-docs: the field table on `src/reference/functions/<name>.md` (its `fmt_style_drift_test` — `fmt` orders inputs by it) |
+| A clippy rule (new, or its level/summary) | `rules::ALL`, `tests/fixtures/clippy/<id>/{fires,quiet}/` (`clippy_cases_test`; `quiet` must trip no rule), Orion-docs: the table on `src/reference/clippy/index.md` and the rule's own page (its `clippy_docs_drift_test`), and `clippy_examples_test` stays empty. A rule with a `Fix` ships a `tests/fixtures/clippy-fix/<case>/{before,after}/` pair. Certain-only: `explain()` names an admitted proof source (engine evaluation, an ingress fact, engine semantics read from source, the registry, structural identity, the `-c` config) and when the rule is silent; a heuristic goes on Orion-docs' `src/reference/clippy/not-a-rule.md` instead |
 | A container-gated test module | the `#[ignore]` name filters in `.github/workflows/ci.yml` and `just test-containers` (`ci_filter_drift_test`) — a module missing from them runs nowhere |
 | A cron scheduling rule (misfire policy, DST, a `transport_config` bound) | `channel/cron.rs` (pure, exhaustively unit-tested) and its authoring twin `validation/cron.rs`, pinned to each other by `cron_guards_and_validation_agree` |
 | A function record (`tests/fixtures/function-records/`) | a re-bless (`ORION_BLESS=1`) is a behaviour change, reviewed like code; `function_records_test` refuses machine-specific content |
@@ -226,6 +229,8 @@ Around 900 comments open with an audit code (`N10`, `R13`, `F35`, …); resolve 
 See `crates/orion-server/config.toml.example`. Every setting has a default; `ORION_SECTION__KEY` overrides any of them (e.g. `ORION_SERVER__PORT=3000`), derived from the config types themselves.
 
 ### CLI commands
+
+`orion-server` is built here; `orion-cli` is built and released from the Orion-cli repository.
 
 ```bash
 orion-server                              # Start the server

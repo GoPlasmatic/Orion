@@ -9,8 +9,8 @@
 # member manifest finds nothing — which read as an empty version and would have
 # turned the tag/version check into a silent mismatch.
 #
-# A member may still pin a `version` of its own (that is how an out-of-band
-# `orion-cli-vX.Y.Z` patch is cut between joint releases), so the pinned form
+# A member may still pin a `version` of its own (an out-of-band patch cut
+# between joint releases), so the pinned form
 # is resolved first and the workspace value is the fallback.
 #
 # Usage: .github/scripts/crate-version.sh orion-server

@@ -53,4 +53,4 @@ orion-cli cron status
 orion-cli cron get <occurrence-id>
 ```
 
-See [Run work on a schedule](../../../docs/src/guides/scheduled-workflows.md).
+See [Run work on a schedule](https://docs.goplasmatic.io/guides/patterns/scheduled-workflows.html).

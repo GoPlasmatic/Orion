@@ -13,10 +13,9 @@
 - [ ] `cargo fmt && cargo clippy && cargo test` pass cleanly (or `just check`
       for the full CI-equivalent gate)
 - [ ] New functionality has tests
-- [ ] If HTTP routes or request/response schemas changed: regenerated the
-      OpenAPI spec (`cargo run -- dump-openapi > docs/openapi.json` — a test
-      fails if it's stale)
-- [ ] If behaviour or configuration changed: docs updated (`docs/src/`, README,
-      or `config.toml.example`)
+- [ ] If HTTP routes or request/response schemas changed, or behaviour or
+      configuration changed: a matching change opened in GoPlasmatic/Orion-docs
+      (the OpenAPI spec and the reference pages, which its drift checks hold
+      to this repository), plus README or `config.toml.example` here
 - [ ] If `examples/` changed: `./examples/deploy.sh <example>` still works
       against a fresh instance

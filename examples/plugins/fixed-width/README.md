@@ -38,6 +38,6 @@ orion-cli dry-run -w examples/packages/fixed-width-statement/workflow.json \
 ```
 
 Both run the codec for real in the same sandbox the server uses. See
-[Build a plugin](https://docs.goplasmatic.io/build/plugins.html) for the
-walkthrough and the [Plugins reference](https://docs.goplasmatic.io/reference/plugins.html)
+[Build a plugin](https://docs.goplasmatic.io/guides/extend/plugins.html) for the
+walkthrough and the [Plugins reference](https://docs.goplasmatic.io/reference/plugin-manifest.html)
 for the manifest, the ABI and the host's limits.

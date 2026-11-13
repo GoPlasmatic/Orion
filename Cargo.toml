@@ -1,12 +1,13 @@
 # Virtual workspace manifest — the packages live under crates/:
-# orion-server (the runtime), orion-cli (the CLI, merged from the former
-# GoPlasmatic/Orion-cli repo), the shared library crates (orion-api,
+# orion-server (the runtime), the shared library crates (orion-api,
 # orion-client, orion-definitions), orion-extension-api (what an edition
 # implements against) and orion-plugin-sdk (what a plugin author links
 # against; depends on nothing here). `default-members` keeps bare cargo
 # commands (`cargo run`, `cargo test`, `cargo build`) pointed at the server,
-# matching the pre-workspace muscle memory; CI covers the CLI explicitly with
-# `--workspace` / `-p orion-cli`.
+# matching the pre-workspace muscle memory; CI covers the rest with
+# `--workspace`. The CLI and the documentation site live in their own
+# repositories (GoPlasmatic/Orion-cli, GoPlasmatic/Orion-docs) and depend on
+# these crates by tag.
 [workspace]
 resolver = "3"
 members = ["crates/*"]
@@ -49,17 +50,21 @@ unwrap_used = "warn"
 panic = "warn"
 
 [workspace.dependencies]
-orion-api = { version = "2.0.0-rc.1", path = "crates/orion-api" }
-orion-authoring = { version = "2.0.0-rc.1", path = "crates/orion-authoring" }
-orion-client = { version = "2.0.0-rc.1", path = "crates/orion-client" }
-orion-common = { version = "2.0.0-rc.1", path = "crates/orion-common" }
-orion-engine = { version = "2.0.0-rc.1", path = "crates/orion-engine" }
-orion-plugin-host = { version = "2.0.0-rc.1", path = "crates/orion-plugin-host" }
-orion-runtime = { version = "2.0.0-rc.1", path = "crates/orion-runtime" }
-orion-storage = { version = "2.0.0-rc.1", path = "crates/orion-storage" }
-orion-definitions = { version = "2.0.0-rc.1", path = "crates/orion-definitions" }
-orion-extension-api = { version = "2.0.0-rc.1", path = "crates/orion-extension-api" }
-orion-http = { version = "2.0.0-rc.1", path = "crates/orion-http" }
+# Exact (`=`) requirements: the library crates promise no semver of their own
+# (each lib.rs says so) and ship in lockstep, so a 2.0.0 orion-server must
+# never resolve a 2.0.1 orion-runtime. cargo-release rewrites these with the
+# workspace version and keeps the operator.
+orion-api = { version = "=2.0.0-rc.1", path = "crates/orion-api" }
+orion-authoring = { version = "=2.0.0-rc.1", path = "crates/orion-authoring" }
+orion-client = { version = "=2.0.0-rc.1", path = "crates/orion-client" }
+orion-common = { version = "=2.0.0-rc.1", path = "crates/orion-common" }
+orion-engine = { version = "=2.0.0-rc.1", path = "crates/orion-engine" }
+orion-plugin-host = { version = "=2.0.0-rc.1", path = "crates/orion-plugin-host" }
+orion-runtime = { version = "=2.0.0-rc.1", path = "crates/orion-runtime" }
+orion-storage = { version = "=2.0.0-rc.1", path = "crates/orion-storage" }
+orion-definitions = { version = "=2.0.0-rc.1", path = "crates/orion-definitions" }
+orion-extension-api = { version = "=2.0.0-rc.1", path = "crates/orion-extension-api" }
+orion-http = { version = "=2.0.0-rc.1", path = "crates/orion-http" }
 
 # `cargo release <level|version>` performs a release commit: it rewrites
 # `workspace.package.version` and every `workspace.dependencies` requirement,

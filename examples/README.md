@@ -17,7 +17,7 @@ examples/
 │   └── <name>/
 ├── plugins/            # plugin source: a Rust crate on orion-plugin-sdk + build.sh
 ├── workflow-tests/     # offline *.case.json regression suite (references packages/)
-├── use-cases/          # live e2e scenarios for the packages (run by tests/e2e)
+├── use-cases/          # live e2e scenarios for the packages (run by Orion-cli's e2e suite)
 ├── deploy.sh           # compile + deploy one or more packages, send their requests
 └── quickstart.sh       # your first service in one command
 ```
@@ -43,8 +43,8 @@ one set — `deploy.sh` does that, then sends each package's `request.json`:
 ./examples/deploy.sh order-classification webhook-transform # both, as one deployment
 ```
 
-It finds `orion-cli` under `target/` (build it with `cargo build -p orion-cli`),
-on `PATH`, or through `ORION_CLI`. `quickstart.sh` deploys a one-workflow
+It finds `orion-cli` on `PATH` or through `ORION_CLI` (the CLI is built and
+released from [its own repository](https://github.com/codetiger/Orion-cli)). `quickstart.sh` deploys a one-workflow
 service the same way. Both scripts need a running Orion server.
 
 ## The packages
@@ -69,11 +69,12 @@ service the same way. Both scripts need a running Orion server.
 orion-cli test examples/workflow-tests \
   --plugin-dir examples/packages/fixed-width-statement \
   --plugin-dir examples/packages/c4-referee            # offline: real engine, no server or network
-just e2e                                                # live: tests/e2e drives a real server via orion-cli
 ```
 
 The two `--plugin-dir`s hand the runner the plugins the cases call for
-real; without them those cases fail rather than pass on a stub.
+real; without them those cases fail rather than pass on a stub. Live, the
+end-to-end suite in [Orion-cli](https://github.com/codetiger/Orion-cli) deploys the packages to a real server
+through the [`use-cases/`](use-cases/) scenarios.
 
 [`workflow-tests/README.md`](workflow-tests/README.md) documents the case format
 (including connector stubs); [`use-cases/README.md`](use-cases/README.md)
@@ -85,4 +86,4 @@ documents the server-backed scenario format.
 - [Deployment endpoints](https://docs.goplasmatic.io/reference/admin-api/deployments.html) — how a compiled directory is deployed
 - [Task Functions](https://docs.goplasmatic.io/reference/functions/index.html) — every function's input schema
 - [Workflow Schema](https://docs.goplasmatic.io/reference/workflows.html) — workflow shape, conditions, and matching
-- [Orion CLI](../crates/orion-cli/) — deploy with `orion-cli deployments apply -d <dir>`
+- [Orion CLI](https://github.com/codetiger/Orion-cli) — deploy with `orion-cli deployments apply -d <dir>`

@@ -6,7 +6,7 @@ permissions:
 
 on:
   # Server release tags only: bare v* (the pre-monorepo format) or the
-  # package-prefixed form. orion-cli-v* tags are docker-release-cli.yml's.
+  # package-prefixed form. The CLI's images are built by its own repository.
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+*"

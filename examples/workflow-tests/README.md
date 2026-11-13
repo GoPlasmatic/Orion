@@ -45,4 +45,5 @@ case rather than a workflow or a fixture, so all three can live side by side.
 | `expect_tasks` | The ids of the tasks that ran, in order, matched exactly. A task that ran and failed is one of them; the tasks after it are not, because the workflow halted there. Unchecked when omitted. |
 
 The runner exits non-zero on any failure, so it gates CI alongside
-`orion-cli lint`.
+`orion-cli lint` — Orion-cli's `examples` job runs both over this directory at
+each Orion tag.

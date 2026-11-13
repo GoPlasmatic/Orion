@@ -6,9 +6,9 @@
 //! [`API_VERSION`](super::API_VERSION) moves for: an older client would
 //! refuse an answer carrying it.
 //!
-//! The two vocabularies only the wire reads — [`PackageArtifactState`] and
-//! [`EditionFindingCode`] — are `#[non_exhaustive]`, so a client's match on
-//! them already has an arm for a later variant. The five the runtime itself
+//! The vocabulary only the wire reads, [`PackageArtifactState`], is
+//! `#[non_exhaustive]`, so a client's match on it already has an arm for a
+//! later variant. The five the runtime itself
 //! dispatches on are deliberately **exhaustive**: the provider registry
 //! keeps one table per [`ImplementationKind`], `connector_call` maps every
 //! [`ConnectorErrorClass`] to a task error class, the reconciler builds

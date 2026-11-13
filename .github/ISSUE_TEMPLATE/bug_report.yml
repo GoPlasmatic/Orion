@@ -38,7 +38,6 @@ body:
       description: Which part of Orion is this about?
       options:
         - orion-server (the runtime)
-        - orion-cli (the CLI)
         - Helm chart / deployment
         - Documentation
     validations:
@@ -47,7 +46,7 @@ body:
     id: version
     attributes:
       label: Orion version
-      description: Output of `orion-server --version`, and `orion-cli --version` if the CLI is involved
+      description: Output of `orion-server --version` (CLI bugs belong in the Orion-cli repository, documentation bugs in GoPlasmatic/Orion-docs)
       placeholder: orion-server 1.0.0 / orion-cli 1.0.0
     validations:
       required: true

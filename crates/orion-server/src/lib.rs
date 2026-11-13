@@ -8,22 +8,23 @@
 //! # This is not an embedding API
 //!
 //! The library target exists for three consumers: the `orion-server` binary,
-//! the integration test suite, and an edition binary (Orion Enterprise) that
-//! runs a node with its own composition: [`run`] with an
-//! [`extensions::CompositionBuilder`] carrying its channel drivers, provider
-//! backends, pools, package verifier and edition. Everything else is `pub`
-//! because those need it, not because it is offered for use.
+//! the integration test suite, and an edition binary that runs a node with its
+//! own composition: [`run`] with an [`extensions::CompositionBuilder`] carrying
+//! its channel drivers, provider backends, pools, package verifier and
+//! edition, written against [`extension_api`] (re-exported, so an edition takes
+//! the matching version from this crate). Everything else is `pub` because
+//! those need it, not because it is offered for use.
 //!
-//! **Nothing here is covered by semver.** Module layout, type names, function
-//! signatures and trait shapes change whenever the binary needs them to,
-//! including in patch releases. The crate version tracks the *product* — its
-//! HTTP API, config surface, workflow JSON contract, metric names and database
-//! schema, which is what 1.0 stabilises. It does not describe this Rust surface,
-//! and a `1.x` bump is not a promise about any item on this page.
+//! **The Rust surface is not covered by semver.** Module layout, type names,
+//! function signatures and trait shapes change whenever the binary needs them
+//! to, including in patch releases; the extension API grows with its first
+//! consumer. The crate version tracks the *product* — its HTTP API, config
+//! surface, definition contract and metric names, which is what 2.x keeps
+//! stable. Pin this crate, and every `orion-*` crate, at an exact version.
 //!
 //! If you want to run Orion, use the binary. See the
-//! [documentation](https://docs.goplasmatic.io/) for operating it, and
-//! `docs/src/api/` for the interfaces that *are* stable.
+//! [documentation](https://docs.goplasmatic.io/) for operating it, and its
+//! versioning policy for what *is* stable.
 //!
 //! If you are reading this to understand the code, start at
 //! [`bootstrap`] (the startup sequence, doc-hidden but public),
@@ -97,3 +98,8 @@ pub use orion_common::trace_context;
 pub use orion_common::version;
 
 pub use bootstrap::run;
+
+/// The extension surface an edition implements (`ChannelDriver`,
+/// `ProviderBackend`, `Registrar`, …), at the version this crate was built
+/// against.
+pub use orion_extension_api as extension_api;

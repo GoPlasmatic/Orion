@@ -20,15 +20,10 @@ use crate::definitions::Document;
 const MANIFEST: &str = env!("CARGO_MANIFEST_DIR");
 
 fn repo_json() -> Vec<PathBuf> {
-    let mut out = Vec::new();
     // Not `tests/fixtures/fmt`: those inputs include a BOM'd file on
     // purpose, and the formatter tests own them.
-    for dir in ["../../examples", "../../tests/e2e", "../../docs"] {
-        out.extend(
-            crate::definitions::json_files(&Path::new(MANIFEST).join(dir))
-                .unwrap_or_else(|e| panic!("{dir}: {e}")),
-        );
-    }
+    let out = crate::definitions::json_files(&Path::new(MANIFEST).join("../../examples"))
+        .unwrap_or_else(|e| panic!("examples: {e}"));
     assert!(out.len() > 40, "corpus looks too small: {}", out.len());
     out
 }

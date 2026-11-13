@@ -1,9 +1,9 @@
 # Orion Server Test Suite
 
 This README covers the server crate's cargo test binaries. The map of the
-whole repo's test estate — including the shell e2e suite at `tests/e2e/`,
-the examples gates, and the CLI's tests — is [`TESTING.md`](../../../TESTING.md)
-at the repo root.
+whole repo's test estate — including the examples gates, and where the shell
+e2e suite and the CLI's tests now live (the Orion-cli repository) — is
+[`TESTING.md`](../../../TESTING.md) at the repo root.
 
 ## Test Binaries
 
@@ -68,7 +68,8 @@ listener). Container-gated tests are `#[ignore]` and skipped.
 Pure expression-budget tests live in `orion-engine` unit tests. Parser, formatter
 and clippy corpus tests live in `orion-authoring` unit tests. Book links, crate
 layering, extension dependencies and public-text guards live in `orion-docs-check`.
-Their shared corpus stays under `orion-server/tests/fixtures` for the CLI tests.
+Their corpus stays under `orion-server/tests/fixtures` (the Orion-cli
+repository keeps copies of the fixtures its CLI tests read).
 
 All integration tests link into a **single binary**: each file under
 `tests/integration/` is a module declared in `tests/integration/main.rs`, so
@@ -93,7 +94,7 @@ backpressure, drain/shutdown); async traces and the DLQ; security (auth,
 secret masking, SSRF, trace redaction); the plugin sandbox (the Wasmtime
 runtime, the manifest, the ABI cases, the SDK's copy of the WIT); TLS
 (certificates are generated in-process with `rcgen`, so these always run);
-CLI subcommands; the authoring layer (compiling a definition set, and the
+the server's own subcommands; the authoring layer (compiling a definition set, and the
 admin API's refusal of uncompiled source form); the formatter and the clippy
 rule registry; OpenAPI; and end-to-end scenario walks. For the full
 module-by-module list:
@@ -189,4 +190,4 @@ the directory — but each release's record is committed to a
 `results/vX.Y.Z/` directory that `.gitignore` re-includes explicitly (see
 the tracked `results/v0.2.0/` and `results/v1.0.0/`, and `RELEASING.md` for
 the release-session procedure). The headline numbers live in the README's
-[Performance](../README.md#performance) section.
+[Performance](../../../README.md#performance) section.

@@ -10,21 +10,26 @@ remaining gates and their owners.
 1. Run `just check`: workspace formatting, Clippy with `-D warnings`, workspace
    tests, default-member doctests and workspace Rustdoc with `-D warnings`.
    Run `cargo +1.98 check --workspace --all-targets --locked` for the MSRV.
-2. Run all **seven** `just test-containers` legs, the 11-suite e2e runner,
-   examples lint/offline cases and live quickstart/package deployments twice.
-   Rebuild all three plugin components and run the SDK/ABI/runtime and offline
-   example cases against the fresh bytes. Use the commands in
-   [TESTING.md](TESTING.md) and `.github/workflows/ci.yml`; record actual selected
-   counts and failures, without carrying forward v1 suite totals.
-3. Run `cargo deny check bans sources licenses`, documentation lint and the
-   book build. Preserve justified duplicate warnings. Check advisories through
-   the current CI policy too.
+2. Run all **six** `just test-containers` legs. Rebuild all three plugin
+   components and run the SDK/ABI/runtime suites against the fresh bytes. With
+   [Orion-cli](https://github.com/codetiger/Orion-cli) built against the
+   candidate, run its 11-suite e2e runner and its examples job: this repo's
+   examples linted, their offline cases run (the plugin examples against the
+   fresh components), and live quickstart/package deployments twice. Use the
+   commands in [TESTING.md](TESTING.md), `.github/workflows/ci.yml` and
+   Orion-cli's CI; record actual selected counts and failures, without
+   carrying forward v1 suite totals.
+3. Run `cargo deny check bans sources licenses`. Preserve justified duplicate
+   warnings. Check advisories through the current CI policy too. Documentation
+   lint and the book build run in
+   [GoPlasmatic/Orion-docs](https://github.com/GoPlasmatic/Orion-docs).
 4. Verify the registry-only dependency graph. Swagger UI 10.0.2 contains
    utoipa#1645's ZIP 9 security fixes; this branch removes the temporary utoipa
    workspace patches and git-source exception. Keep the minimum at 10.0.2 or
    newer so registry consumers receive the fix too. Run the affected tests,
    OpenAPI drift guard, dependency policy and workspace gate after updates.
-5. Reconcile both crates' `Unreleased` notes with the final behavior. Document
+5. Reconcile `orion-server`'s `Unreleased` notes (and the CLI's, in
+   Orion-cli) with the final behavior. Document
    strict v2 definitions, the `{initial, steps, truncated}` trace, matching
    server/CLI API versions, Community removals and the fresh-database move from
    1.x. Preserve dated release history. Do not advertise reference-only
@@ -37,8 +42,9 @@ remaining gates and their owners.
 7. Confirm Console v2 support in Orion-ui before refreshing its recording and
    guide. Track that repository's release as an external dependency.
 
-The workspace has fifteen crates sharing `workspace.package.version`; the
-server and CLI are the two distributed binaries. Use `cargo release` for the
+The workspace has fourteen crates sharing `workspace.package.version`;
+`orion-server` is the one binary this repository distributes. The CLI is
+released from Orion-cli, at the version of the Orion tag it builds against. Use `cargo release` for the
 lockstep bump. Its workspace configuration updates the version requirements,
 commits and tags, and disables automatic push and publication. Do not bump a
 member manifest by hand.
@@ -46,12 +52,12 @@ member manifest by hand.
 For a candidate, rehearse `cargo release version --workspace <candidate-version>`
 and run it with `--execute` after reviewing the plan. This version-only subcommand
 leaves the commit and tag until the generated changes are ready. Every bump also
-needs a regenerated `docs/openapi.json` (`cargo run -- dump-openapi`), the
-Helm chart's `version` and `appVersion` and the README's "current workspace
-release" line (`release_stamps_drift_test` fails until they match), and the
-new `Tested with Orion <version>.` tutorial stamps. Move a tutorial's
-`last_verified` date only after rerunning its documented path. Run the gate
-again, commit the version/generated changes, and tag that final commit.
+needs the Helm chart's `version` and `appVersion` and the README's "current
+workspace release" line (`release_stamps_drift_test` fails until they match).
+Once the tag exists, Orion-docs moves its pin to it, regenerating its
+`openapi.json` and the `Tested with Orion <version>.` tutorial stamps there;
+move a tutorial's `last_verified` date only after rerunning its documented
+path. Run the gate again, commit the version/generated changes, and tag that final commit.
 Cut the dated changelog section on the actual release day, leaving a
 new empty `Unreleased` section and updated compare links.
 
@@ -62,10 +68,10 @@ a dirty development tree with `--allow-dirty` is diagnostic evidence only.
 ## Publish and verify
 
 Push a release-shaped tag only after the required CI run passes for its exact
-commit. A bare `vX.Y.Z` or `vX.Y.Z-rc.N` tag releases both binaries; use the full
-ref (`git push origin refs/tags/<tag>`). Package-prefixed tags
-`orion-server-vX.Y.Z` and `orion-cli-vX.Y.Z` select just that binary. The tag's
-version must match the workspace version.
+commit. A bare `vX.Y.Z` or `vX.Y.Z-rc.N` tag releases `orion-server`; use the full
+ref (`git push origin refs/tags/<tag>`). The tag's version must match the
+workspace version. Orion-cli and Orion-docs build against this tag, so it must
+be pushed before either can move to it.
 
 A server release starts these independent pipelines behind `ci-gate.yml`:
 
@@ -74,14 +80,14 @@ A server release starts these independent pipelines behind `ci-gate.yml`:
   versions produce prereleases.
 - `docker-release.yml` builds per-architecture images and merges their manifest,
   signs it with cosign, attaches the SPDX SBOM and provenance, then verifies the
-  published output. A prerelease never becomes `latest`. The CLI image has its
-  own `docker-release-cli.yml` workflow.
+  published output. A prerelease never becomes `latest`. The CLI image is
+  built by Orion-cli's own release.
 - `crates-publish.yml` publishes twelve library riders in dependency order,
   then `orion-server`, using `.github/scripts/publish-crates.sh`. It skips a
   version already present in the sparse registry index and fails if the index
-  cannot be read. Prerelease tags skip registry publication. `orion-cli` does
-  not publish to crates.io because another project owns that name; it ships
-  through dist, Homebrew, GHCR and `cargo install --git`.
+  cannot be read. Prerelease tags skip registry publication. `orion-cli` is
+  not published here; Orion-cli ships it through dist, Homebrew, GHCR and
+  `cargo install --git`.
 
 Check `CRATES_IO_TOKEN` and the cross-repository `GH_PAT` before tagging.
 A `workflow_dispatch` dry run skips the image merge/signing job, so a real
@@ -98,8 +104,9 @@ gh attestation verify <downloaded-archive> -R GoPlasmatic/Orion
 
 Record run URLs and digests. Fix a failed candidate with a new candidate
 version. Repeat the image and HA checks for the artifact you intend to promote.
-Cloudflare Workers Builds publishes docs from changes on `main`; verify the
-served upgrade guide and version in its deployment dashboard.
+The documentation site is published from Orion-docs (Cloudflare Workers
+Builds); once its pin moves to the release, verify the served upgrade guide
+and version in its deployment dashboard.
 
 ## Benchmark evidence
 
@@ -109,11 +116,13 @@ a dedicated v2 session replaces them. A debug smoke run proves the benchmark
 setup works; it does not supply release throughput or a speedup claim.
 
 On idle, dedicated hardware, record CPU, cores, memory, OS, toolchain, exact
-commit and binary versions. Build both binaries from that commit:
+commit and binary versions. Build the server from that commit and point
+`ORION_CLI` at an `orion-cli` built from Orion-cli against the same Orion
+version:
 
 ```bash
-cargo build --release --locked -p orion-server -p orion-cli
-BENCH_RELEASE=1 BENCH_SKIP_BUILD=1 BENCH_DURATION=30s \
+cargo build --release --locked -p orion-server
+ORION_CLI=/path/to/orion-cli BENCH_RELEASE=1 BENCH_SKIP_BUILD=1 BENCH_DURATION=30s \
   BENCH_OUTPUT_DIR=/tmp/orion-http-candidate \
   bash crates/orion-server/tests/benchmark/bench.sh
 python3 crates/orion-server/tests/benchmark/run-view.py --profile dev --rounds 3 \

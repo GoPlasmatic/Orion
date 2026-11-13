@@ -1,9 +1,9 @@
 # orion-client
 
 The HTTP client for [Orion](https://github.com/GoPlasmatic/Orion)'s admin and
-data APIs — the same transport `orion-cli` and the server's `orion-server
-package` promotion CLI both drive, so there is exactly one implementation of
-the wire protocol in the workspace.
+data APIs — the transport
+[`orion-cli`](https://github.com/codetiger/Orion-cli) drives, so there is
+exactly one implementation of the wire protocol.
 
 Response types come from [`orion-api`](https://crates.io/crates/orion-api);
 this crate is the transport over them.

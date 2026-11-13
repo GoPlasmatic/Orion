@@ -72,7 +72,7 @@ cargo build --release --target wasm32-unknown-unknown
 wasm-tools component new target/wasm32-unknown-unknown/release/acme_codec.wasm -o plugin.wasm
 ```
 
-## Describe and upload it
+## Describe and deploy it
 
 The manifest beside the component names the functions and the fields each
 accepts, in the same vocabulary Orion's built-in functions declare:
@@ -96,14 +96,18 @@ required = true
 template_at = true
 ```
 
+Put `plugin.toml` and the component in a definition set beside the workflows
+that call it; `orion-cli compile` inlines the component, and the deployment
+carries the plugin with them:
+
 ```bash
-orion-cli plugins create -f plugin.toml
-orion-cli plugins activate acme.codec
+orion-cli compile ./definitions -o dist/deployment
+orion-cli deployments apply -d dist/deployment
 ```
 
-The [Plugins reference](https://docs.goplasmatic.io/reference/plugins.html)
+The [plugin manifest reference](https://docs.goplasmatic.io/reference/plugin-manifest.html)
 covers the manifest, the ABI, the host's limits and how a failure is
-reported; [Build a plugin](https://docs.goplasmatic.io/build/plugins.html) is
+reported; [Build a plugin](https://docs.goplasmatic.io/guides/extend/plugins.html) is
 the author's walkthrough, including offline testing with `orion-cli test
 --plugin-dir`.
 

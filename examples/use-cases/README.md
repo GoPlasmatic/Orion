@@ -3,8 +3,9 @@
 Each `*.json` file here is a complete, end-to-end scenario built on one of
 the [example packages](../packages/): the requests to send and the exact
 responses to expect from a **live Orion server** running that package's
-workflow. They are the data-driven half of the repo's e2e suite — and proof
-that the shipped examples behave as documented, asserted in CI on every PR.
+workflow. They are the data-driven half of the e2e suite in the
+[Orion-cli](https://github.com/codetiger/Orion-cli) repository — and proof that the shipped examples behave as
+documented, asserted in its CI against this repository at a release tag.
 
 The package under test is **named, never duplicated**: each case names the
 package directory, and the runner deploys it as it ships — its own
@@ -17,17 +18,20 @@ HTTP channel routing and the engine — against a real `orion-server`.
 
 > Cases that test **runtime behaviour** rather than a scenario (definition
 > test traces, connection secret locators, connector error handling, body
-> modes) live with the suite itself, in `tests/e2e/cases/`, using this same
-> format.
+> modes) live with the suite itself, in Orion-cli's `tests/e2e/cases/`, using
+> this same format.
 
 ## Run them
 
+From an Orion-cli checkout, pointing it at this repository's `examples/`:
+
 ```bash
-just e2e                # the whole e2e suite (from the repo root)
+export ORION_EXAMPLES_DIR=../Orion/examples
+./tests/e2e/run.sh      # the whole e2e suite
 ./tests/e2e/run.sh 06   # just the use-case suite
 ```
 
-The runner (`tests/e2e/`, suite `06_use_cases.sh`) picks up every `*.json`
+The runner (Orion-cli's `tests/e2e/`, suite `06_use_cases.sh`) picks up every `*.json`
 file in this directory — adding a case needs no code changes. For each case
 it writes one definition set (the packages, plugins, connectors, workflows
 and channels the case lists), compiles it with `orion-cli compile`,
@@ -77,7 +81,7 @@ A `connectors` entry is a connector definition, written into the set as a
 file; `compile` turns it into a connection. A credential must be an
 `env://` reference (it becomes one of the connection's `secret_locators`),
 which the server resolves from its own environment — the harness exports
-the ones `tests/e2e/cases/` use.
+the ones its `tests/e2e/cases/` use.
 
 Channels: a case with `workflows` gets one sync HTTP channel per channel
 name its tests send to, routed at `/<name>` and bound to its first workflow,

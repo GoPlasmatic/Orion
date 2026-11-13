@@ -200,92 +200,6 @@ jobs:
         if: github.event_name == 'schedule'
         run: cargo test --workspace --no-fail-fast
 
-  examples:
-    name: Examples
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (toolchain from `with`)
-        with:
-          toolchain: "1.100"
-
-      # Restores the shared `linux-stable` entry written by `test`; never
-      # writes, so one cache serves every stable-Linux job instead of ten.
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        with:
-          shared-key: linux-stable
-          save-if: false
-
-      - name: Install system dependencies
-        uses: ./.github/actions/apt-build-deps
-
-      # Both binaries: orion-cli compiles and deploys to the orion-server
-      # started below. A bare `cargo build` builds only the server.
-      - name: Build
-        run: cargo build -p orion-server -p orion-cli
-
-      - name: Lint example workflows
-        run: |
-          # workflow*.json, not workflow.json: channel-composition ships a
-          # second workflow (workflow-lookup.json) the narrower glob skipped.
-          #
-          # --definitions: a workflow written in source form resolves its
-          # `$from`, `$use` and `$each` against the package's own shared
-          # document, which a per-file lint does not otherwise load.
-          for f in examples/packages/*/workflow*.json; do
-            ./target/debug/orion-cli lint "$f" --definitions "$(dirname "$f")"
-          done
-
-      # `--plugin-dir`: the fixed-width-statement cases run the example's
-      # codec for real, so its manifest and component are handed to the run.
-      - name: Run example workflow tests (offline, stubbed connectors, real plugin)
-        run: ./target/debug/orion-cli test examples/workflow-tests --plugin-dir examples/packages/fixed-width-statement --plugin-dir examples/packages/c4-referee
-
-      - name: Start Postgres (postgres-orders package)
-        run: docker compose -f examples/packages/postgres-orders/docker-compose.yml up --wait postgres
-
-      # Plugins on: the fixed-width-statement and c4-referee packages deploy
-      # one. ORDERS_DB_URL is the env:// reference postgres-orders' connection
-      # names; the node resolves it from its own environment.
-      - name: Start Orion
-        run: |
-          ORION_STORAGE__URL="sqlite:/tmp/orion-examples.db?mode=rwc" \
-          ORDERS_DB_URL="postgres://orion:orion@localhost:5432/orion_orders" \
-          ORION_PLUGINS__ENABLED=true \
-          ./target/debug/orion-server > /tmp/orion-examples.log 2>&1 &
-          for i in $(seq 1 30); do
-            curl -fsS http://localhost:8080/healthz > /dev/null 2>&1 && exit 0
-            sleep 1
-          done
-          echo "server did not become healthy" >&2
-          cat /tmp/orion-examples.log >&2
-          exit 1
-
-      - name: Quickstart script (twice — idempotency)
-        run: |
-          ./examples/quickstart.sh
-          ./examples/quickstart.sh
-
-      # Each deploy replaces the node's head with that one package, so every
-      # package is proven on its own; the second run applies nothing.
-      - name: Deploy every example package end-to-end (twice — idempotency)
-        run: |
-          cd examples
-          for d in packages/*/; do
-            [ -f "$d/workflow.json" ] || continue
-            ./deploy.sh "${d%/}"
-            ./deploy.sh "${d%/}"
-          done
-
-      - name: Server log on failure
-        if: failure()
-        run: cat /tmp/orion-examples.log || true
-
   # The plugin SDK, proven rather than claimed: the test fixture and the
   # example codec are rebuilt from their Rust sources on the shipped
   # `orion-plugin-sdk`, and the suites that pin the ABI run against the fresh
@@ -340,9 +254,6 @@ jobs:
           ORION_PLUGIN_FIXTURE: crates/orion-server/tests/fixtures/plugins/fixture.wasm
         run: cargo test -p orion-server --test integration -- plugin_abi_cases_test plugin_runtime_test plugin_sdk_test
 
-      - name: Run the examples' offline cases against the fresh components
-        run: cargo run -p orion-cli -- test examples/workflow-tests --plugin-dir examples/packages/fixed-width-statement --plugin-dir examples/packages/c4-referee
-
       - name: The SDK's own tests
         run: cargo test -p orion-plugin-sdk
 
@@ -374,7 +285,7 @@ jobs:
       # dependency graph cold.
       #
       # `cargo test --workspace --all-targets` builds a superset of what
-      # `lint`, `examples`, `cli-e2e`, `package`, `mutants` and
+      # `lint`, `package`, `mutants` and
       # `integration-containers` each need, so it owns the write and they
       # restore it read-only. One writer keeps the save deterministic: with
       # several, whichever finished first won the key and the rest logged a
@@ -397,42 +308,6 @@ jobs:
       # heavily documented examples that would otherwise never compile.
       - name: Run doctests
         run: cargo test --doc
-
-  # The workspace shell e2e suite (tests/e2e/) drives a real orion-server
-  # over HTTP with the orion-cli binary — the one place the two crates' API
-  # contract is exercised end to end at the same commit. Before the monorepo
-  # merge this needed an out-of-band server binary and could not run per PR
-  # at all.
-  cli-e2e:
-    name: CLI E2E (orion-cli against orion-server)
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (toolchain from `with`)
-        with:
-          toolchain: "1.100"
-
-      # Restores the shared `linux-stable` entry written by `test`; never
-      # writes, so one cache serves every stable-Linux job instead of ten.
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        with:
-          shared-key: linux-stable
-          save-if: false
-
-      - name: Install system dependencies
-        uses: ./.github/actions/apt-build-deps
-
-      - name: Build both binaries
-        run: cargo build -p orion-server -p orion-cli
-
-      # jq and curl are preinstalled on the GitHub ubuntu images.
-      - name: Run the e2e suite
-        run: E2E_SKIP_BUILD=1 ./tests/e2e/run.sh
 
   # Advisories AND license compatibility / bans / source policy over the
   # whole tree (proposal T12) — deny.toml is the policy, including the one
@@ -498,86 +373,6 @@ jobs:
 
       - name: Assemble and verify-build the publish tarballs
         run: cargo package --locked --workspace
-
-  # The docs site is deployed by Cloudflare Workers Builds on merges touching
-  # docs/**, entirely outside GitHub, so without this a PR
-  # can break the book (dangling SUMMARY entry, bad include) and nobody
-  # notices until after merge. book.toml sets create-missing = false, so a
-  # missing SUMMARY target fails the build here instead of fabricating an
-  # empty page (proposal T25).
-  book:
-    name: Book (mdbook)
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install mdbook
-        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2
-        with:
-          tool: mdbook@0.5.4
-
-      # The same script Cloudflare Workers Builds runs to deploy, so a PR also
-      # exercises the llms-full.txt generation and the _redirects/_headers
-      # staging, not just `mdbook build`. mdbook is already on PATH from the
-      # step above, so the script's pinned-binary fetch is skipped here —
-      # mdbook_pin_drift_test is what keeps that pin and this one equal.
-      - name: Build book
-        run: bash docs/build.sh
-
-      # The docs estate's structural guard: include/link integrity, redirect
-      # coverage for hard site links, the one-owner-per-fact guard greps, and
-      # (check 21) conformance to DOCUMENTATION_STANDARD.md — page types, the
-      # template sections each type must carry, callout vocabulary, sentence
-      # length, hub size and navigation depth.
-      - name: Docs lint
-        run: bash docs/lint.sh
-
-      # The prose half of DOCUMENTATION_STANDARD.md §12. Vale carries the
-      # Google developer documentation style guide plus docs/styles/Orion —
-      # the words §6.7 bans, the link text §10.6 requires, and the vocabulary
-      # §6.4 holds constant. `vale sync` fetches the Google package, which is
-      # not vendored: it is a third-party style with its own release cadence,
-      # and pinning a copy here would mean maintaining it.
-      #
-      # Failing, per §12's "start advisory and tighten to failing over one
-      # quarter": the flag came off when docs/lint.sh's DOCS_STRUCTURE_LEVEL
-      # became `enforce`, and the two switch together.
-      # vale is a Go binary published to GitHub Releases, and it is not one of
-      # the tools `taiki-e/install-action` manages. Asking that action for it
-      # falls through to cargo-binstall, which resolves the name on crates.io
-      # — where `vale` is an unrelated 0.0.0 crate of the same name — so the
-      # step could only ever fail with "no version matching requirement". It
-      # never ran: the `Docs lint` step above it was failing first, and the
-      # install-action bump in #322 is what surfaced it.
-      #
-      # Taken from the release directly, against the checksum the release
-      # publishes. That pins the bytes the way the SHA-pinned actions above
-      # are pinned; the cost is that a version bump here needs its checksum
-      # updated with it, which the two `VALE_` values keep in one place.
-      - name: Install Vale
-        env:
-          VALE_VERSION: 3.21.0
-          VALE_SHA256: 96997d19a4ca6981673b0d4c5ca7f3ede4a9f97964a96edc29fba9e28a328336
-        run: |
-          set -euo pipefail
-          archive="vale_${VALE_VERSION}_Linux_64-bit.tar.gz"
-          curl -sSfL -o "$archive" \
-            "https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/${archive}"
-          echo "${VALE_SHA256}  ${archive}" | sha256sum -c -
-          tar -xzf "$archive" vale
-          sudo install -m 0755 vale /usr/local/bin/vale
-          rm -f "$archive" vale
-          vale --version
-
-      - name: Docs prose
-        working-directory: docs
-        run: |
-          vale sync
-          vale --output=line src
 
   # The chart's guards — its `{{- fail }}`s, the `required` storage.url and
   # values.schema.json — only fire at render time, so before this job a typo
@@ -751,9 +546,8 @@ jobs:
       # Raise the floor when the real number moves up; never lower it to make
       # a red build green. Blocking since T42 (the job earned it — see the
       # note on `coverage:` above).
-      # Scoped to the default members (orion-server): orion-cli is neither
-      # compiled nor instrumented here, so this percentage describes the
-      # server only. TESTING.md's layer-6 note says the same.
+      # Scoped to the default members (orion-server), so this percentage
+      # describes the server. TESTING.md's layer-6 note says the same.
       - name: Generate coverage report
         run: cargo llvm-cov --lcov --output-path lcov.info -j 2 --fail-under-lines 88
 
@@ -877,9 +671,6 @@ jobs:
           # grouping is free to change; keep the two legs balanced.
           - name: data-sql
             run: cargo test --test integration -- --ignored postgres_test mysql_test db_column_types_test data_roundtrip_test data_parity_test integrity_errors_test
-
-          - name: cli-sql
-            run: cargo test -p orion-cli --test authoring -- --ignored sql_check_test
 
           - name: data-nosql
             run: cargo test --test integration -- --ignored vault_test

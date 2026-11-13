@@ -13,7 +13,7 @@ homepage = "https://docs.goplasmatic.io/"
 readme = "README.md"
 keywords = ["workflow", "runtime", "database", "sqlx"]
 categories = ["database"]
-include = ["src/**", "migrations/**", "build.rs", "README.md"]
+include = ["src/**", "migrations/**", "build.rs", "README.md", "LICENSE", "NOTICE"]
 
 [lints]
 workspace = true

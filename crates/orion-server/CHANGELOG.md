@@ -86,7 +86,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it provides no in-place conversion. Export definitions with the old tooling,
   lint and compile them with the new CLI, and redeploy onto a new database.
   Keep the old database for traces, audit logs, the DLQ and cron history. See
-  [the upgrade guide](../../docs/src/operate/maintain/upgrades.md).
+  [the upgrade guide](https://docs.goplasmatic.io/operate/maintain/upgrades.html).
 - **Run dataflow-rs 4.0.3 throughout.** Serving, `dry-run`, offline `test` and
   `POST /api/v2/admin/definitions/test` share the v4 compiler and function
   registry. Authoring analysis uses its typed expressions and operator metadata.
@@ -109,6 +109,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workflow plugin as floating-point values. Use strings for exact identifiers
   beyond that range; the raw plugin JSON ABI does not promise workflow-level
   preservation of arbitrary unsigned integers.
+- **The CLI and the documentation site moved to their own repositories,**
+  because the Community and Enterprise editions share both. `orion-cli`, with
+  its offline authoring tools and the end-to-end suite, is built and released
+  from [Orion-cli](https://github.com/codetiger/Orion-cli) against this
+  repository's crates at a release tag; it still ships through the installers,
+  Homebrew (`GoPlasmatic/tap/orion-cli`) and `ghcr.io/goplasmatic/orion-cli`.
+  The mdBook site, the committed `openapi.json` and the guards that hold the
+  documentation to the code moved to
+  [GoPlasmatic/Orion-docs](https://github.com/GoPlasmatic/Orion-docs), still
+  published at https://docs.goplasmatic.io/. This repository's release builds
+  only `orion-server`, and its workspace drops the `orion-cli` crate.
 
 ### Fixed
 

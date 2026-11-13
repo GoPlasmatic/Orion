@@ -64,43 +64,6 @@ fn workspace() -> PathBuf {
 }
 
 #[test]
-fn the_openapi_document_names_no_tracker_ids() {
-    let spec = std::fs::read_to_string(workspace().join("docs/openapi.json")).unwrap();
-    let found: Vec<String> = spec.lines().filter_map(tracker_id).collect();
-    assert!(
-        found.is_empty(),
-        "docs/openapi.json carries tracker IDs from the doc comments it is built from: {found:?}"
-    );
-}
-
-#[test]
-fn cli_help_names_no_tracker_ids() {
-    let mut found = Vec::new();
-    let mut stack = vec![workspace().join("crates/orion-cli/src")];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).unwrap();
-            for (n, line) in text.lines().enumerate() {
-                let t = line.trim_start();
-                let help = t.starts_with("///") || t.contains("about = \"");
-                if help && let Some(id) = tracker_id(t) {
-                    found.push(format!("{}:{}: {id}", path.display(), n + 1));
-                }
-            }
-        }
-    }
-    assert!(
-        found.is_empty(),
-        "CLI help text carries tracker IDs: {found:?}"
-    );
-}
-
-#[test]
 fn public_sdk_and_api_docs_name_no_tracker_ids() {
     let mut found = Vec::new();
     let mut stack = vec![

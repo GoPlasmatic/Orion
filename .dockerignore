@@ -1,7 +1,6 @@
 target/
 **/target/
 .git/
-docs/
 .claude/
 *.md
 # LICENSE stays in the context: the runtime image redistributes the

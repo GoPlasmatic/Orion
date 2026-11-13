@@ -69,5 +69,5 @@ orion-cli dry-run -w examples/packages/c4-referee/workflow.json -i /tmp/move.jso
 ```
 
 Both run the rules for real in the same sandbox the server uses. See
-[Build a plugin](https://docs.goplasmatic.io/build/plugins.html) for how a
+[Build a plugin](https://docs.goplasmatic.io/guides/extend/plugins.html) for how a
 plugin is written.

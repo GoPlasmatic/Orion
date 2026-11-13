@@ -20,7 +20,7 @@ description = "Guest SDK for Orion WebAssembly plugins: the orion:plugin world b
 readme = "README.md"
 keywords = ["orion", "wasm", "plugin", "component-model"]
 categories = ["wasm", "api-bindings"]
-include = ["/src/**", "/wit/**", "/Cargo.toml", "/README.md"]
+include = ["/src/**", "/wit/**", "/Cargo.toml", "/README.md", "/LICENSE", "/NOTICE"]
 
 
 [lints]

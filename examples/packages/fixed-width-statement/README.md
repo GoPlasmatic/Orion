@@ -33,5 +33,5 @@ examples/packages/fixed-width-statement` runs the codec for real. See
 [`examples/README.md`](../../README.md) for the file layout and the full example
 list, [Run the Examples](https://docs.goplasmatic.io/get-started/tutorials/examples.html)
 for the step-by-step walkthrough, and
-[Build a plugin](https://docs.goplasmatic.io/build/plugins.html) for how the
+[Build a plugin](https://docs.goplasmatic.io/guides/extend/plugins.html) for how the
 codec was written.

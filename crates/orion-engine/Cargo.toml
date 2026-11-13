@@ -13,7 +13,7 @@ homepage = "https://docs.goplasmatic.io/"
 readme = "README.md"
 keywords = ["workflow", "runtime", "dataflow", "jsonlogic"]
 categories = ["web-programming"]
-include = ["src/**", "README.md"]
+include = ["src/**", "README.md", "LICENSE", "NOTICE"]
 
 [lints]
 workspace = true

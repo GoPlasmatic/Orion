@@ -28,11 +28,6 @@ const SRC_DIRS: &[&str] = &[
     concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-authoring/src"),
     concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-http/src"),
 ];
-const ERRORS_MD: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/src/reference/errors.md"
-);
-
 /// Walk `src/`, skipping `#[cfg(test)]` modules, and collect the code literal
 /// from every `FieldError::new(path, "CODE", …)` and
 /// `OrionError::invalid_field(path, "CODE", …)` call.
@@ -136,40 +131,6 @@ fn every_registered_field_code_is_reachable() {
         unreachable.is_empty(),
         "field codes registered but never emitted by src/: {unreachable:?} — a code \
          no call site produces is a vocabulary entry clients would wait forever for"
-    );
-}
-
-#[test]
-fn the_errors_reference_documents_the_registered_vocabulary() {
-    let md = std::fs::read_to_string(ERRORS_MD).expect("read docs/src/reference/errors.md");
-    let heading = "### Field error codes";
-    let start = md
-        .find(heading)
-        .expect("errors.md must carry a '### Field error codes' table");
-    let section = &md[start + heading.len()..];
-    let end = section.find("\n## ").unwrap_or(section.len());
-
-    let mut documented = BTreeSet::new();
-    for line in section[..end].lines() {
-        let line = line.trim();
-        if !line.starts_with('|') {
-            continue;
-        }
-        if let Some(cell) = line.split('|').nth(1) {
-            for token in cell.split('`').skip(1).step_by(2) {
-                let token = token.trim();
-                if token.chars().all(|c| c.is_ascii_uppercase() || c == '_') && !token.is_empty() {
-                    documented.insert(token.to_string());
-                }
-            }
-        }
-    }
-
-    assert_eq!(
-        documented,
-        registered_codes(),
-        "docs/src/reference/errors.md's field-code table and \
-         orion_api::error::field_codes disagree"
     );
 }
 

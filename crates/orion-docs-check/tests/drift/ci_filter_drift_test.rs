@@ -12,9 +12,9 @@
 //! `config_docs_drift_test`: parse the workflow, parse the test tree, and
 //! refuse to let the two disagree.
 //!
-//! Two binaries are selected by name this way: this crate's `integration` and
-//! `orion-cli`'s `authoring` (the offline tools, whose `sql check` suite
-//! needs databases). The `cluster`, `storage_postgres`,
+//! One binary is selected by name this way: orion-server's `integration`
+//! (the CLI's container-gated `sql check` suite moved with the CLI to its own
+//! repository). The `cluster`, `storage_postgres`,
 //! `storage_mysql` and `schema_parity` binaries get their own steps that run
 //! `--ignored` with no name filter, so every ignored test in them is selected
 //! wholesale.
@@ -31,19 +31,13 @@ const JUSTFILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../justfile");
 
 /// Each test binary whose container-gated modules are selected by name: the
 /// `--test` selector ci.yml uses for it, and the directory of its modules.
-const NAMED_BINARIES: &[(&str, &str)] = &[
-    (
-        "--test integration",
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../orion-server/tests/integration"
-        ),
+const NAMED_BINARIES: &[(&str, &str)] = &[(
+    "--test integration",
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../orion-server/tests/integration"
     ),
-    (
-        "--test authoring",
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-cli/tests/authoring"),
-    ),
-];
+)];
 
 /// Module names (file stems) under `dir` that declare at least one
 /// `#[ignore]` test, and so depend on a CI filter to ever run.

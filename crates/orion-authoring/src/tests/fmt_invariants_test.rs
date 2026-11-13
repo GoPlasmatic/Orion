@@ -19,11 +19,7 @@ const MANIFEST: &str = env!("CARGO_MANIFEST_DIR");
 
 fn corpus() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    for dir in [
-        "../../examples",
-        "../../tests/e2e",
-        "../orion-server/tests/fixtures/fmt",
-    ] {
+    for dir in ["../../examples", "../orion-server/tests/fixtures/fmt"] {
         out.extend(crate::definitions::json_files(&Path::new(MANIFEST).join(dir)).unwrap());
     }
     // Only the parseable half of the conformance set has a formatted form.

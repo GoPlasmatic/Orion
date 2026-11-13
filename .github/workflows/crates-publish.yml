@@ -43,39 +43,15 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
 
-      # Two releasable packages share this repo, but only orion-server is
-      # published to crates.io.
-      #
-      # orion-cli deliberately is NOT, and this is not an oversight to correct:
-      # the `orion-cli` name on crates.io was registered in January 2021 by an
-      # unrelated project (a Lisp compiler, github.com/wafelack/orion) and is
-      # owned by that author's account, not ours. Its three versions are all
-      # yanked, but yanking never frees a name — `cargo publish -p orion-cli`
-      # would 403 with "not an owner", and it would do so *after* the rider
-      # crates and orion-server were already live and unyankable-in-place.
-      #
-      # Nothing regresses by leaving it out. The CLI has never shipped through
-      # crates.io: before the monorepo merge it lived in GoPlasmatic/Orion-cli,
-      # which had no crates.io pipeline at all, and its four releases went out
-      # via GitHub releases, the cargo-dist installers, the Homebrew tap and
-      # ghcr.io/goplasmatic/orion-cli. Those are still its channels, and the
-      # install docs already point at `cargo install --git` rather than a bare
-      # `cargo install orion-cli` for exactly this reason.
-      #
-      # Do not add orion-cli here without first securing the name on crates.io.
+      # orion-server is the one binary crate published here. The CLI lives in
+      # its own repository and ships through its installers, not crates.io.
       - name: Determine packages from tag
         id: pkg
         run: |
-          case "${GITHUB_REF_NAME}" in
-            orion-cli-*) packages="" ;;              # CLI-only tag: nothing to publish
-            *)           packages="orion-server" ;;  # bare v* and orion-server-v*
-          esac
+          # Bare v* and orion-server-v* tags both publish the server.
+          packages="orion-server"
           echo "packages=${packages}" >> "$GITHUB_OUTPUT"
-          if [ -n "${packages}" ]; then
-            echo "Publishing: ${packages}"
-          else
-            echo "::notice::${GITHUB_REF_NAME} is a CLI-only tag and orion-cli is not published to crates.io — nothing to do."
-          fi
+          echo "Publishing: ${packages}"
 
       # The shared library crates (orion-api, orion-client, orion-definitions,
       # orion-extension-api, orion-common, orion-storage, orion-engine,

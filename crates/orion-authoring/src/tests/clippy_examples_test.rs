@@ -33,17 +33,3 @@ fn the_example_packages_trip_no_rule() {
     }
     assert!(checked >= 8, "only {checked} packages checked");
 }
-
-#[test]
-fn the_e2e_workflow_fixtures_trip_no_rule() {
-    let dir = Path::new(ROOT).join("tests/e2e/fixtures/workflows");
-    let diagnostics = run_over(&dir);
-    assert!(
-        diagnostics.is_empty(),
-        "{:#?}",
-        diagnostics
-            .iter()
-            .map(|d| d.render_text())
-            .collect::<Vec<_>>()
-    );
-}

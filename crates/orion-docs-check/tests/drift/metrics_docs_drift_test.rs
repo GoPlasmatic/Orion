@@ -22,11 +22,6 @@ const METRICS_RS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../orion-common/src/metrics.rs"
 );
-const OBSERVABILITY_MD: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/src/reference/metrics.md"
-);
-
 /// `name -> label keys`, parsed from the `counter!` / `gauge!` / `histogram!`
 /// invocations in `src/metrics.rs`.
 ///
@@ -121,90 +116,6 @@ fn string_literals(s: &str) -> Vec<String> {
         out.push(s[start + 1..end].to_string());
     }
     out
-}
-
-/// `name -> label keys` from every metrics table on the metrics reference page: a
-/// row whose first cell is a backticked `orion_*` name, with the third cell
-/// holding its backticked labels (or the em dash for none).
-fn documented_metrics() -> BTreeMap<String, BTreeSet<String>> {
-    let doc = std::fs::read_to_string(OBSERVABILITY_MD).expect("read metrics.md");
-    let mut out = BTreeMap::new();
-    for line in doc.lines() {
-        let line = line.trim();
-        if !line.starts_with('|') {
-            continue;
-        }
-        let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
-        if cells.len() < 3 {
-            continue;
-        }
-        let Some(name) = backticked(cells[0]).into_iter().next() else {
-            continue;
-        };
-        if !name.starts_with("orion_") {
-            continue;
-        }
-        out.insert(name, backticked(cells[2]).into_iter().collect());
-    }
-    out
-}
-
-/// The backticked spans in one table cell.
-fn backticked(cell: &str) -> Vec<String> {
-    cell.split('`')
-        .skip(1)
-        .step_by(2)
-        .map(|s| s.to_string())
-        .collect()
-}
-
-#[test]
-fn every_emitted_metric_is_documented() {
-    let emitted = emitted_metrics();
-    let documented = documented_metrics();
-    let missing: Vec<&String> = emitted
-        .keys()
-        .filter(|name| !documented.contains_key(*name))
-        .collect();
-    assert!(
-        missing.is_empty(),
-        "these metrics are emitted but absent from docs/src/reference/metrics.md: {missing:?}"
-    );
-}
-
-#[test]
-fn no_documented_metric_is_a_ghost() {
-    let emitted = emitted_metrics();
-    let documented = documented_metrics();
-    let ghosts: Vec<&String> = documented
-        .keys()
-        .filter(|name| !emitted.contains_key(*name))
-        .collect();
-    assert!(
-        ghosts.is_empty(),
-        "docs/src/reference/metrics.md documents metrics the binary does not emit \
-         (a rename with a missed doc update looks exactly like this): {ghosts:?}"
-    );
-}
-
-#[test]
-fn documented_labels_match_the_code() {
-    let emitted = emitted_metrics();
-    let documented = documented_metrics();
-    let mut mismatches = Vec::new();
-    for (name, labels) in &emitted {
-        let Some(doc_labels) = documented.get(name) else {
-            continue; // reported by every_emitted_metric_is_documented
-        };
-        if labels != doc_labels {
-            mismatches.push(format!("{name}: code {labels:?} vs docs {doc_labels:?}"));
-        }
-    }
-    assert!(
-        mismatches.is_empty(),
-        "label drift between src/metrics.rs and the metrics reference page:\n  {}",
-        mismatches.join("\n  ")
-    );
 }
 
 /// O14: `kafka_consumer_lag` was the one family without the prefix, so it

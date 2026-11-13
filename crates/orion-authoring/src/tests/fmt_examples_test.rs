@@ -3,7 +3,7 @@
 //!
 //! In-process rather than a workflow step, so it runs wherever `cargo test`
 //! does and needs no binary. Its failure message is the diff, and the fix
-//! is `just fmt`.
+//! is `orion-cli fmt examples` (the CLI lives in its own repository).
 
 use std::path::Path;
 
@@ -11,12 +11,8 @@ use crate::definitions::fmt::{Outcome, format_str};
 
 const MANIFEST: &str = env!("CARGO_MANIFEST_DIR");
 
-/// The trees `just fmt` formats. Keep in step with the `fmt` recipe.
-const TREES: &[&str] = &[
-    "../../examples",
-    "../../tests/e2e/cases",
-    "../../tests/e2e/fixtures",
-];
+/// The definition trees this repository ships.
+const TREES: &[&str] = &["../../examples"];
 
 #[test]
 fn every_shipped_json_file_is_formatted() {
@@ -41,7 +37,7 @@ fn every_shipped_json_file_is_formatted() {
     }
     assert!(
         unformatted.is_empty(),
-        "{} file(s) are not in the house style — run `just fmt`:\n\n{}",
+        "{} file(s) are not in the house style — run `orion-cli fmt examples`:\n\n{}",
         unformatted.len(),
         unformatted.join("\n")
     );

@@ -42,11 +42,6 @@ use tower::ServiceExt;
 use crate::common;
 use crate::common::{body_json, json_request};
 
-const EXPRESSIONS_MD: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/src/reference/expressions.md"
-);
-
 /// Every operator Orion supports, with an expression that exercises it and the
 /// value that expression must produce.
 ///
@@ -375,42 +370,6 @@ const OPERATORS: &[OperatorCase] = &[
 /// The one secret [`OPERATORS`]' `secret` row declares, and its value.
 const TEST_SECRET: (&str, &str) = ("partner_hmac", "hmac-value-1a2b");
 
-/// Operator names documented in the "Available operators" section.
-///
-/// A row is a table row whose first cell contains one or more backticked
-/// tokens; `` `sort` `` yields one name and `` `upper` / `lower` `` yields two,
-/// which is how the tables group operators that share an example. Reading stops
-/// at the next `## ` heading so prose elsewhere in the file cannot contribute
-/// names.
-fn documented_operators() -> BTreeSet<String> {
-    let md =
-        std::fs::read_to_string(EXPRESSIONS_MD).expect("read docs/src/reference/expressions.md");
-    let heading = "## Available operators";
-    let start = md
-        .find(heading)
-        .expect("expressions.md must document the operator vocabulary");
-    let section = &md[start + heading.len()..];
-    let end = section.find("\n## ").unwrap_or(section.len());
-
-    let mut out = BTreeSet::new();
-    for line in section[..end].lines() {
-        let line = line.trim();
-        if !line.starts_with('|') {
-            continue;
-        }
-        let Some(first_cell) = line.split('|').nth(1) else {
-            continue;
-        };
-        for token in first_cell.split('`').skip(1).step_by(2) {
-            let token = token.trim();
-            if !token.is_empty() {
-                out.insert(token.to_string());
-            }
-        }
-    }
-    out
-}
-
 /// The data every expression in [`OPERATORS`] is evaluated against.
 fn context() -> Value {
     json!({
@@ -571,29 +530,6 @@ async fn every_documented_operator_is_compiled() {
         });
         assert_eq!(got, expected(), "operator `{name}` evaluated {logic}");
     }
-}
-
-/// The reference page documents exactly the operators [`OPERATORS`] pins —
-/// no more, no fewer.
-#[test]
-fn documented_operators_match_the_supported_set() {
-    let supported: BTreeSet<String> = OPERATORS.iter().map(|(n, ..)| n.to_string()).collect();
-    let documented = documented_operators();
-
-    let undocumented: Vec<&String> = supported.difference(&documented).collect();
-    assert!(
-        undocumented.is_empty(),
-        "operators supported but absent from the 'Available operators' tables in \
-         docs/src/reference/expressions.md: {undocumented:?}"
-    );
-
-    let invented: Vec<&String> = documented.difference(&supported).collect();
-    assert!(
-        invented.is_empty(),
-        "docs/src/reference/expressions.md documents operators this build does not \
-         support: {invented:?}. A reader will write these and get either an error \
-         or a silent object literal."
-    );
 }
 
 /// `exists` reads its arguments as literal path *segments*, so the dotted

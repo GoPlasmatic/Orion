@@ -146,7 +146,7 @@ boundaries in one page.
   while preserving the callee's guards and preventing cycles.
 
 Choose a focused path in
-[What are you building?](https://docs.goplasmatic.io/getting-started/use-cases.html),
+[What are you building?](https://docs.goplasmatic.io/get-started/decide/choose-a-use-case.html),
 or deploy a tested package from [`examples/packages/`](examples/packages/).
 
 ## Runtime capabilities
@@ -182,9 +182,9 @@ server. Each apply is an immutable revision, and a rollback commits an earlier
 one again. Administrative changes are recorded in the audit log.
 
 For AI-assisted authoring, install the [Orion agent
-skill](https://docs.goplasmatic.io/ai/skills.html) or use the self-contained
-[prompt pack](https://docs.goplasmatic.io/ai/prompt-pack.html). The
-[Claude Code tutorial](https://docs.goplasmatic.io/ai/claude-code.html) walks
+skill](https://docs.goplasmatic.io/guides/ai/agent-skill.html) or use the self-contained
+[prompt pack](https://docs.goplasmatic.io/guides/ai/prompt-pack.html). The
+[Claude Code tutorial](https://docs.goplasmatic.io/guides/ai/claude-code.html) walks
 through a complete assisted workflow.
 
 ## When Orion fits
@@ -207,14 +207,16 @@ Choose another runtime, or pair one with Orion, when:
   verification is built in; those flows require a gateway or service mesh.
 
 Read [Is Orion right for
-you?](https://docs.goplasmatic.io/comparison.html) for detailed comparisons
+you?](https://docs.goplasmatic.io/get-started/decide/is-orion-right-for-you.html) for detailed comparisons
 with durable execution engines, API gateways, automation platforms, rule
 engines, and embedded `dataflow-rs`.
 
 ## Install
 
 The current workspace release is **2.0.0-rc.1** and requires Rust **1.98** when built
-from source. The server and CLI are released in lockstep; use matching versions.
+from source. The CLI is built from its own
+[repository](https://github.com/codetiger/Orion-cli) against each server
+release and versioned with it; use matching versions.
 
 ```bash
 # Homebrew: macOS Apple Silicon and Linux
@@ -224,14 +226,13 @@ brew install GoPlasmatic/tap/orion-cli
 # Server from source
 cargo install --git https://github.com/GoPlasmatic/Orion --locked orion-server
 
-# Server and CLI from source
-cargo install --git https://github.com/GoPlasmatic/Orion --locked \
-  orion-server orion-cli
+# CLI from source
+cargo install --git https://github.com/codetiger/Orion-cli --locked orion-cli
 ```
 
 Release installers are also available for Linux, macOS Apple Silicon, and
 Windows. See [Install &
-Run](https://docs.goplasmatic.io/getting-started/install.html) for every method,
+Run](https://docs.goplasmatic.io/get-started/install.html) for every method,
 platform support, startup, and verification.
 
 Useful local commands:
@@ -248,15 +249,15 @@ orion-cli deployments apply -d dist/deployment
 ```
 
 The [server command
-reference](https://docs.goplasmatic.io/reference/configuration.html#cli-commands)
-and [Orion CLI reference](https://docs.goplasmatic.io/reference/cli.html) list
+reference](https://docs.goplasmatic.io/reference/cli/orion-server/)
+and [Orion CLI reference](https://docs.goplasmatic.io/reference/cli/orion-cli/) list
 all commands and flags.
 
 ### Upgrading from v1 to v2 (Breaking Changes)
 
 Orion 2 moves every route from `/api/v1/*` to `/api/v2/*`, replaces per-entity writes with immutable deployments of content-addressed definitions, pages every list by cursor, and starts from a fresh state database: a 1.x database is refused at startup and nothing converts one. Recompile your definition set with `orion-cli compile`, deploy it with `orion-cli deployments apply -d`, and move the clients.
 
-The [Upgrade to 2.0.0](https://docs.goplasmatic.io/releases/upgrade-to-2.0.html) guide lists every change; [Move from Orion 1.x](docs/src/operate/maintain/upgrades.md#move-from-orion-1x) is the procedure.
+The [Upgrade to 2.0.0](https://docs.goplasmatic.io/releases/upgrade-to-2.0.html) guide lists every change; [Move from Orion 1.x](https://docs.goplasmatic.io/operate/maintain/upgrades.html#move-from-orion-1x) is the procedure.
 
 ## Performance
 
@@ -273,25 +274,27 @@ The full manual is at **[docs.goplasmatic.io](https://docs.goplasmatic.io/)**.
 
 | Goal | Start here |
 |---|---|
-| Try Orion | [Quickstart](https://docs.goplasmatic.io/getting-started/quickstart.html) |
+| Try Orion | [Quickstart](https://docs.goplasmatic.io/get-started/quickstart.html) |
 | Understand the model | [How Orion works](https://docs.goplasmatic.io/concepts/how-orion-works.html) |
-| Build a complete service | [Orders API golden path](https://docs.goplasmatic.io/guides/orders-golden-path.html) |
+| Build a complete service | [Orders API golden path](https://docs.goplasmatic.io/get-started/tutorials/orders-api.html) |
 | Find an exact schema | [Reference index](https://docs.goplasmatic.io/reference/) |
 | Deploy and operate | [Operate Orion](https://docs.goplasmatic.io/operate/) |
 | Secure production | [Production checklist](https://docs.goplasmatic.io/operate/production-checklist.html) |
-| Upgrade safely | [Upgrades](https://docs.goplasmatic.io/operate/upgrades.html) |
-| Check compatibility | [Support & compatibility](https://docs.goplasmatic.io/reference/support.html) |
+| Upgrade safely | [Upgrades](https://docs.goplasmatic.io/operate/maintain/upgrades.html) |
+| Check compatibility | [Support & compatibility](https://docs.goplasmatic.io/releases/versioning-policy.html) |
 
-The documentation source lives in [`docs/src/`](docs/src/). Edit that directory,
-not the generated `docs/book/` output. See [`docs/STYLE_GUIDE.md`](docs/STYLE_GUIDE.md)
-for its structure and editorial conventions.
+The documentation source lives in its own repository,
+[GoPlasmatic/Orion-docs](https://github.com/GoPlasmatic/Orion-docs), shared by
+the Community and Enterprise editions. Its `STYLE_GUIDE.md` covers structure and
+editorial conventions.
 
 ## Project and community
 
 - [Orion UI](https://github.com/GoPlasmatic/Orion-ui) provides the browser-based
   operations console.
-- [`orion-cli`](crates/orion-cli/) deploys definition sets and inspects
-  traces, schedules and health from a terminal.
+- [`orion-cli`](https://github.com/codetiger/Orion-cli) deploys definition
+  sets and inspects traces, schedules and health from a terminal; it lives in
+  its own repository.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) covers development setup, tests, and pull
   requests.
 - Use [GitHub Discussions](https://github.com/GoPlasmatic/Orion/discussions) for

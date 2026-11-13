@@ -19,11 +19,10 @@ categories = ["web-programming", "web-programming::http-server"]
 # a source tarball.
 include = [
     "/src/**",
-    "/migrations/**",
-    "/wit/**",
     "/build.rs",
     "/Cargo.toml",
     "/LICENSE",
+    "/NOTICE",
     "/CHANGELOG.md",
     "/config.toml.example",
 ]
@@ -67,6 +66,8 @@ harness = true
 workspace = true
 
 [dependencies]
+# Re-exported as `orion::extension_api`, the surface an edition implements.
+orion-extension-api.workspace = true
 # The crates the server is assembled from; it adds bootstrap and the operator subcommands.
 orion-authoring.workspace = true
 orion-common.workspace = true
@@ -95,7 +96,6 @@ tracing-opentelemetry = { version = "0.34", default-features = false }
 
 [dev-dependencies]
 # What the integration suites drive directly; the server itself names none of it.
-orion-extension-api.workspace = true
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path", "multipart"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "sqlite", "postgres", "mysql"] }
 sea-query = { version = "1.0", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }

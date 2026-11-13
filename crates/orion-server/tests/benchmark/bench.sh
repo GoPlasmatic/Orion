@@ -36,7 +36,8 @@ else
     BUILD_PROFILE="debug"
 fi
 ORION_BIN="${ORION_BIN:-$PROJECT_ROOT/target/$BUILD_PROFILE/orion-server}"
-ORION_CLI="${ORION_CLI:-$PROJECT_ROOT/target/$BUILD_PROFILE/orion-cli}"
+# The CLI lives in its own repository: a matching orion-cli on PATH, or ORION_CLI.
+ORION_CLI="${ORION_CLI:-$(command -v orion-cli || echo orion-cli)}"
 
 # ═══════════════════════════════════════════════════════════════════
 # COLORS (sourced pattern from e2e/helpers.sh)
@@ -88,7 +89,7 @@ build_orion() {
     if [[ -n "${BENCH_SKIP_BUILD:-}" ]]; then
         log_info "Skipping build (BENCH_SKIP_BUILD set)"
         if [[ ! -x "$ORION_BIN" || ! -x "$ORION_CLI" ]]; then
-            log_error "Build both binaries or set ORION_BIN and ORION_CLI"
+            log_error "Build orion-server (or set ORION_BIN) and install a matching orion-cli (or set ORION_CLI)"
             exit 1
         fi
         return 0
@@ -96,9 +97,9 @@ build_orion() {
 
     log_info "Building Orion ($BUILD_PROFILE)..."
     if [[ "$BUILD_PROFILE" == "release" ]]; then
-        cargo build --locked -p orion-server -p orion-cli --release --manifest-path "$PROJECT_ROOT/Cargo.toml" 2>&1 | tail -5
+        cargo build --locked -p orion-server --release --manifest-path "$PROJECT_ROOT/Cargo.toml" 2>&1 | tail -5
     else
-        cargo build --locked -p orion-server -p orion-cli --manifest-path "$PROJECT_ROOT/Cargo.toml" 2>&1 | tail -5
+        cargo build --locked -p orion-server --manifest-path "$PROJECT_ROOT/Cargo.toml" 2>&1 | tail -5
     fi
     log_ok "Build complete"
 }
