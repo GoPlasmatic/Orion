@@ -45,9 +45,9 @@
 //! The [`enums`] types themselves are **strict on purpose**, and are not part
 //! of that tolerance. They exist for the request side and for server-internal
 //! use, where an unrecognised value is a caller error worth a `400` — a
-//! `PATCH /status` body of `{"status": "activ"}` must be refused, not quietly
-//! accepted as an unknown variant. Their `Deserialize` impls return
-//! `unknown_variant` deliberately.
+//! channel definition whose `"channel_type": "syncronous"` must be refused,
+//! not quietly accepted as an unknown variant. Their `Deserialize` impls
+//! return `unknown_variant` deliberately.
 //!
 //! The `utoipa` feature adds `ToSchema` derives so the server can publish
 //! these exact types in its OpenAPI document; clients leave it off.

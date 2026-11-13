@@ -201,8 +201,9 @@ impl OrionClient {
         Ok(())
     }
 
-    // -- Envelope-unwrapping verbs: the `data` payload of an admin 2xx,
-    //    tolerating the bare pre-1.0 shape --
+    // -- Envelope-unwrapping verbs: the `data` payload of the operational
+    //    admin responses. A v2 admin answer is a bare DTO and does not use
+    //    these. --
 
     pub async fn get_data<T: DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
         let bytes = self.execute(Method::GET, path, None).await?;

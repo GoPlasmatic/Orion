@@ -32,8 +32,8 @@ Three principles shape the setup:
 | Touched server ⇄ CLI interaction, `orion-api`, or `orion-client` | Orion-cli's suites, its `tests/e2e` included, built against this tree (its README, *Contributing*, shows the local `[patch]`) |
 | Touched migrations or storage | `just test-containers` (needs Docker) |
 | Touched workflow functions / engine | `cargo test --test integration` + `cargo test -p orion-engine` |
-| Touched the cron scheduler, the ledger, or a cron channel's validation | `cargo test --test integration cron_` + `cargo test -p orion-server --lib cron:: channel::cron storage::repositories::cron` — the DST rules, the misfire policies and the claim/singleton SQL are unit-tested where they are pure; the integration tests drive the real loops against a per-second schedule |
-| Touched anything that walks a workflow's `tasks` | `cargo test -p orion-server --lib engine::steps` — a walk that misses task groups fails nothing else |
+| Touched the cron scheduler, the ledger, or a cron channel's validation | `cargo test --test integration cron_` + `cargo test -p orion-runtime --lib channel::cron` + `cargo test -p orion-storage --lib repositories::cron` — the DST rules, the misfire policies and the claim/singleton SQL are unit-tested where they are pure; the integration tests drive the real loops against a per-second schedule |
+| Touched anything that walks a workflow's `tasks` | `cargo test -p orion-engine --lib steps` — a walk that misses task groups fails nothing else |
 | Touched what a workflow may name, or how one is screened at load | `cargo test --test integration function_schema_test channel_load_refusal_test` — the create-time gate and the load-time screen are checked against a real engine, not against each other |
 | Touched the authoring layer (`$from`, `use`, a `compile` pass) | `cargo test -p orion-authoring definitions::compile` + `cargo test --test integration source_form_refusal_test`, and Orion-cli's `compile_test` — a pass's `residue()` is read three ways (empty after compiling, `compile`'s report, the admin API's refusal), so a pass that only satisfies one of them is a passing test away from shipping |
 | Touched `[vars]` / `[secrets]`, or anything a message carries into a trace | `cargo test --test integration secrets_and_vars_test` — the leak sweep asserts a secret reaches no recording surface *and* carries its own controls, so an assertion that stops seeing anything fails rather than passing quietly |
@@ -45,10 +45,13 @@ Three principles shape the setup:
 
 ## Layer 1 — unit tests (every crate)
 
-Inline `#[cfg(test)]` modules in every crate: `orion-server`
-(config parsing, error mapping, validation/SSRF, query lowering, the
-definition-set loader and its cross-reference pass, the shared-definition
-`$from`/fragment resolver, the step flattener, …),
+Inline `#[cfg(test)]` modules in every crate: `orion-server` (the command
+line, bootstrap and subcommands), `orion-common` (config parsing and
+overrides, error mapping, SSRF, bounded bodies), `orion-engine` (functions,
+the loader, step flattening, the data dialect), `orion-runtime` (channels,
+cron, queues, the deployment store, reload), `orion-authoring` (validation,
+the definition-set loader and its cross-reference pass, the shared-definition
+`$from`/fragment resolver), `orion-storage` (repositories and migrations),
 `orion-api` (wire-contract serde: envelope shapes, skew-tolerant defaults,
 enum round-trips), `orion-client` (path builders, error classification), and
 `orion-plugin-sdk` (the JSON boundary and the error classes of the guest ABI).

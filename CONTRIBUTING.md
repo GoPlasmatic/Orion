@@ -316,10 +316,12 @@ secrets they need and the full procedure are in `RELEASING.md`.
    lockstep is what keeps the rider crates (`orion-api`, `orion-client`,
    `orion-definitions`, `orion-extension-api`, `orion-common`, `orion-storage`, `orion-engine`, `orion-plugin-host`, `orion-runtime`, `orion-authoring`, `orion-http`, `orion-plugin-sdk`) publishable — their version always moves with a
    release, so the skip-if-present rider publish can never leave
-   `orion-server` resolving older crates.io content. The Helm chart needs **no** manual bump —
-   `docker-release.yml` stamps both the chart version and `appVersion` from
-   the tag at publish time; the in-tree `Chart.yaml` value is a development
-   placeholder.
+   `orion-server` resolving older crates.io content. The Helm chart's
+   `version` and `appVersion` and the README's release line move with the
+   workspace version in the same commit — `release_stamps_drift_test` fails
+   the build until they do. `docker-release.yml` restamps both from the tag
+   at publish time, so the in-tree values are the pre-tag record, not a
+   value to leave behind.
 2. **CHANGELOG cut.** Fold `## [Unreleased]` into a dated
    `## [X.Y.Z] - YYYY-MM-DD` heading (merge per category), leave an empty
    `[Unreleased]` on top, and check the compare links at the foot of the file

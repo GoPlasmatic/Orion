@@ -459,10 +459,10 @@ fn test_connectivity_accepts_wait() {
 }
 
 /// T7: the one subcommand with no test through the binary. Its *content* is
-/// drift-guarded by `committed_openapi_json_is_up_to_date`, but that test
-/// generates the spec in-process — nothing proved the subcommand itself exits
-/// zero and writes the spec to stdout, which is exactly how CONTRIBUTING
-/// tells contributors to regenerate `docs/openapi.json`.
+/// generated from the same in-process document the OpenAPI drift guard in
+/// GoPlasmatic/Orion-docs holds, but nothing proved the subcommand itself
+/// exits zero and writes the spec to stdout, which is how that repository
+/// regenerates its committed copy.
 #[test]
 fn dump_openapi_writes_the_spec_to_stdout() {
     let out = Command::new(orion_bin())
@@ -474,7 +474,7 @@ fn dump_openapi_writes_the_spec_to_stdout() {
     assert!(out.status.success(), "stderr={stderr}");
 
     // Stdout must be the spec and nothing else — a stray log line would
-    // corrupt every `dump-openapi > docs/openapi.json` redirect.
+    // corrupt every `dump-openapi > openapi.json` redirect.
     let spec: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("stdout must be a single JSON document");
     assert_eq!(

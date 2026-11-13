@@ -45,9 +45,9 @@ pub(crate) async fn handle_migrate(
     Ok(())
 }
 
-/// Print the OpenAPI spec to stdout. Backs the checked-in `docs/openapi.json`
-/// (regenerate with `orion-server dump-openapi > docs/openapi.json`) and needs
-/// neither config, a database, nor a running server.
+/// Print the OpenAPI spec to stdout. The committed copy lives in
+/// GoPlasmatic/Orion-docs, which regenerates it with this command; the
+/// subcommand needs neither config, a database, nor a running server.
 pub(crate) fn run_dump_openapi() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", crate::server::routes::openapi::pretty_json());
     Ok(())

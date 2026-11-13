@@ -16,7 +16,7 @@ use orion_authoring::definitions::documents::{
 use orion_authoring::definitions::fmt::style;
 /// The properties of a definition file's schema. The definition-file shapes
 /// are not request bodies of any route, so they are read off the type rather
-/// than `docs/openapi.json`.
+/// than the OpenAPI document.
 fn schema_properties<T: utoipa::PartialSchema>() -> BTreeSet<String> {
     let schema = serde_json::to_value(T::schema()).unwrap();
     schema["properties"]

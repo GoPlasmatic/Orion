@@ -17,8 +17,9 @@
 # with the same packages applies nothing ("Up to date") and sends the
 # requests again.
 #
-# Needs `orion-cli` to compile and deploy: set ORION_CLI, build it with
-# `cargo build -p orion-cli` so it is found under target/, or put it on PATH.
+# Needs `orion-cli` to compile and deploy: point ORION_CLI at it, or put it on
+# PATH. It is built and released from https://github.com/codetiger/Orion-cli
+# against this repository's crates; it is not a member of this workspace.
 # Also needs curl, python3 and a running Orion server.
 #
 # File conventions inside a package directory:
@@ -80,18 +81,13 @@ for pkg in "${PACKAGES[@]}"; do
   [[ -f "$pkg/channel.json" ]] || { echo "missing $pkg/channel.json" >&2; exit 1; }
 done
 
-# The binaries: an explicit path, the workspace's own build, or PATH.
-find_bin() {
-  local var="$1" name="$2" candidate
-  if [[ -n "${!var:-}" ]]; then echo "${!var}"; return; fi
-  for candidate in "$EXAMPLES_DIR/../target/debug/$name" "$EXAMPLES_DIR/../target/release/$name" \
-                   "$(command -v "$name" || true)"; do
-    [[ -n "$candidate" && -x "$candidate" ]] && { echo "$candidate"; return; }
-  done
-  echo "$name not found: build it (cargo build -p $name) or set $var=<path>" >&2
+# The CLI: an explicit path, or PATH.
+ORION_CLI="${ORION_CLI:-$(command -v orion-cli || true)}"
+[[ -n "$ORION_CLI" && -x "$ORION_CLI" ]] || {
+  echo "orion-cli not found: set ORION_CLI=<path> or put it on PATH" >&2
+  echo "build it from https://github.com/codetiger/Orion-cli against this repository's crates" >&2
   exit 1
 }
-ORION_CLI="$(find_bin ORION_CLI orion-cli)"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT

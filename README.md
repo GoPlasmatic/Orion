@@ -76,18 +76,30 @@ CH=$(curl -fsS -X POST $A/definitions -H 'Content-Type: application/json' -d '{
                   "route_pattern": "/orders", "methods": ["POST"] }
 }' | jq -r .digest)
 
-jq -n --arg wf "$WF" --arg ch "$CH" '{
-  idempotency_key: "quickstart-1", base_revision: 0, reason: "quickstart",
-  manifest: { schema_version: 2, providers: [], members: [
+MANIFEST=$(jq -n --arg wf "$WF" --arg ch "$CH" '{
+  schema_version: 2, providers: [], members: [
     { entity: { kind: "channel", id: "orders", revision: 1 }, definition_digest: $ch,
       requires: [{ kind: "workflow", id: "quickstart-orders", revision: 1 }] },
     { entity: { kind: "workflow", id: "quickstart-orders", revision: 1 }, definition_digest: $wf }
-  ] }
+  ]
+}')
+
+# An apply must name the digest a plan of the same candidate answered on the
+# same base: plan first, then apply what was reviewed.
+REVIEWED=$(jq -n --argjson manifest "$MANIFEST" \
+  '{ base_revision: 0, manifest: $manifest }' \
+  | curl -fsS -X POST $A/deployment-plans -H 'Content-Type: application/json' --data @- \
+  | jq -r .reviewed_manifest_digest)
+
+jq -n --argjson manifest "$MANIFEST" --arg reviewed "$REVIEWED" '{
+  idempotency_key: "quickstart-1", base_revision: 0, reason: "quickstart",
+  reviewed_manifest_digest: $reviewed, manifest: $manifest
 }' | curl -fsS -X POST $A/deployments -H 'Content-Type: application/json' --data @-
 ```
 
-Each upload answers the definition's digest. The deployment names both digests
-and commits them as the node's first revision. With a definition set on disk,
+Each upload answers the definition's digest. The plan answers the reviewed
+manifest digest, and the deployment names it with both definition digests and
+commits them as the node's first revision. With a definition set on disk,
 `orion-cli compile` and `orion-cli deployments apply -d` do these steps for
 you.
 

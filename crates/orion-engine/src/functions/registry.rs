@@ -188,9 +188,9 @@ impl FunctionEntry {
 /// incomplete catalogue, it is the wrong one.
 ///
 /// A projection of [`FunctionEntry`] rather than the entry itself, because the
-/// wire shape is pinned by `docs/openapi.json` and the two are allowed to grow
-/// at different rates: `writes` and the connector rule are the analysis's
-/// business and are not served.
+/// wire shape is pinned by the OpenAPI document in GoPlasmatic/Orion-docs and
+/// the two are allowed to grow at different rates: `writes` and the connector
+/// rule are the analysis's business and are not served.
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct CatalogueEntry {
     pub name: String,
@@ -1093,7 +1093,7 @@ mod registry_tests {
     }
 
     /// The owned field serialises exactly as the static row does — the wire
-    /// shape `docs/openapi.json` pins must not depend on where an entry came
+    /// shape the OpenAPI document pins must not depend on where an entry came
     /// from.
     #[test]
     fn an_owned_field_serialises_like_the_static_row() {

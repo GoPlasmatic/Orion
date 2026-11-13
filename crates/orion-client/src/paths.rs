@@ -99,7 +99,7 @@ pub fn cache_namespace_invalidate(namespace: &str) -> String {
     )
 }
 
-// -- Admin V2: capabilities, packages, connections, deployments, edition --
+// -- Admin V2: capabilities, packages, connections, deployments --
 pub const V2_RUNTIME_CAPABILITIES: &str = "/api/v2/admin/runtime-capabilities";
 pub const V2_CONNECTOR_PACKAGES: &str = "/api/v2/admin/connector-packages";
 pub const V2_CONNECTIONS: &str = "/api/v2/admin/connections";

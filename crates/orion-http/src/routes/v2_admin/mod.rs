@@ -273,7 +273,7 @@ pub(super) fn decode_files_map(
     path = "/api/v2/admin/runtime-capabilities",
     tag = "Deployments",
     summary = "Discover runtime capabilities and edition boundaries",
-    description = "Returns the v2 contract revision this server speaks (`api_version` — a client that speaks another must stop), its edition (`community` or `enterprise`), registered channel drivers and provider backends (each built-in driver with the digest a connection revision names), the plugin Wasm world, the deployment head, and this node's reconciler status.",
+    description = "Returns the v2 contract revision this server speaks (`api_version` — a client that speaks another must stop), its edition (`community`, `standard` or `enterprise`), registered channel drivers and provider backends (each built-in driver with the digest a connection revision names), the plugin Wasm world, the deployment head, and this node's reconciler status.",
     responses(
         (status = 200, description = "Runtime capabilities report", body = RuntimeCapabilitiesResponse),
     )

@@ -244,7 +244,7 @@ validation failures.",
             per-schedule status, and manual triggers"),
         (name = "Cache", description = "Channel response-cache invalidation by namespace"),
         (name = "Backups", description = "Database backup management (SQLite only)"),
-        (name = "Deployments", description = "Immutable v2 deployment planning, CAS apply, convergence, rollback, and edition preflight"),
+        (name = "Deployments", description = "Immutable v2 deployment planning, CAS apply, convergence, and rollback"),
         (name = "Providers", description = "V2 connector provider package authoring, upload, admission, and revocation"),
         (name = "Connections", description = "Immutable v2 connection revisions and audited health probes"),
         (name = "Data", description = "Data processing"),
@@ -390,8 +390,9 @@ pub(crate) struct ApiDoc;
 ///
 /// Shared by the `orion-server dump-openapi` subcommand and the drift-check
 /// integration test so both serialize the spec identically. The committed
-/// copy lives at `docs/openapi.json`; regenerate it with
-/// `cargo run -- dump-openapi > docs/openapi.json` whenever the API changes.
+/// copy and the guards that hold it to this build live in
+/// GoPlasmatic/Orion-docs; regenerate it there against the release tag
+/// whenever the API changes. `just openapi` prints what this build serves.
 pub fn pretty_json() -> String {
     serde_json::to_string_pretty(&ApiDoc::openapi())
         .expect("OpenAPI spec is always serializable to JSON")

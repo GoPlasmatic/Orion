@@ -221,10 +221,10 @@ fn match_key(
 
 /// The `POST` routes a read-only key may still call: the ones that compute an
 /// answer and store, send and run nothing. A plan validates a candidate against
-/// the head and stores nothing; scaffold, lint and pack return files; the
-/// edition preflight is a dry check. Everything else that is not a `GET` changes
-/// state or reaches a backend — including `definitions/test`, which runs a
-/// workflow against live connectors, and a connection probe, which dials one —
+/// the head and stores nothing; scaffold, lint and pack return files.
+/// Everything else that is not a `GET` changes state or reaches a backend —
+/// including `definitions/test`, which runs a workflow against live
+/// connectors, and a connection probe, which dials one —
 /// so it stays with a full-access key.
 pub(crate) fn read_only_may_call(method: &Method, path: &str) -> bool {
     const SIDE_EFFECT_FREE_POSTS: [&str; 4] = [

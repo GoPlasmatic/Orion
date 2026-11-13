@@ -1,12 +1,13 @@
 //! The 2xx envelopes: `{"data": …}` and its paginated sibling.
 //!
-//! Admin endpoints wrap every success body this way. These types are the one
-//! definition of that shape: the server returns them, publishes them in its
-//! OpenAPI document, and clients read them back.
+//! The operational admin endpoints wrap their success bodies this way. The
+//! strict v2 admin contract answers its DTOs bare. These types are the one
+//! definition of the envelope shape: the server returns them, publishes them
+//! in its OpenAPI document, and clients read them back.
 
 use serde::{Deserialize, Serialize};
 
-/// `{"data": T}` — the envelope every admin 2xx carries.
+/// `{"data": T}` — the envelope an operational admin 2xx carries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct Data<T> {

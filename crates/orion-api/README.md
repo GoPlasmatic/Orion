@@ -11,29 +11,33 @@ against an Orion instance, depend on this crate and on
 built over it — rather than re-deriving the shapes yourself.
 
 ```rust
-use orion_api::{ErrorEnvelope, WorkflowResponse, codes};
+use orion_api::{Digest, ErrorEnvelope, codes};
 
-let body = r#"{"data": {"workflow_id": "orders", "status": "active"}}"#;
-let env: orion_api::DataEnvelope<WorkflowResponse> = serde_json::from_str(body)?;
-assert_eq!(env.data.workflow_id, "orders");
+// Content identities are checked types, not opaque strings.
+let digest = Digest::parse(
+    "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+)?;
+assert_eq!(digest.as_str().len(), 71);
 
 // Errors carry a stable, machine-readable code — branch on the constant.
-let failed = r#"{"error": {"code": "NOT_FOUND", "message": "no such workflow"}}"#;
+let failed = r#"{"error": {"code": "NOT_FOUND", "message": "no such deployment"}}"#;
 let err: ErrorEnvelope = serde_json::from_str(failed)?;
 assert_eq!(err.error.code, codes::NOT_FOUND);
-# Ok::<(), serde_json::Error>(())
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 ## What is here
 
 | Module | Holds |
 |---|---|
-| `content` | the importable-content projection every `content_hash` is taken over |
-| `dto` | one struct per response body the admin API serves |
+| `digest` | `Digest`, the checked `sha256:<64 lowercase hex>` content digest |
+| `dto` | one struct per response body the operational admin API serves |
+| `engine` | engine status, load issues, capabilities and cache-invalidation answers |
 | `enums` | the closed value sets (status, protocol, …) and their string constants |
-| `envelope` | the `{"data": …}` and paginated envelopes admin 2xx responses carry |
+| `envelope` | the `{"data": …}` and paginated envelopes the operational admin 2xx responses carry |
 | `error` | the `{"error": {code, message, details[], request_id}}` envelope, the stable `codes` registry, and the `field_codes` vocabulary |
-| `import` | the bulk-import report and its vocabulary |
+| `time` | the wire timestamp helpers |
+| `v2` | the strict, versioned `/api/v2/admin` request and response contract |
 
 ## Reading responses across versions
 

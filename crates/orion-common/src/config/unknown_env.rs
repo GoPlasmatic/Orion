@@ -368,8 +368,8 @@ mod tests {
     /// gets a block of `ORION_*` variables written by the kubelet, not by any
     /// manifest, so refusing them would have made the chart unbootable.
     /// Sibling tooling collides the same way — `orion-cli`'s variables, and
-    /// this repo's own `docs/recordings/record.sh`, which exports `ORION_PORT`
-    /// and `ORION_SERVER_URL` into the server it launches.
+    /// harnesses that export `ORION_PORT` and `ORION_SERVER_URL` into the
+    /// server they launch.
     #[test]
     fn separatorless_names_are_not_configuration() {
         let known = known_env_override_keys();

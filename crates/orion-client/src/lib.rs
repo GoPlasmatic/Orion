@@ -18,8 +18,10 @@
 //!
 //! - `get`/`post`/`put`/`patch`/… return the **full response body** — for
 //!   passthrough tools (the CLI prints many responses verbatim).
-//! - `get_data`/`post_data`/… **unwrap the `{"data": …}` envelope** every
-//!   admin 2xx carries — for callers that consume the payload.
+//! - `get_data`/`post_data`/… **unwrap the `{"data": …}` envelope** the
+//!   operational admin responses carry — for callers that consume the
+//!   payload. The strict v2 admin contract answers bare DTOs, decoded by the
+//!   typed [`V2Admin`] methods.
 //!
 //! ## Timeouts, size bounds, and retry/idempotency policy
 //!

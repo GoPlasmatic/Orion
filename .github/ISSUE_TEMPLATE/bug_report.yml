@@ -27,8 +27,8 @@ body:
         are masked in API responses, but double-check pasted configs.
       render: bash
       placeholder: |
-        curl -X POST http://localhost:8080/api/v1/admin/workflows -d '{ ... }'
-        curl -X POST http://localhost:8080/api/v1/data/... -d '{ "data": { ... } }'
+        curl -X POST http://localhost:8080/api/v2/admin/deployments -d '{ ... }'
+        curl -X POST http://localhost:8080/api/v2/data/orders -d '{ "data": { ... } }'
     validations:
       required: false
   - type: dropdown
@@ -47,7 +47,7 @@ body:
     attributes:
       label: Orion version
       description: Output of `orion-server --version` (CLI bugs belong in the Orion-cli repository, documentation bugs in GoPlasmatic/Orion-docs)
-      placeholder: orion-server 1.0.0 / orion-cli 1.0.0
+      placeholder: orion-server 2.0.0 / orion-cli 2.0.0
     validations:
       required: true
   - type: dropdown
@@ -64,7 +64,7 @@ body:
   - type: dropdown
     id: database
     attributes:
-      label: Metadata database backend
+      label: State database backend
       options:
         - SQLite (default)
         - PostgreSQL
@@ -76,8 +76,9 @@ body:
     attributes:
       label: Relevant log output
       description: >
-        Server logs around the failure (Orion logs structured JSON by default;
-        include the `x-request-id` of the failing request if you have it).
+        Server logs around the failure (the default log format is human-readable;
+        set `logging.format = "json"` for structured output). Include the
+        `x-request-id` of the failing request if you have it.
       render: text
     validations:
       required: false

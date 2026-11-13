@@ -9,16 +9,16 @@ Response types come from [`orion-api`](https://crates.io/crates/orion-api);
 this crate is the transport over them.
 
 ```rust
-use orion_client::{OrionClient, paths};
-use orion_api::WorkflowResponse;
+use orion_client::{OrionClient, V2Admin};
 
 # async fn example() -> Result<(), orion_client::ClientError> {
 let client = OrionClient::new("http://localhost:8080")?
     .with_api_key("my-admin-key".to_string(), None);
 
-// `*_data` unwraps the `{"data": …}` envelope every admin 2xx carries.
-let workflow: WorkflowResponse = client.get_data(&paths::workflow("orders")).await?;
-println!("{} is {}", workflow.workflow_id, workflow.status);
+// A v2 admin call is typed end to end, and its answer is the bare DTO the
+// strict contract documents — not a `{"data": …}` envelope.
+let capabilities = client.runtime_capabilities().await?;
+println!("server speaks API version {}", capabilities.api_version);
 # Ok(())
 # }
 ```
@@ -37,7 +37,11 @@ Two families of verbs, matching the two things a caller can want:
 | Verbs | Return |
 |---|---|
 | `get` / `post` / `put` / `patch` / `delete` | the **full response body**, for passthrough tools that print responses verbatim |
-| `get_data` / `post_data` / … | the payload with the **`{"data": …}` envelope unwrapped** |
+| `get_data` / `post_data` / … | the payload with the **`{"data": …}` envelope unwrapped**, for the operational admin routes that carry one |
+
+The v2 admin routes (`/api/v2/admin/deployments`, `/definitions`,
+`/connections`, `/connector-packages`, …) answer the bare DTO instead, and
+have typed `V2Admin` methods that decode them directly.
 
 Presentation stays out of scope: hints, colours and message wording belong to
 the calling binary. This crate reports *what happened*; the caller decides how

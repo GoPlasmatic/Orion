@@ -103,7 +103,7 @@ pub const TRACE_STATUS_FAILED: &str = "failed";
 
 // -- Trace mode constants --
 // The transport a traced message arrived on, as written to `traces.mode` and
-// accepted by `GET /api/v2/data/traces?mode=`. The field is an open string on
+// accepted by `GET /api/v2/admin/traces?mode=`. The field is an open string on
 // the wire, so a client must tolerate a value it does not know — but these are
 // the ones the runtime writes.
 pub const TRACE_MODE_SYNC: &str = "sync";

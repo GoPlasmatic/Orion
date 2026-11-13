@@ -36,14 +36,10 @@ ADMIN_KEY="${ORION_ADMIN_API_KEYS%%,*}"
 auth=(-H "Authorization: Bearer ${ADMIN_KEY}")
 ADMIN="$LB_URL/api/v2/admin"
 
-if [[ -z "${ORION_CLI:-}" ]]; then
-    for candidate in target/release/orion-cli target/debug/orion-cli; do
-        [[ -x "$candidate" ]] && { ORION_CLI="$PWD/$candidate"; break; }
-    done
-fi
 ORION_CLI="${ORION_CLI:-$(command -v orion-cli || true)}"
 [[ -n "$ORION_CLI" ]] || {
-    echo "orion-cli not found: build it (cargo build -p orion-cli) or set ORION_CLI"
+    echo "orion-cli not found: set ORION_CLI=<path> or put it on PATH"
+    echo "build it from https://github.com/codetiger/Orion-cli against this repository's crates"
     exit 1
 }
 

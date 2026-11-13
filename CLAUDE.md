@@ -111,7 +111,7 @@ All capabilities are compiled into the one binary; behaviour is controlled at ru
   - `cluster/` — `reconcile.rs` (the one cluster loop: the v2 reconciler, which also applies peers' circuit-breaker resets) and job leases.
   - `queue/` — async trace/audit processing, DLQ retry.
   - `extensions/` — the v2 extension boundary: `CompositionBuilder` → frozen `Composition`, `deployment_store/` (`ImmutableDeploymentStore`), `reconciler.rs` (`NodeReconciler`), `foundation.rs` (the built-in providers), `workflow_provider.rs`, `admission.rs`. Public surface: only the composition types; integration tests reach internals through `#[doc(hidden)] test_support`.
-- `orion-authoring/src/definitions/`: `check.rs` (the cross-reference pass `lint <dir>` and `compile` share), `shared.rs` + `expand.rs` (the `$from`/`use`/`$each`/`$param` catalog and its scoped expansion, descending into task groups via `engine::is_group`), `compile.rs` (the ordered `Pass` pipeline; `residue()`), `clippy/` (`Rule` + `rules::ALL`), `analysis/` (step facts, compiled expressions, `operators.rs` classifying every operator), `fix.rs` (proven rewrites), `fmt/` (the adapter supplying this build's vocabulary), `provenance.rs`.
+- `orion-authoring/src/definitions/`: `check.rs` (the cross-reference pass `lint <dir>` and `compile` share), `shared.rs` + `expand.rs` (the `$from`/`use`/`$each`/`$param` catalog and its scoped expansion, descending into task groups via `engine::is_group`), `compile.rs` (the ordered `Pass` pipeline; `residue()`), `clippy/` (`Rule` + `rules::ALL`), `analysis/` (step facts, compiled expressions, `operators.rs` classifying every operator), `fix.rs` (proven rewrites), `fmt/` (the adapter supplying this build's vocabulary). Source provenance itself is `orion-definitions/src/provenance.rs`.
 
 ### Startup sequence (`main.rs` → `cli.rs` → `bootstrap.rs`)
 
@@ -136,7 +136,7 @@ Then readiness → the v2 reconciler and deployment GC → (in `run`) cluster ta
 - **Composition (the extension boundary):** an edition describes what its node serves with `extensions::CompositionBuilder` (`with_edition`, `with_channel_driver`, `with_provider_backend`, `with_providers`, `with_resource_pool`, `with_package_verifier`) and passes it to `orion::run` / `bootstrap::assemble`. It is frozen once into `state.composition`; every driver and provider lookup goes through it. The one mutable part is the `ProviderRegistry`'s admitted layer (admitted workflow packages, by digest), which can never shadow a composed backend. Revocation is core: the `RevocationLedger` is checked by `Admission::verify_package` and before every `dispatch_attempt`.
 - **Connector registry:** a lock-free `ArcSwap` of configs with secret masking on API reads, and circuit breakers per `(channel, connector)` with LRU eviction. Db connections carry per-operation gates (`operations: { read, insert, update, delete, upsert, raw_write }`, all default `true`).
 - **Repositories** (`orion-storage`): trait-based with SQL implementations — cron, traces, trace_dlq, audit_logs, oauth_state, runtime_nodes, cluster, shared_state — built over sea-query and held as `Arc<dyn …>` in `state.repos`. Definitions, connections and deployments live in the deployment store, not a repository.
-- **Errors:** `OrionError` (`orion-common/src/errors.rs`) implements `IntoResponse` with the envelope `{"error": {"code", "message", …}}`. A refusal that is only a status, code and readable message is `OrionError::Http`, built with its constructor (`not_found`, `unauthorized`, `forbidden`, `conflict`, `payload_too_large`, `unsupported_media_type`, `method_not_allowed`, `upgrade_required`) and matched as `OrionError::Http { status: StatusCode::NOT_FOUND, .. }`; the remaining variants carry behaviour of their own. `response_parts` is the one redaction policy. Every v2 code is in the closed `orion_api::V2Code` registry, whose kind sets the status.
+- **Errors:** `OrionError` (`orion-common/src/errors.rs`) implements `IntoResponse` with the envelope `{"error": {"code", "message", …}}`. A refusal that is only a status, code and readable message is `OrionError::Http`, built with its constructor (`not_found`, `unauthorized`, `forbidden`, `conflict`, `payload_too_large`, `unsupported_media_type`, `method_not_allowed`) and matched as `OrionError::Http { status: StatusCode::NOT_FOUND, .. }`; the remaining variants carry behaviour of their own. `response_parts` is the one redaction policy. Every v2 code is in the closed `orion_api::V2Code` registry, whose kind sets the status.
 - **AppState** (`orion-runtime/src/runtime/state.rs`): the shared state, with `repos` and `caches` grouped and runtime-singular fields flat. Route handlers take it through Axum's `State` — except the data plane: `dynamic_handler` extracts `DataPlane` (`FromRef<AppState>`), the narrow view a data request may touch, built once at assembly.
 
 ### Middleware
@@ -163,7 +163,7 @@ HTTP request → router → dynamic_handler (State<DataPlane>)
   - **Channels:** `POST /channels/{id}/trigger` — a manual run of a deployed cron channel, through the same claim and singleton path.
   - **Circuit breakers:** `GET /connectors/circuit-breakers`, `POST /connectors/circuit-breakers/{key}` (fans out to every node).
   - **Functions:** `GET /functions`. **Engine:** `GET /engine/status`.
-  - **Cron:** `GET /cron/occurrences[/{id}]`, `POST /cron/occurrences/{id}/retry`, `GET /cron/status`.
+  - **Cron:** `GET /cron/occurrences[/{id}]`, `POST /cron/occurrences/{id}/retry`, `POST /cron/occurrences/{id}/cancel`, `GET /cron/status`.
   - **Cache:** `POST /cache/namespaces/{namespace}/invalidate` (the workflow form is `cache_invalidate`).
   - **Traces:** `GET /traces` (admin), `GET /traces/{id}` (admin credential or the per-submission `trace_token`).
   - **Audit logs** (the `X-Orion-Change-Context` header lands in `details`), **trace DLQ**, **backups** (SQLite `VACUUM INTO`, refused in cluster mode; no restore endpoint — see https://docs.goplasmatic.io/operate/maintain/backup-restore.html).
@@ -222,7 +222,7 @@ So these edits are part of the change ("Orion-docs" marks the half that is a pul
 
 ## Comments
 
-Around 900 comments open with an audit code (`N10`, `R13`, `F35`, …); resolve one with `git log --grep=N10` (full history needed). They are a historical record — **new comments do not need one**. Every comment must stand on its own without its ID, state invariants and reasons rather than history (history belongs in commits), and be corrected when its claim stops being true.
+Several hundred comments open with an audit code (`N10`, `R13`, `F35`, …); resolve one with `git log --grep=N10` (full history needed). They are a historical record — **new comments do not need one**. Every comment must stand on its own without its ID, state invariants and reasons rather than history (history belongs in commits), and be corrected when its claim stops being true.
 
 ## Configuration
 

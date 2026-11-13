@@ -1,10 +1,10 @@
 # Orion Configuration
 #
-# Every setting below is shown with its real default, taken from
-# `src/config/*.rs`. Uncomment only what you want to change — a file with no
-# uncommented settings behaves exactly like no file at all.
-# `tests/integration/config_docs_drift_test.rs` fails the build if any default
-# here stops matching the code, so trust these values.
+# Every setting below is shown with its real default, taken from the types in
+# `crates/orion-common/src/config/*.rs`. Uncomment only what you want to
+# change — a file with no uncommented settings behaves exactly like no file at
+# all. `crates/orion-docs-check/tests/drift/config_docs_drift_test.rs` fails
+# the build if any default here stops matching the code, so trust these values.
 #
 # Two ways to override a value without editing this file:
 #
@@ -69,9 +69,6 @@
                                 # data plane at the root — accepted, but it means an
                                 # unknown URL becomes a channel lookup rather than a 404,
                                 # and a future platform route could shadow a channel.
-                                     # Separate from ingest.max_payload_size, so raising the
-                                     # limit for a bulk import does not also raise it for the
-                                     # unauthenticated data plane.
 # Return the real task-failure message on the data plane instead of the generic
 # "Task processing failed; full detail is available in the trace". Unset (the
 # default) means on when `environment` is NOT a production variant — the same
