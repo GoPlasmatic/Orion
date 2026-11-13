@@ -44,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   channel of a protocol this binary does not serve against that description
   instead of refusing it as unknown. `clippy` and `sql check` take the same
   flag.
+- **Deduplication tells settled from in flight for edition drivers.** A
+  delivery from an edition's channel driver whose idempotency key another
+  delivery holds but has not settled is now `Deferred` (retry, do not
+  acknowledge) rather than `Duplicate`; a settled key is still `Duplicate`.
+  HTTP answers `409` for both, as before.
 - **Cross-channel checks.** `ChannelDriver::validate_set` judges every
   channel of its protocol in a candidate deployment together (one topic
   consumed by two channels, say). A problem refuses the candidate with

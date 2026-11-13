@@ -82,7 +82,7 @@ pub(crate) use rate_limit::{COMMON_KEY_HEADERS, key_logic_header_paths};
 pub use response_cache::{CacheFlights, CacheStoreCtx};
 
 use admission::{acquire_backpressure, check_allowed_origin, check_auth, validate_input};
-use dedup::check_deduplication;
+use dedup::{OnInFlight, check_deduplication};
 use rate_limit::{check_principal_rate_limit, check_rate_limit};
 use response_cache::{CacheLookup, check_response_cache};
 
@@ -644,6 +644,13 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
             req.header,
             req.dedup_key_fallback,
             req.dedup_owner,
+            // Only an edition driver's delivery can wait for the holder: it
+            // retries without acknowledging. HTTP answers 409 either way.
+            if matches!(req.transport, Transport::Extension(_)) {
+                OnInFlight::Defer
+            } else {
+                OnInFlight::Conflict
+            },
         )
         .await?
     } else {

@@ -163,12 +163,22 @@ pub enum Unavailable {
     /// transient** without operator action, and the node reports it on
     /// `/health` (`components.background_tasks`).
     QueueClosed,
+    /// Another delivery holds this message's idempotency key and has not
+    /// settled it yet. Transient: it settles (and this one is a duplicate),
+    /// or it is abandoned (and this one runs), or its claim expires with the
+    /// dedup window. Raised only for an edition driver's deliveries, which
+    /// can retry without acknowledging; HTTP answers `409` as for a settled
+    /// key.
+    DedupInFlight,
 }
 
 impl Unavailable {
     /// Whether a client retrying, on its own, could succeed.
     pub fn is_transient(self) -> bool {
-        matches!(self, Self::GuardBackend | Self::AtCapacity)
+        matches!(
+            self,
+            Self::GuardBackend | Self::AtCapacity | Self::DedupInFlight
+        )
     }
 
     /// Seconds to put in `Retry-After`, or `None` when retrying is not the
@@ -180,6 +190,8 @@ impl Unavailable {
             Self::AtCapacity => Some(1),
             // A backend outage is not measured in single seconds.
             Self::GuardBackend => Some(5),
+            // The holder is mid-run; give it a moment.
+            Self::DedupInFlight => Some(1),
             Self::ChannelQuarantined | Self::QueueClosed => None,
         }
     }

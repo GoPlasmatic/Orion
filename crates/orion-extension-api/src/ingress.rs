@@ -326,11 +326,14 @@ pub enum FailureKind {
 pub enum DispatchOutcome {
     /// The workflows ran without error. `output` is the message's `data`.
     Completed { output: Value },
-    /// The deduplication guard has already seen this key settled.
-    /// Acknowledge it; nothing ran.
+    /// Another delivery already settled this key (acknowledged it, or
+    /// preserved it in a dead-letter destination). Acknowledge it; nothing ran.
+    /// A key another delivery still holds unsettled answers `Deferred`
+    /// instead, because nothing has completed yet.
     Duplicate,
     /// Refused for a cause that clears on its own (a rate limit, the
-    /// concurrency permit). Retry later; do not acknowledge.
+    /// concurrency permit, an idempotency key another delivery holds
+    /// unsettled). Retry later; do not acknowledge.
     Deferred { reason: String },
     /// The channel refused the message (`validation_logic`, an unevaluable
     /// rate-limit key, …). Retrying it will fail the same way.

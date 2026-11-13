@@ -323,6 +323,39 @@ async fn the_channels_guards_decide_the_outcome() {
         redelivery.outcome
     );
 
+    // A key another delivery holds, unsettled: nothing has completed yet, so
+    // the second delivery is told to wait, not that it is a duplicate.
+    let holder = host
+        .dispatch(
+            Delivery::new(&channel_id, json!({ "order_id": 3 }))
+                .with_dedup_key("order-3")
+                .with_dedup_owner("queue:orders/2/1"),
+        )
+        .await;
+    assert!(matches!(holder.outcome, DispatchOutcome::Completed { .. }));
+    let waiting = host
+        .dispatch(
+            Delivery::new(&channel_id, json!({ "order_id": 3 }))
+                .with_dedup_key("order-3")
+                .with_dedup_owner("queue:orders/3/1"),
+        )
+        .await;
+    assert!(
+        matches!(waiting.outcome, DispatchOutcome::Deferred { .. }),
+        "{:?}",
+        waiting.outcome
+    );
+    // Once the holder settles, the same key is a duplicate.
+    holder.settle.committed().await;
+    let after = host
+        .dispatch(
+            Delivery::new(&channel_id, json!({ "order_id": 3 }))
+                .with_dedup_key("order-3")
+                .with_dedup_owner("queue:orders/3/1"),
+        )
+        .await;
+    assert_eq!(after.outcome, DispatchOutcome::Duplicate);
+
     // A channel this node does not serve: nothing runs.
     let nowhere = host
         .dispatch(Delivery::new("no-such-channel", json!({ "order_id": 3 })))

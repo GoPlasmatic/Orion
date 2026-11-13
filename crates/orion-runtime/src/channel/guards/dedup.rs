@@ -97,12 +97,24 @@ impl DedupClaim {
 /// [`DedupClaim::confirm`] then overwrites the token with a settled marker
 /// once the delivery is accounted for, which is what suppresses a replay of a
 /// message that *did* run but whose offset commit was lost.
+/// What a key another delivery holds, unsettled, answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OnInFlight {
+    /// `409`, as for a settled key: an HTTP caller whose key is in use.
+    Conflict,
+    /// A transient refusal ([`crate::errors::Unavailable::DedupInFlight`]):
+    /// an edition driver's delivery, which retries without acknowledging
+    /// rather than dropping a message whose original has not completed.
+    Defer,
+}
+
 pub(super) async fn check_deduplication(
     channel: &str,
     channel_config: &Option<Arc<ChannelRuntimeConfig>>,
     header: HeaderLookup<'_, '_>,
     key_fallback: Option<&str>,
     owner: Option<&str>,
+    on_in_flight: OnInFlight,
 ) -> Result<Option<DedupClaim>, OrionError> {
     let Some(cfg) = channel_config else {
         return Ok(None);
@@ -183,6 +195,17 @@ pub(super) async fn check_deduplication(
                 key = %key,
                 "Redelivery of an unsettled message; the idempotency claim is its own"
             );
+        }
+        // Another delivery holds it, not yet settled: nothing has completed,
+        // so a transport that can wait is told to.
+        Some(ref held) if held != DEDUP_SETTLED && on_in_flight == OnInFlight::Defer => {
+            return Err(OrionError::unavailable(
+                crate::errors::Unavailable::DedupInFlight,
+                format!(
+                    "Idempotency key '{key}' is held by a delivery that has not settled; \
+                     retry after it does"
+                ),
+            ));
         }
         Some(_) => {
             return Err(OrionError::conflict(format!(

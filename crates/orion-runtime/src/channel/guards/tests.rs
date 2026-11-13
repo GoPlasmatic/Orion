@@ -1481,16 +1481,30 @@ async fn validation_logic_applies_on_every_transport() {
 #[tokio::test]
 async fn test_dedup_new_key_passes() {
     let cfg = dedup_runtime(StubOutcome::New);
-    let result =
-        super::check_deduplication("test-channel", &cfg, &idempotency_lookup, None, None).await;
+    let result = super::check_deduplication(
+        "test-channel",
+        &cfg,
+        &idempotency_lookup,
+        None,
+        None,
+        super::OnInFlight::Conflict,
+    )
+    .await;
     assert!(result.is_ok());
 }
 
 #[tokio::test]
 async fn test_dedup_duplicate_rejected() {
     let cfg = dedup_runtime(StubOutcome::Duplicate);
-    let result =
-        super::check_deduplication("test-channel", &cfg, &idempotency_lookup, None, None).await;
+    let result = super::check_deduplication(
+        "test-channel",
+        &cfg,
+        &idempotency_lookup,
+        None,
+        None,
+        super::OnInFlight::Conflict,
+    )
+    .await;
     assert!(matches!(
         result,
         Err(OrionError::Http {
@@ -1503,8 +1517,15 @@ async fn test_dedup_duplicate_rejected() {
 #[tokio::test]
 async fn test_dedup_fails_open_on_backend_error_by_default() {
     let cfg = dedup_runtime(StubOutcome::BackendError);
-    let result =
-        super::check_deduplication("test-channel", &cfg, &idempotency_lookup, None, None).await;
+    let result = super::check_deduplication(
+        "test-channel",
+        &cfg,
+        &idempotency_lookup,
+        None,
+        None,
+        super::OnInFlight::Conflict,
+    )
+    .await;
     assert!(result.is_ok(), "backend errors must fail open, not 409");
 }
 
@@ -1513,8 +1534,15 @@ async fn test_dedup_fails_open_on_backend_error_by_default() {
 #[tokio::test]
 async fn test_dedup_fails_closed_when_policy_is_deny() {
     let cfg = dedup_runtime_with_policy(StubOutcome::BackendError, BackendErrorPolicy::Deny);
-    let result =
-        super::check_deduplication("test-channel", &cfg, &idempotency_lookup, None, None).await;
+    let result = super::check_deduplication(
+        "test-channel",
+        &cfg,
+        &idempotency_lookup,
+        None,
+        None,
+        super::OnInFlight::Conflict,
+    )
+    .await;
     assert!(
         matches!(result, Err(OrionError::ServiceUnavailable { .. })),
         "deny must refuse with 503"
@@ -1526,12 +1554,26 @@ async fn test_dedup_fails_closed_when_policy_is_deny() {
 #[tokio::test]
 async fn test_deny_policy_does_not_affect_healthy_backend() {
     let cfg = dedup_runtime_with_policy(StubOutcome::New, BackendErrorPolicy::Deny);
-    let result =
-        super::check_deduplication("test-channel", &cfg, &idempotency_lookup, None, None).await;
+    let result = super::check_deduplication(
+        "test-channel",
+        &cfg,
+        &idempotency_lookup,
+        None,
+        None,
+        super::OnInFlight::Conflict,
+    )
+    .await;
     assert!(result.is_ok());
     let cfg = dedup_runtime_with_policy(StubOutcome::Duplicate, BackendErrorPolicy::Deny);
-    let result =
-        super::check_deduplication("test-channel", &cfg, &idempotency_lookup, None, None).await;
+    let result = super::check_deduplication(
+        "test-channel",
+        &cfg,
+        &idempotency_lookup,
+        None,
+        None,
+        super::OnInFlight::Conflict,
+    )
+    .await;
     assert!(matches!(
         result,
         Err(OrionError::Http {
@@ -1550,9 +1592,16 @@ async fn test_dedup_key_is_channel_scoped() {
             BackendErrorPolicy::Allow,
         )
         .build();
-    super::check_deduplication("orders", &cfg, &idempotency_lookup, None, None)
-        .await
-        .expect("dedup check should pass");
+    super::check_deduplication(
+        "orders",
+        &cfg,
+        &idempotency_lookup,
+        None,
+        None,
+        super::OnInFlight::Conflict,
+    )
+    .await
+    .expect("dedup check should pass");
     let keys = seen.lock().expect("test lock poisoned");
     assert_eq!(keys.as_slice(), ["dedup:orders:token-1"]);
 }
@@ -1570,9 +1619,16 @@ async fn an_out_of_band_key_is_the_fallback_idempotency_key() {
             BackendErrorPolicy::Allow,
         )
         .build();
-    super::check_deduplication("orders", &cfg, &no_headers, Some("ORD-77"), None)
-        .await
-        .expect("dedup check should pass");
+    super::check_deduplication(
+        "orders",
+        &cfg,
+        &no_headers,
+        Some("ORD-77"),
+        None,
+        super::OnInFlight::Conflict,
+    )
+    .await
+    .expect("dedup check should pass");
     assert_eq!(
         seen.lock().expect("test lock poisoned").as_slice(),
         ["dedup:orders:ORD-77"]
@@ -1586,9 +1642,16 @@ async fn an_out_of_band_key_is_the_fallback_idempotency_key() {
             BackendErrorPolicy::Allow,
         )
         .build();
-    super::check_deduplication("orders", &cfg, &idempotency_lookup, Some("ORD-77"), None)
-        .await
-        .expect("dedup check should pass");
+    super::check_deduplication(
+        "orders",
+        &cfg,
+        &idempotency_lookup,
+        Some("ORD-77"),
+        None,
+        super::OnInFlight::Conflict,
+    )
+    .await
+    .expect("dedup check should pass");
     assert_eq!(
         seen.lock().expect("test lock poisoned").as_slice(),
         ["dedup:orders:token-1"]
