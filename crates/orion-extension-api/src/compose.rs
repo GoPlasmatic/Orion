@@ -19,10 +19,11 @@ use crate::provider::ProviderBackend;
 /// use orion_extension_api::{EditionTier, Registrar};
 ///
 /// pub fn register(node: &mut dyn Registrar) {
-///     node.edition(EditionTier::Enterprise);
-///     // node.channel_driver(Arc::new(KafkaChannelDriver));
-///     // node.provider_backend(Arc::new(MongoProvider::new()));
-///     // node.package_verifier(Arc::new(EnterprisePackageVerifier::new()));
+///     node.edition(EditionTier::Standard);
+///     // The edition's own types:
+///     // node.channel_driver(Arc::new(QueueChannelDriver));
+///     // node.provider_backend(Arc::new(DocumentStoreProvider::new()));
+///     // node.package_verifier(Arc::new(LicencedPackageVerifier::new()));
 /// #   let _ = Arc::new(());
 /// }
 /// ```

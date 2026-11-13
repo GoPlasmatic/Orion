@@ -710,7 +710,7 @@ mod tests {
     #[test]
     fn structural_objects_are_not_values() {
         let doc = json!({"name": "w", "tasks": [
-            {"id": "t", "name": "T", "function": {"name": "mongo_read", "input": {"connector": "m", "database": "app"}}},
+            {"id": "t", "name": "T", "function": {"name": "db_read", "input": {"connector": "m", "query": "SELECT 1"}}},
             {"id": "u", "name": "U", "function": {"name": "map", "input": {"mappings": [{"path": "data.x", "logic": {"status": 404, "body": "nope"}}]}}}
         ]});
         let mut hits = Vec::new();

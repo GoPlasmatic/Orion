@@ -7,13 +7,13 @@
 //! define. This module is what the node does with them, and its one public
 //! part is how an edition hands its composition to the node:
 //!
-//! - [`CompositionBuilder`] (named [`CompositionRoot`] in the Enterprise
-//!   design docs; Community's is [`CompositionBuilder::community`]) collects
+//! - [`CompositionBuilder`] (also named [`CompositionRoot`]; Community's is
+//!   [`CompositionBuilder::community`]) collects
 //!   the edition, its channel drivers, provider backends, pool caches and
 //!   package verifier. It implements `Registrar`, so an edition's
 //!   registration code is written against the API crate and applied with
 //!   [`CompositionBuilder::with_extension`].
-//! - `orion_server::run` / `bootstrap::assemble` create the node's services
+//! - `orion::run` / `bootstrap::assemble` create the node's services
 //!   (its identity, deployment store, revocation ledger and native work
 //!   scheduler) and freeze the builder over them into a [`Composition`]:
 //!   plain maps, private fields, nothing registered after boot. A duplicate
@@ -121,20 +121,22 @@ pub struct BuildContext {
 ///
 /// Community's is [`CompositionRoot::community`]. An edition starts from it
 /// (or from [`Self::new`]) and applies its own registration, written against
-/// `orion-extension-api`'s `Registrar`, and hands it to `orion_server::run`:
+/// `orion-extension-api`'s `Registrar`, and hands it to `orion::cli::main`
+/// (or `orion::run`):
 ///
 /// ```ignore
 /// use orion_extension_api::{EditionTier, Registrar};
 ///
-/// fn enterprise(node: &mut dyn Registrar) {
-///     node.edition(EditionTier::Enterprise);
-///     // node.channel_driver(Arc::new(KafkaChannelDriver));
-///     // node.provider_backend(Arc::new(MongoProvider::new()));
-///     // node.package_verifier(Arc::new(EnterprisePackageVerifier::new()));
+/// fn edition(node: &mut dyn Registrar) {
+///     node.edition(EditionTier::Standard);
+///     // The edition's own types:
+///     // node.channel_driver(Arc::new(QueueChannelDriver));
+///     // node.provider_backend(Arc::new(DocumentStoreProvider::new()));
+///     // node.package_verifier(Arc::new(LicencedPackageVerifier::new()));
 /// }
 ///
 /// # async fn run(config: orion::config::AppConfig) -> Result<(), Box<dyn std::error::Error>> {
-/// let composition = orion::extensions::CompositionRoot::community().with_extension(enterprise);
+/// let composition = orion::extensions::CompositionRoot::community().with_extension(edition);
 /// orion::run(config, composition).await
 /// # }
 /// ```
@@ -149,8 +151,8 @@ pub struct CompositionBuilder {
     verifier: Arc<dyn PackageVerifier>,
 }
 
-/// The name the Enterprise design docs use for [`CompositionBuilder`]:
-/// `CompositionRoot::community()` is Community's builder.
+/// Another name for [`CompositionBuilder`]: `CompositionRoot::community()` is
+/// Community's builder.
 pub type CompositionRoot = CompositionBuilder;
 
 impl std::fmt::Debug for CompositionBuilder {

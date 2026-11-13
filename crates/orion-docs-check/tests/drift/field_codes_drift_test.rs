@@ -117,7 +117,7 @@ fn field_code_literals_are_all_registered() {
         unregistered.is_empty(),
         "field-error codes emitted by src/ but absent from \
          orion_api::error::field_codes: {unregistered:?} — add them to the registry \
-         (and to docs/src/reference/errors.md) or reuse an existing code"
+         (and to Orion-docs' src/reference/errors.md) or reuse an existing code"
     );
 }
 

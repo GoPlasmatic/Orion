@@ -557,7 +557,7 @@ fn exists_needs_segments_not_a_dotted_path() {
 /// spelling for "the i-th element" silently returns the whole array.
 ///
 /// Pinned because the per-element fan-out pattern in
-/// `docs/src/guides/workflow-patterns.md` shipped with exactly this bug: a
+/// Orion-docs' `src/guides/patterns/workflow-patterns.md` shipped with exactly this bug: a
 /// `loop` whose body read `{"var": ["data.req.recipients", {"var":
 /// "temp_data.i"}]}` sent the entire recipient list on every sweep instead of
 /// one recipient, with no error anywhere. `val` with path-chain segments is the
@@ -599,7 +599,7 @@ fn an_unsupported_operator_is_rejected_in_a_condition() {
 /// through as an object literal — no error, no failed task, `200` to the
 /// caller.
 ///
-/// This is the behaviour the warning in `docs/src/reference/expressions.md`
+/// This is the behaviour the warning in Orion-docs' `src/reference/expressions.md`
 /// describes, and the reason the operator table is worth testing at all: a
 /// misspelling degrades output silently rather than failing loudly. Exercised
 /// end to end through a real channel because the leniency comes from the
@@ -672,7 +672,7 @@ async fn an_unknown_operator_in_a_mapping_is_a_silent_literal() {
 /// otherwise measure `0`, which reads exactly like "the two datetimes are the
 /// same" — a wrong answer indistinguishable from a right one.
 ///
-/// `docs/src/reference/expressions.md` documents this refusal; the test pins
+/// Orion-docs' `src/reference/expressions.md` documents this refusal; the test pins
 /// that claim to the engine rather than to a dependency's changelog, so the
 /// reference page cannot silently describe a silent-`0` behaviour again.
 #[test]

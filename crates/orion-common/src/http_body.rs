@@ -1,19 +1,18 @@
 //! Reading an outbound HTTP response body under a byte cap — while streaming.
 //!
 //! Every egress path in Orion caps the response it will accept: `http_call`
-//! (and, until it left Community, Elasticsearch) by the connector's
-//! `max_response_size`, JWKS at 256 KiB, an OAuth2 token response at 64 KiB.
-//! Three of the four enforced that cap by
-//! calling `Response::bytes()` and *then* measuring what came back, which
-//! enforces nothing a peer has to respect: `bytes()` reads to end of body
-//! first, so a chunked response — or one with a missing or dishonest
-//! `Content-Length` — is fully in memory by the time the check runs. The cap
-//! rejected the result after paying its whole cost, concurrently, on a path
-//! reachable by any workflow naming an attacker-influenced URL.
+//! by the connector's `max_response_size`, JWKS at 256 KiB, an OAuth2 token
+//! response at 64 KiB.
 //!
-//! The correct shape lived in `engine::functions::http_common` and nowhere
-//! else, so each new caller reimplemented the check and one of them got it
-//! wrong. It lives here instead, as a leaf: `engine`, `connector` and `jwt`
+//! The cap is enforced while reading. Calling `Response::bytes()` and *then*
+//! measuring what came back enforces nothing a peer has to respect: `bytes()`
+//! reads to end of body first, so a chunked response, or one with a missing
+//! or dishonest `Content-Length`, is fully in memory by the time the check
+//! runs, on a path reachable by any workflow naming an attacker-influenced
+//! URL.
+//!
+//! The reader lives here, as a leaf, so no caller reimplements it:
+//! `engine`, `connector` and `jwt`
 //! all reach egress and none of them may reach each other, the same argument
 //! that put HMAC and the base64 table in [`crate::crypto`].
 //!

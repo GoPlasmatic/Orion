@@ -18,7 +18,7 @@
 //! catalog costs no code here:
 //!
 //! ```json
-//! { "constants": { "db": { "connector": "sias-mongo", "database": "app" } },
+//! { "constants": { "db": { "connector": "app-db", "database": "app" } },
 //!   "errors":    { "USER_NOT_FOUND": { "status": 400, "body": "User Not Found !" } } }
 //! ```
 //!
@@ -971,7 +971,7 @@ mod tests {
         let mut f = Vec::new();
         s.merge(
             &json!({
-                "constants": { "db": { "connector": "sias-mongo", "database": "app" },
+                "constants": { "db": { "connector": "app-db", "database": "app" },
                                "timeout": 30000 },
                 "errors": { "USER_NOT_FOUND": { "status": 400, "body": "User Not Found !" } },
                 // The fragment holds a **task group**, deliberately: while this
@@ -1010,7 +1010,7 @@ mod tests {
         s.expand(&mut doc, "wf.json", &mut f);
         assert_eq!(
             doc["input"],
-            json!({ "connector": "sias-mongo", "database": "app", "collection": "users" })
+            json!({ "connector": "app-db", "database": "app", "collection": "users" })
         );
         assert!(f.is_empty(), "{f:?}");
     }
@@ -1023,7 +1023,7 @@ mod tests {
         let mut doc = json!({ "input": { "$from": "constants.db", "database": "other" } });
         s.expand(&mut doc, "wf.json", &mut f);
         assert_eq!(doc["input"]["database"], "other");
-        assert_eq!(doc["input"]["connector"], "sias-mongo");
+        assert_eq!(doc["input"]["connector"], "app-db");
         assert!(f.is_empty(), "{f:?}");
     }
 
@@ -1197,7 +1197,7 @@ mod tests {
         assert_eq!(f.len(), 1, "{f:?}");
         assert_eq!(f[0].check, "shared.duplicate");
         assert_eq!(
-            s.namespaces["constants"]["db"]["connector"], "sias-mongo",
+            s.namespaces["constants"]["db"]["connector"], "app-db",
             "the first definition stands rather than being silently replaced"
         );
     }

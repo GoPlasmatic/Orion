@@ -28,7 +28,7 @@
 //! (`query::backend::sql::tests`).
 //!
 //! [`cases`] is also the source of truth for the parity table in
-//! `docs/src/reference/data-dialect.md`: anything not carrying an
+//! Orion-docs' `src/reference/data-dialect.md`: anything not carrying an
 //! `expected_error` is a promise that the two answers are the same.
 //!
 //! SQLite runs in-memory and is not `#[ignore]`d, so the matrix executes in the

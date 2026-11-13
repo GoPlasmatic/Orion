@@ -2898,7 +2898,6 @@ dependencies = [
 name = "orion-definitions"
 version = "2.0.0-rc.1"
 dependencies = [
- "serde",
  "serde_json",
 ]
 
@@ -3036,7 +3035,6 @@ dependencies = [
 name = "orion-plugin-sdk"
 version = "2.0.0-rc.1"
 dependencies = [
- "serde",
  "serde_json",
  "wit-bindgen 0.63.0",
 ]

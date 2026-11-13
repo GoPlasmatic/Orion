@@ -16,7 +16,7 @@
 //! SQL renderer (`backend::sql`) consumes the [`ResolvedWrite`].
 //!
 //! The write envelope's normative semantics are documented in
-//! `docs/src/reference/data-dialect.md`.
+//! Orion-docs' `src/reference/data-dialect.md`.
 
 use serde_json::{Map, Value as Json};
 

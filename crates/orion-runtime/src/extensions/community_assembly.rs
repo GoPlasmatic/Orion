@@ -136,7 +136,7 @@ pub fn verify_community_assembly(root: &Composition) -> CommunityAssemblyReport 
                 code: "UNCATALOGED_DIRECT_RUST_PROVIDER",
                 component: rust_driver.clone(),
                 message: format!(
-                    "Direct Rust provider '{rust_driver}' is not in the DEC-005 Community foundation catalog"
+                    "Direct Rust provider '{rust_driver}' is not in the Community foundation catalog"
                 ),
             });
         }

@@ -8,7 +8,7 @@ use crate::errors::OrionError;
 /// A bulk insert asking for more than `max_rows` is rejected (never silently
 /// truncated), and an unfiltered `update`/`delete` is rejected unless the caller
 /// both sets `"all": true` on the envelope and `allow_unfiltered` is enabled here.
-/// Documented under Configuration in `docs/src/reference/data-dialect.md`.
+/// Documented under Configuration in Orion-docs' `src/reference/data-dialect.md`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WriteConfig {

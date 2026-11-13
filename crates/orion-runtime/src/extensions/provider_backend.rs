@@ -6,7 +6,7 @@
 //!   registered by driver id: `org.orion.http`, `org.orion.postgresql`,
 //!   `org.orion.mysql`, `org.orion.sqlite` and `org.orion.memory-cache` in
 //!   Community ([`super::foundation::COMMUNITY_RUST_DRIVERS`]); an edition
-//!   composes more (`org.orion.mongodb`, `org.orion.redis`, …).
+//!   composes more under its own driver ids.
 //! - **Workflow (`ImplementationKind::Workflow`)**: an uploaded package whose
 //!   operations are dataflow workflows, one per operation, run hermetically
 //!   ([`crate::extensions::workflow_provider`]) and registered by digest once

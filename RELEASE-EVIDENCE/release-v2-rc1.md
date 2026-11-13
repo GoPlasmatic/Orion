@@ -73,8 +73,8 @@ ShellCheck and six final topology-selection checks passed, including explicit
 node-list parsing for local and published-image modes.
 
 [Machine-readable command results, counts and source/component hashes](release-v2-rc1-validation.json)
-accompany this record. Raw logs remain in `/private/tmp/orion-rc1-checks/`
-on the validation machine.
+accompany this record. Raw logs stayed on the validation machine and are not
+part of this record.
 
 ## Remaining release work
 
@@ -84,5 +84,5 @@ on the validation machine.
   baseline and hardware details. Functional smoke runs do not meet this gate.
 - Repeat HA against the published candidate digest, then move the pinned HA image
   and retire the temporary local-build defaults.
-- Orion-ui v2 support and updated UI recording; Enterprise #378 ownership and
-  runnable-provider evidence; compatible dependency maintenance under #389.
+- Orion-ui v2 support and updated UI recording; compatible dependency
+  maintenance under #389.

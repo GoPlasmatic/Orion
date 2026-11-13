@@ -8,9 +8,8 @@ use crate::errors::OrionError;
 /// A query that omits `limit` gets `default_limit`; a query asking for more than
 /// `max_limit` is rejected (never silently clamped), so no query is ever
 /// unbounded by accident. `max_skip` bounds the pagination offset the same way,
-/// on every backend — Elasticsearch capped `skip` at its result window while
-/// SQL and MongoDB scanned arbitrarily deep (W12). Documented under
-/// Configuration in `docs/src/reference/data-dialect.md`.
+/// on every backend, so no backend scans arbitrarily deep. Documented under
+/// Configuration in Orion-docs' `src/reference/data-dialect.md`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct QueryConfig {

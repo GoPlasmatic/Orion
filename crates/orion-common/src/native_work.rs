@@ -324,7 +324,7 @@ mod tests {
         // Caller times out in 15ms while native thread blocks on `gate`
         let res = scheduler
             .run_owned_blocking(
-                "onnx-infer",
+                "blocking-job",
                 Instant::now() + Duration::from_millis(15),
                 move || {
                     gate_worker.wait();

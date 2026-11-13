@@ -37,7 +37,7 @@
 /// otherwise inherit and report the parent's failures as its own.
 ///
 /// Records carry `{workflow_id, task_id, code, status}` and **never a
-/// message**: see the note in `docs/src/reference/errors.md`.
+/// message**: see the note in Orion-docs' `src/reference/errors.md`.
 pub const ERROR_CONTEXT_PATH: &str = "metadata._orion_errors";
 
 /// The bare key under `metadata`, for the ingress stamping sites.

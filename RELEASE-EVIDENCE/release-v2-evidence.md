@@ -80,7 +80,7 @@ It passed against a fresh stack after the fix. The local image ID is
 isolated HA stack and its volume were removed after validation. Published-image,
 N=3 scaling and signing checks remain release work.
 
-Logs live under `/private/tmp/orion-v2-release-checks/` on the validation machine.
+Raw logs stayed on the validation machine and are not part of this record.
 
 ## Release handoffs
 
@@ -94,7 +94,6 @@ claim an external team has accepted a new assignment.
 | Dedicated HTTP performance record | @shankar-gpio / #385 | Release build on dedicated hardware; raw eleven-row local output, N=2/N=3 cluster results, methodology and comparable baselines. Debug smoke throughput does not satisfy this gate. |
 | Published v2 image and HA | @shankar-gpio / #385, F-1 in local pending list | Repeat the passing local rolling, plugin and cron drills against the published candidate digest. Replace the v1 image pin and remove the temporary build fallback only after that image exists. |
 | Console compatibility | @shankar-gpio tracking Orion-ui / F-1 | Linked Orion-ui v2 support and release; then update and rerun the UI recording and Console guide. |
-| Enterprise model planning | @shankar-gpio tracking Orion-ext / #378 | Transfer or link an Enterprise tracker, implement the shape fix in a runnable provider, benchmark supported builds. Community does not ship the extracted reference. |
 | Compatible dependency convergence | @shankar-gpio tracking upstream owners / #389 | Adopt compatible releases, refresh inverse trees and verify affected behavior. See [dependency owners](dependency-duplicates.md); justified duplicate warnings remain enabled. |
 
 Keep #385 open until the applicable gates have evidence and the remaining

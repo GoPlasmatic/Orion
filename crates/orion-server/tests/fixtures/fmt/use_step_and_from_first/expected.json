@@ -10,8 +10,8 @@
       "id": "read",
       "name": "Read",
       "function": {
-        "name": "mongo_read",
-        "input": { "$from": "constants.db", "collection": "users" }
+        "name": "db_read",
+        "input": { "$from": "constants.db", "query": "SELECT * FROM users" }
       }
     }
   ]

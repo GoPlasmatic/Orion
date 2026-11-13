@@ -6,8 +6,8 @@
 //! [`FunctionEntry`](crate::engine::FunctionEntry) values and engine
 //! functions ([`PluginFunction`]) for a generation to carry, and names
 //! nothing above them but the task supervisor it hands the ticker to.
-//! See `docs/src/concepts/plugins.md` for the design and
-//! `docs/src/reference/plugin-manifest.md` for the manifest, ABI and limits.
+//! See Orion-docs' `src/concepts/plugins.md` for the design and
+//! Orion-docs' `src/reference/plugin-manifest.md` for the manifest, ABI and limits.
 
 // The crates below under their `crate::` names, so the host's paths read as
 // they did inside `orion-server`.

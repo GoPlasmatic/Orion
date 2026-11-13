@@ -103,8 +103,8 @@ pub fn decode_bytes(codec: Codec, s: &str) -> Result<Vec<u8>, String> {
     }
 }
 
-/// Compute an HMAC over `data` — the one spelling of the MAC primitive that
-/// the `crypto` function and SigV4 signing share.
+/// Compute an HMAC over `data`: the one spelling of the MAC primitive that
+/// the `crypto` function and channel HMAC auth share.
 pub fn mac_compute<M: Mac + KeyInit>(key: &[u8], data: &[u8]) -> Vec<u8> {
     let mut mac = M::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(data);

@@ -1,1 +1,1 @@
-{"name":"w","tasks":[{"with":{"msg":"no"},"use":"guard","id":"_g"},{"id":"read","name":"Read","function":{"name":"mongo_read","input":{"collection":"users","$from":"constants.db"}}}]}
+{"name":"w","tasks":[{"with":{"msg":"no"},"use":"guard","id":"_g"},{"id":"read","name":"Read","function":{"name":"db_read","input":{"query":"SELECT * FROM users","$from":"constants.db"}}}]}

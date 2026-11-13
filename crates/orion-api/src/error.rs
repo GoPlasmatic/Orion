@@ -233,7 +233,7 @@ macro_rules! v2_codes {
         /// refusal a client can act on, each with the [`ErrorKind`] that
         /// decides its status. `v2_error_codes_drift_test` in orion-server
         /// keeps this list, what the server raises and
-        /// `docs/src/reference/errors.md` in agreement.
+        /// Orion-docs' `src/reference/errors.md` in agreement.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub enum V2Code {
             $( $(#[$meta])* $variant, )*

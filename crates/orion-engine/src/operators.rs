@@ -31,7 +31,7 @@
 //!
 //! Being the one home of the byte/text model, this module also hosts the
 //! shared HMAC primitives (`mac_compute`/`mac_verify`) that the `crypto`
-//! function, channel HMAC auth, and SigV4 signing all spell identically.
+//! function and channel HMAC auth spell identically.
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;

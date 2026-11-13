@@ -1,23 +1,21 @@
-//! Documentation drift guard for the configuration surface (proposal C2).
+//! The code-side half of the configuration drift guard.
 //!
-//! Three documents describe the same structs and had drifted apart:
-//! the configuration reference claimed `storage.max_connections = 25`,
-//! `config.toml.example` claimed `10`, and `StorageConfig::default()` — the only
-//! one that runs — is `50`. This module makes the code authoritative and fails
-//! the build when either document disagrees with it again.
+//! The config structs are authoritative; `StorageConfig::default()` is what
+//! runs, whatever a document says. This module holds what this repository
+//! prints about configuration to them:
 //!
-//! What is asserted, in both documents:
+//! 1. **Every value `config.toml.example` states equals the struct default.**
+//!    Values are parsed as TOML and compared against the config structs
+//!    flattened to dotted paths; see [`documented_defaults`] for which
+//!    "default" that means.
+//! 2. **Every setting is in the example.** A new field added to a config
+//!    struct fails the suite until it appears there.
+//! 3. **The example invents no setting.** A key that is not a real field fails.
+//! 4. **Every `ORION_*` name this repository's prose prints is a real
+//!    override**, or an excused non-setting.
 //!
-//! 1. **Every documented value equals the struct default.** Values are parsed as
-//!    TOML and compared against the config structs flattened to dotted paths —
-//!    see [`documented_defaults`] for which "default" that means.
-//! 2. **Every setting is documented.** A new field added to a config struct fails
-//!    the suite until it appears in both documents — this is what C1/C3 were.
-//! 3. **No document invents a setting.** A key that is not a real field fails,
-//!    which is how `server.workers` (C4) survived for so long.
-//! 4. **Every env override is documented, and only real ones.** The serde-derived
-//!    catalogue used by the runtime guard is authoritative for the reference
-//!    page's env-var column, including rows claiming no env override (`—`).
+//! The half that reads the configuration reference pages lives in
+//! GoPlasmatic/Orion-docs (its `config_docs_drift_test`).
 //!
 //! ## Conventions this relies on
 //!
@@ -26,11 +24,6 @@
 //! at most one space). Indenting the payload by two or more spaces
 //! (`#   key = value`) marks it as an illustrative snippet and excludes it, which
 //! is how worked examples live in the file without pretending to be defaults.
-//!
-//! `docs/src/reference/configuration/*.md` (one page per config section, plus
-//! the hubs) is read from its settings tables: a row whose first cell is a
-//! backticked dotted path is a setting row, and its second and third cells are
-//! the default and the env override.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -278,18 +271,10 @@ fn prose_files() -> Vec<std::path::PathBuf> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                // `book` is docs/book — mdBook's build output, and since the
-                // move to Cloudflare it also holds the generated llms-full.txt
-                // (docs/build.sh concatenates the whole book into it). Scanning
-                // it re-reads every page through a second path and re-reports
-                // the deliberate typos the troubleshooting chapter documents,
-                // at line numbers in a gitignored artifact nobody can edit.
-                // docs/src is the source and is scanned; this is its shadow.
+                // Build output and installed dependencies, not prose.
                 if !matches!(
                     path.file_name().and_then(|n| n.to_str()),
-                    Some(
-                        "node_modules" | "out" | "target" | "casts" | "videos" | "images" | "book"
-                    )
+                    Some("node_modules" | "out" | "target")
                 ) {
                     walk(&path, out);
                 }
@@ -353,10 +338,9 @@ fn orion_tokens(text: &str) -> Vec<(String, usize)> {
 /// No page, manifest or script in this repository may print an `ORION_*` name
 /// that reads as a setting without being one.
 ///
-/// The reference page's tables are checked above; this is the rest of the
-/// documentation, where the mistyped `ORION_ADMIN_AUTH__API_KEY` lived — in two
-/// pages, of which the sweep that noticed fixed one. Since C4d a name like that
-/// in the server's environment stops the boot, so a page shipping it in a
+/// A mistyped name like `ORION_ADMIN_AUTH__API_KEY` in the server's
+/// environment
+/// stops the boot, so a page shipping it in a
 /// copy-pasteable block ships a server that will not start; and a real override
 /// typed with a single underscore is worse, because the server has no way to
 /// object. [`looks_like_a_setting`] covers both.

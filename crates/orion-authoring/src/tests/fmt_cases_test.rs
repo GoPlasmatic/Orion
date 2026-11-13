@@ -68,7 +68,7 @@ fn every_expected_output_is_a_fixed_point() {
 
 #[test]
 fn the_documented_examples_in_the_plan_hold() {
-    // The two before/after pairs `docs/src/reference/fmt.md` shows.
+    // The two before/after pairs Orion-docs' `src/reference/fmt.md` shows.
     let condition = r#"{"condition":{"and":[{">=":[{"var":"data.order.amount"},100]},{"<":[{"var":"data.order.amount"},500]}]}}"#;
     assert_eq!(
         formatted(condition, "doc"),

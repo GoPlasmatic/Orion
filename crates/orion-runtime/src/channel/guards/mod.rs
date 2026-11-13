@@ -878,7 +878,7 @@ pub fn effective_timeout_ms(
 /// Read off the evaluated value as 1.12 read the JSON it became
 /// ([`result_json`](crate::engine::operators::result_json)): a number JSON
 /// cannot spell — an infinity or a NaN — was `null` there and is falsy here,
-/// and a datetime, a duration or a tensor was an object and is truthy.
+/// and a datetime or a duration was an object and is truthy.
 pub(crate) fn is_truthy(val: &OwnedDataValue) -> bool {
     match val {
         OwnedDataValue::Null => false,

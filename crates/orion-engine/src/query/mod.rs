@@ -1,6 +1,6 @@
 //! The common query dialect: one backend-neutral query (filter + envelope) that
 //! renders to SQL (SQLite/PostgreSQL/MySQL), in identity or schema-mapped mode. The normative semantics
-//! live in `docs/src/reference/data-dialect.md` (published at
+//! live in Orion-docs' `src/reference/data-dialect.md` (published at
 //! <https://docs.goplasmatic.io/reference/data-dialect.html>).
 //!
 //! Pipeline: [`spec::parse`] (envelope) → [`lower::lower_with`] (filter →

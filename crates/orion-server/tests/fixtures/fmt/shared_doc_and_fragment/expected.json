@@ -1,6 +1,6 @@
 {
   "constants": {
-    "db": { "connector": "mongo", "database": "app" },
+    "db": { "connector": "app_db", "database": "app" },
     "limit": 50
   },
   "errors": {

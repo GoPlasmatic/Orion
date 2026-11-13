@@ -156,9 +156,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - Community's built-in model inference, Kafka, MongoDB, Redis, SMTP and object
-  storage capabilities, their commands and their old admin APIs. Enterprise
-  provider implementation and benchmarks belong to Orion-ext; extracted
-  reference code does not establish a runnable provider.
+  storage capabilities, their commands and their old admin APIs. A deployment
+  that used them has no Community replacement; see the upgrade guide.
 - `POST /api/v2/admin/edition-transition-preflight` and `orion-cli deployments
   edition-preflight`. On a Community node the answer was always "allowed":
   a deployment carrying an Enterprise provider cannot build there, and

@@ -3,7 +3,7 @@
 //! Resolves `{"field": ..}` references (against the schema, or identity mode) and
 //! `{"param": ..}` references (from the pre-resolved params map), lowers
 //! `some`/`all`/`none` over declared relations into [`Cond::Rel`], and applies the
-//! dialect's normalisation rules (`docs/src/reference/data-dialect.md`): empty
+//! dialect's normalisation rules (Orion-docs' `src/reference/data-dialect.md`): empty
 //! `and`/`or` fold to `True`/`False`, empty `in` folds to `False`, `== null`
 //! becomes `IsNull`, and chained comparisons become `Between` with faithful
 //! strict/inclusive bounds.

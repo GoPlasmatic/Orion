@@ -1,6 +1,6 @@
 //! How a plugin failure becomes a task error.
 //!
-//! Two sources, one table (`docs/src/reference/plugin-manifest.md`, "Errors"):
+//! Two sources, one table (Orion-docs' `src/reference/plugin-manifest.md`, "Errors"):
 //!
 //! | Source | Condition | Class | Retryable |
 //! |---|---|---|---|

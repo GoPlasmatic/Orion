@@ -140,7 +140,7 @@
       "name": "containers",
       "command": [
         "python3",
-        "/private/tmp/orion-release-containers.py"
+        "<scratch>/orion-release-containers.py"
       ],
       "exit_code": 0,
       "elapsed_seconds": 387.42

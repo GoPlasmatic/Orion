@@ -385,7 +385,7 @@ fn text_expr(field: &FieldRef, op: TextOp, pattern: &str) -> SimpleExpr {
     // W13: `LIKE` with `\` as the escape character. Case sensitivity is the one
     // thing the dialect does **not** normalise: it is a property of the stored
     // data (a column's collation), not of the query. So the per-backend truth is
-    // stated in the parity table of `docs/src/reference/data-dialect.md`
+    // stated in the parity table of Orion-docs' `src/reference/data-dialect.md`
     // ("Text-match case sensitivity") rather than papered over here: PostgreSQL
     // `LIKE` is case-sensitive, SQLite's folds ASCII, MySQL's follows the
     // column's collation (`_ci` by default).

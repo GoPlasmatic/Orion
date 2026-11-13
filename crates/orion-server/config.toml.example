@@ -11,7 +11,7 @@
 #   1. Environment variables, `ORION_SECTION__KEY` (double underscore between
 #      levels): ORION_SERVER__PORT=3000, ORION_STORAGE__URL=..., and so on.
 #      Env vars win over this file. Every setting's variable is listed in
-#      docs/src/configuration/reference.md.
+#      https://docs.goplasmatic.io/reference/configuration/.
 #   2. Placeholders inside this file: `${VAR}` (required — startup fails if
 #      unset), `${VAR:-default}` (optional; the default applies when VAR is
 #      unset) or `${VAR:?message}` (required — startup fails, quoting the

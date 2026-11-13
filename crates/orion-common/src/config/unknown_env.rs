@@ -126,8 +126,8 @@ where
         message: format!(
             "these ORION_* environment variables are not Orion settings and would be \
              silently ignored:\n{}\nEvery override is ORION_ + the config field path, \
-             uppercased with __ between levels — docs/src/configuration/reference.md \
-             lists all of them. {RESERVED_PREFIX}* is reserved for values you \
+             uppercased with __ between levels; \
+             https://docs.goplasmatic.io/reference/configuration/ lists all of them. {RESERVED_PREFIX}* is reserved for values you \
              reference yourself (env:// connector secrets, ${{VAR}} placeholders in \
              the config file or in a connector config_json) and is never read as \
              configuration.",

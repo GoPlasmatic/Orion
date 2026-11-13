@@ -234,10 +234,7 @@ impl ProviderBackend for MemoryCacheProviderBackend {
             && !backend.eq_ignore_ascii_case("memory")
         {
             return Err(ConnectorError::invalid_input(
-                format!(
-                    "org.orion.memory-cache only supports backend 'memory' (got '{backend}'; \
-                     use Enterprise provider 'com.orion.enterprise.redis' for Redis)"
-                ),
+                format!("org.orion.memory-cache only supports backend 'memory' (got '{backend}')"),
                 Some(json!({"pointer": "/backend"})),
             ));
         }

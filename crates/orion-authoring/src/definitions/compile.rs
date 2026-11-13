@@ -776,7 +776,7 @@ mod tests {
         let mut findings = Vec::new();
         shared.merge(
             &json!({
-                "constants": { "db": { "connector": "mongo", "database": "app" } },
+                "constants": { "db": { "connector": "app_db" } },
                 "errors": { "NOT_FOUND": { "status": 404, "body": "nope" } },
                 "fragments": { "guard": {
                     "params": { "msg": { "default": "denied" } },
@@ -796,8 +796,8 @@ mod tests {
             "workflow_id": "w", "name": "w",
             "tasks": [
                 { "id": "_g", "use": "guard", "with": { "msg": "no" } },
-                { "id": "read", "name": "Read", "function": { "name": "mongo_read",
-                    "input": { "$from": "constants.db", "collection": "users" } } },
+                { "id": "read", "name": "Read", "function": { "name": "db_read",
+                    "input": { "$from": "constants.db", "query": "SELECT * FROM users" } } },
                 { "id": "group", "condition": true, "tasks": [
                     { "id": "_g2", "use": "guard" },
                     { "id": "err", "name": "Err", "function": { "name": "map",
@@ -933,8 +933,11 @@ mod tests {
             "a compiled document is canonical — this is what the runtime relies on"
         );
         // The splice merged, and the fragment's ids were namespaced.
-        assert_eq!(doc["tasks"][1]["function"]["input"]["connector"], "mongo");
-        assert_eq!(doc["tasks"][1]["function"]["input"]["collection"], "users");
+        assert_eq!(doc["tasks"][1]["function"]["input"]["connector"], "app_db");
+        assert_eq!(
+            doc["tasks"][1]["function"]["input"]["query"],
+            "SELECT * FROM users"
+        );
         assert_eq!(doc["tasks"][0]["id"], "_g.deny");
     }
 

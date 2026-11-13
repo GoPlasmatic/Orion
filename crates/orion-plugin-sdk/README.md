@@ -24,7 +24,7 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-orion-plugin-sdk = "1"
+orion-plugin-sdk = "2"
 
 [profile.release]
 opt-level = "s"

@@ -4,7 +4,7 @@
 //! [`crate::query::lower`], and the SQL renderer walks it into native query
 //! form. The IR is deliberately small and evaluation-free: it exists only to be
 //! translated. The token model and its normative semantics are documented in
-//! `docs/src/reference/data-dialect.md`.
+//! Orion-docs' `src/reference/data-dialect.md`.
 
 /// A backend-neutral boolean condition over a single logical entity.
 #[derive(Debug, Clone, PartialEq)]
@@ -36,7 +36,7 @@ pub enum Cond {
     /// Range with per-bound inclusivity so a chained `<` (strict) and `<=`
     /// (inclusive) render faithfully; native `BETWEEN` is used only when both
     /// bounds are inclusive (the chained-range rule in
-    /// `docs/src/reference/data-dialect.md`).
+    /// Orion-docs' `src/reference/data-dialect.md`).
     Between {
         field: FieldRef,
         low: Value,
@@ -48,7 +48,7 @@ pub enum Cond {
     /// Substring / prefix / suffix text match (`LIKE`). Case-sensitivity is
     /// whatever the backend natively does (W13) — the dialect does not
     /// normalise it; the per-backend truth is in the parity table of
-    /// `docs/src/reference/data-dialect.md`.
+    /// Orion-docs' `src/reference/data-dialect.md`.
     Text {
         field: FieldRef,
         op: TextOp,
