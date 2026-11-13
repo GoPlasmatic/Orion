@@ -567,6 +567,10 @@ impl<D: RemoteSqlDialect> ProviderBackend for RemoteSqlProviderBackend<D> {
         Ok(ConnectorOutput::with_metadata(data, metadata))
     }
 
+    fn describe(&self) -> Option<orion_extension_api::ProviderDescription> {
+        Some(super::sql_description())
+    }
+
     fn literal_input_keys(&self, _operation: &str) -> Vec<String> {
         SQL_STATEMENT_KEYS
             .iter()
@@ -872,6 +876,10 @@ impl ProviderBackend for SqliteProviderBackend {
         metadata.insert("driver".to_string(), json!(DRIVER_SQLITE));
         metadata.insert("session".to_string(), json!(handle.session()));
         Ok(ConnectorOutput::with_metadata(data, metadata))
+    }
+
+    fn describe(&self) -> Option<orion_extension_api::ProviderDescription> {
+        Some(super::sql_description())
     }
 
     fn literal_input_keys(&self, _operation: &str) -> Vec<String> {

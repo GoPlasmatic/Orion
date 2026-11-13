@@ -123,8 +123,8 @@ impl SqlCmd {
             boundary: orion_authoring::definitions::Boundary {
                 channels: requires_channels.clone(),
                 connectors: requires_connectors.clone(),
-                channel_drivers: super::authoring::capabilities_drivers(capabilities.as_deref())
-                    .map_err(|e| anyhow::anyhow!("{e}"))?,
+                ..super::authoring::capabilities_boundary(capabilities.as_deref())
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
             },
             plugin_dirs,
             config: &config,

@@ -294,6 +294,21 @@ pub(crate) async fn get_runtime_capabilities(
         .registered_drivers()
         .into_iter()
         .map(|(kind, driver_id)| ProviderBackendInfo {
+            operations: comp.providers().description_of(kind, &driver_id).map(|d| {
+                d.operations
+                    .into_iter()
+                    .map(|(name, op)| {
+                        (
+                            name,
+                            orion_api::v2::ProviderOperationInfo {
+                                aliases: op.aliases,
+                                input_schema: op.input_schema,
+                                output_schema: op.output_schema,
+                            },
+                        )
+                    })
+                    .collect()
+            }),
             kind,
             // A driver compiled into this binary (Community's, or one the
             // edition composed) has no package: the digest a connection

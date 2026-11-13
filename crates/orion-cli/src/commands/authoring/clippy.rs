@@ -101,8 +101,8 @@ impl ClippyCmd {
             boundary: Boundary {
                 channels: self.requires_channels.clone(),
                 connectors: self.requires_connectors.clone(),
-                channel_drivers: super::capabilities_drivers(self.capabilities.as_deref())
-                    .map_err(|e| anyhow::anyhow!("{e}"))?,
+                ..super::capabilities_boundary(self.capabilities.as_deref())
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
             },
             config: config.as_ref(),
             fix: self.fix,

@@ -60,8 +60,7 @@ impl LintCmd {
         let boundary = Boundary {
             channels: self.requires_channels.clone(),
             connectors: self.requires_connectors.clone(),
-            channel_drivers: super::capabilities_drivers(self.capabilities.as_deref())
-                .map_err(boxed)?,
+            ..super::capabilities_boundary(self.capabilities.as_deref()).map_err(boxed)?
         };
         run_lint(
             &self.workflow,

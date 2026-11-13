@@ -29,6 +29,8 @@ It enforces admission, capability grants and reserved-operation denial, and retu
 
 `connector_call` dispatches a public operation on a registered v2 provider backend (`rust`, `workflow`, or `wasm`). Internal lifecycle operations prefixed with `orion.internal.` are forbidden from workflow steps and fail immediately with `CONNECTOR_OPERATION_FORBIDDEN`.
 
+A provider that declares its operations is held to them. Community's built-in drivers declare theirs; an edition's compiled-in provider may (`ProviderBackend::describe`), and `GET /api/v2/admin/runtime-capabilities` lists them under `provider_backends[].operations`. Over such a provider (named by `target_id`), an operation it does not declare refuses the workflow at upload and in `orion-cli lint`/`compile` (`[closure.operation]`). A declared `input_schema` holds the call's input before dispatch, and a declared `output_schema` holds the answer after, as a package's manifest schemas do.
+
 ### Which calls a workflow may make
 
 A call runs only in a generation built from a deployment manifest, and only when the workflow's manifest member `requires` the connection. The operations granted are the ones the workflow's own `connector_call` tasks name for it. The connection must be a member of the deployed manifest, and the call uses exactly the revision that member names, never one stored since. Every call of one run shares that run's deadline and budget. Connector ceilings come from [`engine.connector_budget`](../configuration/engine.md#run-budgets). Attempts read the executing engine's cancellation signal, including a nested channel's narrower deadline. Provider sub-workflows share the root's engine task and expression accounting. Other calls fail with `CONNECTOR_CONNECTION_FORBIDDEN`.
@@ -123,7 +125,7 @@ Other database errors are non-retryable `CONNECTOR_INVALID_INPUT` errors. An HTT
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
 | `connection` | string | yes | — | Logical connection ID or driver identifier |
-| `operation` | string | yes | — | Public operation name (for example `http.request`, `sql.query`, `cache.get`) |
+| `operation` | string | yes | — | Public operation name (for example `request` on `org.orion.http`, `query` on a SQL driver, `cache.get` on `org.orion.memory-cache`) |
 | `kind` | string | no | `"rust"` | Provider implementation kind (`rust`, `workflow`, or `wasm`) |
 | `target_id` | string | no | `connection` | Optional provider target ID (`driver_id` for `rust`, `package_digest` for `workflow`/`wasm`) |
 | `input` | object | no | `{}` | Operation input object (`{"var": ...}` references are resolved from the message context) |

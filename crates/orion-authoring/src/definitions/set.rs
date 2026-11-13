@@ -68,6 +68,11 @@ pub struct Boundary {
     /// knows them (`--capabilities`, a node's `/runtime-capabilities`).
     /// `None` is Community's: what a node built from this binary serves.
     pub channel_drivers: Option<crate::extensions::ChannelDriverRegistry>,
+    /// The operations each provider of the target node declares, by driver
+    /// id (`--capabilities`). Community's built-in drivers' are known without
+    /// it ([`crate::extensions::foundation::builtin_description`]).
+    pub provider_operations:
+        Option<std::collections::BTreeMap<String, orion_extension_api::ProviderDescription>>,
 }
 
 impl Boundary {

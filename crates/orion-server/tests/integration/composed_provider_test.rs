@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use axum::http::StatusCode;
 use orion_extension_api::{
     AttemptContext, ConnectorError, ConnectorOutput, EffectiveConnectionIdentity,
-    ImplementationKind, ProviderBackend,
+    ImplementationKind, OperationDescription, ProviderBackend, ProviderDescription,
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -68,6 +68,27 @@ impl ProviderBackend for EchoProvider {
         Ok(ConnectorOutput::new(
             json!({ "greeting": greeting, "echo": input }),
         ))
+    }
+
+    fn describe(&self) -> Option<ProviderDescription> {
+        Some(
+            ProviderDescription::new().with_operation(
+                "echo",
+                OperationDescription::new()
+                    .with_alias("say")
+                    .with_input_schema(json!({
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "type": "object",
+                        "required": ["name"],
+                        "properties": { "name": { "type": "string" } }
+                    }))
+                    .with_output_schema(json!({
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "type": "object",
+                        "required": ["greeting"]
+                    })),
+            ),
+        )
     }
 
     async fn dispose(&self, identity: &EffectiveConnectionIdentity) {
@@ -125,6 +146,19 @@ async fn an_edition_provider_serves_a_connection_without_a_package() {
         .and_then(|b| b["package_digest"].as_str())
         .unwrap_or_else(|| panic!("the composed driver reports its digest: {caps}"))
         .to_string();
+    let backend = caps["provider_backends"]
+        .as_array()
+        .and_then(|b| b.iter().find(|b| b["driver_id"] == DRIVER))
+        .expect("listed");
+    assert_eq!(
+        backend["operations"]["echo"]["aliases"],
+        json!(["say"]),
+        "{backend}"
+    );
+    assert_eq!(
+        backend["operations"]["echo"]["input_schema"]["required"],
+        json!(["name"])
+    );
 
     // The provider judges the configuration at upload, field by field.
     let (status, refused) = send(
@@ -226,6 +260,52 @@ async fn an_edition_provider_serves_a_connection_without_a_package() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["reply"]["greeting"], "hello", "{body}");
+
+    // The declared input schema holds on every call: no name, no dispatch.
+    let (_, refused) = send(
+        &app,
+        "POST",
+        "/api/v2/data/greet",
+        Some(json!({ "data": {} })),
+    )
+    .await;
+    assert!(
+        refused.to_string().contains("input_schema"),
+        "the call is refused against the declared schema: {refused}"
+    );
+
+    // An operation the provider does not declare is refused at upload, at
+    // the field that names it.
+    let (status, refused) = deploy::try_upload(
+        &app,
+        json!({ "kind": "workflow", "definition": {
+            "name": "greet-typo",
+            "tasks": [
+                { "id": "call", "function": { "name": "connector_call", "input": {
+                    "connection": "greeter",
+                    "target_id": DRIVER,
+                    "operation": "ecoh",
+                    "input": { "name": "x" },
+                    "output": "data.reply"
+                } } }
+            ]
+        } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert!(
+        refused["error"]["details"]
+            .as_array()
+            .is_some_and(|d| d.iter().any(|e| {
+                e["path"]
+                    .as_str()
+                    .is_some_and(|p| p.ends_with("input.operation"))
+                    && e["message"]
+                        .as_str()
+                        .is_some_and(|m| m.contains("no operation 'ecoh'"))
+            })),
+        "{refused}"
+    );
     assert!(
         lifecycle.disposed.lock().expect("lock").is_empty(),
         "nothing is retired while revision 1 is served"

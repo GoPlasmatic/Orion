@@ -140,6 +140,28 @@ pub struct ProviderBackendInfo {
     /// `workflow` or `wasm` backend, whose id is already its package digest.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_digest: Option<String>,
+    /// The operations the backend declares, by canonical name: what a
+    /// `connector_call` on it may name (or an alias), and the schemas its
+    /// input and answer are held to. Absent when it declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operations: Option<std::collections::BTreeMap<String, ProviderOperationInfo>>,
+}
+
+/// One operation a provider backend declares.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct ProviderOperationInfo {
+    /// Other names a `connector_call` may give it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    /// The `orion-json-schema/1` document its input is held to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<Object>))]
+    pub input_schema: Option<Value>,
+    /// The `orion-json-schema/1` document its answer is held to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<Object>))]
+    pub output_schema: Option<Value>,
 }
 
 /// The committed deployment head.

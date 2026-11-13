@@ -82,6 +82,67 @@ pub fn builtin_connector(driver_id: &str, mut config: Value) -> Option<(&'static
     Some((connector_type, config))
 }
 
+/// What one of Community's built-in drivers declares about its operations,
+/// by driver id: what the offline tools check a `connector_call` against
+/// without a node to ask.
+pub fn builtin_description(driver_id: &str) -> Option<orion_extension_api::ProviderDescription> {
+    match driver_id {
+        DRIVER_POSTGRESQL | DRIVER_MYSQL | DRIVER_SQLITE => Some(sql_description()),
+        DRIVER_HTTP => Some(http_description()),
+        DRIVER_MEMORY_CACHE => Some(memory_cache_description()),
+        _ => None,
+    }
+}
+
+/// The operations Community's SQL drivers serve (`org.orion.postgresql`,
+/// `org.orion.mysql`, `org.orion.sqlite`), by the names `connector_call`
+/// gives them.
+pub(crate) fn sql_description() -> orion_extension_api::ProviderDescription {
+    use orion_extension_api::{OperationDescription, ProviderDescription};
+    ProviderDescription::new()
+        .with_operation(
+            "query",
+            OperationDescription::new().with_alias("data_query"),
+        )
+        .with_operation(
+            "execute",
+            OperationDescription::new().with_alias("data_write"),
+        )
+}
+
+/// The operations `org.orion.http` serves: one per method, and `request`,
+/// whose input names the method.
+pub(crate) fn http_description() -> orion_extension_api::ProviderDescription {
+    use orion_extension_api::{OperationDescription, ProviderDescription};
+    ["get", "post", "put", "patch", "delete", "request"]
+        .into_iter()
+        .fold(ProviderDescription::new(), |d, op| {
+            d.with_operation(op, OperationDescription::new())
+        })
+}
+
+/// The operations `org.orion.memory-cache` serves.
+pub(crate) fn memory_cache_description() -> orion_extension_api::ProviderDescription {
+    use orion_extension_api::{OperationDescription, ProviderDescription};
+    ProviderDescription::new()
+        .with_operation(
+            "get",
+            OperationDescription::new()
+                .with_alias("cache_read")
+                .with_alias("cache.get"),
+        )
+        .with_operation(
+            "set",
+            OperationDescription::new()
+                .with_alias("cache_write")
+                .with_alias("cache.set"),
+        )
+        .with_operation(
+            "delete",
+            OperationDescription::new().with_alias("cache.delete"),
+        )
+}
+
 /// The contract generation the built-in drivers' identities name. It moves
 /// only when a driver's operations change incompatibly, never with the
 /// build, so a connection revision naming a built-in provider stays valid

@@ -55,6 +55,19 @@ pub trait ConnectorCallHost: Send + Sync {
         operation: &str,
     ) -> Vec<String>;
 
+    /// Why `operation` is not one `(kind, target)` serves, when its provider
+    /// is registered and declares its operations; `None` otherwise (an
+    /// undeclared provider judges the name when the call runs).
+    fn operation_problem(
+        &self,
+        kind: ImplementationKind,
+        target: &str,
+        operation: &str,
+    ) -> Option<String> {
+        let _ = (kind, target, operation);
+        None
+    }
+
     /// Run the call: authority, the connection's deployed revision, its
     /// provider, and the dispatch.
     async fn invoke(&self, call: ConnectorInvocation<'_>) -> Result<Value, HandlerError>;
@@ -139,6 +152,13 @@ impl Function for ConnectorCallFunction {
             )]);
         };
         let target = cfg.target_id.as_deref().unwrap_or(&cfg.connection);
+        // A provider that declares its operations is held to them now, at
+        // load, rather than on the first request that reaches the step.
+        if let Some(problem) = self.host.operation_problem(kind, target, &cfg.operation) {
+            let mut at = AuthoredPath::root();
+            at.push("operation");
+            return Err(vec![Issue::new(IssueCode::InputParse, at, problem)]);
+        }
         let Some(input) = cfg.input.as_ref() else {
             return Ok(());
         };

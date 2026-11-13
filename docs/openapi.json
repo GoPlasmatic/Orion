@@ -7595,12 +7595,52 @@
           "kind": {
             "$ref": "#/components/schemas/ImplementationKind"
           },
+          "operations": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The operations the backend declares, by canonical name: what a\n`connector_call` on it may name (or an alias), and the schemas its\ninput and answer are held to. Absent when it declares none.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ProviderOperationInfo"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "package_digest": {
             "type": [
               "string",
               "null"
             ],
             "description": "A `rust` driver's provider digest, derived from its id — what a\nconnection revision over it names as its `provider_digest`, whether\nthe driver is Community's or one an edition compiled in. Absent for a\n`workflow` or `wasm` backend, whose id is already its package digest."
+          }
+        }
+      },
+      "ProviderOperationInfo": {
+        "type": "object",
+        "description": "One operation a provider backend declares.",
+        "properties": {
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Other names a `connector_call` may give it."
+          },
+          "input_schema": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The `orion-json-schema/1` document its input is held to."
+          },
+          "output_schema": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The `orion-json-schema/1` document its answer is held to."
           }
         }
       },

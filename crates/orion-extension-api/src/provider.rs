@@ -108,6 +108,89 @@ pub trait SourceConnectorFacet: Send + Sync {
     async fn close(&self, ctx: &AttemptContext, cursor: Value) -> Result<(), ConnectorError>;
 }
 
+/// One operation a provider declares ([`ProviderDescription`]): the names a
+/// `connector_call` may give it, and the `orion-json-schema/1` documents its
+/// input and its answer must satisfy, when it declares them. The node checks
+/// the input before dispatch and the answer after, the way it checks an
+/// uploaded package's `operations.<name>` schemas.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct OperationDescription {
+    /// Other names `connector_call` may call it by (`cache.get` for `get`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
+}
+
+impl OperationDescription {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Another name for the operation.
+    #[must_use]
+    pub fn with_alias(mut self, alias: impl Into<String>) -> Self {
+        self.aliases.push(alias.into());
+        self
+    }
+
+    /// The schema the call's input must satisfy.
+    #[must_use]
+    pub fn with_input_schema(mut self, schema: Value) -> Self {
+        self.input_schema = Some(schema);
+        self
+    }
+
+    /// The schema the provider's answer must satisfy.
+    #[must_use]
+    pub fn with_output_schema(mut self, schema: Value) -> Self {
+        self.output_schema = Some(schema);
+        self
+    }
+}
+
+/// What a provider declares about itself ([`ProviderBackend::describe`]):
+/// its operations, by canonical name. A provider that declares one declares
+/// all of them: a `connector_call` naming any other is refused when its
+/// workflow loads.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ProviderDescription {
+    pub operations: BTreeMap<String, OperationDescription>,
+}
+
+impl ProviderDescription {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Declare `name`.
+    #[must_use]
+    pub fn with_operation(
+        mut self,
+        name: impl Into<String>,
+        operation: OperationDescription,
+    ) -> Self {
+        self.operations.insert(name.into(), operation);
+        self
+    }
+
+    /// The operation `name` calls, by its canonical name or an alias,
+    /// compared case-insensitively.
+    pub fn operation(&self, name: &str) -> Option<(&str, &OperationDescription)> {
+        self.operations
+            .iter()
+            .find(|(canonical, op)| {
+                canonical.eq_ignore_ascii_case(name)
+                    || op.aliases.iter().any(|a| a.eq_ignore_ascii_case(name))
+            })
+            .map(|(canonical, op)| (canonical.as_str(), op))
+    }
+}
+
 /// What a provider is asked to validate: a connection's configuration and,
 /// when it belongs to a stored connection, which one.
 #[derive(Debug, Clone, Copy)]
@@ -230,6 +313,16 @@ pub trait ProviderBackend: Send + Sync {
     /// caller's values reach the database only as bind parameters.
     fn literal_input_keys(&self, _operation: &str) -> Vec<String> {
         Vec::new()
+    }
+
+    /// The operations this provider serves, with their input and output
+    /// schemas. `None` (the default) declares nothing: any operation name
+    /// reaches [`Self::invoke`], which judges it. A description is enforced:
+    /// an undeclared operation is refused when its workflow loads, and a
+    /// declared schema is checked on every call. `/runtime-capabilities`
+    /// serves it.
+    fn describe(&self) -> Option<ProviderDescription> {
+        None
     }
 
     /// Return the optional [`SourceConnectorFacet`] if this provider supports

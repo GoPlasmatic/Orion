@@ -151,6 +151,7 @@ pub fn check(
         functions,
         &mut findings,
     );
+    check_operations(&workflows, boundary, &mut findings);
     check_env_refs(set, &mut findings);
     check_cron_slots(set, &mut findings);
 
@@ -723,6 +724,52 @@ fn check_cron_slots(set: &DefinitionSet, findings: &mut Vec<Diagnostic>) {
 
 /// Task references that must resolve in the set or be declared on the
 /// boundary.
+/// A `connector_call` naming an operation its provider does not declare:
+/// the check the node makes when the workflow loads, made offline. The
+/// provider is the call's literal `target_id`; its declaration is a built-in
+/// driver's, or the target node's (`--capabilities`). A provider that
+/// declares nothing, or a target the set cannot name offline, is judged by
+/// the node.
+fn check_operations(workflows: &Workflows, boundary: &Boundary, findings: &mut Vec<Diagnostic>) {
+    let describe = |target: &str| {
+        boundary
+            .provider_operations
+            .as_ref()
+            .and_then(|known| known.get(target).cloned())
+            .or_else(|| crate::extensions::foundation::builtin_description(target))
+    };
+    for (workflow, tasks, loop_config) in &workflows.tasks {
+        for task in crate::engine::leaf_tasks(tasks, loop_config.as_ref()) {
+            if task["function"]["name"] != crate::engine::functions::connector_call::NAME {
+                continue;
+            }
+            let input = &task["function"]["input"];
+            let (Some(target), Some(operation)) =
+                (input["target_id"].as_str(), input["operation"].as_str())
+            else {
+                continue;
+            };
+            if operation.starts_with("orion.internal.") {
+                continue;
+            }
+            let Some(described) = describe(target) else {
+                continue;
+            };
+            if described.operation(operation).is_none() {
+                let declared: Vec<&str> = described.operations.keys().map(String::as_str).collect();
+                findings.push(Diagnostic::error(
+                    "closure.operation",
+                    format!("workflow '{workflow}'"),
+                    format!(
+                        "provider '{target}' has no operation '{operation}' (it declares: {})",
+                        declared.join(", ")
+                    ),
+                ));
+            }
+        }
+    }
+}
+
 fn check_closure(
     workflows: &Workflows,
     connectors: &BTreeMap<String, crate::engine::ConnectorFacts>,

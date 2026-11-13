@@ -13,7 +13,9 @@ package verifier to a node.
 - `ProviderBackend`: a connector provider. A `rust` backend compiled into an edition's
   binary needs no package: connections name it by a digest derived from its id (reported in
   `/runtime-capabilities`), and its `validate_connection` judges a revision's configuration at
-  upload. A definition set names it with `"provider": "<driver id>"` (with an unstable `SourceConnectorFacet` hidden
+  upload. A definition set names it with `"provider": "<driver id>"`. Its optional `describe`
+  declares its operations (names, aliases, input/output schemas): undeclared operations are
+  refused at workflow load and offline, and declared schemas are checked on every call (with an unstable `SourceConnectorFacet` hidden
   until the first source channel protocol ships), called with an `AttemptContext` and
   answering `Result<ConnectorOutput, ConnectorError>`.
 - `ConnectionPoolCache`: a provider's pool cache, with per-connector and whole-cache

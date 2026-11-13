@@ -40,6 +40,15 @@ impl ConnectorCallHost for ProviderCalls {
             .map_or_else(Vec::new, |backend| backend.literal_input_keys(operation))
     }
 
+    fn operation_problem(
+        &self,
+        kind: ImplementationKind,
+        target: &str,
+        operation: &str,
+    ) -> Option<String> {
+        self.providers.operation_problem(kind, target, operation)
+    }
+
     async fn invoke(&self, call: ConnectorInvocation<'_>) -> Result<Value, HandlerError> {
         let run = ACTIVE_RUN_CONTEXT.try_with(Clone::clone).map_err(|_| {
             forbidden(
@@ -261,10 +270,29 @@ async fn execute_connector_call(
             .get(impl_kind, &target_id)
             .ok_or_else(|| not_registered(impl_kind, &target_id))?,
     };
+    // A compiled-in provider's declared schemas, as a package's are held to
+    // its manifest's: the input before anything is dispatched, the answer
+    // after.
+    if declared_by.is_none() {
+        providers
+            .check_described_input(backend.as_ref(), operation, connection, &input_val)
+            .map_err(connector_error)?;
+    }
     let output = providers
         .dispatch_attempt(&invocation, backend.as_ref(), input_val)
         .await
         .map_err(connector_error)?;
+    if declared_by.is_none() {
+        providers
+            .check_described_output(
+                backend.as_ref(),
+                operation,
+                connection,
+                &output.data,
+                invocation.effect_status(),
+            )
+            .map_err(connector_error)?;
+    }
     if let Some(package_digest) = declared_by {
         store
             .check_operation_output(

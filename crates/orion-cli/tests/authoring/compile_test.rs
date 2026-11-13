@@ -583,6 +583,67 @@ fn tree(root: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
 }
 
 #[test]
+fn a_connector_call_names_an_operation_its_provider_declares() {
+    // A built-in driver's operations are known without a node to ask.
+    let scratch = deployment_set("compile-operations");
+    let wf = scratch.path().join("wf.json");
+    let original = std::fs::read_to_string(&wf).unwrap();
+    std::fs::write(&wf, original.replace("\"cache.set\"", "\"cache.sett\"")).unwrap();
+    let (ok, report) = compile_deployment(scratch.path(), &scratch.path().join("dist-typo"));
+    assert!(!ok, "{report}");
+    assert!(report.contains("no operation 'cache.sett'"), "{report}");
+    std::fs::write(&wf, original).unwrap();
+
+    // An edition provider's are the target node's, from --capabilities.
+    std::fs::write(
+        scratch.path().join("conn-events.json"),
+        r#"{ "name": "events", "provider": "com.orion.enterprise.kafka",
+             "config": { "brokers": ["kafka-1:9092"] } }"#,
+    )
+    .unwrap();
+    let publisher = |operation: &str| {
+        format!(
+            r#"{{ "workflow_id": "publish", "name": "Publish", "tasks": [
+                 {{ "id": "send", "name": "Send", "function": {{ "name": "connector_call",
+                    "input": {{ "connection": "events", "target_id": "com.orion.enterprise.kafka",
+                               "operation": "{operation}", "input": {{ "topic": "orders" }},
+                               "output": "data.sent" }} }} }} ] }}"#
+        )
+    };
+    let capabilities = scratch.path().join("caps.json");
+    std::fs::write(
+        &capabilities,
+        serde_json::json!({
+            "channel_driver_info": [],
+            "provider_backends": [{
+                "kind": "rust",
+                "driver_id": "com.orion.enterprise.kafka",
+                "operations": { "publish": {} }
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let compile = |out: &str| {
+        run(&[
+            "compile",
+            scratch.path().to_str().unwrap(),
+            "--capabilities",
+            capabilities.to_str().unwrap(),
+            "-o",
+            scratch.path().join(out).to_str().unwrap(),
+        ])
+    };
+    std::fs::write(scratch.path().join("wf-publish.json"), publisher("pubish")).unwrap();
+    let (ok, report) = compile("dist-pubish");
+    assert!(!ok, "{report}");
+    assert!(report.contains("no operation 'pubish'"), "{report}");
+    std::fs::write(scratch.path().join("wf-publish.json"), publisher("publish")).unwrap();
+    let (ok, report) = compile("dist-publish");
+    assert!(ok, "{report}");
+}
+
+#[test]
 fn an_edition_protocol_compiles_against_the_target_nodes_capabilities() {
     let scratch = deployment_set("compile-capabilities");
     let channel = |transport: &str| {

@@ -119,6 +119,42 @@ pub struct ProviderRegistry {
     /// The connection revisions the last published generation pins, so the
     /// next build can tell which ones it retired ([`Self::retire_unserved`]).
     served: Arc<Mutex<BTreeSet<EffectiveConnectionIdentity>>>,
+    /// Each backend's [`ProviderBackend::describe`], with its schemas
+    /// compiled, keyed `kind:driver_id`. A description is fixed for a
+    /// backend's life, so it is compiled once, on first use.
+    described: Arc<Mutex<BTreeMap<String, Option<Arc<Described>>>>>,
+}
+
+/// A backend's description and its schemas, compiled.
+struct Described {
+    description: orion_extension_api::ProviderDescription,
+    /// `<operation>/input` and `<operation>/output`, by canonical name; the
+    /// error when a declared schema does not compile, which refuses every
+    /// call that needs it rather than skipping the check.
+    schemas: Result<super::schema_profile::CompiledSchemaBundle, String>,
+}
+
+impl Described {
+    fn of(description: orion_extension_api::ProviderDescription) -> Self {
+        let mut files = BTreeMap::new();
+        for (name, op) in &description.operations {
+            if let Some(schema) = &op.input_schema {
+                files.insert(format!("{name}/input"), schema.clone());
+            }
+            if let Some(schema) = &op.output_schema {
+                files.insert(format!("{name}/output"), schema.clone());
+            }
+        }
+        let schemas = super::schema_profile::CompiledSchemaBundle::compile(
+            files,
+            super::schema_profile::SchemaProfileLimits::default(),
+        )
+        .map_err(|f| format!("{} at {}", f.code, f.location));
+        Self {
+            description,
+            schemas,
+        }
+    }
 }
 
 /// The admitted layer: readers load the table lock-free, writers serialise
@@ -152,7 +188,144 @@ impl ProviderRegistry {
             deployments,
             ledger,
             served: Arc::default(),
+            described: Arc::default(),
         }
+    }
+
+    /// `backend`'s description, compiled once.
+    fn described(&self, backend: &dyn ProviderBackend) -> Option<Arc<Described>> {
+        let key = format!("{}:{}", backend.kind(), backend.driver_id());
+        let mut cache = self
+            .described
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        cache
+            .entry(key)
+            .or_insert_with(|| backend.describe().map(|d| Arc::new(Described::of(d))))
+            .clone()
+    }
+
+    /// Why `operation` is not one the backend at `(kind, target)` serves,
+    /// when it is registered and declares its operations.
+    pub fn operation_problem(
+        &self,
+        kind: ImplementationKind,
+        target: &str,
+        operation: &str,
+    ) -> Option<String> {
+        // The host's reserved namespace keeps its own refusal
+        // (CONNECTOR_OPERATION_FORBIDDEN, when the call runs): it is not a
+        // name any provider could declare.
+        if operation.starts_with("orion.internal.") {
+            return None;
+        }
+        let backend = self.get(kind, target)?;
+        let described = self.described(backend.as_ref())?;
+        if described.description.operation(operation).is_some() {
+            return None;
+        }
+        let declared: Vec<&str> = described
+            .description
+            .operations
+            .keys()
+            .map(String::as_str)
+            .collect();
+        Some(format!(
+            "provider '{target}' has no operation '{operation}' (it declares: {})",
+            declared.join(", ")
+        ))
+    }
+
+    /// `input` against the input schema `backend` declares for `operation`.
+    pub fn check_described_input(
+        &self,
+        backend: &dyn ProviderBackend,
+        operation: &str,
+        connection: &str,
+        input: &Value,
+    ) -> Result<(), ConnectorError> {
+        self.check_described(backend, operation, "input", input)
+            .map_err(|why| {
+                ConnectorError::invalid_input(
+                    format!(
+                        "'{operation}' on '{connection}': {why} (provider '{}''s input_schema)",
+                        backend.driver_id()
+                    ),
+                    None,
+                )
+            })
+    }
+
+    /// `output` against the output schema `backend` declares for
+    /// `operation`. A refused answer is the provider breaking its contract;
+    /// the effect already happened, so the error carries `effect_status`.
+    pub fn check_described_output(
+        &self,
+        backend: &dyn ProviderBackend,
+        operation: &str,
+        connection: &str,
+        output: &Value,
+        effect_status: EffectStatus,
+    ) -> Result<(), ConnectorError> {
+        self.check_described(backend, operation, "output", output)
+            .map_err(|why| {
+                ConnectorError::contract_violation(
+                    "output",
+                    format!(
+                        "'{operation}' on '{connection}': provider '{}' answered outside its \
+                     output_schema: {why}",
+                        backend.driver_id()
+                    ),
+                    effect_status,
+                )
+            })
+    }
+
+    fn check_described(
+        &self,
+        backend: &dyn ProviderBackend,
+        operation: &str,
+        slot: &str,
+        instance: &Value,
+    ) -> Result<(), String> {
+        let Some(described) = self.described(backend) else {
+            return Ok(());
+        };
+        let Some((canonical, op)) = described.description.operation(operation) else {
+            return Ok(());
+        };
+        let declared = match slot {
+            "input" => op.input_schema.is_some(),
+            _ => op.output_schema.is_some(),
+        };
+        if !declared {
+            return Ok(());
+        }
+        let bundle = described
+            .schemas
+            .as_ref()
+            .map_err(|e| format!("its declared schemas do not compile ({e})"))?;
+        bundle
+            .validate_instance(&format!("{canonical}/{slot}"), instance)
+            .map_err(|finding| {
+                let field = finding.instance_field();
+                if field.is_empty() {
+                    format!("{} refused it", finding.location)
+                } else {
+                    format!("{} refused `{field}`", finding.location)
+                }
+            })
+    }
+
+    /// Every backend's description, as `/runtime-capabilities` serves it.
+    pub fn description_of(
+        &self,
+        kind: ImplementationKind,
+        driver_id: &str,
+    ) -> Option<orion_extension_api::ProviderDescription> {
+        let backend = self.get(kind, driver_id)?;
+        self.described(backend.as_ref())
+            .map(|d| d.description.clone())
     }
 
     /// The backend a connection revision naming `provider_digest` runs on: a

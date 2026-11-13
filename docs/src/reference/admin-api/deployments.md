@@ -43,7 +43,7 @@ The same answer reports these capabilities and runtime state:
 |---|---|
 | `channel_drivers` | The registered channel drivers. |
 | `channel_driver_info` | What each of those drivers declares: `protocol`, `supports_sync`, `supports_async`, `registers_http_routes`, `supports_oauth2_login`, `ingress_guards` (for a driver that runs its own listener, the guards its deliveries pass) and `transport_schema` (the `orion-json-schema/1` document its channels' `transport_config` must satisfy, when it publishes one). `orion-cli compile --capabilities` reads it. |
-| `provider_backends` | Each backend's `kind` and `driver_id`, plus `package_digest` for a `rust` driver compiled into the server: the digest a connection revision over it names. |
+| `provider_backends` | Each backend's `kind` and `driver_id`, plus `package_digest` for a `rust` driver compiled into the server (the digest a connection revision over it names) and `operations` when it declares them (aliases and input/output schemas, by canonical name). |
 | `deployment_head` | The head's `revision` and `epoch`. |
 | `native_scheduler` | The native work scheduler's load. |
 | `node_status` | Desired and applied revisions, quarantined members, the last build error and its backoff. |

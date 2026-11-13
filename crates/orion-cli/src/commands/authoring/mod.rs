@@ -407,6 +407,56 @@ pub(crate) fn capabilities_drivers(
     Ok(Some(registry))
 }
 
+/// The [`Boundary`](orion_authoring::definitions::Boundary) parts
+/// `--capabilities FILE` describes: the node's channel drivers, and the
+/// operations its providers declare (`provider_backends[].operations`).
+/// Default without the flag.
+pub(crate) fn capabilities_boundary(
+    path: Option<&str>,
+) -> Result<orion_authoring::definitions::Boundary, Box<dyn std::error::Error>> {
+    let mut boundary = orion_authoring::definitions::Boundary {
+        channel_drivers: capabilities_drivers(path)?,
+        ..Default::default()
+    };
+    let Some(path) = path else {
+        return Ok(boundary);
+    };
+    let value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+    let answer = value
+        .get("data")
+        .filter(|d| d.is_object())
+        .unwrap_or(&value);
+    let backends: Vec<orion_api::v2::ProviderBackendInfo> = answer
+        .get("provider_backends")
+        .map(|b| serde_json::from_value(b.clone()))
+        .transpose()
+        .map_err(|e| format!("--capabilities {path}: `provider_backends`: {e}"))?
+        .unwrap_or_default();
+    let mut operations = std::collections::BTreeMap::new();
+    for backend in backends {
+        let Some(declared) = backend.operations else {
+            continue;
+        };
+        let mut description = orion_runtime::extensions::ProviderDescription::new();
+        for (name, op) in declared {
+            let mut described = orion_runtime::extensions::OperationDescription::new();
+            for alias in op.aliases {
+                described = described.with_alias(alias);
+            }
+            if let Some(schema) = op.input_schema {
+                described = described.with_input_schema(schema);
+            }
+            if let Some(schema) = op.output_schema {
+                described = described.with_output_schema(schema);
+            }
+            description = description.with_operation(name, described);
+        }
+        operations.insert(backend.driver_id, description);
+    }
+    boundary.provider_operations = Some(operations);
+    Ok(boundary)
+}
+
 fn load_and_gate(
     dir: &str,
     boundary: orion_authoring::definitions::Boundary,

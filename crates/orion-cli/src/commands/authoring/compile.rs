@@ -87,10 +87,7 @@ pub(crate) fn run_compile(req: CompileRequest<'_>) -> Result<(), Box<dyn std::er
     // references may live outside it: the boundary is empty.
     let (set, _) = load_and_gate(
         req.dir,
-        orion_authoring::definitions::Boundary {
-            channel_drivers: super::capabilities_drivers(req.capabilities)?,
-            ..Default::default()
-        },
+        super::capabilities_boundary(req.capabilities)?,
         true,
         req.deny_warnings,
         req.plugin_dirs,

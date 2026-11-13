@@ -181,6 +181,10 @@ impl ProviderBackend for HttpProviderBackend {
         DRIVER_HTTP
     }
 
+    fn describe(&self) -> Option<orion_extension_api::ProviderDescription> {
+        Some(super::http_description())
+    }
+
     fn validate_config(&self, config: &Value) -> Result<(), ConnectorError> {
         let Some(url) = config.get("url").and_then(Value::as_str) else {
             return Err(ConnectorError::invalid_input(

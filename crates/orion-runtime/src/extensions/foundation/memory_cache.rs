@@ -231,6 +231,10 @@ impl ProviderBackend for MemoryCacheProviderBackend {
         DRIVER_MEMORY_CACHE
     }
 
+    fn describe(&self) -> Option<orion_extension_api::ProviderDescription> {
+        Some(super::memory_cache_description())
+    }
+
     fn validate_config(&self, config: &Value) -> Result<(), ConnectorError> {
         if let Some(backend) = config.get("backend").and_then(Value::as_str)
             && !backend.eq_ignore_ascii_case("memory")
