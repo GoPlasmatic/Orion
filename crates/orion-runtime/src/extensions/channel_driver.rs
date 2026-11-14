@@ -377,6 +377,7 @@ impl ChannelDriverRegistry {
             out.push(problem);
         }
         out.extend(ingress_problems(driver.as_ref(), fields, config));
+        out.extend(hook_problems(driver.as_ref(), config));
         out.extend(transport_schema_problems(driver.as_ref(), transport_config));
         out.extend(driver.validate_transport(transport_config, config, channel_id));
         out
@@ -621,6 +622,72 @@ fn ingress_problems(
                 format!(
                     "a '{protocol}' channel registers no HTTP route and must not declare \
                      route_pattern"
+                ),
+            ));
+        }
+    }
+    out
+}
+
+/// `config` keys a hooked channel's requests never pass through, whatever
+/// guards its driver declares: the driver owns the request body and the
+/// answer.
+const HOOK_REFUSED_CONFIG_KEYS: &[(&str, &str)] = &[
+    (
+        "cache",
+        "the driver owns the answer, so there is nothing for a response cache to key on or serve",
+    ),
+    (
+        "request",
+        "`request` shapes a JSON body into `data`; the driver reads the body and supplies `data`",
+    ),
+    (
+        "response",
+        "`response` shapes a workflow's reply, and the driver writes the reply",
+    ),
+    (
+        "oauth2_login",
+        "both legs of the sign-in flow are the data route's own redirects",
+    ),
+];
+
+/// A hooked channel ([`ChannelDriverCapabilities::http_hook`]) may configure
+/// only the guards its two rows run: the always-on rate limit, `auth`,
+/// `principal_rate_limit` and `origin_allow_list`, and what its driver
+/// declared. Anything else would be accepted and never applied. The rows this
+/// mirrors are `Transport::HttpHook` and `Transport::HttpHookRun` in
+/// `channel::guards`.
+fn hook_problems(driver: &dyn ChannelDriver, config: &Value) -> Vec<FieldError> {
+    let Some(guards) = driver.capabilities().http_hook else {
+        return Vec::new();
+    };
+    let Some(map) = config.as_object() else {
+        return Vec::new();
+    };
+    let protocol = driver.protocol_id();
+    let set = |key: &str| map.get(key).is_some_and(|v| !v.is_null());
+    let mut out = Vec::new();
+    for (key, why) in HOOK_REFUSED_CONFIG_KEYS {
+        if set(key) {
+            out.push(FieldError::new(
+                format!("channel.config.{key}"),
+                orion_api::error::field_codes::INVALID,
+                format!("a '{protocol}' channel must not set {key}: {why}"),
+            ));
+        }
+    }
+    for (key, runs) in [
+        ("validation_logic", guards.validation),
+        ("deduplication", guards.deduplication),
+        ("backpressure", guards.backpressure),
+    ] {
+        if !runs && set(key) {
+            out.push(FieldError::new(
+                format!("channel.config.{key}"),
+                orion_api::error::field_codes::INVALID,
+                format!(
+                    "a '{protocol}' channel must not set {key}: the '{protocol}' driver does \
+                     not run that guard"
                 ),
             ));
         }
@@ -1017,6 +1084,80 @@ mod tests {
         let mut old = serde_json::to_value(&described[0]).expect("serializes");
         old.as_object_mut().expect("object").remove("http_hook");
         let _: ChannelDriverInfo = serde_json::from_value(old).expect("http_hook defaults");
+    }
+
+    fn gql_fields(channel_type: &'static str) -> ChannelProtocolFields<'static> {
+        let mut f = fields("gql", channel_type);
+        f.route_pattern = Some("/graphql");
+        f
+    }
+
+    #[test]
+    fn a_hooked_channel_may_not_configure_cache_oauth_request_or_response() {
+        let reg = with_hook(hook_caps());
+        let accepted = json!({
+            "rate_limit": {"requests_per_second": 5},
+            "auth": {"type": "api_key", "keys": ["k"]},
+            "origin_allow_list": ["https://app.example"],
+            "validation_logic": {"!!": [{"var": "data.query"}]},
+            "backpressure": {"max_concurrent": 2},
+            "timeout_ms": 1000,
+        });
+        let errs = reg.validate_channel(&gql_fields("sync"), &json!({}), &accepted, None);
+        assert!(errs.is_empty(), "{errs:?}");
+
+        let refused = json!({
+            "cache": {"enabled": true},
+            "request": {"body_mode": "payload"},
+            "response": {"mode": "shaped"},
+            "oauth2_login": {"provider": "x"},
+            // Not declared by this driver.
+            "deduplication": {"header": "x-id", "window_secs": 60},
+        });
+        let errs = reg.validate_channel(&gql_fields("sync"), &json!({}), &refused, None);
+        let mut paths: Vec<&str> = errs.iter().map(|e| e.path.as_str()).collect();
+        paths.sort_unstable();
+        assert_eq!(
+            paths,
+            [
+                "channel.config.cache",
+                "channel.config.deduplication",
+                "channel.config.oauth2_login",
+                "channel.config.request",
+                "channel.config.response",
+            ],
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn a_hooked_channel_may_not_be_async() {
+        let reg = with_hook(hook_caps());
+        let errs = reg.validate_channel(&gql_fields("async"), &json!({}), &json!({}), None);
+        assert!(
+            errs.iter().any(|e| e.path == "channel.channel_type"),
+            "a hook answers for itself: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn a_described_hook_is_validated_offline_as_its_node_would() {
+        let node = with_hook(hook_caps());
+        let offline = ChannelDriverRegistry::with_described(&node.describe()).expect("distinct");
+        for config in [
+            json!({"cache": {"enabled": true}}),
+            json!({"deduplication": {"header": "x-id", "window_secs": 60}}),
+            json!({"validation_logic": {"!!": [{"var": "data.query"}]}}),
+            json!({}),
+        ] {
+            let paths = |reg: &ChannelDriverRegistry| -> Vec<String> {
+                reg.validate_channel(&gql_fields("sync"), &json!({}), &config, None)
+                    .into_iter()
+                    .map(|e| e.path)
+                    .collect()
+            };
+            assert_eq!(paths(&offline), paths(&node), "{config}");
+        }
     }
 
     #[test]

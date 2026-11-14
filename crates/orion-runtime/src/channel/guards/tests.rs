@@ -651,6 +651,118 @@ fn cron_guards_and_validation_agree() {
     assert!(!refused("validation_logic") && !refused("backpressure"));
 }
 
+/// A hooked channel's two rows: everything keyed on the caller runs once per
+/// request, and a run inside it is judged only on its own `data`.
+#[test]
+fn http_hook_row_runs_rate_limit_auth_origin_and_declared_guards() {
+    use orion_extension_api::HttpHookGuards;
+    let none = Transport::HttpHook(HttpHookGuards::none()).guards();
+    assert!(none.rate_limit && none.auth && none.origin_allow_list);
+    assert!(
+        !none.validation,
+        "the body is the driver's, and need not be JSON"
+    );
+    assert!(!none.deduplication && !none.backpressure);
+    assert!(!none.response_cache && !none.oauth2_login);
+
+    let all = HttpHookGuards::none()
+        .validation()
+        .deduplication()
+        .backpressure();
+    let declared = Transport::HttpHook(all).guards();
+    assert!(declared.deduplication && declared.backpressure);
+    assert!(
+        !declared.validation,
+        "validation judges each run, not the request"
+    );
+}
+
+#[test]
+fn http_hook_run_row_runs_only_declared_validation() {
+    use orion_extension_api::HttpHookGuards;
+    let all = HttpHookGuards::none()
+        .validation()
+        .deduplication()
+        .backpressure();
+    assert_eq!(
+        Transport::HttpHookRun(all).guards(),
+        super::GuardSet {
+            auth: false,
+            origin_allow_list: false,
+            rate_limit: false,
+            validation: true,
+            deduplication: false,
+            response_cache: false,
+            backpressure: false,
+            oauth2_login: false,
+        }
+    );
+    assert!(
+        !Transport::HttpHookRun(HttpHookGuards::none())
+            .guards()
+            .validation
+    );
+}
+
+/// As for cron: every guard both hook rows leave off must be a key authoring
+/// refuses on a hooked channel, or it is accepted and silently ignored.
+#[test]
+fn hook_guards_and_validation_agree() {
+    use orion_extension_api::{
+        ChannelDriver, ChannelDriverCapabilities, ChannelProtocolFields, HttpHookGuards,
+    };
+    struct Hook;
+    impl ChannelDriver for Hook {
+        fn protocol_id(&self) -> &str {
+            "hook"
+        }
+        fn capabilities(&self) -> ChannelDriverCapabilities {
+            ChannelDriverCapabilities::none()
+                .sync()
+                .http_routes()
+                .http_hook(HttpHookGuards::none())
+        }
+        fn validate_fields(&self, _: &ChannelProtocolFields<'_>) -> Vec<crate::errors::FieldError> {
+            Vec::new()
+        }
+    }
+    let mut drivers = crate::extensions::channel_driver::community_drivers();
+    drivers.push(Arc::new(Hook));
+    let registry =
+        crate::extensions::ChannelDriverRegistry::new(drivers).expect("distinct protocols");
+    let mut fields = ChannelProtocolFields::new("hook");
+    fields.channel_type = Some("sync");
+    let refused = |key: &str| {
+        !registry
+            .validate_channel(&fields, &json!({}), &json!({ key: {} }), None)
+            .is_empty()
+    };
+    let request = Transport::HttpHook(HttpHookGuards::none()).guards();
+    let run = Transport::HttpHookRun(HttpHookGuards::none()).guards();
+    for (on, key) in [
+        (request.auth || run.auth, "auth"),
+        (
+            request.origin_allow_list || run.origin_allow_list,
+            "origin_allow_list",
+        ),
+        (request.rate_limit || run.rate_limit, "rate_limit"),
+        (request.validation || run.validation, "validation_logic"),
+        (request.deduplication || run.deduplication, "deduplication"),
+        (request.response_cache || run.response_cache, "cache"),
+        (request.backpressure || run.backpressure, "backpressure"),
+        (request.oauth2_login || run.oauth2_login, "oauth2_login"),
+    ] {
+        assert!(
+            on || refused(key),
+            "both hook rows leave `{key}` off, so authoring must refuse it"
+        );
+        assert!(
+            !on || !refused(key),
+            "a hook row runs `{key}`, so authoring must accept it"
+        );
+    }
+}
+
 /// Authentication is enforced on both HTTP ingresses, not just the one a
 /// test happened to exercise.
 ///

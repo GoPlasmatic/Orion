@@ -23,6 +23,24 @@
 //! driver declares, drawn from rate limit, `validation_logic`, deduplication
 //! and backpressure only; the HTTP-only guards are never on it.
 //!
+//! A hooked channel (its driver serves the request itself, see
+//! `orion_extension_api::http`) passes two rows: [`Transport::HttpHook`] once
+//! per request, before the driver sees it, and [`Transport::HttpHookRun`] once
+//! per run the driver makes. `decl` is what the driver declared in its
+//! `HttpHookGuards`:
+//!
+//! | Guard | `HttpHook` (per request) | `HttpHookRun` (per run) |
+//! |---|---|---|
+//! | rate limit | ✅ | ❌ |
+//! | channel `auth` (+ principal limit) | ✅ | ❌ |
+//! | origin allow-list | ✅ | ❌ |
+//! | `validation_logic` | ❌ | decl |
+//! | deduplication | decl | ❌ |
+//! | response cache | ❌ | ❌ |
+//! | backpressure | decl | ❌ |
+//! | `oauth2_login` | ❌ | ❌ |
+//! | channel `timeout_ms` | — | ✅ |
+//!
 //! ¹ clamped to the transport's ceiling — see [`effective_timeout_ms`]. The
 //! async worker caps the channel value at `trace_queue.processing_timeout_ms`,
 //! because on that path the deadline protects a shared resource (a queue
@@ -103,6 +121,11 @@ pub enum Transport {
     /// which core guards its protocol runs; the HTTP-only guards are never
     /// among them.
     Extension(orion_extension_api::GuardSet),
+    /// A request to a hooked channel, before its driver's `serve_http` sees
+    /// it. Carries what the driver declared.
+    HttpHook(orion_extension_api::HttpHookGuards),
+    /// One run a hooked channel's driver makes through `HttpHost::run`.
+    HttpHookRun(orion_extension_api::HttpHookGuards),
 }
 
 /// The guards one transport applies.
@@ -254,6 +277,38 @@ impl Transport {
                 deduplication: declared.deduplication,
                 response_cache: false,
                 backpressure: declared.backpressure,
+                oauth2_login: false,
+            },
+            // The request is the unit a client controls, so everything keyed
+            // on the caller runs once, here: the rate limit (counting runs
+            // would let a document with many fields lock its sender out), the
+            // credential, the origin. Deduplication is per request for the
+            // same reason a per-run key would collide inside one request. The
+            // permit is taken once and, for a stream, held until it ends:
+            // a second permit per run would count one request twice.
+            // Validation is off because the body is the driver's to read and
+            // need not be JSON; it judges each run instead. The cache and the
+            // sign-in flow are off because the driver owns the answer.
+            Transport::HttpHook(declared) => GuardSet {
+                auth: true,
+                origin_allow_list: true,
+                rate_limit: true,
+                validation: false,
+                deduplication: declared.deduplication,
+                response_cache: false,
+                backpressure: declared.backpressure,
+                oauth2_login: false,
+            },
+            // A run inside an admitted request: only what judges the run's
+            // own `data`. Everything keyed on the caller ran on the request.
+            Transport::HttpHookRun(declared) => GuardSet {
+                auth: false,
+                origin_allow_list: false,
+                rate_limit: false,
+                validation: declared.validation,
+                deduplication: false,
+                response_cache: false,
+                backpressure: false,
                 oauth2_login: false,
             },
         }
