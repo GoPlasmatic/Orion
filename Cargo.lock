@@ -2968,6 +2968,7 @@ dependencies = [
  "orion-authoring",
  "orion-common",
  "orion-engine",
+ "orion-extension-api",
  "orion-plugin-host",
  "orion-runtime",
  "orion-storage",
