@@ -137,8 +137,76 @@ async fn ping_at_boot(store: &dyn SharedStateStore, timeout: Duration) -> Result
     }
 }
 
+/// A store standing in for an edition's, for this crate's unit tests: it
+/// answers its ping as told, and nothing else is called on it.
+#[cfg(test)]
+pub(crate) mod test_store {
+    use std::sync::Arc;
+
+    use orion_extension_api::{SharedStateStore, StoreError};
+
+    pub(crate) struct Fake {
+        pub(crate) name: &'static str,
+        pub(crate) ping: Result<(), StoreError>,
+        pub(crate) hangs: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl SharedStateStore for Fake {
+        fn name(&self) -> &str {
+            self.name
+        }
+        async fn get(&self, _: &str) -> Result<Option<String>, StoreError> {
+            unreachable!("not called here")
+        }
+        async fn get_many(&self, _: &[String]) -> Result<Vec<Option<String>>, StoreError> {
+            unreachable!("not called here")
+        }
+        async fn set(&self, _: &str, _: &str, _: Option<u64>) -> Result<(), StoreError> {
+            unreachable!("not called here")
+        }
+        async fn remove_many(&self, _: &[String]) -> Result<u64, StoreError> {
+            unreachable!("not called here")
+        }
+        async fn claim(&self, _: &str, _: &str, _: u64) -> Result<Option<String>, StoreError> {
+            unreachable!("not called here")
+        }
+        async fn incr_by(&self, _: &str, _: i64, _: Option<u64>) -> Result<i64, StoreError> {
+            unreachable!("not called here")
+        }
+        async fn hit_window(&self, _: &str) -> Result<i64, StoreError> {
+            unreachable!("not called here")
+        }
+        async fn ping(&self) -> Result<(), StoreError> {
+            if self.hangs {
+                std::future::pending::<()>().await;
+            }
+            self.ping.clone()
+        }
+    }
+
+    /// A store named `fake` that answers its ping with `ping`.
+    pub(crate) fn fake(ping: Result<(), StoreError>) -> Arc<dyn SharedStateStore> {
+        Arc::new(Fake {
+            name: "fake",
+            ping,
+            hangs: false,
+        })
+    }
+
+    /// A healthy store named `name`.
+    pub(crate) fn named(name: &'static str) -> Arc<dyn SharedStateStore> {
+        Arc::new(Fake {
+            name,
+            ping: Ok(()),
+            hangs: false,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_store::{Fake, fake};
     use super::*;
     use orion_extension_api::StoreError;
 
@@ -150,52 +218,6 @@ mod tests {
         let mut config = AppConfig::default();
         config.cluster.enabled = true;
         config
-    }
-
-    /// A store an edition might register: it answers its ping as told, and
-    /// nothing else is called on it here.
-    struct Fake {
-        ping: Result<(), StoreError>,
-        hangs: bool,
-    }
-
-    #[async_trait::async_trait]
-    impl SharedStateStore for Fake {
-        fn name(&self) -> &str {
-            "fake"
-        }
-        async fn get(&self, _: &str) -> Result<Option<String>, StoreError> {
-            unreachable!("not called at boot")
-        }
-        async fn get_many(&self, _: &[String]) -> Result<Vec<Option<String>>, StoreError> {
-            unreachable!("not called at boot")
-        }
-        async fn set(&self, _: &str, _: &str, _: Option<u64>) -> Result<(), StoreError> {
-            unreachable!("not called at boot")
-        }
-        async fn remove_many(&self, _: &[String]) -> Result<u64, StoreError> {
-            unreachable!("not called at boot")
-        }
-        async fn claim(&self, _: &str, _: &str, _: u64) -> Result<Option<String>, StoreError> {
-            unreachable!("not called at boot")
-        }
-        async fn incr_by(&self, _: &str, _: i64, _: Option<u64>) -> Result<i64, StoreError> {
-            unreachable!("not called at boot")
-        }
-        async fn hit_window(&self, _: &str) -> Result<i64, StoreError> {
-            unreachable!("not called at boot")
-        }
-        async fn ping(&self) -> Result<(), StoreError> {
-            if self.hangs {
-                std::future::pending::<()>().await;
-            }
-            self.ping.clone()
-        }
-    }
-
-    /// Also the external store `reconcile`'s tests use.
-    pub(super) fn fake(ping: Result<(), StoreError>) -> Arc<dyn SharedStateStore> {
-        Arc::new(Fake { ping, hangs: false })
     }
 
     #[tokio::test]
@@ -262,6 +284,7 @@ mod tests {
         let mut config = enabled();
         config.engine.health_check_timeout_secs = 1;
         let hung: Arc<dyn SharedStateStore> = Arc::new(Fake {
+            name: "fake",
             ping: Ok(()),
             hangs: true,
         });

@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::admission::{EditionTier, PackageVerifier};
 use crate::channel::ChannelDriver;
+use crate::cluster::SharedStateStore;
 use crate::contract::ImplementationKind;
 use crate::identity::BackendKey;
 use crate::pool::PoolEntry;
@@ -24,6 +25,7 @@ use crate::provider::ProviderBackend;
 ///     // node.channel_driver(Arc::new(QueueChannelDriver));
 ///     // node.provider_backend(Arc::new(DocumentStoreProvider::new()));
 ///     // node.package_verifier(Arc::new(LicencedPackageVerifier::new()));
+///     // node.cluster_store(Arc::new(RedisSharedStore::lazy(&settings)));
 /// #   let _ = Arc::new(());
 /// }
 /// ```
@@ -46,6 +48,17 @@ pub trait Registrar {
 
     /// The package verifier, replacing the one already composed.
     fn package_verifier(&mut self, verifier: Arc<dyn PackageVerifier>);
+
+    /// The cluster's shared hot-path store, in place of the state
+    /// database's. One per node: a second is a [`CompositionError`].
+    ///
+    /// Registration cannot wait on the network, so hand over a client that
+    /// connects lazily. The node pings it at boot, bounded by
+    /// `engine.health_check_timeout_secs`, and refuses to start when it does
+    /// not answer; `/readyz` then reports it as its `cluster_store`
+    /// component. With `cluster.enabled = false` it is unused, and the node
+    /// says so at startup.
+    fn cluster_store(&mut self, store: Arc<dyn SharedStateStore>);
 }
 
 /// A second backend under a `(kind, driver_id)` that already has one.
@@ -124,7 +137,8 @@ fn pointer_suffix(pointer: &str) -> String {
 /// Why a composition does not build. Most variants are a second
 /// registration of something the composition already holds: every extension
 /// point is keyed (a channel protocol, a provider's `(kind, driver_id)`, a
-/// pool's `cache_id`), and a node serves one of each. The rest are a
+/// pool's `cache_id`) or single (the cluster store), and a node serves one
+/// of each. The rest are a
 /// registered extension that could never serve.
 ///
 /// Non-exhaustive: new extension points add variants.
@@ -157,5 +171,16 @@ pub enum CompositionError {
         code: String,
         /// Where the profile found it (with the schema pointer, when it has one).
         location: String,
+    },
+    /// Two cluster shared-state stores.
+    #[error(
+        "composition: a cluster store '{existing}' is already registered; \
+         '{added}' cannot be registered beside it"
+    )]
+    DuplicateClusterStore {
+        /// The first store's `name()`.
+        existing: String,
+        /// The second store's `name()`.
+        added: String,
     },
 }

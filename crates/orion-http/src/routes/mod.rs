@@ -558,8 +558,8 @@ fn tasks_component(state: &AppState) -> (&'static str, Vec<crate::runtime::TaskR
     (component, report)
 }
 
-/// Readiness probe — checks DB, engine, background tasks, and
-/// startup readiness. Use for Kubernetes
+/// Readiness probe — checks DB, engine, background tasks, an edition's
+/// cluster store, and startup readiness. Use for Kubernetes
 /// `readinessProbe`.
 #[utoipa::path(
     get,
@@ -570,8 +570,15 @@ fn tasks_component(state: &AppState) -> (&'static str, Vec<crate::runtime::TaskR
     description = "\
 Readiness probe. Reports `ready` only when the database responds, startup \
 has completed, every background task the node cannot work without is still \
-running. In cluster mode the shared dedup store, response cache and rate \
-limits live in that same database, so its check covers them. The \
+running, and, in cluster mode with a store the edition supplies, that store \
+responds. In cluster mode the shared dedup store, response cache and rate \
+limits live in the state database unless the edition supplies a store for \
+them; then `components.cluster_store` reports it as `{name, status}`, \
+`status` being `ok` or `error`, and an `error` makes the node not ready, \
+because dedup would otherwise fail open while the data plane answers 200s. \
+The component is absent when the database holds the shared store, whose \
+check `components.database` already is. Both pings run concurrently, each \
+bounded by `engine.health_check_timeout_secs`. The \
 `components.engine` field is a constant `\"ok\"` kept for response-shape \
 stability: the engine snapshot is lock-free and cannot be unavailable once \
 the process serves.
@@ -591,13 +598,16 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
     use std::sync::atomic::Ordering;
 
     let initialized = state.ready.load(Ordering::Acquire);
-    let db_ping = state.ping_db().await;
+    let (db_ping, store_ping) = tokio::join!(state.ping_db(), state.ping_cluster_store());
     let db_healthy = db_ping.is_ok();
+    // `None`: no edition store to ask, so nothing to fold in.
+    let store_healthy = store_ping.unwrap_or(true);
     let (tasks_state, _) = tasks_component(&state);
     // A driver that is not consuming leaves its protocol's work undone while
     // every other component reads `ok`, so it takes the node out of rotation.
     let drivers_ready = state.ingress.all_ready();
-    let all_ready = db_healthy && initialized && tasks_state != "error" && drivers_ready;
+    let all_ready =
+        db_healthy && store_healthy && initialized && tasks_state != "error" && drivers_ready;
     let http_status = if all_ready {
         StatusCode::OK
     } else {
@@ -618,6 +628,16 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
                 .into_iter()
                 .map(|(protocol, health)| (protocol, health.component().to_string()))
                 .collect(),
+            cluster_store: store_ping.and_then(|ok| {
+                state
+                    .cluster
+                    .shared
+                    .as_ref()
+                    .map(|store| orion_api::ClusterStoreReadiness {
+                        name: store.name().to_string(),
+                        status: if ok { "ok" } else { "error" }.to_string(),
+                    })
+            }),
         },
     };
 

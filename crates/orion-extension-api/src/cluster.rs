@@ -2,10 +2,10 @@
 //! response cache, namespace invalidation counters and fleet-wide rate
 //! windows.
 //!
-//! Community's is the node's state database. An edition may supply its own,
-//! e.g. Redis. Coordination of record (breaker epochs, job leases, DLQ
+//! Community's is the node's state database. An edition may register its
+//! own ([`crate::Registrar::cluster_store`]), e.g. Redis. Coordination of record (breaker epochs, job leases, DLQ
 //! claims, the config epoch) stays on the state database whatever is
-//! supplied here.
+//! registered here.
 
 use async_trait::async_trait;
 

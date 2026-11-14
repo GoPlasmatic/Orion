@@ -64,10 +64,10 @@ pub mod v2;
 pub use digest::{Digest, DigestError};
 pub use dto::{
     AuditLogEntryResponse, BackupFileResponse, BackupListItemResponse, CircuitBreakerResetResponse,
-    CircuitBreakerStatesResponse, CronOccurrenceResponse, CronOccurrenceSummaryResponse,
-    CronScheduleStatusResponse, DlqPurgeResponse, HealthResponse, LivenessResponse,
-    ReadinessComponents, ReadinessResponse, TraceDetailResponse, TraceDlqEntryResponse,
-    TraceDlqSummaryResponse, TraceListItemResponse,
+    CircuitBreakerStatesResponse, ClusterStoreReadiness, CronOccurrenceResponse,
+    CronOccurrenceSummaryResponse, CronScheduleStatusResponse, DlqPurgeResponse, HealthResponse,
+    LivenessResponse, ReadinessComponents, ReadinessResponse, TraceDetailResponse,
+    TraceDlqEntryResponse, TraceDlqSummaryResponse, TraceListItemResponse,
 };
 pub use engine::{
     CacheInvalidatedResponse, ChannelLoadIssueResponse, ConnectorLoadIssueResponse,

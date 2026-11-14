@@ -9,8 +9,8 @@
 //!
 //! - [`CompositionBuilder`] (also named [`CompositionRoot`]; Community's is
 //!   [`CompositionBuilder::community`]) collects
-//!   the edition, its channel drivers, provider backends, pool caches and
-//!   package verifier. It implements `Registrar`, so an edition's
+//!   the edition, its channel drivers, provider backends, pool caches,
+//!   package verifier and cluster store. It implements `Registrar`, so an edition's
 //!   registration code is written against the API crate and applied with
 //!   [`CompositionBuilder::with_extension`].
 //! - `orion::run` / `bootstrap::assemble` create the node's services
@@ -53,7 +53,8 @@ pub use orion_extension_api::{
     ConnectorErrorClass, ConnectorOutput, Digest, EditionTier, EffectStatus,
     EffectiveConnectionIdentity, ErrorOrigin, ImplementationKind, NodeInfo, OperationDescription,
     PackageAdmissionRequest, PackageVerifier, PoolEntry, ProviderBackend, ProviderDescription,
-    ProviderId, ProviderRef, Registrar, RetryAdvice, Revision, SecretValue, ValidateContext, codes,
+    ProviderId, ProviderRef, Registrar, RetryAdvice, Revision, SecretValue, SharedStateStore,
+    ValidateContext, codes,
 };
 
 pub use admission::{Admission, CommunityPackageVerifier, RevocationLedger};
@@ -116,7 +117,8 @@ pub struct BuildContext {
 
 /// An owned description of what a node serves: its edition, the
 /// channel drivers, the connector provider backends, the connection-pool
-/// caches and the package verifier. The node freezes it into the
+/// caches, the package verifier and the cluster's shared store. The node
+/// freezes it into the
 /// [`Composition`] it runs on when it starts; nothing registered here can
 /// change after that.
 ///
@@ -150,6 +152,9 @@ pub struct CompositionBuilder {
     provider_setups: Vec<ProviderSetup>,
     pools: Vec<PoolEntry>,
     verifier: Arc<dyn PackageVerifier>,
+    /// Kept as registered, so a second one is the error [`Self::build`] and
+    /// [`Self::cluster_store`] both report.
+    cluster_stores: Vec<Arc<dyn SharedStateStore>>,
 }
 
 /// Another name for [`CompositionBuilder`]: `CompositionRoot::community()` is
@@ -178,6 +183,14 @@ impl std::fmt::Debug for CompositionBuilder {
             )
             .field("provider_setups", &self.provider_setups.len())
             .field("package_verifier", &self.verifier.policy_id())
+            .field(
+                "cluster_store",
+                &self
+                    .cluster_stores
+                    .iter()
+                    .map(|s| s.name().to_string())
+                    .collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
@@ -195,6 +208,7 @@ impl CompositionBuilder {
             provider_setups: Vec::new(),
             pools: Vec::new(),
             verifier: Arc::new(CommunityPackageVerifier),
+            cluster_stores: Vec::new(),
         }
     }
 
@@ -262,6 +276,32 @@ impl CompositionBuilder {
         self
     }
 
+    /// Register the cluster's shared hot-path store (dedup claims, the
+    /// response cache, namespace counters, rate windows), in place of the
+    /// state database's. Used only with `cluster.enabled`; one per node.
+    pub fn with_cluster_store(mut self, store: Arc<dyn SharedStateStore>) -> Self {
+        self.cluster_stores.push(store);
+        self
+    }
+
+    /// The cluster store registered on this builder, if any, or the
+    /// [`CompositionError::DuplicateClusterStore`] a second registration is.
+    ///
+    /// Read before [`Self::build`]: the cluster runtime is built in the
+    /// node's first boot phase, before the composition is frozen, and the
+    /// store it holds is fixed from then on. `build` repeats the check, so
+    /// a caller that never asks fails the same way.
+    pub fn cluster_store(&self) -> Result<Option<Arc<dyn SharedStateStore>>, CompositionError> {
+        match self.cluster_stores.as_slice() {
+            [] => Ok(None),
+            [only] => Ok(Some(only.clone())),
+            [existing, added, ..] => Err(CompositionError::DuplicateClusterStore {
+                existing: existing.name().to_string(),
+                added: added.name().to_string(),
+            }),
+        }
+    }
+
     /// Apply an edition's registration code, written against
     /// [`Registrar`] (`orion-extension-api`) rather than this builder.
     pub fn with_extension(mut self, register: impl FnOnce(&mut dyn Registrar)) -> Self {
@@ -273,6 +313,7 @@ impl CompositionBuilder {
     /// setups, then key every driver, provider and pool. The first
     /// duplicate is the error.
     pub fn build(self, node: BuildContext) -> Result<Composition, CompositionError> {
+        self.cluster_store()?;
         let Self {
             edition,
             channels,
@@ -280,6 +321,7 @@ impl CompositionBuilder {
             provider_setups,
             mut pools,
             verifier,
+            cluster_stores: _,
         } = self;
         let BuildContext {
             deployments,
@@ -374,6 +416,10 @@ impl Registrar for CompositionBuilder {
 
     fn package_verifier(&mut self, verifier: Arc<dyn PackageVerifier>) {
         self.verifier = verifier;
+    }
+
+    fn cluster_store(&mut self, store: Arc<dyn SharedStateStore>) {
+        self.cluster_stores.push(store);
     }
 }
 
@@ -599,6 +645,37 @@ mod tests {
             "com.example.pool",
             1,
         ))));
+    }
+
+    #[test]
+    fn a_second_cluster_store_is_a_composition_error() {
+        use crate::cluster::test_store::named;
+
+        let one = CompositionRoot::community().with_cluster_store(named("redis"));
+        let store = one.cluster_store().unwrap().expect("the registered store");
+        assert_eq!(store.name(), "redis");
+        assert!(one.build_in_memory().is_ok());
+        assert!(
+            CompositionRoot::community()
+                .cluster_store()
+                .unwrap()
+                .is_none()
+        );
+
+        let expected = CompositionError::DuplicateClusterStore {
+            existing: "redis".to_string(),
+            added: "other".to_string(),
+        };
+        // Through the builder, read before build.
+        let two = CompositionRoot::community()
+            .with_cluster_store(named("redis"))
+            .with_cluster_store(named("other"));
+        assert_eq!(two.cluster_store().err(), Some(expected.clone()));
+        // And through build, the same error, also via the extension API.
+        let two = CompositionRoot::community()
+            .with_cluster_store(named("redis"))
+            .with_extension(|node: &mut dyn Registrar| node.cluster_store(named("other")));
+        assert_eq!(two.build_in_memory().err(), Some(expected));
     }
 
     #[test]

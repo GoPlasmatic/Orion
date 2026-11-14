@@ -559,6 +559,26 @@ pub struct ReadinessComponents {
     /// composes none.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub channel_drivers: std::collections::BTreeMap<String, String>,
+    /// The cluster's shared store, when an edition supplies it and the
+    /// cluster is enabled. An unreachable store makes the node not ready.
+    /// Absent otherwise: the state database's store is covered by
+    /// `database`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_store: Option<ClusterStoreReadiness>,
+}
+
+/// The `cluster_store` component of a [`ReadinessComponents`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct ClusterStoreReadiness {
+    /// The store's name, e.g. `redis`.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub name: String,
+    /// `ok` | `error`.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub status: String,
 }
 
 /// `GET /health`: the detailed report. The fields after `components` are

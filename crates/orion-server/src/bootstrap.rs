@@ -1052,7 +1052,19 @@ pub async fn assemble(
     } = params;
     crate::version::record_build(env!("GIT_HASH"), env!("BUILD_TIMESTAMP"));
 
-    let storage = open_storage(config, pool).await?;
+    // The cluster runtime is built in phase 1, before the composition is
+    // frozen, so its store is read off the builder here.
+    let cluster_store = composition.cluster_store()?;
+    if let Some(store) = &cluster_store
+        && !config.cluster.enabled
+    {
+        tracing::warn!(
+            cluster_store = store.name(),
+            "a cluster store '{}' is registered but cluster.enabled = false; it is unused",
+            store.name()
+        );
+    }
+    let storage = open_storage(config, pool, cluster_store).await?;
     let components = build_serving_components(&storage, composition)
         .await?
         .publish_first_generation(&storage.config);
@@ -1121,8 +1133,12 @@ pub struct Storage {
     pub channel_loader: Arc<crate::channel::ChannelLoader>,
 }
 
-/// Boot phase 1: the node's identity, the cluster runtime over the state
-/// database, the repositories and the channel loader.
+/// Boot phase 1: the node's identity, the cluster runtime, the repositories
+/// and the channel loader.
+///
+/// The cluster's shared store is `cluster_store` (an edition's, read off its
+/// composition) or, with none, the state database; it is used only with
+/// `cluster.enabled`.
 ///
 /// One identity for this node, resolved once: the cluster runtime, the node
 /// reconciler and the deployment store's receipts all read it from here.
@@ -1131,6 +1147,7 @@ pub struct Storage {
 pub async fn open_storage(
     config: Arc<config::AppConfig>,
     pool: crate::storage::DbPool,
+    cluster_store: Option<Arc<dyn crate::extension_api::SharedStateStore>>,
 ) -> Result<Storage, BootstrapError> {
     let config = if config.cluster.instance_id.is_empty() {
         let mut resolved = (*config).clone();
@@ -1140,10 +1157,11 @@ pub async fn open_storage(
         config
     };
 
-    let cluster = crate::cluster::init_cluster_runtime(&config, &pool, None).await?;
+    let cluster = crate::cluster::init_cluster_runtime(&config, &pool, cluster_store).await?;
     tracing::info!(
         instance_id = %cluster.instance_id,
         cluster_enabled = cluster.enabled,
+        cluster_store = cluster.shared.as_ref().map(|s| s.name()),
         "Instance identity"
     );
 

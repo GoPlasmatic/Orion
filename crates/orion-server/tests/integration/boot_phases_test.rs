@@ -40,7 +40,7 @@ async fn restart(
 #[tokio::test]
 async fn the_storage_phase_resolves_the_nodes_identity_once() {
     let minted =
-        orion::bootstrap::open_storage(Arc::new(AppConfig::default()), memory_pool().await)
+        orion::bootstrap::open_storage(Arc::new(AppConfig::default()), memory_pool().await, None)
             .await
             .unwrap();
     assert!(!minted.config.cluster.instance_id.is_empty());
@@ -51,11 +51,28 @@ async fn the_storage_phase_resolves_the_nodes_identity_once() {
 
     let mut config = AppConfig::default();
     config.cluster.instance_id = "node-7".into();
-    let kept = orion::bootstrap::open_storage(Arc::new(config), memory_pool().await)
+    let kept = orion::bootstrap::open_storage(Arc::new(config), memory_pool().await, None)
         .await
         .unwrap();
     assert_eq!(kept.config.cluster.instance_id, "node-7");
     assert_eq!(kept.cluster.instance_id, "node-7");
+}
+
+/// A cluster store composed on a node whose cluster is disabled is unused,
+/// not an error: the node boots on its in-process stores (and logs it).
+#[tokio::test]
+async fn a_registered_store_with_the_cluster_disabled_still_boots() {
+    let store = Arc::new(crate::cluster_store_test::CountingStore::default());
+    // Down, so a boot that pinged it would fail.
+    store.down.store(true, std::sync::atomic::Ordering::SeqCst);
+    let state = common::test_state_with_composition(
+        AppConfig::default(),
+        orion::extensions::CompositionRoot::community().with_cluster_store(store),
+    )
+    .await;
+    assert!(state.cluster.shared.is_none());
+    assert!(!state.cluster.external_store);
+    assert!(state.ready.load(std::sync::atomic::Ordering::Acquire));
 }
 
 /// A fresh node serves nothing, says it is ready, and has recorded its own

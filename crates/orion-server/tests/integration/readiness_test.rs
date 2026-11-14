@@ -1,8 +1,10 @@
 //! `/readyz` component reporting (D15, O10).
 //!
-//! A cluster's shared store lives in the state database, so the database
-//! ping covers it. There is no separate `cluster_redis` component, and there
-//! must not be one.
+//! A cluster's shared store lives in the state database unless an edition
+//! supplies one, so the database ping covers it. There is no
+//! `cluster_redis` component, and a node with no edition store has no
+//! `cluster_store` component either (`cluster_store_test` covers one that
+//! has).
 
 use axum::http::StatusCode;
 use tower::ServiceExt;
@@ -24,6 +26,10 @@ async fn readyz_reports_no_cluster_redis_component() {
     assert!(
         body["components"].get("cluster_redis").is_none(),
         "the cluster_redis component is gone: {body}"
+    );
+    assert!(
+        body["components"].get("cluster_store").is_none(),
+        "a default node has no cluster_store component: {body}"
     );
 }
 

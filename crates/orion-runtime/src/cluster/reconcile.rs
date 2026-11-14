@@ -287,7 +287,8 @@ async fn apply_breaker_resets(state: &AppState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cluster::tests::{fake, sqlite_pool};
+    use crate::cluster::test_store::fake;
+    use crate::cluster::tests::sqlite_pool;
     use crate::storage::repositories::shared_state::SqlSharedState;
 
     #[tokio::test]
