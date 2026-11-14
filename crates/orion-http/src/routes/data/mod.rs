@@ -60,6 +60,14 @@ target channel at request time, so no per-channel path exists in this document:
   `PATCH` and `DELETE` behave identically to the `POST` documented here, with \
   the verb exposed as `metadata.http_method`. Query the admin channel API for \
   the routes a given deployment actually serves.
+* **Hooked channels** — a channel whose protocol's driver answers its requests \
+  itself (an edition's event stream or GraphQL endpoint; `http_hook` in \
+  `GET /api/v2/admin/runtime-capabilities`). The body is handed to the driver \
+  as received and need not be JSON, so the `415`/`400` rows below do not apply \
+  to it; the rate limit, `auth` and the origin allow-list still run first. The \
+  status, headers and body (possibly a `text/event-stream` that stays open) are \
+  the driver's. Each workflow run it makes is traced with the protocol as its \
+  `mode`. Such a channel cannot be submitted to `/async` (`405`).
 
 Append `/async` to submit to the queue instead — see \
 `POST /api/v2/data/{channel}/async`.
