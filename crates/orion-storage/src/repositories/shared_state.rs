@@ -29,6 +29,7 @@ use sha2::{Digest, Sha256};
 use crate::schema::{ClusterKv, ClusterRateWindows};
 use crate::{DbBackend, DbPool, DbTransaction, build_sqlx};
 use orion_common::errors::OrionError;
+use orion_extension_api::{SharedStateStore, StoreError};
 
 use super::helpers::{insert_if_absent, sql_now, sql_now_plus_secs};
 
@@ -326,6 +327,91 @@ impl SqlSharedState {
     }
 }
 
+/// The database store as the cluster's [`SharedStateStore`]: each method
+/// delegates to the inherent one of the same name (which callers holding a
+/// `SqlSharedState` reach first), and only the error type changes.
+#[async_trait::async_trait]
+impl SharedStateStore for SqlSharedState {
+    fn name(&self) -> &str {
+        "database"
+    }
+
+    async fn get(&self, key: &str) -> Result<Option<String>, StoreError> {
+        SqlSharedState::get(self, key).await.map_err(store_error)
+    }
+
+    async fn get_many(&self, keys: &[String]) -> Result<Vec<Option<String>>, StoreError> {
+        SqlSharedState::get_many(self, keys)
+            .await
+            .map_err(store_error)
+    }
+
+    async fn set(&self, key: &str, value: &str, ttl_secs: Option<u64>) -> Result<(), StoreError> {
+        SqlSharedState::set(self, key, value, ttl_secs)
+            .await
+            .map_err(store_error)
+    }
+
+    async fn remove_many(&self, keys: &[String]) -> Result<u64, StoreError> {
+        SqlSharedState::remove_many(self, keys)
+            .await
+            .map_err(store_error)
+    }
+
+    async fn claim(
+        &self,
+        key: &str,
+        owner: &str,
+        window_secs: u64,
+    ) -> Result<Option<String>, StoreError> {
+        SqlSharedState::claim(self, key, owner, window_secs)
+            .await
+            .map_err(store_error)
+    }
+
+    async fn incr_by(&self, key: &str, by: i64, ttl_secs: Option<u64>) -> Result<i64, StoreError> {
+        SqlSharedState::incr_by(self, key, by, ttl_secs)
+            .await
+            .map_err(store_error)
+    }
+
+    async fn hit_window(&self, key: &str) -> Result<i64, StoreError> {
+        SqlSharedState::hit_window(self, key)
+            .await
+            .map_err(store_error)
+    }
+
+    async fn ping(&self) -> Result<(), StoreError> {
+        self.pool
+            .ping()
+            .await
+            .map_err(|e| StoreError::unavailable(e.to_string()))
+    }
+
+    /// Expired rows stay in the tables until deleted.
+    fn needs_sweep(&self) -> bool {
+        true
+    }
+
+    async fn sweep(&self) -> Result<(), StoreError> {
+        SqlSharedState::sweep(self)
+            .await
+            .map(|_| ())
+            .map_err(store_error)
+    }
+}
+
+/// A validation failure (a non-integer counter, an overflow) is the caller's
+/// mistake; anything else is the database failing to answer.
+fn store_error(e: OrionError) -> StoreError {
+    match e {
+        // The message alone: the node wraps an `Invalid` back into a
+        // validation error, which adds its own prefix.
+        OrionError::Validation { message, .. } => StoreError::invalid(message),
+        other => StoreError::unavailable(other.to_string()),
+    }
+}
+
 /// The value at `hash` and whether it is live, read under a row lock.
 async fn locked_value(tx: &mut DbTransaction, hash: &str) -> Result<(String, bool), OrionError> {
     let backend = tx.backend();
@@ -527,5 +613,26 @@ mod tests {
             .await
             .expect("the shared store answers");
         assert!(s.sweep().await.expect("the shared store answers") >= 1);
+    }
+
+    /// Through the trait: the same store, its failures classed for the node.
+    #[tokio::test]
+    async fn as_a_shared_state_store_it_classes_its_failures() {
+        let s = store().await;
+        let shared: &dyn SharedStateStore = &s;
+        assert_eq!(shared.name(), "database");
+        assert!(shared.needs_sweep());
+        shared.ping().await.expect("the shared store answers");
+        shared
+            .set("t", "text", None)
+            .await
+            .expect("the shared store answers");
+        let refused = shared
+            .incr_by("t", 1, None)
+            .await
+            .expect_err("text is not a counter");
+        assert_eq!(refused.kind(), orion_extension_api::StoreErrorKind::Invalid);
+        assert!(refused.message().contains("not an integer"), "{refused}");
+        shared.sweep().await.expect("the shared store answers");
     }
 }

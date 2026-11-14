@@ -84,7 +84,8 @@ jobs:
       # the index has the crate, so each subsequent publish can resolve it
       # immediately. Listed in dependency order: orion-client,
       # orion-extension-api and orion-common depend on orion-api,
-      # orion-storage on orion-common, orion-engine on all of those and
+      # orion-storage on orion-common and orion-extension-api, orion-engine on
+      # all of those and
       # orion-definitions, orion-plugin-host on orion-engine, orion-runtime on
       # all of them, orion-authoring on orion-runtime, and orion-http on
       # orion-authoring. All eleven are

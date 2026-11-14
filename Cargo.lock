@@ -3116,6 +3116,7 @@ dependencies = [
  "hex",
  "orion-api",
  "orion-common",
+ "orion-extension-api",
  "sea-query",
  "sea-query-sqlx",
  "serde",

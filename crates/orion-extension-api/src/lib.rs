@@ -11,6 +11,7 @@
 //! | A connector provider | [`ProviderBackend`] | `(kind, driver_id)` |
 //! | A provider's pool cache | [`ConnectionPoolCache`] | its `cache_id` |
 //! | Package admission | [`PackageVerifier`] | one per node |
+//! | The cluster's shared hot-path store | [`SharedStateStore`] | one per node |
 //!
 //! A channel driver whose messages do not arrive over the node's HTTP data
 //! plane also runs a listener: [`ChannelDriver::start`] returns a
@@ -47,6 +48,7 @@
 mod admission;
 mod attempt;
 mod channel;
+mod cluster;
 mod compose;
 mod contract;
 mod identity;
@@ -62,6 +64,7 @@ pub use attempt::{
     AttemptContext, AttemptScope, ConnectionResolver, DependencyCaller, SecretValue,
 };
 pub use channel::{ChannelDriver, ChannelDriverCapabilities, ChannelProtocolFields};
+pub use cluster::{SharedStateStore, StoreError, StoreErrorKind};
 pub use compose::{CompositionError, DuplicateProvider, InvalidSchema, Registrar};
 pub use contract::{
     ConnectorError, ConnectorErrorClass, ConnectorOutput, EffectStatus, ErrorOrigin,
