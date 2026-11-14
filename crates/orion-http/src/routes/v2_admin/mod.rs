@@ -232,6 +232,7 @@ impl IntoResponse for V2Error {
                 message,
                 details: Vec::new(),
                 request_id: orion_common::request_context::request_id(),
+                connector: None,
             },
         };
         (status, Json(body)).into_response()

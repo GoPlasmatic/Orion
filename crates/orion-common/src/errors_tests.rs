@@ -628,3 +628,165 @@ async fn test_request_id_absent_when_empty() {
     let body = body_to_value(response).await;
     assert!(body["error"].get("request_id").is_none());
 }
+
+/// An engine error the way the engine reports a connector failure: the
+/// task-error code of its class, the failure riding as the source.
+fn connector_engine_error(
+    task_code: &str,
+    class: orion_api::v2::ConnectorErrorClass,
+    from_provider: bool,
+    retry_after_ms: Option<u64>,
+) -> OrionError {
+    OrionError::Engine(
+        dataflow_rs::Error::service(
+            task_code.to_string(),
+            "Function execution error: connector_call: ECHO_REFUSED: no route to db-7",
+        )
+        .with_source(ConnectorFailure {
+            class,
+            provider_code: Cow::Borrowed("ECHO_REFUSED"),
+            retryable: retry_after_ms.is_some(),
+            retry_after_ms,
+            from_provider,
+            message: "no route to db-7".to_string(),
+        }),
+    )
+}
+
+#[tokio::test]
+async fn connector_failures_answer_by_class() {
+    use orion_api::v2::ConnectorErrorClass as C;
+    for (class, task_code, status, code) in [
+        (
+            C::ProviderFailure,
+            "FUNCTION_ERROR",
+            StatusCode::BAD_GATEWAY,
+            "CONNECTOR_PROVIDER_FAILURE",
+        ),
+        (
+            C::Unavailable,
+            "IO_ERROR",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "CONNECTOR_PROVIDER_UNAVAILABLE",
+        ),
+        (
+            C::RateLimited,
+            "FUNCTION_ERROR",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "CONNECTOR_PROVIDER_UNAVAILABLE",
+        ),
+        (
+            C::ContractViolation,
+            "FUNCTION_ERROR",
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "CONNECTOR_CONTRACT_VIOLATION",
+        ),
+    ] {
+        let err = connector_engine_error(task_code, class, true, None);
+        let trace = err.trace_text();
+        let response = err.into_response();
+        assert_eq!(response.status(), status, "{class:?}");
+        let body = body_to_value(response).await;
+        assert_eq!(body["error"]["code"], code, "{class:?}: {body}");
+        assert_eq!(body["error"]["connector"]["provider_code"], "ECHO_REFUSED");
+        assert_eq!(body["error"]["connector"]["class"], class.as_str());
+        assert!(
+            !body.to_string().contains("db-7"),
+            "the provider's text stays off the wire: {body}"
+        );
+        assert!(
+            trace.starts_with(&format!("{code} (ECHO_REFUSED): "))
+                && trace.contains("no route to db-7"),
+            "the trace keeps it: {trace}"
+        );
+    }
+
+    // A caller-input class keeps the answer it had, and gains the detail.
+    let err = OrionError::Engine(
+        dataflow_rs::Error::service(
+            "VALIDATION_ERROR".to_string(),
+            "Validation error: connector_call: MONGO_DUPLICATE_KEY: dup",
+        )
+        .with_source(ConnectorFailure {
+            class: C::Conflict,
+            provider_code: Cow::Borrowed("MONGO_DUPLICATE_KEY"),
+            retryable: false,
+            retry_after_ms: None,
+            from_provider: true,
+            message: "dup".to_string(),
+        }),
+    );
+    let response = err.into_response();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_to_value(response).await;
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    assert_eq!(
+        body["error"]["connector"]["provider_code"],
+        "MONGO_DUPLICATE_KEY"
+    );
+}
+
+#[tokio::test]
+async fn a_provider_code_built_from_data_is_not_sent() {
+    let err = OrionError::Engine(
+        dataflow_rs::Error::service("FUNCTION_ERROR".to_string(), "x").with_source(
+            ConnectorFailure {
+                class: orion_api::v2::ConnectorErrorClass::ProviderFailure,
+                provider_code: Cow::Owned("refused: user 42".to_string()),
+                retryable: false,
+                retry_after_ms: None,
+                from_provider: true,
+                message: "x".to_string(),
+            },
+        ),
+    );
+    let response = err.into_response();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = body_to_value(response).await;
+    assert!(body["error"].get("connector").is_none(), "{body}");
+}
+
+#[test]
+fn connector_unavailable_sends_retry_after() {
+    let err = connector_engine_error(
+        "IO_ERROR",
+        orion_api::v2::ConnectorErrorClass::Unavailable,
+        true,
+        Some(1_500),
+    );
+    let response = err.into_response();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response.headers()[axum::http::header::RETRY_AFTER],
+        "2",
+        "rounded up"
+    );
+
+    let err = connector_engine_error(
+        "IO_ERROR",
+        orion_api::v2::ConnectorErrorClass::Unavailable,
+        true,
+        None,
+    );
+    let response = err.into_response();
+    assert!(
+        response
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn a_host_budget_failure_stays_engine_error() {
+    let err = connector_engine_error(
+        "FUNCTION_ERROR",
+        orion_api::v2::ConnectorErrorClass::ProviderFailure,
+        false,
+        None,
+    );
+    let response = err.into_response();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = body_to_value(response).await;
+    assert_eq!(body["error"]["code"], "ENGINE_ERROR");
+}

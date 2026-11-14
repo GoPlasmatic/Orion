@@ -21,7 +21,10 @@ package verifier to a node.
   `$ref`; see `OperationDescription`); one outside it fails the composition's build with
   `CompositionError::InvalidProviderSchema`, as a channel driver's `transport_schema` does with
   `InvalidTransportSchema`. It is called with an `AttemptContext` and answers
-  `Result<ConnectorOutput, ConnectorError>`.
+  `Result<ConnectorOutput, ConnectorError>`. A `ConnectorError`'s `code` is contract: a
+  data-plane caller sees it as `error.connector.provider_code` (502 for a `ProviderFailure`,
+  503 for `Unavailable`/`RateLimited`, 500 for a `ContractViolation`), so make it a static
+  SHOUTY_CASE literal that carries no data. Its `message` reaches the trace, not the caller.
 - `ConnectionPoolCache`: a provider's pool cache, evicted per connector when a deployment
   changes that connection.
 - `PackageVerifier`: whether a provider package may be admitted on the node.

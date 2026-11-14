@@ -75,6 +75,16 @@ error_codes! {
     ConfigError = "CONFIG_ERROR" => 500,
     ResponseTooLarge = "RESPONSE_TOO_LARGE" => 500,
     ServiceUnavailable = "SERVICE_UNAVAILABLE" => 503,
+    /// A connector's provider was reached and failed the operation. The
+    /// provider's own code is in `error.connector.provider_code`; its message
+    /// is not sent.
+    ConnectorProviderFailure = "CONNECTOR_PROVIDER_FAILURE" => 502,
+    /// A connector's provider is unavailable or rate-limited the call.
+    /// `Retry-After` carries its hint when it gave one.
+    ConnectorProviderUnavailable = "CONNECTOR_PROVIDER_UNAVAILABLE" => 503,
+    /// A connector's provider answered outside its declared contract (its
+    /// output schema). A fault in the provider, not in the request.
+    ConnectorContractViolation = "CONNECTOR_CONTRACT_VIOLATION" => 500,
     /// An open circuit breaker shed the request before it reached a connector.
     CircuitOpen = "CIRCUIT_OPEN" => 503,
     Timeout = "TIMEOUT" => 504,
@@ -114,6 +124,15 @@ pub mod codes {
     pub const SERIALIZATION_ERROR: &str = super::ErrorCode::SerializationError.as_str();
     /// An open circuit breaker shed the request before it reached a connector.
     pub const CIRCUIT_OPEN: &str = super::ErrorCode::CircuitOpen.as_str();
+    /// A connector's provider was reached and failed the operation.
+    pub const CONNECTOR_PROVIDER_FAILURE: &str =
+        super::ErrorCode::ConnectorProviderFailure.as_str();
+    /// A connector's provider is unavailable or rate-limited the call.
+    pub const CONNECTOR_PROVIDER_UNAVAILABLE: &str =
+        super::ErrorCode::ConnectorProviderUnavailable.as_str();
+    /// A connector's provider answered outside its declared contract.
+    pub const CONNECTOR_CONTRACT_VIOLATION: &str =
+        super::ErrorCode::ConnectorContractViolation.as_str();
     /// A `channel_call` chain came back to a channel already on it, or went
     /// deeper than the configured maximum (`508 Loop Detected`). The loop is
     /// in the deployed channels, not in the request.
@@ -513,6 +532,32 @@ pub struct ErrorBody {
     pub details: Vec<FieldError>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
+    /// The connector failure behind a data-plane answer, when one is: its
+    /// class and the provider's own code. Omitted for every other error.
+    ///
+    /// Boxed: it is rare, and the envelope rides inside every client error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connector: Option<Box<ConnectorErrorDetail>>,
+}
+
+/// What a data-plane error body says about the connector failure behind it.
+/// The provider's message is never sent (it can name hosts and values); its
+/// code is, because providers document their codes as contract.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct ConnectorErrorDetail {
+    /// The failure's class (`provider_failure`, `unavailable`,
+    /// `rate_limited`, `contract_violation`, …). A string, so a class added
+    /// later does not break a tolerant client.
+    #[serde(default)]
+    pub class: String,
+    /// The provider's own code (`MONGO_DUPLICATE_KEY`): a static
+    /// SHOUTY_CASE name the provider documents.
+    #[serde(default)]
+    pub provider_code: String,
+    /// Whether the provider advised that retrying may succeed.
+    #[serde(default)]
+    pub retryable: bool,
 }
 
 /// The full error response body: `{"error": {...}}`.
@@ -560,6 +605,7 @@ mod tests {
                 message: "no such workflow".to_string(),
                 details: Vec::new(),
                 request_id: None,
+                connector: None,
             },
         };
         let value = serde_json::to_value(&env).expect("test");
@@ -616,6 +662,7 @@ mod tests {
                 message: "bad".to_string(),
                 details: vec![FieldError::new("a.b", "REQUIRED", "missing")],
                 request_id: Some("req-1".to_string()),
+                connector: None,
             },
         };
         let json = serde_json::to_string(&env).expect("test");
@@ -623,5 +670,32 @@ mod tests {
         assert_eq!(back.error.details.len(), 1);
         assert_eq!(back.error.details[0].path, "a.b");
         assert_eq!(back.error.request_id.as_deref(), Some("req-1"));
+    }
+
+    /// `connector` is on the wire only for a connector failure, and reads
+    /// back whole when it is.
+    #[test]
+    fn the_connector_detail_is_omitted_unless_set() {
+        let mut body = ErrorBody {
+            code: codes::INTERNAL_ERROR.to_string(),
+            message: "x".to_string(),
+            ..ErrorBody::default()
+        };
+        let json = serde_json::to_value(&body).expect("test");
+        assert!(json.get("connector").is_none(), "{json}");
+
+        body.code = codes::CONNECTOR_PROVIDER_FAILURE.to_string();
+        body.connector = Some(Box::new(ConnectorErrorDetail {
+            class: "provider_failure".to_string(),
+            provider_code: "ECHO_REFUSED".to_string(),
+            retryable: false,
+        }));
+        let json = serde_json::to_string(&body).expect("test");
+        let back: ErrorBody = serde_json::from_str(&json).expect("test");
+        assert_eq!(back.connector, body.connector);
+        assert_eq!(
+            ErrorCode::parse(&back.code).map(ErrorCode::status),
+            Some(502)
+        );
     }
 }

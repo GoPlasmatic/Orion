@@ -98,6 +98,14 @@ impl ConnectorError {
     /// A failure a provider reports: `code` names it, `class` says what kind of
     /// fault it is. Defaults to a provider-origin error that is not retried;
     /// refine it with the `with_*` methods.
+    ///
+    /// `code` is contract: a data-plane caller sees it as
+    /// `error.connector.provider_code` and may branch on it. Make it a static
+    /// SHOUTY_CASE literal that carries no data (`MONGO_DUPLICATE_KEY`, not
+    /// `"duplicate key 42"`); a code that is not `^[A-Z][A-Z0-9_]{0,63}$` is
+    /// not sent. `message` is operator-only: it reaches the trace and the log,
+    /// never a response body, for the classes the data plane answers itself
+    /// (`ProviderFailure`, `Unavailable`, `RateLimited`, `ContractViolation`).
     pub fn new(
         code: impl Into<Cow<'static, str>>,
         class: ConnectorErrorClass,

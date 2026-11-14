@@ -59,6 +59,9 @@ impl ProviderBackend for EchoProvider {
         operation: &str,
         input: Value,
     ) -> Result<ConnectorOutput, ConnectorError> {
+        if operation == "fail" {
+            return Err(failure(input["mode"].as_str().unwrap_or_default()));
+        }
         assert_eq!(operation, "echo");
         let greeting = ctx
             .public_config()
@@ -72,22 +75,24 @@ impl ProviderBackend for EchoProvider {
 
     fn describe(&self) -> Option<ProviderDescription> {
         Some(
-            ProviderDescription::new().with_operation(
-                "echo",
-                OperationDescription::new()
-                    .with_alias("say")
-                    .with_input_schema(json!({
-                        "$schema": "https://json-schema.org/draft/2020-12/schema",
-                        "type": "object",
-                        "required": ["name"],
-                        "properties": { "name": { "type": "string" } }
-                    }))
-                    .with_output_schema(json!({
-                        "$schema": "https://json-schema.org/draft/2020-12/schema",
-                        "type": "object",
-                        "required": ["greeting"]
-                    })),
-            ),
+            ProviderDescription::new()
+                .with_operation(
+                    "echo",
+                    OperationDescription::new()
+                        .with_alias("say")
+                        .with_input_schema(json!({
+                            "$schema": "https://json-schema.org/draft/2020-12/schema",
+                            "type": "object",
+                            "required": ["name"],
+                            "properties": { "name": { "type": "string" } }
+                        }))
+                        .with_output_schema(json!({
+                            "$schema": "https://json-schema.org/draft/2020-12/schema",
+                            "type": "object",
+                            "required": ["greeting"]
+                        })),
+                )
+                .with_operation("fail", OperationDescription::new()),
         )
     }
 
@@ -100,6 +105,28 @@ impl ProviderBackend for EchoProvider {
 
     async fn shutdown(&self, _deadline: Instant) {
         self.0.shut_down.store(true, Ordering::SeqCst);
+    }
+}
+
+/// The failure `fail` answers for `mode`. Each message names a host, which
+/// must never reach a caller.
+fn failure(mode: &str) -> ConnectorError {
+    use orion_extension_api::{ConnectorErrorClass, EffectStatus, RetryAdvice};
+    match mode {
+        "unavailable" => ConnectorError::new(
+            "ECHO_UNAVAILABLE",
+            ConnectorErrorClass::Unavailable,
+            "echo backend at db-7 is draining",
+            EffectStatus::NotStarted,
+        )
+        .with_retry_advice(RetryAdvice::Transient)
+        .with_retry_after_ms(2_000),
+        _ => ConnectorError::new(
+            "ECHO_REFUSED",
+            ConnectorErrorClass::ProviderFailure,
+            "echo refused by host db-7",
+            EffectStatus::NotStarted,
+        ),
     }
 }
 
@@ -359,4 +386,168 @@ async fn an_edition_provider_serves_a_connection_without_a_package() {
         .shutdown(Instant::now() + Duration::from_secs(5))
         .await;
     assert!(lifecycle.shut_down.load(Ordering::SeqCst));
+}
+
+/// Deploy revision 1 of the `greeter` connection, a workflow `fails` that
+/// calls the provider's `fail` operation with `data.mode`, and a sync HTTP
+/// channel `fails` bound to it.
+async fn deploy_failing(app: &axum::Router) {
+    let (_, caps) = send(app, "GET", "/api/v2/admin/runtime-capabilities", None).await;
+    let digest = caps["provider_backends"]
+        .as_array()
+        .and_then(|b| b.iter().find(|b| b["driver_id"] == DRIVER))
+        .and_then(|b| b["package_digest"].as_str())
+        .expect("the composed driver reports its digest")
+        .to_string();
+    let (status, created) = send(
+        app,
+        "POST",
+        "/api/v2/admin/connections/greeter/revisions",
+        Some(json!({
+            "revision": 1,
+            "provider_digest": digest,
+            "public_config": { "greeting": "hello" },
+            "secret_locators": {}
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let configuration_digest = created["connection"]["configuration_digest"]
+        .as_str()
+        .expect("a digest")
+        .to_string();
+    let workflow = deploy::upload(
+        app,
+        json!({ "kind": "workflow", "definition": {
+            "name": "fails",
+            "tasks": [
+                { "id": "call", "function": { "name": "connector_call", "input": {
+                    "connection": "greeter",
+                    "target_id": DRIVER,
+                    "operation": "fail",
+                    "input": { "mode": { "var": "data.mode" } },
+                    "output": "data.reply"
+                } } }
+            ]
+        } }),
+    )
+    .await;
+    let channel = deploy::upload(
+        app,
+        deploy::channel_definition(&common::sync_http_channel("fails", "fails")).0,
+    )
+    .await;
+    deploy::deploy(
+        app,
+        vec![
+            deploy::Upsert {
+                kind: "connection",
+                id: "greeter".into(),
+                digest: configuration_digest,
+                revision: Some(1),
+                requires: Vec::new(),
+            },
+            deploy::Upsert {
+                kind: "workflow",
+                id: "fails".into(),
+                digest: workflow,
+                revision: None,
+                requires: vec![("connection", "greeter".into())],
+            },
+            deploy::Upsert {
+                kind: "channel",
+                id: "fails".into(),
+                digest: channel,
+                revision: None,
+                requires: vec![("workflow", "fails".into())],
+            },
+        ],
+    )
+    .await;
+}
+
+/// A provider's own failure reaches the caller as what it is: a 502 naming
+/// the provider's code, not an opaque engine error, and never the provider's
+/// message. An unavailable provider is a 503 the caller can retry, with the
+/// provider's hint. The trace keeps the raw text for the operator.
+#[tokio::test]
+async fn a_provider_failure_answers_with_its_class_and_code() {
+    let (_state, app, _lifecycle) = node().await;
+    deploy_failing(&app).await;
+
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/api/v2/data/fails",
+        Some(json!({ "data": { "mode": "provider" } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    assert_eq!(
+        body["error"]["code"], "CONNECTOR_PROVIDER_FAILURE",
+        "{body}"
+    );
+    assert_eq!(body["error"]["connector"]["provider_code"], "ECHO_REFUSED");
+    assert_eq!(body["error"]["connector"]["class"], "provider_failure");
+    assert!(!body.to_string().contains("db-7"), "{body}");
+
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v2/data/fails",
+            Some(json!({ "data": { "mode": "unavailable" } })),
+        ))
+        .await
+        .expect("the node answers");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response.headers()[axum::http::header::RETRY_AFTER],
+        "2",
+        "the provider's hint"
+    );
+    let body = body_json(response).await;
+    assert_eq!(body["error"]["code"], "CONNECTOR_PROVIDER_UNAVAILABLE");
+    assert_eq!(
+        body["error"]["connector"]["provider_code"],
+        "ECHO_UNAVAILABLE"
+    );
+    assert_eq!(body["error"]["connector"]["retryable"], true);
+    assert!(!body.to_string().contains("db-7"), "{body}");
+}
+
+/// A provider failure inside a channel the caller reached through
+/// `channel_call` answers the outer caller the same way.
+#[tokio::test]
+async fn a_nested_provider_failure_reaches_the_outer_caller() {
+    let (_state, app, _lifecycle) = node().await;
+    deploy_failing(&app).await;
+    common::create_and_activate_channel(
+        &app,
+        "outer",
+        json!({
+            "name": "Outer",
+            "condition": true,
+            "tasks": [{
+                "id": "call",
+                "name": "Call the failing channel",
+                "function": {
+                    "name": "channel_call",
+                    "input": { "channel": "fails", "output": "data.inner" }
+                }
+            }]
+        }),
+    )
+    .await;
+
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/api/v2/data/outer",
+        Some(json!({ "data": { "mode": "provider" } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    assert_eq!(body["error"]["connector"]["provider_code"], "ECHO_REFUSED");
+    assert!(!body.to_string().contains("db-7"), "{body}");
 }

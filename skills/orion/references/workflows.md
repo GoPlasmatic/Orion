@@ -117,6 +117,14 @@ Continued failures append bounded, sanitized records to
 status—not backend error messages. Branch on the code. Connector and integrity
 codes may be more specific than the generic engine codes.
 
+When a connector failure fails the request, the response answers it by class:
+`502 CONNECTOR_PROVIDER_FAILURE` when the provider failed the operation,
+`503 CONNECTOR_PROVIDER_UNAVAILABLE` (with `Retry-After` when the provider
+gave a hint) when it is unavailable or rate-limited, and
+`500 CONNECTOR_CONTRACT_VIOLATION` when it answered outside its output schema.
+`error.connector` carries `{class, provider_code, retryable}`; the provider's
+message is in the trace's `error_message`, not the response.
+
 ```json
 {
   "id": "recover",

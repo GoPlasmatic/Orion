@@ -269,7 +269,8 @@ pub fn implementation_kind(kind: Option<&str>) -> Option<ImplementationKind> {
     ImplementationKind::parse(kind.unwrap_or("rust"))
 }
 
-/// A connector failure as the task error it is reported as.
+/// A connector failure as the task error it is reported as, carrying the
+/// failure itself so the data plane can answer it by class.
 pub fn connector_error(err: ConnectorError) -> HandlerError {
     let class = match err.class {
         ConnectorErrorClass::InvalidInput
@@ -290,5 +291,14 @@ pub fn connector_error(err: ConnectorError) -> HandlerError {
         }
     };
     let msg = format!("{}: {}", err.code, err.message);
-    HandlerError::new(class, msg)
+    let mut handler = HandlerError::new(class, msg);
+    handler.connector = Some(Box::new(orion_common::errors::ConnectorFailure {
+        class: err.class,
+        retryable: err.retry_advice == RetryAdvice::Transient,
+        retry_after_ms: err.retry_after_ms,
+        from_provider: err.origin.kind == orion_extension_api::OriginKind::Provider,
+        provider_code: err.code,
+        message: err.message,
+    }));
+    handler
 }

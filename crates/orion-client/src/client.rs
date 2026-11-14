@@ -414,6 +414,7 @@ mod tests {
                 message: "msg".into(),
                 details: Vec::new(),
                 request_id: None,
+                connector: None,
             },
         };
         assert!(is_retryable_get_error(&make_api(StatusCode::BAD_GATEWAY)));

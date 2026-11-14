@@ -81,5 +81,6 @@ pub use enums::{
 };
 pub use envelope::{Data, Page};
 pub use error::{
-    ErrorBody, ErrorCode, ErrorEnvelope, ErrorKind, FieldError, V2Code, codes, field_codes,
+    ConnectorErrorDetail, ErrorBody, ErrorCode, ErrorEnvelope, ErrorKind, FieldError, V2Code,
+    codes, field_codes,
 };

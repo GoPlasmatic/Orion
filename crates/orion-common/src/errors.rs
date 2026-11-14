@@ -497,6 +497,22 @@ impl OrionError {
 }
 
 impl OrionError {
+    /// The text a failed trace records as its `error_message`: the wire code,
+    /// the connector's own code when a connector failed, and the raw message.
+    ///
+    /// Raw, unlike the response body: a trace is read through the admin API,
+    /// and the provider's text is what makes the failure diagnosable there.
+    pub fn trace_text(&self) -> String {
+        let (_, code, _) = self.response_parts();
+        match self {
+            OrionError::Engine(e) => match connector_failure_of(e) {
+                Some(failure) => format!("{code} ({}): {e}", failure.provider_code),
+                None => format!("{code}: {e}"),
+            },
+            other => format!("{code}: {other}"),
+        }
+    }
+
     /// The structured field errors a validation refusal carries, empty for
     /// every other variant.
     ///
@@ -516,10 +532,17 @@ impl IntoResponse for OrionError {
         self.log_internal_detail();
         let (status, code, message) = self.response_parts();
         let message = message.into_owned();
-        let retry_after = match &self {
-            OrionError::ServiceUnavailable { reason, .. } => reason.retry_after_secs(),
+        let connector = match &self {
+            OrionError::Engine(e) => connector_failure_of(e),
             _ => None,
         };
+        let retry_after = match &self {
+            OrionError::ServiceUnavailable { reason, .. } => reason.retry_after_secs(),
+            _ => connector.and_then(ConnectorFailure::retry_after_secs),
+        };
+        let connector = connector
+            .and_then(ConnectorFailure::wire_detail)
+            .map(Box::new);
         // What the body and headers need beyond the message, moved out of the
         // error rather than copied: the field errors and the bearer challenge.
         let (details, bearer_challenge) = match self {
@@ -541,6 +564,7 @@ impl IntoResponse for OrionError {
                 message,
                 details,
                 request_id: crate::request_context::request_id(),
+                connector,
             },
         };
 
@@ -624,9 +648,111 @@ fn without_label<'m>(message: &'m str, label: &str) -> &'m str {
     message.strip_prefix(label).unwrap_or(message)
 }
 
+/// A connector failure, carried as the source of the engine error it was
+/// reported as, so the data plane can answer it by its class rather than by
+/// the task-error code the workflow records (`FUNCTION_ERROR`, `IO_ERROR`, …,
+/// which stay as they were for workflow branching and DLQ retry).
+///
+/// The engine attaches it (`engine::functions::connector_call::connector_error`);
+/// [`connector_failure_of`] reads it back. It survives the engine's own
+/// wrapping, `HandlerError::prefixed`, and a nested `channel_call`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectorFailure {
+    /// The failure's class.
+    pub class: orion_api::v2::ConnectorErrorClass,
+    /// The provider's code (`MONGO_DUPLICATE_KEY`), or the host's.
+    pub provider_code: Cow<'static, str>,
+    /// Whether the provider advised that retrying may succeed.
+    pub retryable: bool,
+    /// The provider's retry hint, in milliseconds.
+    pub retry_after_ms: Option<u64>,
+    /// Whether the provider raised it, rather than the host on its behalf
+    /// (a budget, a transport refusal).
+    pub from_provider: bool,
+    /// The provider's raw message. Operator-only: it reaches the trace and
+    /// the log, never a response body.
+    pub message: String,
+}
+
+impl std::fmt::Display for ConnectorFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.provider_code, self.message)
+    }
+}
+
+impl std::error::Error for ConnectorFailure {}
+
+impl ConnectorFailure {
+    /// The status, code and generic message a data-plane caller gets for this
+    /// failure, when its class has an answer of its own; `None` keeps the
+    /// task-error mapping (a caller-input class stays 400, a deadline 504, a
+    /// host-raised provider failure such as an exhausted budget 500).
+    fn answer(&self) -> Option<(StatusCode, &'static str, &'static str)> {
+        use orion_api::v2::ConnectorErrorClass as C;
+        match self.class {
+            C::ProviderFailure if self.from_provider => Some((
+                StatusCode::BAD_GATEWAY,
+                codes::CONNECTOR_PROVIDER_FAILURE,
+                "The connector's provider failed the operation",
+            )),
+            C::Unavailable | C::RateLimited => Some((
+                StatusCode::SERVICE_UNAVAILABLE,
+                codes::CONNECTOR_PROVIDER_UNAVAILABLE,
+                "The connector's provider is unavailable",
+            )),
+            C::ContractViolation => Some((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::CONNECTOR_CONTRACT_VIOLATION,
+                "The connector's provider answered outside its contract",
+            )),
+            _ => None,
+        }
+    }
+
+    /// What the error body says about it. `None` when the provider's code is
+    /// not a plain SHOUTY_CASE name (`^[A-Z][A-Z0-9_]{0,63}$`): a code is
+    /// contract, and one built from data is not sent.
+    fn wire_detail(&self) -> Option<orion_api::ConnectorErrorDetail> {
+        let code = self.provider_code.as_ref();
+        let shouty = code.len() <= 64
+            && code.starts_with(|c: char| c.is_ascii_uppercase())
+            && code
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+        shouty.then(|| orion_api::ConnectorErrorDetail {
+            class: self.class.as_str().to_string(),
+            provider_code: code.to_string(),
+            retryable: self.retryable,
+        })
+    }
+
+    /// `Retry-After` in whole seconds, rounded up, for a 503 answer.
+    fn retry_after_secs(&self) -> Option<u32> {
+        self.answer()
+            .filter(|(status, ..)| *status == StatusCode::SERVICE_UNAVAILABLE)
+            .and(self.retry_after_ms)
+            .map(|ms| u32::try_from(ms.div_ceil(1000)).unwrap_or(u32::MAX).max(1))
+    }
+}
+
+/// The [`ConnectorFailure`] an engine error carries as its source, when it
+/// was a connector's.
+pub fn connector_failure_of(e: &dataflow_rs::Error) -> Option<&ConnectorFailure> {
+    std::error::Error::source(e)?.downcast_ref::<ConnectorFailure>()
+}
+
 /// Map an engine error to its HTTP status, code and caller-safe message.
 fn engine_error_response(e: &dataflow_rs::Error) -> (StatusCode, &'static str, String) {
     use dataflow_rs::ErrorKind;
+
+    // A connector failure whose class has an answer of its own is answered by
+    // it, before the task-error code is read: a provider failure is the
+    // provider's (502), not an opaque engine fault, and an unavailable
+    // provider is a 503 a caller can retry.
+    if let Some((status, wire, message)) = connector_failure_of(e).and_then(|f| f.answer()) {
+        tracing::warn!(code = wire, error = %e, "connector failure");
+        return (status, wire, message.to_string());
+    }
 
     let message = e.message();
     match e.kind() {

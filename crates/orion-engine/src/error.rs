@@ -130,6 +130,11 @@ pub struct HandlerError {
     /// whose variant is its classification and is carried through with the
     /// prefixed message.
     original: Option<Box<dataflow_rs::Error>>,
+    /// The connector failure this reports, when it is one: attached to the
+    /// engine error as its source, so the data plane answers it by class
+    /// (`orion_common::errors::connector_failure_of`). Kept by
+    /// [`Self::prefixed`]: the failure is the provider's, not the message's.
+    pub connector: Option<Box<orion_common::errors::ConnectorFailure>>,
 }
 
 impl HandlerError {
@@ -139,6 +144,7 @@ impl HandlerError {
             msg: msg.to_string(),
             detail: None,
             original: None,
+            connector: None,
         }
     }
 
@@ -194,15 +200,18 @@ impl HandlerError {
 
     /// The engine error this class maps to, built from `msg` (I184): the
     /// class's code and retryability (a connection failure and a timeout are
-    /// retried), and `msg` under its label. `detail` rides as the
-    /// source, which the error's JSON never carries.
+    /// retried), and `msg` under its label. The connector failure, or else
+    /// `detail`, rides as the source, which the error's JSON never carries.
     fn into_v4_from_class(self) -> dataflow_rs::Error {
         let (code, label) = self.class.face();
         let error = dataflow_rs::Error::service(code, format!("{label}{}", self.msg))
             .with_retryable(self.class.is_retryable());
-        match self.detail {
-            Some(detail) => error.with_source(ServiceDetail(detail)),
-            None => error,
+        // One source: a connector failure's is what decides the answer, and a
+        // connector error carries no separate detail.
+        match (self.connector, self.detail) {
+            (Some(failure), _) => error.with_source(*failure),
+            (None, Some(detail)) => error.with_source(ServiceDetail(detail)),
+            (None, None) => error,
         }
     }
 }
@@ -328,6 +337,7 @@ impl From<dataflow_rs::Error> for HandlerError {
                 msg: failure.message.clone(),
                 detail: None,
                 original: Some(Box::new(e)),
+                connector: None,
             };
         }
         let class = match e.kind() {
@@ -352,6 +362,9 @@ impl From<dataflow_rs::Error> for HandlerError {
             class,
             msg: bare_message(&e).to_string(),
             detail: detail_of(&e).map(str::to_string),
+            connector: orion_common::errors::connector_failure_of(&e)
+                .cloned()
+                .map(Box::new),
             original: Some(Box::new(e)),
         }
     }
@@ -537,6 +550,42 @@ mod tests {
     /// `prefixed` keeps a budget refusal's kind, with the prefixed message —
     /// so the code stays `BUDGET_EXCEEDED` and the refusal does not read as a
     /// backend fault — and rebuilds every other error from its class.
+    /// A connector failure rides as the engine error's source through every
+    /// step it takes on the way to the data plane: the conversion, a
+    /// handler's prefix, a round trip back into a `HandlerError` (a nested
+    /// `channel_call`) and the engine's own `wrap`.
+    #[test]
+    fn connector_error_carries_its_failure_as_the_source() {
+        use orion_extension_api::{ConnectorError, ConnectorErrorClass, EffectStatus};
+
+        let err = crate::functions::connector_call::connector_error(ConnectorError::new(
+            "ECHO_REFUSED",
+            ConnectorErrorClass::ProviderFailure,
+            "no route to db-7",
+            EffectStatus::NotStarted,
+        ));
+        assert_eq!(err.class, ErrorClass::Backend);
+        let engine: dataflow_rs::Error = err.prefixed("connector_call").into();
+        assert_eq!(
+            engine.kind(),
+            &ErrorKind::Service {
+                code: "FUNCTION_ERROR".into()
+            },
+            "the recorded task code is unchanged"
+        );
+        let failure =
+            orion_common::errors::connector_failure_of(&engine).expect("the failure rides");
+        assert_eq!(failure.provider_code, "ECHO_REFUSED");
+        assert!(failure.from_provider);
+
+        let nested: dataflow_rs::Error = HandlerError::from(engine).prefixed("channel_call").into();
+        let nested = nested.wrap("parent");
+        let failure =
+            orion_common::errors::connector_failure_of(&nested).expect("it survives nesting");
+        assert_eq!(failure.class, ConnectorErrorClass::ProviderFailure);
+        assert_eq!(failure.message, "no route to db-7");
+    }
+
     #[test]
     fn prefixed_keeps_a_budget_errors_kind_and_rebuilds_the_rest() {
         let budget = budget_error();

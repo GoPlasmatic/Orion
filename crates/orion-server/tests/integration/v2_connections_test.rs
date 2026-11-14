@@ -586,8 +586,9 @@ async fn connector_call_input_must_satisfy_the_declared_input_schema() {
 /// `output_schema` (`display_name` must be a non-empty string): the same
 /// call that serves "Ada" fails when the provider answers "". A provider
 /// breaking its contract is an internal fault, so the caller sees only
-/// `ENGINE_ERROR` and never the answer; the refusal's own words are pinned
-/// by the deployment store's `an_answer_is_held_to_the_operation_output_schema`.
+/// `CONNECTOR_CONTRACT_VIOLATION` and the class, never the answer; the
+/// refusal's own words are pinned by the deployment store's
+/// `an_answer_is_held_to_the_operation_output_schema`.
 #[tokio::test]
 async fn connector_call_output_must_satisfy_the_declared_output_schema() {
     let app = deploy_lookup(json!("")).await;
@@ -599,6 +600,20 @@ async fn connector_call_output_must_satisfy_the_declared_output_schema() {
     )
     .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-    assert_eq!(body["error"]["code"], "ENGINE_ERROR", "{body}");
+    assert_eq!(
+        body["error"]["code"], "CONNECTOR_CONTRACT_VIOLATION",
+        "{body}"
+    );
+    assert_eq!(
+        body["error"]["connector"]["class"], "contract_violation",
+        "{body}"
+    );
+    assert!(
+        !body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("display_name"),
+        "the provider's answer is never described: {body}"
+    );
     assert!(body["data"].is_null(), "{body}");
 }
