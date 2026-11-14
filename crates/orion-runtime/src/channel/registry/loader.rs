@@ -61,7 +61,7 @@ pub(super) struct RuntimeDeps<'a> {
         &'a std::collections::BTreeMap<String, crate::config::InstanceProviderConfig>,
     pub(super) oidc_discovery: &'a std::sync::Arc<crate::channel::oidc_discovery::DiscoveryCache>,
     pub(super) global_trace_storage: &'a TraceStorageConfig,
-    pub(super) cluster_shared: Option<crate::storage::repositories::shared_state::SqlSharedState>,
+    pub(super) cluster_shared: Option<std::sync::Arc<dyn orion_extension_api::SharedStateStore>>,
     pub(super) cron_enabled: bool,
     pub(super) channel_drivers: &'a crate::extensions::ChannelDriverRegistry,
 }

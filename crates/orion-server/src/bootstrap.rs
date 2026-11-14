@@ -1140,7 +1140,7 @@ pub async fn open_storage(
         config
     };
 
-    let cluster = crate::cluster::init_cluster_runtime(&config.cluster, &pool).await?;
+    let cluster = crate::cluster::init_cluster_runtime(&config, &pool, None).await?;
     tracing::info!(
         instance_id = %cluster.instance_id,
         cluster_enabled = cluster.enabled,

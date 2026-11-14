@@ -684,7 +684,7 @@ async fn a_shared_rate_window_holds_and_spills_at_most_2x(backend: &str, pool: &
     use orion::storage::repositories::shared_state::SqlSharedState;
     // limit_per_window = rps + burst = 3.
     let limiter = SharedRateLimitBackend::new(
-        SqlSharedState::new(pool.clone()),
+        std::sync::Arc::new(SqlSharedState::new(pool.clone())),
         format!("contract-{backend}"),
         3,
         0,

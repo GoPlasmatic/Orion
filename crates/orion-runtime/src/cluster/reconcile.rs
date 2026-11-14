@@ -6,8 +6,11 @@
 //! node rides the `config_epoch` row's `breaker_epoch`/`breaker_key`, and the
 //! same loop applies it here.
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+
+use orion_extension_api::SharedStateStore;
 
 use crate::runtime::state::AppState;
 
@@ -15,7 +18,7 @@ use crate::runtime::state::AppState;
 /// the reconciler on single nodes too: a committed revision whose inline build
 /// failed still needs to reach the serving generation without another apply.
 pub fn start_cluster_tasks(state: &AppState) {
-    if let Some(store) = state.cluster.shared.clone()
+    if let Some(store) = sweeper_store(state.cluster.shared.as_ref())
         && !state.tasks.is_registered("shared_state_sweeper")
     {
         // Optional: an unswept table still answers every read correctly (an
@@ -29,6 +32,12 @@ pub fn start_cluster_tasks(state: &AppState) {
     start_v2_reconciler(state);
 }
 
+/// The shared store the sweeper runs over: only one that asks for it (the
+/// state database's). A store that expires its own keys has nothing to sweep.
+fn sweeper_store(shared: Option<&Arc<dyn SharedStateStore>>) -> Option<Arc<dyn SharedStateStore>> {
+    shared.filter(|store| store.needs_sweep()).cloned()
+}
+
 /// How often each node deletes the shared store's expired keys and finished
 /// rate-limit windows.
 const SHARED_STATE_SWEEP_SECS: u64 = 30;
@@ -37,7 +46,7 @@ const SHARED_STATE_SWEEP_SECS: u64 = 30;
 /// statement removes only rows already dead to every reader, so concurrent
 /// sweeps are harmless.
 async fn run_shared_state_sweeper(
-    store: crate::storage::repositories::shared_state::SqlSharedState,
+    store: Arc<dyn SharedStateStore>,
     mut shutdown: crate::runtime::Shutdown,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(SHARED_STATE_SWEEP_SECS));
@@ -49,7 +58,7 @@ async fn run_shared_state_sweeper(
         }
         if let Err(e) = store.sweep().await {
             crate::metrics::record_error("shared_state_sweep");
-            tracing::warn!(error = %e, "Shared state sweep failed");
+            tracing::warn!(error = %e, store = store.name(), "Shared state sweep failed");
         }
     }
 }
@@ -273,4 +282,25 @@ async fn apply_breaker_resets(state: &AppState) -> bool {
             .fetch_max(row.breaker_epoch, Ordering::AcqRel);
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cluster::tests::{fake, sqlite_pool};
+    use crate::storage::repositories::shared_state::SqlSharedState;
+
+    #[tokio::test]
+    async fn only_a_store_that_asks_for_it_is_swept() {
+        let database: Arc<dyn SharedStateStore> =
+            Arc::new(SqlSharedState::new(sqlite_pool().await));
+        assert!(sweeper_store(Some(&database)).is_some());
+
+        let external = fake(Ok(()));
+        assert!(
+            sweeper_store(Some(&external)).is_none(),
+            "no sweeper for an external store"
+        );
+        assert!(sweeper_store(None).is_none());
+    }
 }

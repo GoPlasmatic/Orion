@@ -1,14 +1,17 @@
 //! Per-channel rate-limit backends (multi-instance-ha A4).
 //!
 //! Single node: governor's in-process GCRA (`local`) — precise and free.
-//! Cluster: a fixed window in the shared state database, so a configured
-//! limit holds across all replicas combined instead of multiplying by the
-//! node count. The window is derived from **the database's own clock**, so
-//! every replica ages into the same bucket no matter how its local clock
-//! drifts. Fixed windows trade up to 2x burst at a window boundary for
+//! Cluster: a fixed window in the cluster's shared store (the state
+//! database, or an edition's), so a configured limit holds across all
+//! replicas combined instead of multiplying by the node count. The window is
+//! derived from **the store's own clock**, so every replica ages into the
+//! same bucket no matter how its local clock drifts. Fixed windows trade up to 2x burst at a window boundary for
 //! simplicity — the configured burst allowance absorbs it in practice.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
+use orion_extension_api::SharedStateStore;
 
 use super::{KeyedLimiter, build_keyed_limiter};
 use crate::errors::OrionError;
@@ -77,27 +80,22 @@ impl RateLimitBackend for LocalRateLimitBackend {
     }
 }
 
-/// Shared fixed-window limiter on the cluster's state database.
+/// Shared fixed-window limiter on the cluster's shared store.
 ///
-/// One row per `(scope:key, second)` in `cluster_rate_windows`, counted in a
-/// write transaction, so the count is the fleet's. Window limit = rps +
-/// burst, mapping the per-channel `requests_per_second`/`burst` config onto
-/// a one-second window. The second is the **database's** clock, not the
-/// node's: skewed nodes would otherwise land in different windows and the
-/// shared limit would silently multiply by the number of skew groups.
+/// One count per `(scope:key, second)` ([`SharedStateStore::hit_window`]),
+/// so the count is the fleet's. Window limit = rps + burst, mapping the
+/// per-channel `requests_per_second`/`burst` config onto a one-second
+/// window. The second is the **store's** clock, not the node's: skewed
+/// nodes would otherwise land in different windows and the shared limit
+/// would silently multiply by the number of skew groups.
 pub struct SharedRateLimitBackend {
-    store: crate::storage::repositories::shared_state::SqlSharedState,
+    store: Arc<dyn SharedStateStore>,
     scope: String,
     limit_per_window: u32,
 }
 
 impl SharedRateLimitBackend {
-    pub fn new(
-        store: crate::storage::repositories::shared_state::SqlSharedState,
-        scope: String,
-        rps: u32,
-        burst: u32,
-    ) -> Self {
+    pub fn new(store: Arc<dyn SharedStateStore>, scope: String, rps: u32, burst: u32) -> Self {
         Self {
             store,
             scope,
@@ -119,8 +117,10 @@ impl RateLimitBackend for SharedRateLimitBackend {
             // policy lives with the caller, which also logs and records the
             // error metric with the channel in scope.
             Err(e) => Err(OrionError::internal(format!(
-                "rate-limit backend '{}': {e}",
-                self.scope
+                "rate-limit backend '{}': cluster store '{}': {}",
+                self.scope,
+                self.store.name(),
+                e.message()
             ))),
         }
     }

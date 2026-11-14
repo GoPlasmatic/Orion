@@ -227,8 +227,8 @@ pub struct QuarantinedChannel {
 pub struct ClusterBackends {
     /// Default dedup/response-cache backend (the cluster's shared store).
     pub default_cache: Option<Arc<dyn CacheBackend>>,
-    /// The shared state database, for fleet-wide rate-limit windows.
-    pub shared: Option<crate::storage::repositories::shared_state::SqlSharedState>,
+    /// The cluster's shared store, for fleet-wide rate-limit windows.
+    pub shared: Option<Arc<dyn orion_extension_api::SharedStateStore>>,
 }
 
 /// The identity of one stored channel row.
