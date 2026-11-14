@@ -3,14 +3,13 @@
 # doubling the cold-cache cost for the same binary (T23).
 # P18: digest-pinned (multi-arch manifest list) so a rebuild months from now
 # resolves the same base layers; dependabot bumps the tag+digest pair.
-FROM rust:1.98-slim@sha256:bce1476d4be4d78b83705bc5f428b86d640eeeea33e9dadafbc037b5703a53bf AS chef
+FROM rust:1.100-slim@sha256:e9d95b74296f7126a83ae3d041aeaba1ff4c478f13abc5cc034fcf7c131c3d4a AS chef
 RUN cargo install cargo-chef --locked
 WORKDIR /app
 
 # Planner stage: generate a recipe for dependency caching. The workspace
 # manifest set must be complete for cargo metadata to resolve, so the whole
-# crates/ tree rides in (the CLI crate is small; .dockerignore already trims
-# the context).
+# crates/ tree rides in (.dockerignore already trims the context).
 FROM chef AS planner
 COPY Cargo.toml Cargo.lock* ./
 COPY crates/ crates/
