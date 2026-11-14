@@ -95,8 +95,17 @@ pub async fn test_state_and_pool(config: AppConfig) -> (AppState, orion::storage
 pub async fn test_state_with_handles(
     config: AppConfig,
 ) -> (AppState, orion::bootstrap::TaskHandles) {
-    let (state, handles, _pool) =
-        test_state_inner(config, orion::extensions::CompositionRoot::community()).await;
+    test_state_with_handles_and_composition(config, orion::extensions::CompositionRoot::community())
+        .await
+}
+
+/// [`test_state_with_handles`] over an edition's own composition: the
+/// cluster harness boots its nodes over an injected cluster store with it.
+pub async fn test_state_with_handles_and_composition(
+    config: AppConfig,
+    composition: orion::extensions::CompositionBuilder,
+) -> (AppState, orion::bootstrap::TaskHandles) {
+    let (state, handles, _pool) = test_state_inner(config, composition).await;
     (state, handles)
 }
 

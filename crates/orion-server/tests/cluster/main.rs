@@ -24,6 +24,7 @@
 #[path = "../integration/common/mod.rs"]
 mod common;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -34,7 +35,10 @@ use testcontainers_modules::postgres::Postgres;
 use tower::ServiceExt;
 
 use common::{body_json, json_request, post_with_idempotency_key};
+use orion::extension_api::{SharedStateStore, StoreError};
+use orion::extensions::CompositionBuilder;
 use orion::runtime::state::AppState;
+use orion::storage::repositories::shared_state::SqlSharedState;
 
 /// One cluster node: full `AppState`, its router, and the queue drains.
 ///
@@ -97,7 +101,15 @@ async fn two_nodes() -> TwoNodeHarness {
 }
 
 async fn two_nodes_with(customize: impl Fn(&mut orion::config::AppConfig)) -> TwoNodeHarness {
-    let cluster = cluster_nodes_with(2, customize, |_, _| {}).await;
+    two_nodes_composed(customize, community).await
+}
+
+/// [`two_nodes_with`], each node composed by `compose`.
+async fn two_nodes_composed(
+    customize: impl Fn(&mut orion::config::AppConfig),
+    compose: impl AsyncFn(&orion::config::AppConfig) -> CompositionBuilder,
+) -> TwoNodeHarness {
+    let cluster = cluster_nodes_with(2, customize, |_, _| {}, compose).await;
     TwoNodeHarness {
         state_a: cluster.nodes[0].state.clone(),
         state_b: cluster.nodes[1].state.clone(),
@@ -148,14 +160,79 @@ async fn post_status(node: &axum::Router, channel: &str) -> StatusCode {
         .status()
 }
 
+/// Community's composition, for a node of the harness.
+async fn community(_: &orion::config::AppConfig) -> CompositionBuilder {
+    orion::extensions::CompositionRoot::community()
+}
+
+/// Community's composition with an edition-style cluster store injected:
+/// [`Injected`] over the cluster's own Postgres, through a pool of its own.
+async fn injected(config: &orion::config::AppConfig) -> CompositionBuilder {
+    let pool = orion::storage::init_pool(&config.storage)
+        .await
+        .expect("the injected store's pool");
+    orion::extensions::CompositionRoot::community()
+        .with_cluster_store(Arc::new(Injected(SqlSharedState::new(pool))))
+}
+
+/// The database store wearing another name, so a node holds it as an
+/// edition's store: registered through the composition, pinged at boot and
+/// reported by `/readyz`. The tests that run over it prove the shared
+/// hot-path state goes through whatever store is composed.
+struct Injected(SqlSharedState);
+
+#[orion::extension_api::async_trait]
+impl SharedStateStore for Injected {
+    fn name(&self) -> &str {
+        "injected"
+    }
+    async fn get(&self, key: &str) -> Result<Option<String>, StoreError> {
+        SharedStateStore::get(&self.0, key).await
+    }
+    async fn get_many(&self, keys: &[String]) -> Result<Vec<Option<String>>, StoreError> {
+        SharedStateStore::get_many(&self.0, keys).await
+    }
+    async fn set(&self, key: &str, value: &str, ttl_secs: Option<u64>) -> Result<(), StoreError> {
+        SharedStateStore::set(&self.0, key, value, ttl_secs).await
+    }
+    async fn remove_many(&self, keys: &[String]) -> Result<u64, StoreError> {
+        SharedStateStore::remove_many(&self.0, keys).await
+    }
+    async fn claim(
+        &self,
+        key: &str,
+        owner: &str,
+        window_secs: u64,
+    ) -> Result<Option<String>, StoreError> {
+        SharedStateStore::claim(&self.0, key, owner, window_secs).await
+    }
+    async fn incr_by(&self, key: &str, by: i64, ttl_secs: Option<u64>) -> Result<i64, StoreError> {
+        SharedStateStore::incr_by(&self.0, key, by, ttl_secs).await
+    }
+    async fn hit_window(&self, key: &str) -> Result<i64, StoreError> {
+        SharedStateStore::hit_window(&self.0, key).await
+    }
+    async fn ping(&self) -> Result<(), StoreError> {
+        SharedStateStore::ping(&self.0).await
+    }
+    fn needs_sweep(&self) -> bool {
+        true
+    }
+    async fn sweep(&self) -> Result<(), StoreError> {
+        SharedStateStore::sweep(&self.0).await
+    }
+}
+
 /// Build an N-node cluster over one Postgres container, which is all a
 /// cluster shares.
 /// `shared` customizes the config every node gets; `per_node(i, cfg)` runs
-/// after it for node-specific overrides (e.g. a slow reconciler poll).
+/// after it for node-specific overrides (e.g. a slow reconciler poll);
+/// `compose(cfg)` builds each node's composition.
 async fn cluster_nodes_with(
     n: usize,
     shared: impl Fn(&mut orion::config::AppConfig),
     per_node: impl Fn(usize, &mut orion::config::AppConfig),
+    compose: impl AsyncFn(&orion::config::AppConfig) -> CompositionBuilder,
 ) -> ClusterHarness {
     let pg = Postgres::default().start().await.expect("start postgres");
     let pg_port = pg.get_host_port_ipv4(5432).await.expect("pg port");
@@ -172,7 +249,9 @@ async fn cluster_nodes_with(
         let mut cfg = config.clone();
         cfg.cluster.instance_id = format!("node-{}", (b'a' + i as u8) as char);
         per_node(i, &mut cfg);
-        let (state, handles) = common::test_state_with_handles(cfg).await;
+        let composition = compose(&cfg).await;
+        let (state, handles) =
+            common::test_state_with_handles_and_composition(cfg, composition).await;
         orion::cluster::start_cluster_tasks(&state);
         nodes.push(Node {
             router: orion::server::build_router(state.clone()),
@@ -363,8 +442,22 @@ async fn deployment_propagates_channel_activation_across_nodes() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
 async fn dedup_is_shared_across_nodes() {
-    let h = two_nodes().await;
+    dedup_is_shared_across_nodes_over(two_nodes_composed(|_| {}, community).await).await;
+}
 
+/// [`dedup_is_shared_across_nodes`] over an injected store: the claim one
+/// node makes stops the other through the composed store.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
+async fn dedup_is_shared_across_nodes_through_an_injected_store() {
+    let h = two_nodes_composed(|_| {}, injected).await;
+    let store = h.state_a.cluster.shared.as_ref().expect("a shared store");
+    assert_eq!(store.name(), "injected");
+    assert!(h.state_a.cluster.external_store);
+    dedup_is_shared_across_nodes_over(h).await;
+}
+
+async fn dedup_is_shared_across_nodes_over(h: TwoNodeHarness) {
     common::create_and_activate_channel_with_config(
         &h.node_a,
         "dedup-cluster-ch",
@@ -488,15 +581,25 @@ async fn dlq_row_claimed_by_exactly_one_node() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
 async fn rate_limit_holds_across_nodes_combined() {
-    let h = two_nodes_with(|config| {
-        // The middleware layer only mounts when platform limiting is on;
-        // keep platform limits far above the per-channel limit under test.
-        config.rate_limit.enabled = true;
-        config.rate_limit.default_rps = 10_000;
-        config.rate_limit.default_burst = 10_000;
-    })
+    rate_limit_holds_across_nodes_combined_over(
+        two_nodes_composed(rate_limited_config, community).await,
+    )
     .await;
+}
 
+/// [`rate_limit_holds_across_nodes_combined`] over an injected store: the
+/// window both nodes count in is the composed store's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
+async fn rate_limit_holds_across_nodes_combined_through_an_injected_store() {
+    let h = two_nodes_composed(rate_limited_config, injected).await;
+    let store = h.state_a.cluster.shared.as_ref().expect("a shared store");
+    assert_eq!(store.name(), "injected");
+    assert!(h.state_a.cluster.external_store);
+    rate_limit_holds_across_nodes_combined_over(h).await;
+}
+
+async fn rate_limit_holds_across_nodes_combined_over(h: TwoNodeHarness) {
     common::create_and_activate_channel_with_config(
         &h.node_a,
         "rl-cluster-ch",
@@ -553,6 +656,14 @@ async fn rate_limit_holds_across_nodes_combined() {
         limited >= 20,
         "both nodes must see shared 429s (got {limited})"
     );
+}
+
+/// The middleware layer only mounts when platform limiting is on; keep
+/// platform limits far above the per-channel limit under test.
+fn rate_limited_config(config: &mut orion::config::AppConfig) {
+    config.rate_limit.enabled = true;
+    config.rate_limit.default_rps = 10_000;
+    config.rate_limit.default_burst = 10_000;
 }
 
 /// Propagation beyond activation: deploying without a channel — what
@@ -818,7 +929,7 @@ async fn concurrent_admin_writes_converge() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
 async fn three_node_activation_propagates() {
-    let h = cluster_nodes_with(3, |_| {}, |_, _| {}).await;
+    let h = cluster_nodes_with(3, |_| {}, |_, _| {}, community).await;
 
     common::create_and_activate_channel(
         &h.nodes[0].router,
@@ -1060,6 +1171,7 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
                 cfg.cluster.epoch_poll_interval_ms = 5_000;
             }
         },
+        community,
     )
     .await;
     let node_a = h.nodes[0].router.clone();
@@ -1257,8 +1369,22 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
 async fn response_cache_is_shared_across_nodes() {
-    let h = two_nodes().await;
+    response_cache_is_shared_across_nodes_over(two_nodes_composed(|_| {}, community).await).await;
+}
 
+/// [`response_cache_is_shared_across_nodes`] over an injected store: a
+/// response one node caches is served by the other from the composed store.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
+async fn response_cache_is_shared_across_nodes_through_an_injected_store() {
+    let h = two_nodes_composed(|_| {}, injected).await;
+    let store = h.state_a.cluster.shared.as_ref().expect("a shared store");
+    assert_eq!(store.name(), "injected");
+    assert!(h.state_a.cluster.external_store);
+    response_cache_is_shared_across_nodes_over(h).await;
+}
+
+async fn response_cache_is_shared_across_nodes_over(h: TwoNodeHarness) {
     common::create_and_activate_channel_with_config(
         &h.node_a,
         "cache-cluster-ch",

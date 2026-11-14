@@ -26,6 +26,15 @@
 //!
 //! [`test_config`] is the default config with trace persistence pinned to
 //! `sync`, so a trace is committed before its response returns.
+//!
+//! [`shared_store_contract`] checks a cluster
+//! [`SharedStateStore`](crate::extension_api::SharedStateStore) against the
+//! semantics the trait documents: the state database's store runs it on
+//! every backend, and an edition runs it against its own.
+
+mod shared_store_contract;
+
+pub use shared_store_contract::shared_store_contract;
 
 use std::sync::Arc;
 

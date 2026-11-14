@@ -37,7 +37,7 @@ pub async fn run_all(backend: &str, pool: &DbPool) {
         .expect("repositories must build on every backend");
 
     a_read_snapshot_is_repeatable(backend, pool).await;
-    the_shared_store_claims_once_and_counts_every_increment(backend, pool).await;
+    the_shared_store_keeps_the_store_contract(pool).await;
     a_shared_rate_window_holds_and_spills_at_most_2x(backend, pool).await;
     a_deployment_audit_row_commits_with_the_head(backend, pool).await;
     concurrent_applies_on_one_base_commit_exactly_once(backend, pool).await;
@@ -614,67 +614,14 @@ async fn a_collection_racing_an_apply_never_takes_what_it_deploys(backend: &str,
     }
 }
 
-/// The cluster's shared store on this backend: values expire on the
-/// database's clock, a claim is won by exactly one of many concurrent
-/// claimants, and concurrent increments are never lost.
-async fn the_shared_store_claims_once_and_counts_every_increment(backend: &str, pool: &DbPool) {
+/// The cluster's shared store on this backend, through the conformance kit
+/// every store runs (`orion::testing::shared_store_contract`): expiry on the
+/// database's clock, one winner among concurrent claimants, no lost
+/// increment, ordered reads, counted removals and aligned rate windows.
+async fn the_shared_store_keeps_the_store_contract(pool: &DbPool) {
     use orion::storage::repositories::shared_state::SqlSharedState;
-    let store = SqlSharedState::new(pool.clone());
-
-    store.set("contract:v", "1", None).await.expect("set");
-    store
-        .set("contract:v", "2", Some(60))
-        .await
-        .expect("overwrite");
-    assert_eq!(
-        store.get("contract:v").await.expect("get").as_deref(),
-        Some("2"),
-        "{backend}"
-    );
-    store.set("contract:gone", "x", Some(0)).await.expect("set");
-    assert_eq!(
-        store.get("contract:gone").await.expect("get"),
-        None,
-        "{backend}: expired"
-    );
-
-    let claims = futures::future::join_all((0..8).map(|i| {
-        let store = store.clone();
-        async move {
-            store
-                .claim("contract:claim", &format!("owner-{i}"), 60)
-                .await
-        }
-    }))
-    .await;
-    let won = claims.iter().filter(|c| matches!(c, Ok(None))).count();
-    assert_eq!(
-        won, 1,
-        "{backend}: exactly one claimant wins, got {claims:?}"
-    );
-
-    let increments = futures::future::join_all((0..10).map(|_| {
-        let store = store.clone();
-        async move { store.incr_by("contract:n", 1, Some(60)).await }
-    }))
-    .await;
-    let mut seen: Vec<i64> = increments.into_iter().map(|r| r.expect("incr")).collect();
-    seen.sort_unstable();
-    assert_eq!(
-        seen,
-        (1..=10).collect::<Vec<_>>(),
-        "{backend}: no increment lost"
-    );
-
-    assert_eq!(
-        store
-            .remove_many(&["contract:v".into(), "contract:n".into()])
-            .await
-            .expect("remove"),
-        2,
-        "{backend}"
-    );
-    store.sweep().await.expect("sweep");
+    orion::testing::shared_store_contract(std::sync::Arc::new(SqlSharedState::new(pool.clone())))
+        .await;
 }
 
 /// A fixed window on the database's clock: the limit holds within a second,
