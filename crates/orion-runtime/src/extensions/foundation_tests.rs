@@ -850,3 +850,70 @@ async fn dispatch(
         .dispatch_attempt(invocation, backend.as_ref(), input)
         .await
 }
+
+/// `set`'s TTL fields: absent or `null` sets nothing from that field, so a
+/// `null` `ttl_ms` no longer hides `ttl_secs`; both set is refused rather
+/// than one silently winning.
+#[tokio::test]
+async fn memory_cache_set_reads_null_ttl_as_absent_and_refuses_both() {
+    let cache = MemoryCacheProviderBackend::new(16);
+    let inv = make_invocation(DRIVER_MEMORY_CACHE, "conn-ttl", 1, "set");
+    let attempt = inv.next_attempt().unwrap();
+    let identity = inv.effective_identity().clone();
+
+    let before = Instant::now();
+    cache
+        .invoke(
+            &attempt,
+            "set",
+            json!({"key": "a", "value": 1, "ttl_ms": null, "ttl_secs": 30}),
+        )
+        .await
+        .expect("a null ttl_ms is absent");
+    let expires = cache
+        .store()
+        .expires_at(&identity, "a")
+        .expect("stored")
+        .expect("ttl_secs applies");
+    let ttl = expires.duration_since(before);
+    assert!(
+        ttl >= Duration::from_secs(29) && ttl <= Duration::from_secs(31),
+        "{ttl:?}"
+    );
+
+    let err = cache
+        .invoke(
+            &attempt,
+            "set",
+            json!({"key": "b", "value": 1, "ttl_ms": 5, "ttl_secs": 9}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, codes::INVALID_INPUT);
+    assert!(err.message.contains("not both"), "{}", err.message);
+    assert_eq!(
+        cache.store().expires_at(&identity, "b"),
+        None,
+        "nothing stored"
+    );
+
+    cache
+        .invoke(
+            &attempt,
+            "set",
+            json!({"key": "c", "value": 1, "ttl_ms": null, "ttl_secs": null}),
+        )
+        .await
+        .expect("both null is no TTL");
+    assert_eq!(cache.store().expires_at(&identity, "c"), Some(None));
+
+    let err = cache
+        .invoke(
+            &attempt,
+            "set",
+            json!({"key": "d", "value": 1, "ttl_secs": 0}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, codes::INVALID_INPUT);
+}

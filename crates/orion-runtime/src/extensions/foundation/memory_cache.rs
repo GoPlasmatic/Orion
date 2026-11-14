@@ -163,6 +163,18 @@ impl PartitionedMemoryCache {
     pub fn partition_count(&self) -> usize {
         self.partitions.lock().map(|g| g.len()).unwrap_or(0)
     }
+
+    /// When `key` expires: `None` when it is not stored, `Some(None)` when it
+    /// never expires.
+    #[cfg(test)]
+    pub fn expires_at(
+        &self,
+        identity: &EffectiveConnectionIdentity,
+        key: &str,
+    ) -> Option<Option<Instant>> {
+        let guard = self.partitions.lock().unwrap_or_else(|e| e.into_inner());
+        guard.get(identity)?.get(key).map(|e| e.expires_at)
+    }
 }
 
 #[async_trait::async_trait]
@@ -178,7 +190,26 @@ impl ConnectionPoolCache for PartitionedMemoryCache {
     }
 }
 
+/// A `set` TTL field: absent or `null` is no TTL from it; anything else
+/// must be a positive integer.
+fn positive(input: &Value, field: &str) -> Result<Option<u64>, ConnectorError> {
+    match input.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(raw) => raw.as_u64().filter(|&v| v > 0).map(Some).ok_or_else(|| {
+            ConnectorError::invalid_input(
+                format!("Memory cache '{field}' must be a positive integer"),
+                Some(json!({"pointer": format!("/{field}")})),
+            )
+        }),
+    }
+}
+
 /// Community foundation in-memory cache connector provider (`org.orion.memory-cache`).
+///
+/// `set` takes an optional TTL as `ttl_ms` or `ttl_secs`. A field that is
+/// absent or `null` sets nothing, so `{"ttl_ms": null, "ttl_secs": 30}`
+/// expires in 30 seconds; both non-null is `invalid_input`, and neither is
+/// an entry that does not expire.
 pub struct MemoryCacheProviderBackend {
     store: Arc<PartitionedMemoryCache>,
 }
@@ -277,32 +308,16 @@ impl ProviderBackend for MemoryCacheProviderBackend {
                         Some(json!({"pointer": "/value"})),
                     ));
                 }
-                let ttl = if let Some(raw_ms) = input.get("ttl_ms") {
-                    if raw_ms.is_null() {
-                        None
-                    } else {
-                        let ms = raw_ms.as_u64().filter(|&v| v > 0).ok_or_else(|| {
-                            ConnectorError::invalid_input(
-                                "Memory cache 'ttl_ms' must be a positive integer",
-                                Some(json!({"pointer": "/ttl_ms"})),
-                            )
-                        })?;
-                        Some(Duration::from_millis(ms))
+                let ttl = match (positive(&input, "ttl_ms")?, positive(&input, "ttl_secs")?) {
+                    (Some(_), Some(_)) => {
+                        return Err(ConnectorError::invalid_input(
+                            "Memory cache 'set' takes 'ttl_ms' or 'ttl_secs', not both",
+                            Some(json!({"pointer": "/ttl_ms", "conflicts_with": "/ttl_secs"})),
+                        ));
                     }
-                } else if let Some(raw_secs) = input.get("ttl_secs") {
-                    if raw_secs.is_null() {
-                        None
-                    } else {
-                        let secs = raw_secs.as_u64().filter(|&v| v > 0).ok_or_else(|| {
-                            ConnectorError::invalid_input(
-                                "Memory cache 'ttl_secs' must be a positive integer",
-                                Some(json!({"pointer": "/ttl_secs"})),
-                            )
-                        })?;
-                        Some(Duration::from_secs(secs))
-                    }
-                } else {
-                    None
+                    (Some(ms), None) => Some(Duration::from_millis(ms)),
+                    (None, Some(secs)) => Some(Duration::from_secs(secs)),
+                    (None, None) => None,
                 };
                 self.store.set(identity, key.to_string(), value, ttl);
                 Ok(ConnectorOutput::new(json!({
