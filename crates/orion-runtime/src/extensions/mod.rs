@@ -33,6 +33,7 @@ pub mod channel_driver;
 #[cfg(test)]
 pub mod community_assembly;
 pub mod context;
+pub(crate) mod dependency;
 pub mod deployment_store;
 pub mod foundation;
 pub mod governed_connection;

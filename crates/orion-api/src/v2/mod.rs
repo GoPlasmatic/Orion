@@ -148,6 +148,26 @@ pub struct ProviderBackendInfo {
     /// input and answer are held to. Absent when it declares none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operations: Option<std::collections::BTreeMap<String, ProviderOperationInfo>>,
+    /// The connections the backend calls beside its own, by alias: what a
+    /// connection over it binds in `bindings`. Absent when it declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependencies: Option<std::collections::BTreeMap<String, ProviderDependencyInfo>>,
+}
+
+/// One dependency a provider backend declares.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct ProviderDependencyInfo {
+    /// The provider id the bound connection must run on, when it must run
+    /// on one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The operations the backend may call on the bound connection.
+    #[serde(default)]
+    pub operations: std::collections::BTreeSet<String>,
+    /// Whether a connection may leave the alias unbound.
+    #[serde(default)]
+    pub optional: bool,
 }
 
 /// One operation a provider backend declares.

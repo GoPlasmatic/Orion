@@ -172,4 +172,9 @@ pub struct CompiledConnection {
     pub provider_digest: String,
     pub public_config: Value,
     pub secret_locators: BTreeMap<String, String>,
+    /// Over a provider that declares dependencies: which connection of the
+    /// set each dependency alias calls (`alias -> connection_id`). Omitted
+    /// when empty, so a connection without any compiles as it always did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bindings: BTreeMap<String, String>,
 }

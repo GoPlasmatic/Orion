@@ -167,6 +167,13 @@ impl ProviderBackend for FetcherProvider {
         ))
     }
 
+    /// The probe reaches the dependency as a call would.
+    async fn health_check(&self, ctx: &AttemptContext) -> Result<(), ConnectorError> {
+        ctx.call_dependency("store", "echo", json!({ "name": "probe" }))
+            .await
+            .map(|_| ())
+    }
+
     fn describe(&self) -> Option<ProviderDescription> {
         Some(
             ProviderDescription::new()
@@ -817,4 +824,265 @@ async fn a_bound_target_must_be_required_by_the_deployment() {
         body.to_string().contains("does not require"),
         "the refusal names the missing requirement: {body}"
     );
+}
+
+fn configuration_digest(body: &Value) -> String {
+    body["connection"]["configuration_digest"]
+        .as_str()
+        .unwrap_or_else(|| unreachable!("a stored revision: {body}"))
+        .to_string()
+}
+
+/// Deploy `greeter` (an echo connection at `greeter_rev`), `fetch` bound to
+/// it, and a workflow + channel `fetches` that calls `fetch` with
+/// `data.name` and `data.op`.
+async fn deploy_fetcher(app: &axum::Router, greeter: &Value, fetch: &Value) {
+    let workflow = deploy::upload(
+        app,
+        json!({ "kind": "workflow", "definition": {
+            "name": "fetches",
+            "tasks": [
+                { "id": "call", "function": { "name": "connector_call", "input": {
+                    "connection": "fetch",
+                    "target_id": FETCHER,
+                    "operation": "fetch",
+                    "input": { "name": { "var": "data.name" }, "op": { "var": "data.op" } },
+                    "output": "data.reply"
+                } } }
+            ]
+        } }),
+    )
+    .await;
+    let channel = deploy::upload(
+        app,
+        deploy::channel_definition(&common::sync_http_channel("fetches", "fetches")).0,
+    )
+    .await;
+    deploy::deploy(
+        app,
+        vec![
+            deploy::Upsert {
+                kind: "connection",
+                id: "greeter".into(),
+                digest: configuration_digest(greeter),
+                revision: greeter["connection"]["revision"].as_u64(),
+                requires: Vec::new(),
+            },
+            deploy::Upsert {
+                kind: "connection",
+                id: "fetch".into(),
+                digest: configuration_digest(fetch),
+                revision: Some(1),
+                requires: vec![("connection", "greeter".into())],
+            },
+            deploy::Upsert {
+                kind: "workflow",
+                id: "fetches".into(),
+                digest: workflow,
+                revision: None,
+                requires: vec![("connection", "fetch".into())],
+            },
+            deploy::Upsert {
+                kind: "channel",
+                id: "fetches".into(),
+                digest: channel,
+                revision: None,
+                requires: vec![("workflow", "fetches".into())],
+            },
+        ],
+    )
+    .await;
+}
+
+/// A Rust provider calls the connection bound to its declared alias, at the
+/// revision the deployment pins: a newer stored revision is not reached until
+/// a deployment requires it, and then the old one is released.
+#[tokio::test]
+async fn a_rust_provider_reaches_the_pinned_target_revision() {
+    let (_state, app, lifecycle) = node().await;
+    let (_, greeter) = store_revision(
+        &app,
+        "greeter",
+        1,
+        DRIVER,
+        json!({ "greeting": "hello" }),
+        json!({}),
+    )
+    .await;
+    let (_, fetch) = store_revision(
+        &app,
+        "fetch",
+        1,
+        FETCHER,
+        json!({}),
+        json!({ "store": "greeter" }),
+    )
+    .await;
+    deploy_fetcher(&app, &greeter, &fetch).await;
+
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/api/v2/data/fetches",
+        Some(json!({ "data": { "name": "orion" } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["reply"]["via"]["greeting"], "hello", "{body}");
+    assert_eq!(
+        body["data"]["reply"]["via"]["echo"]["name"], "orion",
+        "{body}"
+    );
+    assert_eq!(
+        body["data"]["reply"]["bound"],
+        json!({ "id": "greeter", "revision": 1 })
+    );
+
+    // Stored, not deployed: still revision 1.
+    let (status, greeter2) = store_revision(
+        &app,
+        "greeter",
+        2,
+        DRIVER,
+        json!({ "greeting": "hey" }),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{greeter2}");
+    let (_, body) = send(
+        &app,
+        "POST",
+        "/api/v2/data/fetches",
+        Some(json!({ "data": { "name": "orion" } })),
+    )
+    .await;
+    assert_eq!(body["data"]["reply"]["via"]["greeting"], "hello", "{body}");
+
+    // Deployed: the binding follows the requirement to revision 2.
+    deploy::deploy(
+        &app,
+        vec![deploy::Upsert {
+            kind: "connection",
+            id: "greeter".into(),
+            digest: configuration_digest(&greeter2),
+            revision: Some(2),
+            requires: Vec::new(),
+        }],
+    )
+    .await;
+    let (_, body) = send(
+        &app,
+        "POST",
+        "/api/v2/data/fetches",
+        Some(json!({ "data": { "name": "orion" } })),
+    )
+    .await;
+    assert_eq!(body["data"]["reply"]["via"]["greeting"], "hey", "{body}");
+    assert_eq!(body["data"]["reply"]["bound"]["revision"], 2, "{body}");
+    assert!(
+        lifecycle
+            .disposed
+            .lock()
+            .expect("lock")
+            .contains(&("greeter".to_string(), 1)),
+        "the released revision is disposed"
+    );
+}
+
+/// The dependency grants `echo` alone: any other operation on the bound
+/// connection is refused before it is dispatched.
+#[tokio::test]
+async fn an_ungranted_dependency_operation_is_forbidden() {
+    let (_state, app, _lifecycle) = node().await;
+    let (_, greeter) = store_revision(
+        &app,
+        "greeter",
+        1,
+        DRIVER,
+        json!({ "greeting": "hello" }),
+        json!({}),
+    )
+    .await;
+    let (_, fetch) = store_revision(
+        &app,
+        "fetch",
+        1,
+        FETCHER,
+        json!({}),
+        json!({ "store": "greeter" }),
+    )
+    .await;
+    deploy_fetcher(&app, &greeter, &fetch).await;
+
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/api/v2/data/fetches",
+        Some(json!({ "data": { "name": "orion", "op": "fail" } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["error"]["connector"]["provider_code"], "CONNECTOR_OPERATION_FORBIDDEN",
+        "{body}"
+    );
+}
+
+/// The probe of a connection over a Rust provider binds its dependencies, so
+/// a health check that calls one reaches the bound connection.
+#[tokio::test]
+async fn the_probe_reaches_a_rust_providers_bound_connection() {
+    let (_state, app, _lifecycle) = node().await;
+    let (_, greeter) = store_revision(
+        &app,
+        "greeter",
+        1,
+        DRIVER,
+        json!({ "greeting": "hello" }),
+        json!({}),
+    )
+    .await;
+    let (_, fetch) = store_revision(
+        &app,
+        "fetch",
+        1,
+        FETCHER,
+        json!({}),
+        json!({ "store": "greeter" }),
+    )
+    .await;
+    deploy_fetcher(&app, &greeter, &fetch).await;
+
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/api/v2/admin/connections/fetch/revisions/1/probes",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["healthy"], true, "{body}");
+}
+
+/// `/runtime-capabilities` lists what a provider depends on, so a deployer
+/// knows which aliases a connection over it binds.
+#[tokio::test]
+async fn runtime_capabilities_list_a_providers_dependencies() {
+    let (_state, app, _lifecycle) = node().await;
+    let (_, caps) = send(&app, "GET", "/api/v2/admin/runtime-capabilities", None).await;
+    let backends = caps["provider_backends"].as_array().expect("backends");
+    let fetcher = backends
+        .iter()
+        .find(|b| b["driver_id"] == FETCHER)
+        .expect("listed");
+    assert_eq!(
+        fetcher["dependencies"]["store"],
+        json!({ "provider": DRIVER, "operations": ["echo"], "optional": false }),
+        "{fetcher}"
+    );
+    let echo = backends
+        .iter()
+        .find(|b| b["driver_id"] == DRIVER)
+        .expect("listed");
+    assert!(echo.get("dependencies").is_none(), "{echo}");
 }

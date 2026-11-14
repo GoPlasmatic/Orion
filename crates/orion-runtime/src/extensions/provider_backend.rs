@@ -587,7 +587,7 @@ impl ProviderRegistry {
             prior_effect,
         )?;
 
-        let invocation = invocation.with_deployments(&self.deployments);
+        let invocation = invocation.with_registry(self);
         let attempt = invocation.next_attempt()?;
 
         let start = std::time::Instant::now();

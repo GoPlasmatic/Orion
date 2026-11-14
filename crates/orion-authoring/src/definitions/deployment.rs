@@ -94,6 +94,7 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
 
     // Connections first: a workflow's requirements are checked against them.
     let mut connection_ids: BTreeSet<String> = BTreeSet::new();
+    let mut bound: Vec<(String, String, BTreeMap<String, String>)> = Vec::new();
     for def in set.iter(Entity::Connector) {
         match connection(&def.doc, &def.origin) {
             Ok((connection, notes)) => {
@@ -112,16 +113,39 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
                     }
                     Err(e) => errors.push(e),
                 }
+                // A bound connection is deployed with its binder: the member
+                // requires each target, which the node pins the call to.
+                let requires = connection
+                    .bindings
+                    .values()
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .map(|target| CompiledRequirement {
+                        kind: EntityKind::Connection,
+                        id: target.clone(),
+                    })
+                    .collect();
+                bound.push((id.clone(), def.origin.clone(), connection.bindings.clone()));
                 members.push(CompiledMember {
                     kind: EntityKind::Connection,
                     id: id.clone(),
                     definition: None,
                     connection: Some(id),
-                    requires: Vec::new(),
+                    requires,
                 });
                 out.counts.connections += 1;
             }
             Err(e) => errors.push(e),
+        }
+    }
+    for (id, origin, bindings) in bound {
+        for (alias, target) in bindings {
+            if !connection_ids.contains(&target) {
+                errors.push(format!(
+                    "connector '{id}' ({origin}): `bindings.{alias}` names connection \
+                     '{target}', and the set has no connector of that name"
+                ));
+            }
         }
     }
 
@@ -586,7 +610,7 @@ pub fn connection(doc: &Value, origin: &str) -> Result<(CompiledConnection, Vec<
     let what = format!("connector '{name}' ({origin})");
     refuse_unknown_keys(
         obj,
-        &["name", "connector_type", "provider", "config"],
+        &["name", "connector_type", "provider", "config", "bindings"],
         &["id", "tags", "enabled"],
         &what,
     )?;
@@ -654,6 +678,39 @@ pub fn connection(doc: &Value, origin: &str) -> Result<(CompiledConnection, Vec<
     };
     let provider_digest = foundation::synthetic_provider_digest(&driver).into_string();
 
+    // `bindings` name the set's connections a provider's declared
+    // dependencies call. Only a `provider` declares dependencies: none of
+    // the `connector_type` drivers does.
+    let bindings: BTreeMap<String, String> = match obj.get("bindings") {
+        None | Some(Value::Null) => BTreeMap::new(),
+        Some(_) if !obj.contains_key("provider") => {
+            return Err(format!(
+                "{what}: `bindings` binds a provider's declared dependencies; name the \
+                 `provider` that declares them"
+            ));
+        }
+        Some(Value::Object(map)) => map
+            .iter()
+            .map(|(alias, target)| match target.as_str() {
+                Some(target) if is_member_id(target) => Ok((alias.clone(), target.to_string())),
+                _ => Err(format!(
+                    "{what}: `bindings.{alias}` must name a connection of the set, not {target}"
+                )),
+            })
+            .collect::<Result<_, _>>()?,
+        Some(other) => {
+            return Err(format!(
+                "{what}: `bindings` maps each dependency alias to a connection, not {other}"
+            ));
+        }
+    };
+    if let Some((alias, _)) = bindings.iter().find(|(_, target)| target.as_str() == name) {
+        return Err(format!(
+            "{what}: `bindings.{alias}` names the connection itself; a connection cannot be \
+             its own dependency"
+        ));
+    }
+
     let mut secret_locators = BTreeMap::new();
     let mut misplaced = Vec::new();
     extract_references(&mut config, "", &mut secret_locators, &mut misplaced);
@@ -697,6 +754,7 @@ pub fn connection(doc: &Value, origin: &str) -> Result<(CompiledConnection, Vec<
             provider_digest,
             public_config: config,
             secret_locators,
+            bindings,
         },
         notes,
     ))
@@ -817,6 +875,84 @@ mod tests {
         .expect("converts");
         assert_eq!(id, "w");
         assert_eq!(wf.on_failure, WorkflowOnFailure::Continue);
+    }
+
+    /// A connector over a `provider` may bind the provider's dependencies to
+    /// other connections of the set: the compiled connection carries them,
+    /// and its member requires each target, so they deploy together.
+    #[test]
+    fn a_connection_binds_over_a_provider_and_requires_its_targets() {
+        let def = |doc: Value, origin: &str| super::super::set::Definition {
+            entity: Entity::Connector,
+            origin: origin.to_string(),
+            doc,
+            spans: None,
+            provenance: Default::default(),
+        };
+        let set = DefinitionSet {
+            definitions: vec![
+                def(
+                    json!({"name": "store", "provider": "com.orion.storage", "config": {}}),
+                    "store.json",
+                ),
+                def(
+                    json!({"name": "models", "provider": "com.orion.models", "config": {},
+                           "bindings": {"artifact_store": "store"}}),
+                    "models.json",
+                ),
+            ],
+            plugins: Vec::new(),
+        };
+        let out = build(&set).expect("compiles");
+        let compiled: CompiledConnection =
+            serde_json::from_slice(&out.files["connections/models.json"]).expect("a connection");
+        assert_eq!(compiled.bindings["artifact_store"], "store");
+        let unbound: Value =
+            serde_json::from_slice(&out.files["connections/store.json"]).expect("a connection");
+        assert!(unbound.get("bindings").is_none(), "{unbound}");
+        let manifest: Value =
+            serde_json::from_slice(&out.files["deployment.json"]).expect("a manifest");
+        let models = manifest["members"]
+            .as_array()
+            .and_then(|m| m.iter().find(|m| m["id"] == "models"))
+            .expect("the member");
+        assert_eq!(
+            models["requires"],
+            json!([{"kind": "connection", "id": "store"}]),
+            "{manifest}"
+        );
+
+        // A target the set does not carry, bindings without a provider, and
+        // a connection bound to itself are each refused by name.
+        let missing = DefinitionSet {
+            definitions: vec![def(
+                json!({"name": "models", "provider": "com.orion.models", "config": {},
+                       "bindings": {"artifact_store": "nowhere"}}),
+                "models.json",
+            )],
+            plugins: Vec::new(),
+        };
+        let errors = build(&missing).expect_err("refused");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("`bindings.artifact_store`") && e.contains("nowhere")),
+            "{errors:?}"
+        );
+        let typed = connection(
+            &json!({"name": "c", "connector_type": "http",
+                    "config": {"base_url": "https://x.example"}, "bindings": {"a": "b"}}),
+            "c.json",
+        )
+        .expect_err("refused");
+        assert!(typed.contains("name the `provider`"), "{typed}");
+        let itself = connection(
+            &json!({"name": "c", "provider": "com.orion.models", "config": {},
+                    "bindings": {"a": "c"}}),
+            "c.json",
+        )
+        .expect_err("refused");
+        assert!(itself.contains("its own dependency"), "{itself}");
     }
 
     #[test]

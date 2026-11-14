@@ -15,7 +15,8 @@ use std::time::Instant;
 
 use orion_extension_api::{
     AttemptContext, AttemptScope, ConnectionReference, ConnectionResolver, ConnectorError,
-    EffectStatus, EffectiveConnectionIdentity, SecretValue, codes,
+    ConnectorOutput, DependencyCaller, EffectStatus, EffectiveConnectionIdentity, SecretValue,
+    codes,
 };
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -702,6 +703,7 @@ impl RunContext {
             max_attempts: max_invocation_attempts.max(1),
             attempt_counter: Arc::new(AtomicU64::new(0)),
             effect_ledger: Arc::new(Mutex::new(EffectStatus::NotStarted)),
+            providers: None,
         })
     }
 }
@@ -720,9 +722,25 @@ pub struct Invocation {
     max_attempts: u32,
     attempt_counter: Arc<AtomicU64>,
     effect_ledger: Arc<Mutex<EffectStatus>>,
+    /// The registry a dependency call dispatches on, once the invocation is
+    /// dispatched ([`Self::with_registry`]): what makes it the
+    /// [`DependencyCaller`] its provider's attempts see.
+    providers: Option<super::provider_backend::ProviderRegistry>,
 }
 
 impl Invocation {
+    /// A copy bound to `providers`, its deployment store and the governed
+    /// connection row: what [`ProviderRegistry::dispatch_attempt`] hands a
+    /// provider, so the attempt can resolve its configuration and call its
+    /// declared dependencies.
+    ///
+    /// [`ProviderRegistry::dispatch_attempt`]: super::provider_backend::ProviderRegistry::dispatch_attempt
+    pub fn with_registry(&self, providers: &super::provider_backend::ProviderRegistry) -> Self {
+        let mut bound = self.with_deployments(providers.deployment_store());
+        bound.providers = Some(providers.clone());
+        bound
+    }
+
     /// Return a copy of this invocation bound to `deployments` if not already
     /// bound to a governed connection row.
     pub fn with_deployments(
@@ -904,6 +922,7 @@ impl Invocation {
             max_attempts: max_invocation_attempts.max(1),
             attempt_counter: Arc::new(AtomicU64::new(0)),
             effect_ledger: self.effect_ledger.clone(),
+            providers: None,
         })
     }
 }
@@ -997,6 +1016,42 @@ impl AttemptScope for Invocation {
 
     fn connection_resolver(&self) -> Option<&dyn ConnectionResolver> {
         self.connection_row.is_some().then_some(self)
+    }
+
+    fn dependency_caller(&self) -> Option<&dyn DependencyCaller> {
+        self.providers.is_some().then_some(self)
+    }
+}
+
+/// A dispatched invocation calls its provider's declared dependencies: the
+/// alias resolves through the run's authority, keyed by this connection, to
+/// the revision the deployment pins.
+#[async_trait::async_trait]
+impl DependencyCaller for Invocation {
+    async fn call(
+        &self,
+        alias: &str,
+        operation: &str,
+        input: serde_json::Value,
+    ) -> Result<ConnectorOutput, ConnectorError> {
+        let Some(providers) = &self.providers else {
+            return Err(ConnectorError::forbidden(
+                codes::DEPENDENCY_UNDECLARED,
+                "dispatch",
+                format!("no dependency '{alias}' is bound for this call"),
+                self.effect_status(),
+            ));
+        };
+        super::dependency::dispatch_dependency(providers, self, alias, operation, input).await
+    }
+
+    fn bound(&self, alias: &str) -> Option<ConnectionReference> {
+        let key = super::workflow_provider::dependency_key(&self.connection.connection_id, alias);
+        self.context
+            .authority
+            .declared_dependencies
+            .get(&key)
+            .map(|(bound, _)| bound.clone())
     }
 }
 

@@ -444,7 +444,8 @@ pub(crate) async fn probe_connection(
             .is_none_or(|m| !m.is_empty())
         && let Err(cfg_err) = backend.validate_connection(
             &ValidateContext::new(&conn_row.public_config)
-                .for_connection(&conn_row.connection_id, conn_row.revision),
+                .for_connection(&conn_row.connection_id, conn_row.revision)
+                .with_bindings(&conn_row.bindings),
         )
     {
         return Ok(Json(probe_response(
@@ -491,9 +492,14 @@ pub(crate) async fn probe_connection(
         revision: conn_row.revision,
         secret_hash: "sha256:probe".to_string(),
     };
+    // Bound to the registry, so a provider's health check can reach its
+    // declared dependencies as a call would.
     let attempt = run_ctx
         .start_invocation(conn_ref, eff, "probe", None, 1)
-        .and_then(|inv| inv.next_attempt())
+        .and_then(|inv| {
+            inv.with_registry(state.composition.providers())
+                .next_attempt()
+        })
         .map_err(|e| {
             V2Error::new(
                 DeploymentErrorKind::ProbeFailed,
@@ -513,18 +519,18 @@ pub(crate) async fn probe_connection(
 
 /// The dependencies `conn`'s bindings name, keyed as a run's authority keys
 /// them, each bound connection at its latest stored revision with the
-/// operations the package declares for the alias. A binding to a connection
-/// that is not stored, or to a provider that is not, is left out.
+/// operations its provider (a workflow package or a composed Rust driver)
+/// declares for the alias. A binding to a connection that is not stored, or
+/// to a provider that is not, is left out.
 fn probe_dependencies(
     state: &AppState,
     conn: &ConnectionRevisionRow,
 ) -> BTreeMap<String, (ConnectionReference, BTreeSet<String>)> {
-    use crate::extensions::workflow_provider::{declared_dependencies, dependency_key};
+    use crate::extensions::workflow_provider::{dependency_key, provider_dependencies};
     let store = &state.deployments;
-    let Some(package) = store.get_package(&conn.provider_digest) else {
+    let Some((_, dependencies)) = provider_dependencies(store, &conn.provider_digest) else {
         return BTreeMap::new();
     };
-    let dependencies = declared_dependencies(&package.manifest_json);
     let connections = store.list_connections();
     let mut out = BTreeMap::new();
     for (alias, target) in &conn.bindings {
