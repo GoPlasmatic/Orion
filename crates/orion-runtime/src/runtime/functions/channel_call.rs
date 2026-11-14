@@ -146,6 +146,19 @@ fn serviceable_target(
             ),
         ));
     }
+    // A hooked channel's workflow is driven by its driver's protocol (a
+    // stream, a GraphQL document), and a `channel_call` has no request to
+    // hand that driver.
+    if matches!(runtime.http, crate::channel::HttpServing::Hook { .. }) {
+        return Err(HandlerError::new(
+            ErrorClass::Backend,
+            format!(
+                "channel_call to '{target}': it is served by its '{}' driver over HTTP; \
+                 call its workflow's channel through a plain one",
+                runtime.channel.protocol
+            ),
+        ));
+    }
     Ok(runtime)
 }
 

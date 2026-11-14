@@ -191,7 +191,7 @@ pub trait ChannelDriver: Send + Sync {
     /// Serve one request to `channel` on the HTTP data plane. Called only for
     /// a driver that declares [`ChannelDriverCapabilities::http_hook`], after
     /// the request's guards passed; `host` runs the channel's workflow. An
-    /// error answers `502` with the message logged, not returned to the
+    /// error answers `500` with the message logged, not returned to the
     /// caller. The default serves nothing.
     async fn serve_http(
         &self,

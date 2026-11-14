@@ -34,7 +34,7 @@ pub use oauth2_login::{CompiledOAuth2Login, Leg as OAuthLeg};
 pub use rate_limit_backend::{LocalRateLimitBackend, RateLimitBackend, SharedRateLimitBackend};
 pub use registry::{
     ChannelLoadIssue, ChannelLoader, ChannelRuntimeConfig, ChannelSnapshot, ClusterBackends,
-    QuarantinedChannel, ReloadDeps,
+    HttpServing, QuarantinedChannel, ReloadDeps,
 };
 pub use routing::{RouteMatch, RouteTable};
 

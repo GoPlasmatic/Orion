@@ -1,3 +1,4 @@
+mod hook;
 mod sync;
 pub(crate) mod traces;
 
@@ -92,7 +93,7 @@ and its sibling fields are discarded.",
         (status = 401, description = "The channel declares `auth` and the request did not satisfy it — absent, wrong, or malformed credential. One message for every cause, so a caller cannot learn which half they had right.", body = ErrorResponse),
         (status = 403, description = "`Origin` header not in the channel's `origin_allow_list`", body = ErrorResponse),
         (status = 404, description = "No channel serves this request: either no REST route matches the requested method and path, or the single-segment name is not an active channel in the registry.", body = ErrorResponse),
-        (status = 405, description = "The channel is not served over HTTP (`METHOD_NOT_ALLOWED`): a cron channel (run it now through `POST /api/v2/admin/channels/{id}/trigger`), or a channel whose driver runs its own listener and receives its messages over that transport.", body = ErrorResponse),
+        (status = 405, description = "The channel is not served over HTTP (`METHOD_NOT_ALLOWED`): a cron channel (run it now through `POST /api/v2/admin/channels/{id}/trigger`), or a channel whose driver runs its own listener and receives its messages over that transport. On `/async`, also a channel whose driver answers its requests itself.", body = ErrorResponse),
         (status = 409, description = "Deduplication key already seen inside the channel's dedup window", body = ErrorResponse),
         (status = 413, description = "Request body exceeded `ingest.max_payload_size` (`PAYLOAD_TOO_LARGE`)", body = ErrorResponse),
         (status = 415, description = "Non-empty body without a JSON `Content-Type`", body = ErrorResponse),
@@ -204,6 +205,40 @@ pub(crate) async fn dynamic_handler(
         ));
     }
 
+    // A hooked channel's driver answers the request itself, and its body is
+    // the driver's to read: it need not be JSON. The branch peeks at the
+    // serving map rather than calling `require_serviceable`, so an unknown or
+    // quarantined name falls through to the checks below and keeps its
+    // 415 → 400 → 404/503 order. (A quarantined hooked channel therefore
+    // answers a non-JSON body 415: quarantine keeps no runtime config to read
+    // its protocol from.)
+    if let Some((runtime, driver, declared)) = hook::hooked(&generation, &channel) {
+        if is_async {
+            return Err(OrionError::method_not_allowed(format!(
+                "channel '{channel}' is served by its '{}' driver, which answers for \
+                 itself: it cannot be submitted asynchronously",
+                runtime.channel.protocol
+            )));
+        }
+        return hook::serve(
+            &state,
+            hook::Hooked {
+                generation,
+                runtime,
+                driver,
+                guards: declared,
+                method: &method,
+                path: route_path,
+                headers: &headers,
+                peer: peer.as_ref(),
+                query: &query_params,
+                route_params: &route_params,
+                body,
+            },
+        )
+        .await;
+    }
+
     // Content-Type enforcement: non-empty bodies must declare a JSON media type
     if !body.is_empty() {
         let content_type = headers
@@ -264,7 +299,7 @@ pub(crate) async fn dynamic_handler(
     // cron arm so a cron channel keeps its more useful message, and after the
     // 415/400 checks above so their ordering is unchanged.
     if let Some(runtime) = channel_runtime.as_ref()
-        && !runtime.served_over_http
+        && matches!(runtime.http, crate::channel::HttpServing::No)
     {
         return Err(OrionError::method_not_allowed(format!(
             "channel '{channel}' is a '{}' channel: its messages arrive over its \

@@ -25,6 +25,7 @@ orion-api = { workspace = true, features = ["utoipa"] }
 orion-authoring.workspace = true
 orion-common.workspace = true
 orion-engine.workspace = true
+orion-extension-api.workspace = true
 orion-plugin-host.workspace = true
 orion-runtime.workspace = true
 orion-storage.workspace = true

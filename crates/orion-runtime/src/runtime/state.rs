@@ -45,6 +45,8 @@ pub struct DataPlaneParts {
     pub trace_persistence_queue: crate::queue::TracePersistenceQueue,
     pub traces: Arc<dyn crate::storage::repositories::traces::TraceRepository>,
     pub channel_auth_failures: Arc<crate::auth::FailedAuthTracker>,
+    /// What a hooked channel's request host is built from.
+    pub hook: Arc<crate::http_hook::HookDeps>,
 }
 
 impl DataPlane {
@@ -172,6 +174,9 @@ pub struct AppStateInner {
     pub reload_degraded: Arc<AtomicBool>,
     /// Multi-instance coordination runtime. Inert when `cluster.enabled = false`.
     pub cluster: Arc<crate::cluster::ClusterRuntime>,
+    /// Fired by the serve loop when its drain gate resolves: every open
+    /// stream of a hooked channel ends then (see [`crate::http_hook`]).
+    pub stream_drain: crate::http_hook::StreamDrain,
     /// The node's long-lived background tasks. Held here so `/health` and
     /// `/readyz` can report their liveness — before this, a dead persistence
     /// worker or DLQ retry consumer was invisible to every probe while the
@@ -295,6 +300,17 @@ impl AppStateInner {
         let trusted_proxies = Arc::new(config.rate_limit.parsed_trusted_proxies());
         let admin_keys: Arc<[crate::config::AdminKey]> = Arc::from(config.admin_auth.admin_keys());
         let channel_auth_failures = Arc::new(crate::auth::FailedAuthTracker::default());
+        let stream_drain = crate::http_hook::StreamDrain::default();
+        let hook = Arc::new(crate::http_hook::HookDeps {
+            runtime: runtime.clone(),
+            traces: repos.traces.clone(),
+            persistence_queue: trace_persistence_queue.clone(),
+            exprs: exprs.clone(),
+            vars: vars.clone(),
+            node: orion_extension_api::NodeInfo::new(cluster.instance_id.clone(), cluster.enabled),
+            max_result_size_bytes: config.trace_queue.max_result_size_bytes,
+            drain: stream_drain.clone(),
+        });
         let data_plane = DataPlane::new(DataPlaneParts {
             runtime: runtime.clone(),
             config: config.clone(),
@@ -305,6 +321,7 @@ impl AppStateInner {
             trace_persistence_queue,
             traces: repos.traces.clone(),
             channel_auth_failures,
+            hook,
         });
         Arc::new(Self {
             runtime,
@@ -328,6 +345,7 @@ impl AppStateInner {
             ready,
             reload_degraded: Arc::new(AtomicBool::new(false)),
             cluster,
+            stream_drain,
             tasks,
             cron_status,
             ingress,

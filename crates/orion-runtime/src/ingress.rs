@@ -48,7 +48,6 @@ use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 
 use crate::channel::guards::{DedupClaim, GuardContext, GuardRequest, Transport};
-use crate::channel::registry::ChannelRuntimeConfig;
 use crate::engine::TRIGGER_KEY;
 use crate::errors::{OrionError, StatusCode};
 use crate::queue::TracePersistenceQueue;
@@ -212,7 +211,19 @@ async fn dispatch(host: &Host, delivery: Delivery) -> Dispatched {
     .await;
 
     // 6. The trace, every outcome included.
-    record_trace(host, &runtime, &channel, input_json, &execution).await;
+    crate::queue::trace_record::record_run(
+        crate::queue::trace_record::RunTraceSink {
+            trace_repo: &*deps.trace_repo,
+            persistence_queue: &deps.persistence_queue,
+            max_result_size_bytes: deps.max_result_size_bytes,
+        },
+        &host.protocol,
+        &runtime,
+        &channel,
+        input_json,
+        &execution,
+    )
+    .await;
 
     // 7. The channel's counters.
     runtime
@@ -222,7 +233,16 @@ async fn dispatch(host: &Host, delivery: Delivery) -> Dispatched {
         .metrics
         .record_message_duration(&channel, execution.duration.as_secs_f64());
 
-    let outcome = match execution.outcome {
+    let outcome = outcome_of(execution);
+    match claim {
+        Some(claim) => Dispatched::new(outcome, Box::new(ClaimSettle(claim))),
+        None => Dispatched::unsettled(outcome),
+    }
+}
+
+/// What a finished run answers a driver: its output, or why it failed.
+pub(crate) fn outcome_of(execution: crate::engine::Execution) -> DispatchOutcome {
+    match execution.outcome {
         crate::engine::RunOutcome::Ok => DispatchOutcome::Completed {
             output: execution.data(),
         },
@@ -238,10 +258,6 @@ async fn dispatch(host: &Host, delivery: Delivery) -> Dispatched {
             kind: FailureKind::Workflow,
             message: summary,
         },
-    };
-    match claim {
-        Some(claim) => Dispatched::new(outcome, Box::new(ClaimSettle(claim))),
-        None => Dispatched::unsettled(outcome),
     }
 }
 
@@ -252,7 +268,7 @@ async fn dispatch(host: &Host, delivery: Delivery) -> Dispatched {
 /// evaluated against this message fails against every redelivery of it, so
 /// deferring it would block the driver's stream for as long as the channel
 /// keeps that expression.
-fn refusal(error: &OrionError) -> DispatchOutcome {
+pub(crate) fn refusal(error: &OrionError) -> DispatchOutcome {
     match error {
         OrionError::Http { status, .. } if *status == StatusCode::CONFLICT => {
             DispatchOutcome::Duplicate
@@ -287,75 +303,6 @@ impl Settle for ClaimSettle {
     async fn abandoned(self: Box<Self>) {
         self.0.release().await;
     }
-}
-
-/// Persist the trace for one dispatched delivery, under the channel's own
-/// `tracing` block. A trace that cannot be written is logged and dropped: it
-/// must not change what the driver does with the delivery.
-async fn record_trace(
-    host: &Host,
-    runtime: &ChannelRuntimeConfig,
-    channel: &str,
-    input_json: Option<String>,
-    execution: &crate::engine::Execution,
-) {
-    let deps = &host.deps;
-    let has_errors = !execution.outcome.is_ok();
-    let cfg = runtime.trace_storage;
-    if !crate::queue::trace_record::TracePlan::decide(&cfg, has_errors).persists() {
-        return;
-    }
-    // The data, and the task errors beside it when the run recorded any, as
-    // the sync path stores them: a failed delivery's row says why it failed.
-    let errors = execution.message.errors();
-    let result = if errors.is_empty() {
-        execution.data()
-    } else {
-        serde_json::json!({ "data": execution.data(), "errors": errors })
-    };
-    let Ok(result_json) = serde_json::to_string(&result) else {
-        tracing::warn!(
-            channel,
-            "Failed to serialize a delivery's result for its trace"
-        );
-        return;
-    };
-    if deps.max_result_size_bytes > 0 && result_json.len() > deps.max_result_size_bytes {
-        crate::metrics::record_trace_dropped("result_too_large");
-        tracing::warn!(
-            channel,
-            result_bytes = result_json.len(),
-            cap = deps.max_result_size_bytes,
-            "Delivery result exceeds trace_queue.max_result_size_bytes; trace not stored"
-        );
-        return;
-    }
-    let task_trace_json = crate::engine::utils::serialize_task_trace_capped(
-        execution.task_trace.as_ref(),
-        deps.max_result_size_bytes,
-        channel,
-    );
-    crate::queue::trace_record::route_store_completed(
-        &cfg,
-        &*deps.trace_repo,
-        &deps.persistence_queue,
-        crate::queue::trace_record::CompletedTrace {
-            mode: &host.protocol,
-            channel,
-            channel_id: Some(&runtime.channel.channel_id),
-            input_json,
-            response_json: std::borrow::Cow::Owned(result_json),
-            duration_ms: execution.duration.as_secs_f64() * 1000.0,
-            has_errors,
-            failed: matches!(
-                execution.outcome,
-                crate::engine::RunOutcome::Timeout(_) | crate::engine::RunOutcome::EngineError(_)
-            ),
-            task_trace_json,
-            error_message: execution.outcome.error_text(channel),
-        },
-    )
-    .await;
 }
 
 /// The bindings `protocol`'s driver is reconciled against in `generation`,

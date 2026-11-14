@@ -132,3 +132,80 @@ impl TracePlan {
         matches!(self, Self::Persist)
     }
 }
+
+/// Where [`record_run`] writes: the trace repository, the persistence queue,
+/// and the cap on a stored result.
+pub struct RunTraceSink<'a> {
+    pub trace_repo: &'a dyn crate::storage::repositories::traces::TraceSink,
+    pub persistence_queue: &'a TracePersistenceQueue,
+    /// `trace_queue.max_result_size_bytes`; `0` is no cap.
+    pub max_result_size_bytes: usize,
+}
+
+/// Persist the trace of one run an edition's driver made (a delivery from its
+/// own listener, or a run of a hooked channel), under the channel's own
+/// `tracing` block, with `mode` = the driver's protocol. A trace that cannot
+/// be written is logged and dropped: it must not change what the driver does
+/// with the run.
+pub async fn record_run(
+    sink: RunTraceSink<'_>,
+    mode: &str,
+    runtime: &crate::channel::ChannelRuntimeConfig,
+    channel: &str,
+    input_json: Option<String>,
+    execution: &crate::engine::Execution,
+) {
+    let has_errors = !execution.outcome.is_ok();
+    let cfg = runtime.trace_storage;
+    if !TracePlan::decide(&cfg, has_errors).persists() {
+        return;
+    }
+    // The data, and the task errors beside it when the run recorded any, as
+    // the sync path stores them: a failed run's row says why it failed.
+    let errors = execution.message.errors();
+    let result = if errors.is_empty() {
+        execution.data()
+    } else {
+        serde_json::json!({ "data": execution.data(), "errors": errors })
+    };
+    let Ok(result_json) = serde_json::to_string(&result) else {
+        tracing::warn!(channel, "Failed to serialize a run's result for its trace");
+        return;
+    };
+    if sink.max_result_size_bytes > 0 && result_json.len() > sink.max_result_size_bytes {
+        metrics::record_trace_dropped("result_too_large");
+        tracing::warn!(
+            channel,
+            result_bytes = result_json.len(),
+            cap = sink.max_result_size_bytes,
+            "Run result exceeds trace_queue.max_result_size_bytes; trace not stored"
+        );
+        return;
+    }
+    let task_trace_json = crate::engine::utils::serialize_task_trace_capped(
+        execution.task_trace.as_ref(),
+        sink.max_result_size_bytes,
+        channel,
+    );
+    route_store_completed(
+        &cfg,
+        sink.trace_repo,
+        sink.persistence_queue,
+        CompletedTrace {
+            mode,
+            channel,
+            channel_id: Some(&runtime.channel.channel_id),
+            input_json,
+            response_json: std::borrow::Cow::Owned(result_json),
+            duration_ms: execution.duration.as_secs_f64() * 1000.0,
+            has_errors,
+            failed: matches!(
+                execution.outcome,
+                crate::engine::RunOutcome::Timeout(_) | crate::engine::RunOutcome::EngineError(_)
+            ),
+            task_trace_json,
+            error_message: execution.outcome.error_text(channel),
+        },
+    )
+    .await;
+}

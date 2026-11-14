@@ -126,6 +126,58 @@ impl EffectiveTraceConfig {
     }
 }
 
+/// How the HTTP data plane serves a channel.
+#[derive(Clone)]
+pub enum HttpServing {
+    /// Each request runs the channel's workflow once and answers with its
+    /// result: `rest`, `http`, and any driver that declares neither a hook nor
+    /// a listener of its own.
+    Workflow,
+    /// The channel's driver serves each request itself
+    /// ([`orion_extension_api::ChannelDriver::serve_http`]), behind the
+    /// `HttpHook` guard row, and its runs pass the `HttpHookRun` row.
+    Hook {
+        driver: Arc<dyn orion_extension_api::ChannelDriver>,
+        guards: orion_extension_api::HttpHookGuards,
+    },
+    /// Not served over HTTP (405): a cron channel, which runs on its schedule,
+    /// or one whose driver runs its own listener and receives its messages
+    /// behind that transport's authentication.
+    No,
+}
+
+impl HttpServing {
+    /// What a channel of `driver`'s protocol is served as; `cron` says the
+    /// channel compiled a schedule.
+    pub fn of(driver: &Arc<dyn orion_extension_api::ChannelDriver>, cron: bool) -> Self {
+        let caps = driver.capabilities();
+        if cron || caps.ingress.is_some() {
+            Self::No
+        } else if let Some(guards) = caps.http_hook {
+            Self::Hook {
+                driver: driver.clone(),
+                guards,
+            }
+        } else {
+            Self::Workflow
+        }
+    }
+}
+
+impl std::fmt::Debug for HttpServing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Workflow => f.write_str("Workflow"),
+            Self::Hook { driver, guards } => f
+                .debug_struct("Hook")
+                .field("protocol", &driver.protocol_id())
+                .field("guards", guards)
+                .finish(),
+            Self::No => f.write_str("No"),
+        }
+    }
+}
+
 /// Runtime state for a single active channel.
 pub struct ChannelRuntimeConfig {
     /// The channel DB model.
@@ -185,12 +237,12 @@ pub struct ChannelRuntimeConfig {
     /// surface at the first fire, in a background task with no caller to answer.
     /// `None` for every other protocol.
     pub cron: Option<Arc<crate::channel::CronDescriptor>>,
-    /// Whether the HTTP data plane may run this channel: its driver declares
-    /// no `ingress` (it does not run its own listener) and it is not cron.
+    /// How the HTTP data plane serves this channel: by running its workflow,
+    /// through its driver's hook, or not at all.
     ///
     /// Fixed at load from the node's driver registry, which is frozen for the
     /// node's life, so a carried-over config never goes stale on it.
-    pub served_over_http: bool,
+    pub http: HttpServing,
     /// This channel's per-message metric handles, resolved on first use (see
     /// [`crate::metrics::ChannelMetrics`]). Labelled with `channel.name`.
     pub metrics: crate::metrics::ChannelMetrics,
@@ -380,6 +432,11 @@ pub struct ChannelSnapshot {
     /// with the rest of the snapshot, so a driver reconciled against this
     /// generation sees the revisions this generation pins.
     required_connections: Arc<BTreeMap<String, Vec<(String, u64)>>>,
+    /// Each hooked channel's binding, by stable channel id: what its driver's
+    /// `serve_http` is handed, with a resolver for every connection the
+    /// channel requires. Built beside `required_connections`, once per
+    /// generation, so the request path resolves nothing.
+    hook_bindings: Arc<BTreeMap<String, orion_extension_api::ChannelBinding>>,
 }
 
 impl ChannelSnapshot {
@@ -392,6 +449,31 @@ impl ChannelSnapshot {
     ) -> Self {
         self.required_connections = Arc::new(required);
         self
+    }
+
+    /// Attach each hooked channel's binding, keyed by stable channel id.
+    #[must_use]
+    pub fn with_hook_bindings(
+        mut self,
+        bindings: BTreeMap<String, orion_extension_api::ChannelBinding>,
+    ) -> Self {
+        self.hook_bindings = Arc::new(bindings);
+        self
+    }
+
+    /// The binding hooked channel `channel_id` is served with.
+    pub fn hook_binding(&self, channel_id: &str) -> Option<&orion_extension_api::ChannelBinding> {
+        self.hook_bindings.get(channel_id)
+    }
+
+    /// Every serviceable channel the data plane serves through its driver's
+    /// hook.
+    pub fn hooked(&self) -> Vec<Arc<ChannelRuntimeConfig>> {
+        self.by_name
+            .values()
+            .filter(|runtime| matches!(runtime.http, HttpServing::Hook { .. }))
+            .cloned()
+            .collect()
     }
 
     /// The `(connection id, revision)` pairs channel `channel_id` requires.
@@ -417,6 +499,7 @@ impl ChannelSnapshot {
                 cron_enabled: false,
             },
             required_connections: Arc::default(),
+            hook_bindings: Arc::default(),
         }
     }
 

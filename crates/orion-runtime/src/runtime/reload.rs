@@ -684,6 +684,24 @@ async fn build_and_publish(
             )
             .await
             .with_required_connections(channel_connections);
+        // Each hooked channel's binding, resolved once here rather than per
+        // request: its driver is handed a resolver for every connection the
+        // channel requires (an event stream fed from a broker).
+        let hook_bindings = new_channels
+            .hooked()
+            .iter()
+            .map(|runtime| {
+                let binding = crate::ingress::binding_of(
+                    &runtime.channel,
+                    runtime.parsed_config.timeout_ms,
+                    new_channels.required_connections(&runtime.channel.channel_id),
+                    &state.deployments,
+                    state.composition.providers().ledger(),
+                );
+                (runtime.channel.channel_id.clone(), binding)
+            })
+            .collect();
+        let new_channels = new_channels.with_hook_bindings(hook_bindings);
 
         // The publication barrier: a revision older than what this node
         // already desires or applied never replaces it.

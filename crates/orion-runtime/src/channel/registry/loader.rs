@@ -701,8 +701,9 @@ impl ChannelLoader {
         // A driver that runs its own listener (`ingress`) receives its
         // channel's messages over its transport; the HTTP data plane must not
         // run that channel too, or it would be reachable without the
-        // transport's authentication. Cron fires from its scheduler alone.
-        let served_over_http = driver.capabilities().ingress.is_none() && cron.is_none();
+        // transport's authentication. Cron fires from its scheduler alone. A
+        // hooked driver answers its channel's requests itself.
+        let http = super::HttpServing::of(&driver, cron.is_some());
 
         let cache_flights = parsed_config
             .cache
@@ -728,7 +729,7 @@ impl ChannelLoader {
             auth,
             oauth2_login,
             cron,
-            served_over_http,
+            http,
             metrics: Default::default(),
         }))
     }
@@ -906,6 +907,7 @@ impl ChannelLoader {
             route_key,
             deps: fingerprint,
             required_connections: std::sync::Arc::default(),
+            hook_bindings: std::sync::Arc::default(),
         };
 
         if refused > 0 {

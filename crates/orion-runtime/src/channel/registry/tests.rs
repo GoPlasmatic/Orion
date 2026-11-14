@@ -290,7 +290,7 @@ async fn a_registered_driver_that_registers_routes_is_routed() {
 
 /// A driver that runs its own listener may still declare HTTP routes, and the
 /// route resolves: the data plane then refuses the channel by
-/// `served_over_http`, after resolution, so the refusal covers a matched route
+/// `http` (`HttpServing::No`), after resolution, so the refusal covers a matched route
 /// exactly as it covers a name.
 #[tokio::test]
 async fn an_ingress_driver_with_routes_is_routed_but_not_served_over_http() {
@@ -331,9 +331,15 @@ async fn an_ingress_driver_with_routes_is_routed_but_not_served_over_http() {
         .expect("the driver's route is matched");
     assert_eq!(matched.channel_name, "inbound");
     let runtime = registry.get_by_name("inbound").expect("loaded");
-    assert!(!runtime.served_over_http, "an ingress channel");
+    assert!(
+        matches!(runtime.http, super::HttpServing::No),
+        "an ingress channel"
+    );
     let plain = registry.get_by_name("plain").expect("loaded");
-    assert!(plain.served_over_http, "a rest channel");
+    assert!(
+        matches!(plain.http, super::HttpServing::Workflow),
+        "a rest channel"
+    );
 }
 
 /// A REST channel that claims `route_pattern`, so it lands in the route

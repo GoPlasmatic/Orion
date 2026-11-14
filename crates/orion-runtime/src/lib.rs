@@ -24,6 +24,7 @@ pub mod cluster;
 pub mod cron;
 #[doc(hidden)]
 pub mod extensions;
+pub mod http_hook;
 pub mod ingress;
 pub mod queue;
 pub mod runtime;

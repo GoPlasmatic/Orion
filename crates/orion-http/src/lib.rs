@@ -5,7 +5,7 @@ pub(crate) use orion_authoring::{definitions, validation};
 pub(crate) use orion_common::{config, crypto, errors, metrics};
 pub(crate) use orion_engine::{self as engine, connector};
 pub(crate) use orion_plugin_host as plugin;
-pub(crate) use orion_runtime::{channel, extensions, queue, runtime};
+pub(crate) use orion_runtime::{channel, extensions, http_hook, queue, runtime};
 pub(crate) use orion_storage as storage;
 
 pub mod drain;
