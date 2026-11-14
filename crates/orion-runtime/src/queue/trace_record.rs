@@ -41,6 +41,9 @@ pub struct CompletedTrace<'a> {
     /// Whether execution stopped with a timeout or engine error.
     pub failed: bool,
     pub task_trace_json: Option<String>,
+    /// Why a failed run failed (`OrionError::trace_text`); `None` when it
+    /// completed.
+    pub error_message: Option<String>,
 }
 
 /// Route a completed sync trace through the chosen persistence mode.
@@ -69,6 +72,7 @@ pub async fn route_store_completed(
                 result_json: &trace.response_json,
                 duration_ms: trace.duration_ms,
                 task_trace_json: trace.task_trace_json.as_deref(),
+                error_message: trace.error_message.as_deref(),
             })
             .await
         {
@@ -84,6 +88,7 @@ pub async fn route_store_completed(
             result_json: trace.response_json.into_owned(),
             duration_ms: trace.duration_ms,
             task_trace_json: trace.task_trace_json,
+            error_message: trace.error_message,
         });
         persistence_queue.submit(task).await;
     }

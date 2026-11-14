@@ -253,10 +253,11 @@ pub(crate) async fn get_trace(
             }
             response.message = Some(result_val);
         }
-    } else if trace.status == models::TRACE_STATUS_FAILED
-        && let Some(ref err) = trace.error_message
-    {
-        response.error = Some(err.clone());
+    } else if trace.status == models::TRACE_STATUS_FAILED {
+        response.error = trace
+            .error_message
+            .clone()
+            .or_else(|| errors_of_result(trace.result_json.as_deref()));
     }
 
     if let Some(ref tt) = trace.task_trace_json
@@ -314,4 +315,23 @@ fn strip_step_metadata(trace: &mut Value) {
             }
         }
     }
+}
+
+/// A failed row written before sync and ingress traces recorded
+/// `error_message`: its result's `errors[]`, as `code: message` joined with
+/// `"; "`. `None` when the result names none.
+fn errors_of_result(result_json: Option<&str>) -> Option<String> {
+    let result: Value = serde_json::from_str(result_json?).ok()?;
+    let joined = result
+        .get("errors")?
+        .as_array()?
+        .iter()
+        .map(|e| {
+            let code = e.get("code").and_then(Value::as_str).unwrap_or("ERROR");
+            let message = e.get("message").and_then(Value::as_str).unwrap_or_default();
+            format!("{code}: {message}")
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    (!joined.is_empty()).then_some(joined)
 }

@@ -626,6 +626,7 @@ async fn a_burst_of_traces_commits_as_a_single_batch() {
                         result_json: format!("{{\"n\":{i}}}"),
                         duration_ms: 1.0,
                         task_trace_json: None,
+                        error_message: None,
                     }
                 ))
                 .await,
@@ -689,6 +690,7 @@ async fn a_burst_of_large_traces_flushes_on_the_byte_budget() {
                         result_json: big.clone(),
                         duration_ms: 1.0,
                         task_trace_json: None,
+                        error_message: None,
                     }
                 ))
                 .await

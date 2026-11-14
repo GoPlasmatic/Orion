@@ -1395,6 +1395,7 @@ async fn trace_cleanup_ticks_on_both_nodes_delete_exactly_once() {
                 result_json: "{}",
                 duration_ms: 1.0,
                 task_trace_json: None,
+                error_message: None,
             })
             .await
             .expect("seed expired trace");
@@ -1420,6 +1421,7 @@ async fn trace_cleanup_ticks_on_both_nodes_delete_exactly_once() {
             result_json: "{}",
             duration_ms: 1.0,
             task_trace_json: None,
+            error_message: None,
         })
         .await
         .expect("seed fresh trace");

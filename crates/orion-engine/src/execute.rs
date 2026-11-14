@@ -69,6 +69,26 @@ impl RunOutcome {
     pub fn is_ok(&self) -> bool {
         matches!(self, Self::Ok)
     }
+
+    /// The text a trace records as its `error_message` for this outcome, the
+    /// same on every transport: the task errors' `code: message` summary, or
+    /// `TIMEOUT: processing timed out after …` for a timeout, or
+    /// [`orion_common::errors::OrionError::trace_text`] for an engine failure
+    /// (the wire code, a connector's own code when one failed, and the raw
+    /// message). `None` for a run that succeeded.
+    pub fn error_text(&self, channel: &str) -> Option<String> {
+        use orion_common::errors::OrionError;
+        match self {
+            Self::Ok => None,
+            Self::WorkflowErrors(summary) => Some(summary.clone()),
+            // Phrased as the async and cron rows always were, under the code.
+            Self::Timeout(ms) => Some(format!(
+                "{}: processing timed out after {ms}ms on channel '{channel}'",
+                orion_api::codes::TIMEOUT
+            )),
+            Self::EngineError(e) => Some(OrionError::Engine(e.clone()).trace_text()),
+        }
+    }
 }
 
 /// A cancelled run, as the timeout 1.12 recorded for it.

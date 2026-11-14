@@ -711,3 +711,67 @@ async fn an_http_channel_beside_an_ingress_driver_is_still_served() {
     let body = body_json(response).await;
     assert_eq!(body["data"]["seen"], 7, "{body}");
 }
+
+/// A delivery whose workflow fails leaves a row that says why: the task
+/// errors in its result, and the shared trace text in `error_message`.
+#[tokio::test]
+async fn a_failed_delivery_records_its_error_in_the_trace() {
+    let (_state, app, probe) = node().await;
+    let workflow_id = common::create_and_activate_workflow(
+        &app,
+        common::workflow_with_tasks(
+            "Queue Fails",
+            json!([{
+                "id": "boom",
+                "name": "Fail",
+                "function": { "name": "map", "input": { "mappings": [
+                    { "path": "data.x", "logic": { "throw": ["delivery refused"] } }
+                ]}}
+            }]),
+        ),
+    )
+    .await;
+    let channel_id = common::deploy_channel(
+        &app,
+        json!({
+            "name": "failing",
+            "channel_type": "async",
+            "protocol": PROTOCOL,
+            "workflow_id": workflow_id,
+            "transport_config": { "topic": "orders.failing" }
+        }),
+    )
+    .await;
+    probe
+        .wait_for(|set| set.iter().any(|b| b.channel_id() == channel_id))
+        .await;
+
+    let dispatched = probe
+        .host()
+        .dispatch(Delivery::new(&channel_id, json!({ "order_id": 1 })))
+        .await;
+    assert!(
+        matches!(dispatched.outcome, DispatchOutcome::Failed { .. }),
+        "{:?}",
+        dispatched.outcome
+    );
+    dispatched.settle.committed().await;
+
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v2/admin/traces?channel=failing&limit=5",
+            None,
+        ))
+        .await
+        .expect("trace listing answers");
+    let body = body_json(response).await;
+    let rows = body["data"].as_array().expect("a trace page");
+    assert_eq!(rows.len(), 1, "{body}");
+    let error_message = rows[0]["error_message"].as_str().unwrap_or_default();
+    assert!(
+        error_message.starts_with("ENGINE_ERROR: ") && error_message.contains("boom"),
+        "the row says why, naming the task: {body}"
+    );
+}

@@ -546,13 +546,10 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
                 "Async trace processing timed out"
             );
             metrics::record_error("engine");
-            handle_failure(
-                &ctx,
-                trace_mode,
-                &dlq,
-                &format!("Processing timed out after {ms}ms"),
-            )
-            .await;
+            let text = crate::engine::RunOutcome::Timeout(ms)
+                .error_text(&channel)
+                .unwrap_or_default();
+            handle_failure(&ctx, trace_mode, &dlq, &text).await;
         }
         // A workflow that failed its tasks routes to the DLQ exactly like an
         // engine failure: the async caller has no response to read the errors
@@ -563,7 +560,10 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
         }
         crate::engine::RunOutcome::EngineError(e) => {
             metrics::record_error("engine");
-            handle_failure(&ctx, trace_mode, &dlq, &e.to_string()).await;
+            let text = crate::engine::RunOutcome::EngineError(e)
+                .error_text(&channel)
+                .unwrap_or_default();
+            handle_failure(&ctx, trace_mode, &dlq, &text).await;
         }
     }
 }

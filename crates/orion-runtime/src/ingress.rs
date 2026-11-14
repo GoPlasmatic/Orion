@@ -305,7 +305,15 @@ async fn record_trace(
     if !crate::queue::trace_record::TracePlan::decide(&cfg, has_errors).persists() {
         return;
     }
-    let Ok(result_json) = serde_json::to_string(&execution.data()) else {
+    // The data, and the task errors beside it when the run recorded any, as
+    // the sync path stores them: a failed delivery's row says why it failed.
+    let errors = execution.message.errors();
+    let result = if errors.is_empty() {
+        execution.data()
+    } else {
+        serde_json::json!({ "data": execution.data(), "errors": errors })
+    };
+    let Ok(result_json) = serde_json::to_string(&result) else {
         tracing::warn!(
             channel,
             "Failed to serialize a delivery's result for its trace"
@@ -344,6 +352,7 @@ async fn record_trace(
                 crate::engine::RunOutcome::Timeout(_) | crate::engine::RunOutcome::EngineError(_)
             ),
             task_trace_json,
+            error_message: execution.outcome.error_text(channel),
         },
     )
     .await;

@@ -514,6 +514,27 @@ async fn a_provider_failure_answers_with_its_class_and_code() {
     );
     assert_eq!(body["error"]["connector"]["retryable"], true);
     assert!(!body.to_string().contains("db-7"), "{body}");
+
+    // The operator's trace keeps what the caller was not told.
+    let (_, traces) = send(
+        &app,
+        "GET",
+        "/api/v2/admin/traces?channel=fails&limit=5",
+        None,
+    )
+    .await;
+    let messages: Vec<&str> = traces["data"]
+        .as_array()
+        .expect("a trace page")
+        .iter()
+        .filter_map(|t| t["error_message"].as_str())
+        .collect();
+    assert!(
+        messages.iter().any(
+            |m| m.starts_with("CONNECTOR_PROVIDER_FAILURE (ECHO_REFUSED): ") && m.contains("db-7")
+        ),
+        "{traces}"
+    );
 }
 
 /// A provider failure inside a channel the caller reached through

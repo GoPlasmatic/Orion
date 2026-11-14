@@ -198,12 +198,105 @@ async fn a_provider_contract_failure_keeps_its_diagnostic_in_the_trace() {
         !public.to_string().contains("provider fixture failed"),
         "public error must remain sanitized: {public}"
     );
+    assert_eq!(
+        public["error"]["code"], "CONNECTOR_CONTRACT_VIOLATION",
+        "{public}"
+    );
     let (_, stored) = stored_payloads(&pool, "contract-failure").await;
     assert!(stored.contains("PROVIDER_CONTRACT_VIOLATION"), "{stored}");
     assert!(
         stored.contains("provider fixture failed its contract"),
         "{stored}"
     );
+    // The row says why it failed, and the trace read serves it.
+    let (id, error_message) = stored_error(&pool, "contract-failure").await;
+    let error_message = error_message.expect("a failed sync row records its error");
+    assert!(
+        error_message.starts_with("CONNECTOR_CONTRACT_VIOLATION (PROVIDER_CONTRACT_VIOLATION): ")
+            && error_message.contains("provider fixture failed its contract"),
+        "{error_message}"
+    );
+    let trace = body_json(
+        app.clone()
+            .oneshot(json_request(
+                "GET",
+                &format!("/api/v2/admin/traces/{id}"),
+                None,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(trace["data"]["error"], error_message.as_str(), "{trace}");
+}
+
+/// A failed row written before sync traces recorded `error_message` still
+/// says why it failed: the trace read falls back to its result's `errors[]`.
+#[tokio::test]
+async fn a_legacy_failed_row_falls_back_to_result_errors() {
+    let (state, pool) = common::test_state_and_pool(cfg_with_storage(TraceStorageMode::Sync)).await;
+    let app = orion::server::build_router(state.clone());
+    let id = state
+        .repos
+        .traces
+        .store_completed(orion::storage::repositories::traces::TraceCompletedRef {
+            failed: true,
+            channel: "legacy",
+            channel_id: None,
+            mode: "sync",
+            input_json: None,
+            result_json: r#"{"status":"failed","errors":[{"code":"ENGINE_ERROR","message":"boom"},{"code":"TIMEOUT","message":"late"}]}"#,
+            duration_ms: 1.0,
+            task_trace_json: None,
+            error_message: None,
+        })
+        .await
+        .expect("stored");
+    let (_, stored) = stored_error(&pool, "legacy").await;
+    assert_eq!(stored, None, "a row with no recorded error");
+    let trace = body_json(
+        app.clone()
+            .oneshot(json_request(
+                "GET",
+                &format!("/api/v2/admin/traces/{id}"),
+                None,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        trace["data"]["error"], "ENGINE_ERROR: boom; TIMEOUT: late",
+        "{trace}"
+    );
+}
+
+/// A clean run's row records no error.
+#[tokio::test]
+async fn a_clean_sync_run_records_no_error() {
+    let (state, pool) = common::test_state_and_pool(cfg_with_storage(TraceStorageMode::Sync)).await;
+    let app = orion::server::build_router(state);
+    common::create_and_activate_channel(&app, "clean", common::simple_log_workflow("clean")).await;
+    assert_eq!(submit_sync(&app, "clean").await, StatusCode::OK);
+    let (_, error_message) = stored_error(&pool, "clean").await;
+    assert_eq!(error_message, None);
+}
+
+async fn stored_error(pool: &orion::storage::DbPool, channel: &str) -> (String, Option<String>) {
+    for _ in 0..50 {
+        let row = pool
+            .fetch_optional_as::<(String, Option<String>)>(
+                "SELECT id, error_message FROM traces WHERE channel = ?",
+                sea_query_sqlx::SqlxValues(sea_query::Values(vec![channel.into()])),
+            )
+            .await
+            .expect("read trace");
+        if let Some(row) = row {
+            return row;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("no trace for {channel} within 2.5s");
 }
 
 #[tokio::test]

@@ -678,13 +678,11 @@ async fn execute(
     }
     let has_errors = !execution.outcome.is_ok() || result_error.is_some();
 
-    let (occurrence_status, error_message) = match execution.outcome {
-        crate::engine::RunOutcome::Ok => (status::COMPLETED, None),
-        crate::engine::RunOutcome::WorkflowErrors(summary) => (status::FAILED, Some(summary)),
-        crate::engine::RunOutcome::Timeout(ms) => {
-            (status::FAILED, Some(format!("timed out after {ms}ms")))
-        }
-        crate::engine::RunOutcome::EngineError(e) => (status::FAILED, Some(e.to_string())),
+    let error_message = execution.outcome.error_text(channel);
+    let occurrence_status = if error_message.is_none() {
+        status::COMPLETED
+    } else {
+        status::FAILED
     };
     if let Some(ref id) = trace_id {
         let trace_failed = occurrence_status != status::COMPLETED || result_error.is_some();

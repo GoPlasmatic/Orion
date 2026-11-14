@@ -205,6 +205,7 @@ async fn postgres_keyset_pagination_walks_every_trace_once() {
                 result_json: "{}",
                 duration_ms: 1.0,
                 task_trace_json: None,
+                error_message: None,
             })
             .await
             .expect("seed trace"),

@@ -734,7 +734,8 @@ pub(super) async fn process_sync_for_channel(
                 metrics::record_error("engine");
                 Err(OrionError::Engine(e))
             }
-            crate::engine::RunOutcome::Ok | crate::engine::RunOutcome::WorkflowErrors(_) => Ok(()),
+            crate::engine::RunOutcome::Ok => Ok(None),
+            crate::engine::RunOutcome::WorkflowErrors(summary) => Ok(Some(summary)),
         };
         match result {
             Err(error) => {
@@ -766,6 +767,7 @@ pub(super) async fn process_sync_for_channel(
                             task_trace_json: crate::engine::utils::serialize_task_trace_capped(
                                 task_trace.as_ref(), state.config.trace_queue.max_result_size_bytes, channel,
                             ),
+                            error_message: Some(error.trace_text()),
                         },
                     ).await;
                     if let Some(p) = &profile { p.set_trace_store(trace_start.elapsed()); }
@@ -777,7 +779,7 @@ pub(super) async fn process_sync_for_channel(
             // partially succeeded still has data worth returning. Only the metric
             // label changed with the shared step: `orion_messages_total` counts
             // this as `error` now, as the async path always did.
-            Ok(()) => {
+            Ok(workflow_errors) => {
                 // The *request's* duration — guards, execution, and the response
                 // build below. `execute_admitted` already recorded the engine
                 // call's own latency on `orion_message_duration_seconds`; this one
@@ -1045,6 +1047,7 @@ pub(super) async fn process_sync_for_channel(
                         duration_ms,
                         has_errors,
                         task_trace_json,
+                        error_message: workflow_errors,
                     },
                     cache_body,
                     cache_context,

@@ -45,6 +45,10 @@ pub struct TraceCompletedRow {
     /// Optional per-task execution trace JSON. Populated only when the
     /// channel has `config.tracing.task_details = true`.
     pub task_trace_json: Option<String>,
+    /// Why a failed run failed (`OrionError::trace_text`): the wire code, the
+    /// connector's own code when one failed, and the raw message. `None` for
+    /// a run that completed.
+    pub error_message: Option<String>,
 }
 
 /// Borrowed view of a completed-trace row, so the singular path can hand its
@@ -68,6 +72,8 @@ pub struct TraceCompletedRef<'a> {
     /// Optional per-task execution trace JSON. Populated only when the
     /// channel has `config.tracing.task_details = true`.
     pub task_trace_json: Option<&'a str>,
+    /// Why a failed run failed; `None` for a run that completed.
+    pub error_message: Option<&'a str>,
 }
 
 impl TraceCompletedRow {
@@ -84,6 +90,7 @@ impl TraceCompletedRow {
             failed: self.failed,
             duration_ms: self.duration_ms,
             task_trace_json: self.task_trace_json.as_deref(),
+            error_message: self.error_message.as_deref(),
         }
     }
 }
@@ -133,9 +140,9 @@ pub struct TraceCompletion<'a> {
     pub error_message: Option<&'a str>,
 }
 
-/// The 11 columns every completed-trace INSERT writes. The singular and batch
+/// The 12 columns every completed-trace INSERT writes. The singular and batch
 /// paths share this (and [`completed_values`]) so they cannot diverge.
-fn completed_columns() -> [Traces; 11] {
+fn completed_columns() -> [Traces; 12] {
     [
         Traces::Id,
         Traces::Status,
@@ -148,6 +155,7 @@ fn completed_columns() -> [Traces; 11] {
         Traces::StartedAt,
         Traces::CompletedAt,
         Traces::TaskTraceJson,
+        Traces::ErrorMessage,
     ]
 }
 
@@ -156,8 +164,9 @@ fn completed_values(
     row: TraceCompletedRef<'_>,
     id: &str,
     now: chrono::NaiveDateTime,
-) -> [sea_query::SimpleExpr; 11] {
+) -> [sea_query::SimpleExpr; 12] {
     let input_val = super::helpers::optional_string_value(row.input_json);
+    let error_val = super::helpers::optional_string_value(row.error_message);
     let task_trace_val = super::helpers::optional_string_value(row.task_trace_json);
     let channel_id_val = super::helpers::optional_string_value(row.channel_id);
     [
@@ -172,6 +181,7 @@ fn completed_values(
         Expr::val(now),
         Expr::val(now),
         Expr::val(task_trace_val),
+        Expr::val(error_val),
     ]
 }
 
@@ -703,6 +713,7 @@ mod tests {
                 result_json: r#"{"ok":true}"#,
                 duration_ms: 10.0,
                 task_trace_json: None,
+                error_message: None,
             })
             .await
             .expect("test");
@@ -736,6 +747,7 @@ mod tests {
                 result_json: r#"{"ok":true}"#,
                 duration_ms: 5.0,
                 task_trace_json: None,
+                error_message: None,
             })
             .await
             .expect("test");
@@ -848,6 +860,7 @@ mod tests {
                     result_json: "{}",
                     duration_ms: 1.0,
                     task_trace_json: None,
+                    error_message: None,
                 })
                 .await
                 .expect("test");
@@ -929,6 +942,59 @@ mod tests {
         assert_eq!(seen, expected);
     }
 
+    /// `error_message` is written by both insert paths and read back; a
+    /// completed row has none.
+    #[tokio::test]
+    async fn a_completed_rows_error_message_round_trips_on_both_insert_paths() {
+        let pool = test_pool().await;
+        let repo = SqlTraceRepository::new(pool.clone());
+        let failed = repo
+            .store_completed(TraceCompletedRef {
+                failed: true,
+                channel: "orders",
+                channel_id: None,
+                mode: "sync",
+                input_json: None,
+                result_json: "{}",
+                duration_ms: 1.0,
+                task_trace_json: None,
+                error_message: Some("ENGINE_ERROR: boom"),
+            })
+            .await
+            .expect("test");
+        let row = |failed: bool, error_message: Option<&str>| TraceCompletedRow {
+            failed,
+            channel: "orders".to_string(),
+            channel_id: None,
+            mode: "kafka".to_string(),
+            input_json: None,
+            result_json: "{}".to_string(),
+            duration_ms: 1.0,
+            task_trace_json: None,
+            error_message: error_message.map(str::to_string),
+        };
+        let batch = repo
+            .store_completed_batch(&[row(true, Some("TIMEOUT: late")), row(false, None)])
+            .await
+            .expect("test");
+
+        let read = |id: String| {
+            let repo = &repo;
+            async move { repo.get_by_id(&id).await.expect("test") }
+        };
+        let single = read(failed).await;
+        assert_eq!(single.status, "failed");
+        assert_eq!(single.error_message.as_deref(), Some("ENGINE_ERROR: boom"));
+        let batched_failed = read(batch[0].clone()).await;
+        assert_eq!(
+            batched_failed.error_message.as_deref(),
+            Some("TIMEOUT: late")
+        );
+        let batched_ok = read(batch[1].clone()).await;
+        assert_eq!(batched_ok.status, "completed");
+        assert_eq!(batched_ok.error_message, None);
+    }
+
     /// The tie-break the cursor exists for: rows sharing a `created_at` must
     /// not be skipped or repeated at a page boundary.
     #[tokio::test]
@@ -945,6 +1011,7 @@ mod tests {
                 result_json: "{}",
                 duration_ms: 1.0,
                 task_trace_json: None,
+                error_message: None,
             })
             .await
             .expect("test");
