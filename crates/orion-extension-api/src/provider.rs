@@ -23,6 +23,46 @@ use crate::identity::{BackendKey, EffectiveConnectionIdentity, ProviderId, Revis
 /// input and its answer must satisfy, when it declares them. The node checks
 /// the input before dispatch and the answer after, the way it checks an
 /// uploaded package's `operations.<name>` schemas.
+///
+/// # The schema profile
+///
+/// A declared schema must be inside `orion-json-schema/1`:
+///
+/// - its root declares `"$schema": "https://json-schema.org/draft/2020-12/schema"`,
+///   and no nested schema declares `$schema`;
+/// - it uses only these keywords: `$schema`, `$defs`, `$ref`, `title`,
+///   `description`, `x-orion-sensitive`, `type`, `enum`, `const`, `minimum`,
+///   `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `properties`,
+///   `required`, `additionalProperties`, `minProperties`, `maxProperties`,
+///   `items`, `minItems`, `maxItems`, `minLength`, `maxLength`, `allOf`,
+///   `anyOf`, `oneOf` (so no `pattern` and no `format`);
+/// - a `$ref` is local (`#/$defs/x`) or relative to another of the
+///   provider's schemas, never a URL;
+/// - `x-orion-sensitive` is a boolean.
+///
+/// What follows from it:
+///
+/// - a schema outside the profile fails the composition's build
+///   (`CompositionError::InvalidProviderSchema`, naming the operation, the
+///   slot and the schema pointer), so the node does not start;
+/// - an input the input schema refuses is `invalid_input` (400) and the
+///   provider is never called;
+/// - an answer the output schema refuses is a `contract_violation`, after
+///   the effect.
+///
+/// ```
+/// use orion_extension_api::OperationDescription;
+/// use serde_json::json;
+///
+/// let lookup = OperationDescription::new().with_input_schema(json!({
+///     "$schema": "https://json-schema.org/draft/2020-12/schema",
+///     "type": "object",
+///     "required": ["id"],
+///     "properties": { "id": { "type": "string", "minLength": 1 } },
+///     "additionalProperties": false
+/// }));
+/// assert!(lookup.input_schema.is_some());
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct OperationDescription {

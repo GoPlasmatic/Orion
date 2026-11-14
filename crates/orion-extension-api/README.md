@@ -15,8 +15,13 @@ package verifier to a node.
   `/runtime-capabilities`), and its `validate_connection` judges a revision's configuration at
   upload. A definition set names it with `"provider": "<driver id>"`. Its optional `describe`
   declares its operations (names, aliases, input/output schemas): undeclared operations are
-  refused at workflow load and offline, and declared schemas are checked on every call. It is
-  called with an `AttemptContext` and answers `Result<ConnectorOutput, ConnectorError>`.
+  refused at workflow load and offline, and declared schemas are checked on every call. A
+  declared schema must be inside the `orion-json-schema/1` profile (root draft 2020-12
+  `$schema` only, a fixed keyword list without `pattern` or `format`, local or relative
+  `$ref`; see `OperationDescription`); one outside it fails the composition's build with
+  `CompositionError::InvalidProviderSchema`, as a channel driver's `transport_schema` does with
+  `InvalidTransportSchema`. It is called with an `AttemptContext` and answers
+  `Result<ConnectorOutput, ConnectorError>`.
 - `ConnectionPoolCache`: a provider's pool cache, evicted per connector when a deployment
   changes that connection.
 - `PackageVerifier`: whether a provider package may be admitted on the node.

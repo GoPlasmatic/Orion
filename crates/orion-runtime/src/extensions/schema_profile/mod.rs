@@ -96,6 +96,11 @@ pub struct SchemaProfileFinding {
     /// finding about a schema or a manifest.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub instance_path: String,
+    /// For a finding about a schema, the JSON pointer inside that schema to
+    /// what the profile refused (`/properties/x`, `/properties/x/pattern`);
+    /// empty when the finding has no single location in it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub schema_pointer: String,
 }
 
 impl SchemaProfileFinding {
@@ -104,7 +109,17 @@ impl SchemaProfileFinding {
             code: code.into(),
             location: location.into(),
             instance_path: String::new(),
+            schema_pointer: String::new(),
         }
+    }
+
+    /// This finding, at `segments` inside the schema it is about.
+    fn at_schema(mut self, segments: &[String]) -> Self {
+        self.schema_pointer = segments
+            .iter()
+            .map(|segment| format!("/{}", segment.replace('~', "~0").replace('/', "~1")))
+            .collect();
+        self
     }
 
     /// This finding, about the value under `segment` of the instance the
@@ -248,17 +263,18 @@ impl SchemaWalk<'_> {
 
         for k in map.keys() {
             if !self.allowed.contains(k.as_str()) {
-                return Err(SchemaProfileFinding::new(
-                    "SCHEMA_UNSUPPORTED_KEYWORD",
-                    path,
-                ));
+                let mut at = pointer.clone();
+                at.push(k.clone());
+                return Err(
+                    SchemaProfileFinding::new("SCHEMA_UNSUPPORTED_KEYWORD", path).at_schema(&at),
+                );
             }
         }
         if map.contains_key("$schema") && !pointer.is_empty() {
-            return Err(SchemaProfileFinding::new(
-                "SCHEMA_INVALID",
-                "nested dialect declaration",
-            ));
+            return Err(
+                SchemaProfileFinding::new("SCHEMA_INVALID", "nested dialect declaration")
+                    .at_schema(&pointer),
+            );
         }
         if let Some(sens) = map.get("x-orion-sensitive")
             && !sens.is_boolean()

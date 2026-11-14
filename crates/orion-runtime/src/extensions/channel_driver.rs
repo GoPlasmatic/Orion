@@ -246,6 +246,41 @@ impl ChannelDriverRegistry {
         })
     }
 
+    /// Refuse the first driver whose `transport_schema()` is outside
+    /// `orion-json-schema/1`. Such a schema would refuse every channel of its
+    /// protocol at upload, naming the driver rather than the channel, so a
+    /// composition holding one is refused at build instead.
+    pub(crate) fn check_transport_schemas(
+        &self,
+    ) -> Result<(), orion_extension_api::CompositionError> {
+        for driver in self.drivers.values() {
+            let Some(schema) = driver.transport_schema() else {
+                continue;
+            };
+            if let Err(finding) = super::schema_profile::CompiledSchemaBundle::compile(
+                BTreeMap::from([(TRANSPORT_SCHEMA_PATH.to_string(), schema)]),
+                super::schema_profile::SchemaProfileLimits::default(),
+            ) {
+                let location = if finding.schema_pointer.is_empty() {
+                    finding.location
+                } else {
+                    format!(
+                        "{} (schema pointer {})",
+                        finding.location, finding.schema_pointer
+                    )
+                };
+                return Err(
+                    orion_extension_api::CompositionError::InvalidTransportSchema {
+                        protocol: driver.protocol_id().to_string(),
+                        code: finding.code,
+                        location,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Community Edition channel driver registry: `"rest"`, `"http"` and
     /// `"cron"`. What the offline tooling (`lint`, `compile`) validates
     /// against; a running node validates against its composition's.
@@ -377,6 +412,9 @@ impl ChannelDriver for DescribedChannelDriver {
     }
 }
 
+/// The file name a driver's transport schema compiles under.
+const TRANSPORT_SCHEMA_PATH: &str = "transport_config.schema.json";
+
 /// `transport_config` against the driver's published schema, when it
 /// publishes one. The same check runs at upload on the node and offline over
 /// a described driver, so the two cannot disagree about a channel's shape.
@@ -384,13 +422,12 @@ fn transport_schema_problems(
     driver: &dyn ChannelDriver,
     transport_config: &Value,
 ) -> Vec<FieldError> {
-    const SCHEMA_PATH: &str = "transport_config.schema.json";
     let Some(schema) = driver.transport_schema() else {
         return Vec::new();
     };
     let protocol = driver.protocol_id();
     let bundle = match super::schema_profile::CompiledSchemaBundle::compile(
-        BTreeMap::from([(SCHEMA_PATH.to_string(), schema)]),
+        BTreeMap::from([(TRANSPORT_SCHEMA_PATH.to_string(), schema)]),
         super::schema_profile::SchemaProfileLimits::default(),
     ) {
         Ok(bundle) => bundle,
@@ -408,7 +445,7 @@ fn transport_schema_problems(
             )];
         }
     };
-    match bundle.validate_instance(SCHEMA_PATH, transport_config) {
+    match bundle.validate_instance(TRANSPORT_SCHEMA_PATH, transport_config) {
         Ok(()) => Vec::new(),
         Err(finding) => {
             let field = finding.instance_field();

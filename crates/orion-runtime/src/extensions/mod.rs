@@ -288,6 +288,7 @@ impl CompositionBuilder {
 
         let channels = ChannelDriverRegistry::new(channels)
             .map_err(CompositionError::DuplicateChannelDriver)?;
+        channels.check_transport_schemas()?;
 
         let mut registrar = ProviderRegistrar {
             deployments: &deployments,
@@ -304,13 +305,21 @@ impl CompositionBuilder {
             ..
         } = registrar;
         let mut table = provider_backend::ProviderTable::default();
-        for backend in backends {
+        for backend in &backends {
             if backend.kind() == ImplementationKind::Rust {
                 deployments.register_composed_rust_driver(backend.driver_id());
             }
             table
-                .insert(backend)
+                .insert(backend.clone())
                 .map_err(CompositionError::DuplicateProvider)?;
+        }
+        // Every backend is keyed before any is compiled, so a duplicate stays
+        // the error it always was.
+        let mut described = provider_backend::CompiledDescriptions::default();
+        for backend in &backends {
+            described
+                .compile(backend.as_ref())
+                .map_err(CompositionError::InvalidProviderSchema)?;
         }
         pools.extend(setup_pools);
         let pools = ResourcePoolRegistry::new(pools).map_err(CompositionError::DuplicatePool)?;
@@ -318,7 +327,7 @@ impl CompositionBuilder {
         Ok(Composition {
             edition,
             channels,
-            providers: ProviderRegistry::new(table, deployments, ledger.clone()),
+            providers: ProviderRegistry::new(table, deployments, ledger.clone(), described),
             pools,
             admission: Admission::new(verifier, ledger),
         })
@@ -641,6 +650,157 @@ mod tests {
             dup_pool,
             CompositionError::DuplicatePool(DRIVER_MEMORY_CACHE.to_string())
         );
+    }
+
+    /// A provider whose one operation declares `schema` as its input.
+    struct Declares(serde_json::Value);
+
+    #[async_trait::async_trait]
+    impl ProviderBackend for Declares {
+        fn kind(&self) -> ImplementationKind {
+            ImplementationKind::Rust
+        }
+        fn driver_id(&self) -> &str {
+            "com.example.declares"
+        }
+        fn validate_config(&self, _: &serde_json::Value) -> Result<(), ConnectorError> {
+            Ok(())
+        }
+        async fn invoke(
+            &self,
+            _: &orion_extension_api::AttemptContext,
+            _: &str,
+            _: serde_json::Value,
+        ) -> Result<orion_extension_api::ConnectorOutput, ConnectorError> {
+            unreachable!("never invoked")
+        }
+        fn describe(&self) -> Option<orion_extension_api::ProviderDescription> {
+            Some(
+                orion_extension_api::ProviderDescription::new().with_operation(
+                    "lookup",
+                    orion_extension_api::OperationDescription::new()
+                        .with_input_schema(self.0.clone()),
+                ),
+            )
+        }
+    }
+
+    fn build_declaring(schema: serde_json::Value) -> Result<Composition, CompositionError> {
+        CompositionRoot::community()
+            .with_provider_backend(Arc::new(Declares(schema)))
+            .build_in_memory()
+    }
+
+    #[test]
+    fn a_provider_schema_outside_the_profile_fails_the_build() {
+        let dialect = super::schema_profile::DIALECT_URI;
+        let invalid = |e: CompositionError| match e {
+            CompositionError::InvalidProviderSchema(s) => *s,
+            other => unreachable!("expected an invalid provider schema, got {other:?}"),
+        };
+
+        // A nested dialect declaration: named down to the schema pointer.
+        let nested = invalid(
+            build_declaring(serde_json::json!({
+                "$schema": dialect,
+                "type": "object",
+                "properties": { "x": { "$schema": dialect, "type": "string" } }
+            }))
+            .unwrap_err(),
+        );
+        assert_eq!(
+            (
+                nested.driver_id.as_str(),
+                nested.operation.as_str(),
+                nested.slot.as_str(),
+                nested.code.as_str(),
+                nested.schema_pointer.as_str(),
+            ),
+            (
+                "com.example.declares",
+                "lookup",
+                "input",
+                "SCHEMA_INVALID",
+                "/properties/x"
+            )
+        );
+        let message = nested.to_string();
+        assert!(
+            message.contains("com.example.declares") && message.contains("/properties/x"),
+            "{message}"
+        );
+
+        // No root dialect.
+        let rootless =
+            invalid(build_declaring(serde_json::json!({ "type": "object" })).unwrap_err());
+        assert_eq!(rootless.code, "SCHEMA_INVALID");
+        assert_eq!(rootless.operation, "lookup");
+
+        // A keyword the profile does not support.
+        let keyword = invalid(
+            build_declaring(serde_json::json!({
+                "$schema": dialect,
+                "type": "object",
+                "properties": { "id": { "type": "string", "pattern": "^a" } }
+            }))
+            .unwrap_err(),
+        );
+        assert_eq!(keyword.code, "SCHEMA_UNSUPPORTED_KEYWORD");
+        assert_eq!(keyword.schema_pointer, "/properties/id/pattern");
+
+        // A schema inside the profile builds, and is what the registry serves.
+        let comp = build_declaring(serde_json::json!({
+            "$schema": dialect,
+            "type": "object",
+            "properties": { "id": { "type": "string" } }
+        }))
+        .expect("a conforming schema composes");
+        assert!(
+            comp.providers()
+                .description_of(ImplementationKind::Rust, "com.example.declares")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_transport_schema_outside_the_profile_fails_the_build() {
+        struct Listener;
+        impl ChannelDriver for Listener {
+            fn protocol_id(&self) -> &str {
+                "listener"
+            }
+            fn capabilities(&self) -> orion_extension_api::ChannelDriverCapabilities {
+                orion_extension_api::ChannelDriverCapabilities::none().sync()
+            }
+            fn validate_fields(
+                &self,
+                _: &orion_extension_api::ChannelProtocolFields<'_>,
+            ) -> Vec<crate::errors::FieldError> {
+                Vec::new()
+            }
+            fn transport_schema(&self) -> Option<serde_json::Value> {
+                Some(serde_json::json!({
+                    "$schema": super::schema_profile::DIALECT_URI,
+                    "type": "object",
+                    "properties": { "topic": { "type": "string", "format": "uri" } }
+                }))
+            }
+        }
+        let err = CompositionRoot::community()
+            .with_channel_driver(Arc::new(Listener))
+            .build_in_memory()
+            .unwrap_err();
+        let CompositionError::InvalidTransportSchema {
+            protocol,
+            code,
+            location,
+        } = err
+        else {
+            unreachable!("expected an invalid transport schema, got {err:?}");
+        };
+        assert_eq!(protocol, "listener");
+        assert_eq!(code, "SCHEMA_UNSUPPORTED_KEYWORD");
+        assert!(location.contains("/properties/topic/format"), "{location}");
     }
 
     #[test]

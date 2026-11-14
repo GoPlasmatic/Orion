@@ -125,6 +125,28 @@ pub struct ProviderRegistry {
     described: Arc<Mutex<BTreeMap<String, Option<Arc<Described>>>>>,
 }
 
+/// The composed backends' descriptions, compiled at build: what
+/// [`ProviderRegistry::new`] seeds its cache with.
+#[derive(Default)]
+pub(crate) struct CompiledDescriptions(BTreeMap<String, Option<Arc<Described>>>);
+
+impl CompiledDescriptions {
+    /// Compile `backend`'s declared schemas, or name the first outside the
+    /// profile.
+    pub(crate) fn compile(
+        &mut self,
+        backend: &dyn ProviderBackend,
+    ) -> Result<(), Box<orion_extension_api::InvalidSchema>> {
+        let described = Described::compile(backend)?;
+        self.0.insert(described_key(backend), described);
+        Ok(())
+    }
+}
+
+fn described_key(backend: &dyn ProviderBackend) -> String {
+    format!("{}:{}", backend.kind(), backend.driver_id())
+}
+
 /// A backend's description and its schemas, compiled.
 struct Described {
     description: orion_extension_api::ProviderDescription,
@@ -135,7 +157,8 @@ struct Described {
 }
 
 impl Described {
-    fn of(description: orion_extension_api::ProviderDescription) -> Self {
+    /// Every declared schema, as `<operation>/<slot>` files.
+    fn files(description: &orion_extension_api::ProviderDescription) -> BTreeMap<String, Value> {
         let mut files = BTreeMap::new();
         for (name, op) in &description.operations {
             if let Some(schema) = &op.input_schema {
@@ -145,8 +168,12 @@ impl Described {
                 files.insert(format!("{name}/output"), schema.clone());
             }
         }
+        files
+    }
+
+    fn of(description: orion_extension_api::ProviderDescription) -> Self {
         let schemas = super::schema_profile::CompiledSchemaBundle::compile(
-            files,
+            Self::files(&description),
             super::schema_profile::SchemaProfileLimits::default(),
         )
         .map_err(|f| format!("{} at {}", f.code, f.location));
@@ -154,6 +181,57 @@ impl Described {
             description,
             schemas,
         }
+    }
+
+    /// `backend`'s description with its schemas compiled, or the first
+    /// schema outside the profile, named by operation and slot.
+    ///
+    /// The composition builds through this, so a composed provider whose
+    /// declared schema could never be checked stops the node at boot instead
+    /// of refusing every call that needs it — and, for an output schema on
+    /// an operation with no input schema, instead of failing only after the
+    /// effect has happened. Admitted backends keep the lazy path.
+    pub(crate) fn compile(
+        backend: &dyn ProviderBackend,
+    ) -> Result<Option<Arc<Self>>, Box<orion_extension_api::InvalidSchema>> {
+        let Some(description) = backend.describe() else {
+            return Ok(None);
+        };
+        let described = Self::of(description);
+        if described.schemas.is_ok() {
+            return Ok(Some(Arc::new(described)));
+        }
+        let files = Self::files(&described.description);
+        let limits = super::schema_profile::SchemaProfileLimits::default;
+        let invalid = |file: &str, f: super::schema_profile::SchemaProfileFinding| {
+            let (operation, slot) = file.rsplit_once('/').unwrap_or((file, ""));
+            Box::new(orion_extension_api::InvalidSchema::new(
+                backend.driver_id(),
+                operation,
+                slot,
+                f.code,
+                f.location,
+                f.schema_pointer,
+            ))
+        };
+        // The bundle failed: name the first schema that fails on its own.
+        for (file, schema) in &files {
+            if let Err(f) = super::schema_profile::CompiledSchemaBundle::compile(
+                BTreeMap::from([(file.clone(), schema.clone())]),
+                limits(),
+            ) {
+                return Err(invalid(file, f));
+            }
+        }
+        // Each compiles alone, so the failure is between them (a `$ref`
+        // across schemas, a bundle-wide limit): report the bundle's finding.
+        let finding = super::schema_profile::CompiledSchemaBundle::compile(files, limits())
+            .err()
+            .unwrap_or_else(|| {
+                super::schema_profile::SchemaProfileFinding::new("SCHEMA_INVALID", "bundle")
+            });
+        let location = finding.location.clone();
+        Err(invalid(&location, finding))
     }
 }
 
@@ -177,10 +255,15 @@ impl std::fmt::Debug for ProviderRegistry {
 impl ProviderRegistry {
     /// A registry over the frozen `composed` table, with an empty admitted
     /// layer. Built by [`super::CompositionBuilder::build`].
+    ///
+    /// `described` is the composed backends' descriptions, compiled while
+    /// the composition was built (see [`Described::compile`]), so the build
+    /// and the runtime share one compile.
     pub(crate) fn new(
         composed: ProviderTable,
         deployments: ImmutableDeploymentStore,
         ledger: Arc<RevocationLedger>,
+        described: CompiledDescriptions,
     ) -> Self {
         Self {
             composed: Arc::new(composed),
@@ -188,13 +271,13 @@ impl ProviderRegistry {
             deployments,
             ledger,
             served: Arc::default(),
-            described: Arc::default(),
+            described: Arc::new(Mutex::new(described.0)),
         }
     }
 
     /// `backend`'s description, compiled once.
     fn described(&self, backend: &dyn ProviderBackend) -> Option<Arc<Described>> {
-        let key = format!("{}:{}", backend.kind(), backend.driver_id());
+        let key = described_key(backend);
         let mut cache = self
             .described
             .lock()

@@ -60,7 +60,7 @@ pub use admission::{
 };
 pub use attempt::{AttemptContext, AttemptScope, ConnectionResolver, SecretValue};
 pub use channel::{ChannelDriver, ChannelDriverCapabilities, ChannelProtocolFields};
-pub use compose::{CompositionError, DuplicateProvider, Registrar};
+pub use compose::{CompositionError, DuplicateProvider, InvalidSchema, Registrar};
 pub use contract::{
     ConnectorError, ConnectorErrorClass, ConnectorOutput, EffectStatus, ErrorOrigin,
     ImplementationKind, OriginKind, RetryAdvice, codes,
