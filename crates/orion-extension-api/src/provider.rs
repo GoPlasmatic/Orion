@@ -6,7 +6,7 @@
 //! (`org.orion.http`), a `workflow` or `wasm` package under its digest. The
 //! node dispatches each attempt of a call to it with an [`AttemptContext`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -102,14 +102,83 @@ impl OperationDescription {
     }
 }
 
+/// A connection a provider needs beside its own, declared under an alias
+/// ([`ProviderDescription::with_dependency`]): a connection over this
+/// provider names, in its `bindings`, the connection the alias is bound to,
+/// and the provider calls it through [`AttemptContext::call_dependency`].
+///
+/// The provider reaches only the operations it declares here, on the
+/// connection revision the deployment pins, under its own call's deadline and
+/// budget; it never holds the target's configuration or secrets. A target
+/// whose own provider declares dependencies is refused, so dependencies never
+/// chain.
+///
+/// ```
+/// use orion_extension_api::{DependencyDescription, ProviderDescription};
+///
+/// let description = ProviderDescription::new().with_dependency(
+///     "artifact_store",
+///     DependencyDescription::new()
+///         .on_provider("com.orion.storage")
+///         .with_operation("presign")
+///         .optional(),
+/// );
+/// assert!(description.dependencies["artifact_store"].optional);
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct DependencyDescription {
+    /// The provider id the bound connection must run on, when it must run
+    /// on one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The operations the provider may call on it.
+    #[serde(default)]
+    pub operations: BTreeSet<String>,
+    /// Whether a connection may leave the alias unbound.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional: bool,
+}
+
+impl DependencyDescription {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Require the bound connection to run on `provider`.
+    #[must_use]
+    pub fn on_provider(mut self, provider: impl Into<String>) -> Self {
+        self.provider = Some(provider.into());
+        self
+    }
+
+    /// Grant `operation` on the bound connection.
+    #[must_use]
+    pub fn with_operation(mut self, operation: impl Into<String>) -> Self {
+        self.operations.insert(operation.into());
+        self
+    }
+
+    /// Let a connection leave the alias unbound.
+    #[must_use]
+    pub fn optional(mut self) -> Self {
+        self.optional = true;
+        self
+    }
+}
+
 /// What a provider declares about itself ([`ProviderBackend::describe`]):
-/// its operations, by canonical name. A provider that declares one declares
-/// all of them: a `connector_call` naming any other is refused when its
-/// workflow loads.
+/// its operations, by canonical name, and the connections it depends on, by
+/// alias. A provider that declares one operation declares all of them: a
+/// `connector_call` naming any other is refused when its workflow loads.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ProviderDescription {
     pub operations: BTreeMap<String, OperationDescription>,
+    /// The connections it calls beside its own, by alias. Validated against a
+    /// connection's `bindings` at upload and when a deployment is built.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dependencies: BTreeMap<String, DependencyDescription>,
 }
 
 impl ProviderDescription {
@@ -125,6 +194,17 @@ impl ProviderDescription {
         operation: OperationDescription,
     ) -> Self {
         self.operations.insert(name.into(), operation);
+        self
+    }
+
+    /// Declare the dependency `alias`.
+    #[must_use]
+    pub fn with_dependency(
+        mut self,
+        alias: impl Into<String>,
+        dependency: DependencyDescription,
+    ) -> Self {
+        self.dependencies.insert(alias.into(), dependency);
         self
     }
 
@@ -149,6 +229,7 @@ pub struct ValidateContext<'a> {
     config: &'a Value,
     connection_id: Option<&'a str>,
     revision: Option<Revision>,
+    bindings: Option<&'a BTreeMap<String, String>>,
 }
 
 impl<'a> ValidateContext<'a> {
@@ -158,7 +239,23 @@ impl<'a> ValidateContext<'a> {
             config,
             connection_id: None,
             revision: None,
+            bindings: None,
         }
+    }
+
+    /// The connection's `bindings` (alias → connection id). The node has
+    /// already checked them against the provider's declared dependencies; a
+    /// provider reads them to judge configuration that depends on one being
+    /// bound (an artifact source that names a bound store).
+    #[must_use]
+    pub fn with_bindings(mut self, bindings: &'a BTreeMap<String, String>) -> Self {
+        self.bindings = Some(bindings);
+        self
+    }
+
+    /// The connection's `bindings`, when the node gave them.
+    pub fn bindings(&self) -> Option<&'a BTreeMap<String, String>> {
+        self.bindings
     }
 
     /// Tie the configuration to a connection revision.
@@ -273,5 +370,39 @@ pub trait ProviderBackend: Send + Sync {
     /// serves it.
     fn describe(&self) -> Option<ProviderDescription> {
         None
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// `dependencies` is on the wire only when a provider declares one, so a
+    /// description that declares none serializes as it always did.
+    #[test]
+    fn a_description_serializes_dependencies_only_when_declared() {
+        let bare = ProviderDescription::new().with_operation("get", OperationDescription::new());
+        let json = serde_json::to_value(&bare).unwrap();
+        assert!(json.get("dependencies").is_none(), "{json}");
+
+        let declared = bare.with_dependency(
+            "store",
+            DependencyDescription::new()
+                .on_provider("com.orion.storage")
+                .with_operation("presign")
+                .with_operation("head"),
+        );
+        let json = serde_json::to_value(&declared).unwrap();
+        assert_eq!(
+            json["dependencies"]["store"],
+            serde_json::json!({
+                "provider": "com.orion.storage",
+                "operations": ["head", "presign"]
+            }),
+            "`optional` is omitted while false"
+        );
+        let back: ProviderDescription = serde_json::from_value(json).unwrap();
+        assert_eq!(back, declared);
     }
 }

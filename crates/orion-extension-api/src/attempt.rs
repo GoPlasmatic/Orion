@@ -18,7 +18,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::contract::{ConnectorError, EffectStatus};
+use crate::contract::{ConnectorError, ConnectorOutput, EffectStatus, codes};
 use crate::identity::{ConnectionReference, EffectiveConnectionIdentity};
 
 /// A resolved secret value whose `Debug` and `Display` implementations are
@@ -121,6 +121,31 @@ pub trait AttemptScope: Any + Send + Sync + fmt::Debug {
     fn connection_resolver(&self) -> Option<&dyn ConnectionResolver> {
         None
     }
+
+    /// The caller for the provider's declared dependencies, when the host
+    /// binds one ([`AttemptContext::call_dependency`]).
+    fn dependency_caller(&self) -> Option<&dyn DependencyCaller> {
+        None
+    }
+}
+
+/// How a provider reaches a connection it declared as a dependency
+/// ([`crate::DependencyDescription`]): the host resolves the alias to the
+/// connection revision the deployment pins and dispatches one call on it,
+/// under this call's deadline and budget, with only the operations the
+/// dependency declares.
+#[async_trait]
+pub trait DependencyCaller: Send + Sync + fmt::Debug {
+    /// Call `operation` on the connection bound to `alias`.
+    async fn call(
+        &self,
+        alias: &str,
+        operation: &str,
+        input: Value,
+    ) -> Result<ConnectorOutput, ConnectorError>;
+
+    /// The connection revision bound to `alias` in this run, when one is.
+    fn bound(&self, alias: &str) -> Option<ConnectionReference>;
 }
 
 /// One attempt at a connector call, as the provider dispatched to sees it.
@@ -240,6 +265,37 @@ impl AttemptContext {
         }
     }
 
+    /// Call `operation` on the connection bound to the dependency `alias`.
+    ///
+    /// The call shares this attempt's deadline, budget and effect evidence:
+    /// an effect the dependency records is this call's effect too. Refused
+    /// with `DEPENDENCY_UNDECLARED` when the host binds no dependencies, or
+    /// the connection binds nothing to `alias`, and with
+    /// `OPERATION_FORBIDDEN` for an operation the dependency does not
+    /// declare.
+    pub async fn call_dependency(
+        &self,
+        alias: &str,
+        operation: &str,
+        input: Value,
+    ) -> Result<ConnectorOutput, ConnectorError> {
+        match self.scope.dependency_caller() {
+            Some(caller) => caller.call(alias, operation, input).await,
+            None => Err(ConnectorError::forbidden(
+                codes::DEPENDENCY_UNDECLARED,
+                "dispatch",
+                format!("no dependency '{alias}' is bound for this call"),
+                self.effect_status(),
+            )),
+        }
+    }
+
+    /// The connection revision bound to `alias`, when one is: how a provider
+    /// tells an unbound optional dependency from a bound one before calling.
+    pub fn bound_connection(&self, alias: &str) -> Option<ConnectionReference> {
+        self.scope.dependency_caller()?.bound(alias)
+    }
+
     /// Refuse to go on once the run is cancelled or past its deadline,
     /// carrying the effect evidence recorded so far.
     pub fn check_live(&self) -> Result<(), ConnectorError> {
@@ -270,6 +326,7 @@ mod tests {
 
     use super::*;
     use crate::{Digest, ProviderRef, Revision};
+    use std::future::Future as _;
 
     /// A scope over a fixed value: what a provider's own tests hand it.
     #[derive(Debug)]
@@ -372,6 +429,29 @@ mod tests {
         let err = ctx.check_live().unwrap_err();
         assert_eq!(err.code, crate::codes::CANCELLED);
         assert_eq!(err.effect_status, EffectStatus::Unknown);
+    }
+
+    /// A host that binds no dependency caller refuses every dependency call
+    /// as undeclared, carrying the effect evidence so far, and reports no
+    /// bound connection.
+    #[test]
+    fn a_scope_without_a_dependency_caller_refuses_with_its_effect() {
+        let scope = fixed(Instant::now() + Duration::from_secs(60));
+        let ctx = AttemptContext::new(scope, 1);
+        ctx.record_effect(EffectStatus::Unknown);
+        // The refusal awaits nothing, so one poll answers it (no runtime in
+        // this crate's dependencies).
+        let call = std::pin::pin!(ctx.call_dependency("artifact_store", "presign", Value::Null));
+        let std::task::Poll::Ready(result) =
+            call.poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+        else {
+            unreachable!("the refusal is immediate");
+        };
+        let err = result.unwrap_err();
+        assert_eq!(err.code, crate::codes::DEPENDENCY_UNDECLARED);
+        assert_eq!(err.effect_status, EffectStatus::Unknown);
+        assert!(err.message.contains("artifact_store"), "{}", err.message);
+        assert!(ctx.bound_connection("artifact_store").is_none());
     }
 
     #[test]

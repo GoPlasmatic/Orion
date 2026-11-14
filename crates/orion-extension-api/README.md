@@ -25,6 +25,14 @@ package verifier to a node.
   data-plane caller sees it as `error.connector.provider_code` (502 for a `ProviderFailure`,
   503 for `Unavailable`/`RateLimited`, 500 for a `ContractViolation`), so make it a static
   SHOUTY_CASE literal that carries no data. Its `message` reaches the trace, not the caller.
+  A provider that needs another connection (an artifact store, a key service) declares it in
+  `describe` with `ProviderDescription::with_dependency(alias, DependencyDescription)`: the
+  provider it must run on, the operations granted, and whether it is optional. A connection
+  binds the alias in its `bindings`, and the provider calls it with
+  `AttemptContext::call_dependency(alias, operation, input)`. It gets operation calls only,
+  never the target's configuration or secrets, and the call shares the parent's deadline,
+  budget and effect evidence (a dependency call that completes marks the parent's effect
+  completed too).
 - `ConnectionPoolCache`: a provider's pool cache, evicted per connector when a deployment
   changes that connection.
 - `PackageVerifier`: whether a provider package may be admitted on the node.

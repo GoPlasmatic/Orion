@@ -58,7 +58,9 @@ pub use admission::{
     AdmissionRejection, AdmissionVerdict, EditionTier, PackageAdmissionRequest, PackageVerifier,
     admission_codes,
 };
-pub use attempt::{AttemptContext, AttemptScope, ConnectionResolver, SecretValue};
+pub use attempt::{
+    AttemptContext, AttemptScope, ConnectionResolver, DependencyCaller, SecretValue,
+};
 pub use channel::{ChannelDriver, ChannelDriverCapabilities, ChannelProtocolFields};
 pub use compose::{CompositionError, DuplicateProvider, InvalidSchema, Registrar};
 pub use contract::{
@@ -74,7 +76,10 @@ pub use ingress::{
     GuardSet, IngressHost, NodeInfo, NothingToSettle, RunningDriver, Settle,
 };
 pub use pool::{ConnectionPoolCache, PoolEntry};
-pub use provider::{OperationDescription, ProviderBackend, ProviderDescription, ValidateContext};
+pub use provider::{
+    DependencyDescription, OperationDescription, ProviderBackend, ProviderDescription,
+    ValidateContext,
+};
 
 /// The wire types a contract shares with `orion-api`. The vocabularies
 /// ([`ImplementationKind`], [`ConnectorErrorClass`], [`EffectStatus`],
