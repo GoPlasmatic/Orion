@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::FieldError;
+use crate::http::{HttpHookGuards, HttpHost, HttpRequest, HttpResponse};
 use crate::ingress::{ChannelBinding, DriverError, GuardSet, IngressHost, RunningDriver};
 
 /// Capabilities declared by a [`ChannelDriver`].
@@ -30,6 +31,16 @@ pub struct ChannelDriverCapabilities {
     /// deliveries pass these guards. `None` for a protocol served by the
     /// node's own ingresses (the HTTP data plane, the cron scheduler).
     pub ingress: Option<GuardSet>,
+    /// The driver serves its channels' requests on the node's HTTP data plane
+    /// itself ([`ChannelDriver::serve_http`]), and they pass these guards
+    /// besides the always-on ones. `None` for a protocol whose requests run
+    /// the channel's workflow once and answer with its result.
+    ///
+    /// A driver declaring it must also declare [`Self::http_routes`], and may
+    /// not declare [`Self::ingress`], [`Self::async_submit`] or
+    /// [`Self::oauth2_login`]; the node refuses such a composition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_hook: Option<HttpHookGuards>,
 }
 
 impl ChannelDriverCapabilities {
@@ -41,6 +52,7 @@ impl ChannelDriverCapabilities {
             registers_http_routes: false,
             supports_oauth2_login: false,
             ingress: None,
+            http_hook: None,
         }
     }
 
@@ -77,6 +89,15 @@ impl ChannelDriverCapabilities {
     #[must_use]
     pub const fn ingress(mut self, guards: GuardSet) -> Self {
         self.ingress = Some(guards);
+        self
+    }
+
+    /// Serves its channels' requests itself on the HTTP data plane, which
+    /// passes them `guards` (see [`HttpHookGuards`]). Authoring then refuses a
+    /// channel of this protocol that configures a guard the hook never runs.
+    #[must_use]
+    pub const fn http_hook(mut self, guards: HttpHookGuards) -> Self {
+        self.http_hook = Some(guards);
         self
     }
 }
@@ -165,5 +186,23 @@ pub trait ChannelDriver: Send + Sync {
     ) -> Result<Option<Box<dyn RunningDriver>>, DriverError> {
         let _ = host;
         Ok(None)
+    }
+
+    /// Serve one request to `channel` on the HTTP data plane. Called only for
+    /// a driver that declares [`ChannelDriverCapabilities::http_hook`], after
+    /// the request's guards passed; `host` runs the channel's workflow. An
+    /// error answers `502` with the message logged, not returned to the
+    /// caller. The default serves nothing.
+    async fn serve_http(
+        &self,
+        channel: &ChannelBinding,
+        request: HttpRequest,
+        host: std::sync::Arc<dyn HttpHost>,
+    ) -> Result<HttpResponse, DriverError> {
+        let _ = (channel, request, host);
+        Err(DriverError::new(format!(
+            "the '{}' driver does not serve HTTP requests",
+            self.protocol_id()
+        )))
     }
 }

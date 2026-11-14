@@ -27,9 +27,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use orion_api::v2::{ChannelDriverInfo, IngressGuards};
+use orion_api::v2::{ChannelDriverInfo, HttpHookGuards as HttpHookGuardsInfo, IngressGuards};
 use orion_extension_api::{
-    ChannelDriver, ChannelDriverCapabilities, ChannelProtocolFields, GuardSet,
+    ChannelDriver, ChannelDriverCapabilities, ChannelProtocolFields, GuardSet, HttpHookGuards,
 };
 use serde_json::Value;
 
@@ -224,6 +224,11 @@ impl ChannelDriverRegistry {
                         deduplication: g.deduplication,
                         backpressure: g.backpressure,
                     }),
+                    http_hook: caps.http_hook.map(|g| HttpHookGuardsInfo {
+                        validation: g.validation,
+                        deduplication: g.deduplication,
+                        backpressure: g.backpressure,
+                    }),
                     transport_schema: driver.transport_schema(),
                 }
             })
@@ -274,6 +279,26 @@ impl ChannelDriverRegistry {
                         protocol: driver.protocol_id().to_string(),
                         code: finding.code,
                         location,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuse the first driver whose capabilities cannot be served together.
+    /// A hooked driver ([`ChannelDriverCapabilities::http_hook`]) is served by
+    /// the node's own HTTP data plane, so it may not also run its own
+    /// listener (two ways in), accept `/async` submissions (a hook answers for
+    /// itself), or carry the OAuth2 sign-in flow (whose redirect is the data
+    /// route's own answer); and it needs the route its requests arrive on.
+    pub(crate) fn check_coherence(&self) -> Result<(), orion_extension_api::CompositionError> {
+        for driver in self.drivers.values() {
+            if let Some(reason) = incoherence(&driver.capabilities()) {
+                return Err(
+                    orion_extension_api::CompositionError::InvalidChannelDriver {
+                        protocol: driver.protocol_id().to_string(),
+                        reason: reason.to_string(),
                     },
                 );
             }
@@ -358,6 +383,24 @@ impl ChannelDriverRegistry {
     }
 }
 
+/// Why `caps` cannot be served together, or `None` when they can.
+fn incoherence(caps: &ChannelDriverCapabilities) -> Option<&'static str> {
+    caps.http_hook?;
+    if caps.ingress.is_some() {
+        Some("it declares both an HTTP hook and its own ingress listener")
+    } else if caps.supports_async {
+        Some("an HTTP hook answers for itself and cannot accept /async submissions")
+    } else if caps.supports_oauth2_login {
+        Some(
+            "an HTTP hook cannot carry the OAuth2 sign-in flow, whose redirect is the data route's answer",
+        )
+    } else if !caps.registers_http_routes {
+        Some("an HTTP hook needs the HTTP route its requests arrive on (declare http_routes)")
+    } else {
+        None
+    }
+}
+
 /// A protocol the offline tools know only by its description from a node's
 /// `/runtime-capabilities` ([`ChannelDriverRegistry::with_described`]).
 struct DescribedChannelDriver {
@@ -399,6 +442,19 @@ impl ChannelDriver for DescribedChannelDriver {
                 guards = guards.backpressure();
             }
             caps = caps.ingress(guards);
+        }
+        if let Some(g) = info.http_hook {
+            let mut guards = HttpHookGuards::none();
+            if g.validation {
+                guards = guards.validation();
+            }
+            if g.deduplication {
+                guards = guards.deduplication();
+            }
+            if g.backpressure {
+                guards = guards.backpressure();
+            }
+            caps = caps.http_hook(guards);
         }
         caps
     }
@@ -792,6 +848,7 @@ mod tests {
                 deduplication: true,
                 backpressure: false,
             }),
+            http_hook: None,
             transport_schema: Some(json!({
                 "$schema": crate::extensions::schema_profile::DIALECT_URI,
                 "type": "object",
@@ -891,6 +948,108 @@ mod tests {
         // Round trip: a description rebuilds a registry that validates alike.
         let rebuilt = ChannelDriverRegistry::with_described(&described).expect("distinct");
         assert_eq!(rebuilt.protocol_ids(), with_queue().protocol_ids());
+    }
+
+    /// A GraphQL-like driver serving its channels' requests itself.
+    struct HookDriver(ChannelDriverCapabilities);
+
+    impl ChannelDriver for HookDriver {
+        fn protocol_id(&self) -> &'static str {
+            "gql"
+        }
+
+        fn capabilities(&self) -> ChannelDriverCapabilities {
+            self.0
+        }
+
+        fn validate_fields(&self, _fields: &ChannelProtocolFields<'_>) -> Vec<FieldError> {
+            Vec::new()
+        }
+    }
+
+    fn hook_caps() -> ChannelDriverCapabilities {
+        ChannelDriverCapabilities::none()
+            .sync()
+            .http_routes()
+            .http_hook(HttpHookGuards::none().validation().backpressure())
+    }
+
+    fn with_hook(caps: ChannelDriverCapabilities) -> ChannelDriverRegistry {
+        let mut drivers = community_drivers();
+        drivers.push(Arc::new(HookDriver(caps)));
+        ChannelDriverRegistry::new(drivers).expect("distinct protocols")
+    }
+
+    #[test]
+    fn describe_reports_the_http_hook() {
+        let described = with_hook(hook_caps()).describe();
+        let gql = described
+            .iter()
+            .find(|d| d.protocol == "gql")
+            .expect("the composed driver");
+        assert_eq!(
+            gql.http_hook,
+            Some(HttpHookGuardsInfo {
+                validation: true,
+                deduplication: false,
+                backpressure: true,
+            })
+        );
+        assert!(gql.ingress_guards.is_none());
+        let rest = described
+            .iter()
+            .find(|d| d.protocol == "rest")
+            .expect("rest");
+        assert!(
+            rest.http_hook.is_none(),
+            "rest runs its workflow once per request"
+        );
+
+        // The description survives the wire and rebuilds the same capabilities.
+        let wire = serde_json::to_value(gql).expect("serializes");
+        let back: ChannelDriverInfo = serde_json::from_value(wire).expect("deserializes");
+        let rebuilt = ChannelDriverRegistry::with_described(&[back]).expect("distinct");
+        assert_eq!(
+            rebuilt.get("gql").expect("the stand-in").capabilities(),
+            hook_caps()
+        );
+        // A description from a node that predates the hook still reads.
+        let mut old = serde_json::to_value(&described[0]).expect("serializes");
+        old.as_object_mut().expect("object").remove("http_hook");
+        let _: ChannelDriverInfo = serde_json::from_value(old).expect("http_hook defaults");
+    }
+
+    #[test]
+    fn a_driver_declaring_hook_and_ingress_is_refused() {
+        let refused = [
+            (hook_caps().ingress(GuardSet::none()), "ingress listener"),
+            (hook_caps().async_submit(), "/async"),
+            (hook_caps().oauth2_login(), "OAuth2"),
+            (
+                ChannelDriverCapabilities::none()
+                    .sync()
+                    .http_hook(HttpHookGuards::none()),
+                "http_routes",
+            ),
+        ];
+        for (caps, says) in refused {
+            let err = with_hook(caps)
+                .check_coherence()
+                .expect_err("an incoherent driver is refused");
+            let orion_extension_api::CompositionError::InvalidChannelDriver { protocol, reason } =
+                &err
+            else {
+                unreachable!("{err:?}");
+            };
+            assert_eq!(protocol, "gql");
+            assert!(reason.contains(says), "{says}: {reason}");
+        }
+        with_hook(hook_caps())
+            .check_coherence()
+            .expect("a hook with a route and nothing else is coherent");
+        ChannelDriverRegistry::community()
+            .check_coherence()
+            .expect("community's drivers are coherent");
     }
 
     #[test]

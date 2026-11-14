@@ -10,6 +10,13 @@ package verifier to a node.
   published generation, and it dispatches each message through `IngressHost::dispatch`. Dispatch
   applies the channel's guards, traces and runs the workflow, and answers a `DispatchOutcome`
   plus a `Settle` handle for the deduplication claim. See the `ingress` module.
+  A driver whose requests arrive over the data plane but which answers them itself (a
+  server-sent event stream, a GraphQL document) declares `ChannelDriverCapabilities::http_hook`
+  with the `HttpHookGuards` it uses, alongside `http_routes`, and implements `serve_http`. Each
+  request reaches it after its rate limit, authentication and origin check; it runs the
+  channel's workflow through `HttpHost::run` as often as it needs, and answers an `HttpResponse`
+  whose body may be a `BodyStream`. A stream ends when `HttpHost::shutdown` resolves. A hooked
+  driver may not also declare `ingress`, `async_submit` or `oauth2_login`. See the `http` module.
 - `ProviderBackend`: a connector provider. A `rust` backend compiled into an edition's
   binary needs no package: connections name it by a digest derived from its id (reported in
   `/runtime-capabilities`), and its `validate_connection` judges a revision's configuration at

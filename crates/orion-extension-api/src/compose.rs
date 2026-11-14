@@ -172,6 +172,15 @@ pub enum CompositionError {
         /// Where the profile found it (with the schema pointer, when it has one).
         location: String,
     },
+    /// A channel driver declares capabilities that cannot be served together
+    /// (an HTTP hook beside its own listener, an HTTP hook with no route).
+    #[error("composition: the '{protocol}' channel driver cannot be served: {reason}")]
+    InvalidChannelDriver {
+        /// The driver's protocol id.
+        protocol: String,
+        /// Which capabilities conflict.
+        reason: String,
+    },
     /// Two cluster shared-state stores.
     #[error(
         "composition: a cluster store '{existing}' is already registered; \

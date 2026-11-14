@@ -112,6 +112,11 @@ pub struct ChannelDriverInfo {
     /// pass. Absent for a protocol the node's own ingresses serve.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingress_guards: Option<IngressGuards>,
+    /// For a driver that serves its channels' requests on the data plane
+    /// itself, the guards beyond the always-on ones (rate limit,
+    /// authentication, origin) that its requests and runs pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_hook: Option<HttpHookGuards>,
     /// The `orion-json-schema/1` document its channels' `transport_config`
     /// must satisfy, when the driver publishes one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -126,6 +131,18 @@ pub struct IngressGuards {
     pub rate_limit: bool,
     pub validation: bool,
     pub deduplication: bool,
+    pub backpressure: bool,
+}
+
+/// The guards a hooked driver declares beyond the always-on ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct HttpHookGuards {
+    /// `validation_logic`, judged against each run's `data`.
+    pub validation: bool,
+    /// Idempotency-key deduplication, once per request.
+    pub deduplication: bool,
+    /// The concurrency permit, held for the request and any stream it opens.
     pub backpressure: bool,
 }
 

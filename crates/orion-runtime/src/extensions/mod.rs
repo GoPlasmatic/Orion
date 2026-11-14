@@ -332,6 +332,7 @@ impl CompositionBuilder {
         let channels = ChannelDriverRegistry::new(channels)
             .map_err(CompositionError::DuplicateChannelDriver)?;
         channels.check_transport_schemas()?;
+        channels.check_coherence()?;
 
         let mut registrar = ProviderRegistrar {
             deployments: &deployments,
@@ -887,6 +888,37 @@ mod tests {
         assert_eq!(protocol, "listener");
         assert_eq!(code, "SCHEMA_UNSUPPORTED_KEYWORD");
         assert!(location.contains("/properties/topic/format"), "{location}");
+    }
+
+    #[test]
+    fn a_hooked_driver_with_its_own_listener_fails_the_build() {
+        struct Both;
+        impl ChannelDriver for Both {
+            fn protocol_id(&self) -> &str {
+                "both"
+            }
+            fn capabilities(&self) -> orion_extension_api::ChannelDriverCapabilities {
+                orion_extension_api::ChannelDriverCapabilities::none()
+                    .sync()
+                    .http_routes()
+                    .http_hook(orion_extension_api::HttpHookGuards::none())
+                    .ingress(orion_extension_api::GuardSet::none())
+            }
+            fn validate_fields(
+                &self,
+                _: &orion_extension_api::ChannelProtocolFields<'_>,
+            ) -> Vec<crate::errors::FieldError> {
+                Vec::new()
+            }
+        }
+        let err = CompositionRoot::community()
+            .with_channel_driver(Arc::new(Both))
+            .build_in_memory()
+            .unwrap_err();
+        assert!(
+            matches!(&err, CompositionError::InvalidChannelDriver { protocol, .. } if protocol == "both"),
+            "{err:?}"
+        );
     }
 
     #[test]

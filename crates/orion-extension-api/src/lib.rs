@@ -16,7 +16,10 @@
 //! A channel driver whose messages do not arrive over the node's HTTP data
 //! plane also runs a listener: [`ChannelDriver::start`] returns a
 //! [`RunningDriver`], which hands each message to the node through
-//! [`IngressHost::dispatch`] (see [`ingress`]).
+//! [`IngressHost::dispatch`] (see [`ingress`]). One whose requests arrive
+//! over the data plane but are answered by the driver (a stream, a GraphQL
+//! document) serves them in [`ChannelDriver::serve_http`] and runs the
+//! channel's workflow through [`HttpHost::run`] (see [`http`]).
 //!
 //! A connector call answers `Result<`[`ConnectorOutput`]`, `[`ConnectorError`]`>`
 //! and is handed an [`AttemptContext`], a read-only view of the run the node
@@ -51,6 +54,7 @@ mod channel;
 mod cluster;
 mod compose;
 mod contract;
+pub mod http;
 mod identity;
 pub mod ingress;
 mod pool;
@@ -69,6 +73,9 @@ pub use compose::{CompositionError, DuplicateProvider, InvalidSchema, Registrar}
 pub use contract::{
     ConnectorError, ConnectorErrorClass, ConnectorOutput, EffectStatus, ErrorOrigin,
     ImplementationKind, OriginKind, RetryAdvice, codes,
+};
+pub use http::{
+    BodyStream, HttpBody, HttpHookGuards, HttpHost, HttpRequest, HttpResponse, ShutdownSignal,
 };
 pub use identity::{
     BackendKey, ConnectionId, ConnectionReference, EffectiveConnectionIdentity, ProviderId,
