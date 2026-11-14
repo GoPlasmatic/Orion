@@ -92,6 +92,7 @@ and its sibling fields are discarded.",
         (status = 401, description = "The channel declares `auth` and the request did not satisfy it — absent, wrong, or malformed credential. One message for every cause, so a caller cannot learn which half they had right.", body = ErrorResponse),
         (status = 403, description = "`Origin` header not in the channel's `origin_allow_list`", body = ErrorResponse),
         (status = 404, description = "No channel serves this request: either no REST route matches the requested method and path, or the single-segment name is not an active channel in the registry.", body = ErrorResponse),
+        (status = 405, description = "The channel is not served over HTTP (`METHOD_NOT_ALLOWED`): a cron channel (run it now through `POST /api/v2/admin/channels/{id}/trigger`), or a channel whose driver runs its own listener and receives its messages over that transport.", body = ErrorResponse),
         (status = 409, description = "Deduplication key already seen inside the channel's dedup window", body = ErrorResponse),
         (status = 413, description = "Request body exceeded `ingest.max_payload_size` (`PAYLOAD_TOO_LARGE`)", body = ErrorResponse),
         (status = 415, description = "Non-empty body without a JSON `Content-Type`", body = ErrorResponse),
@@ -253,6 +254,22 @@ pub(crate) async fn dynamic_handler(
              request. To run it now, POST /api/v2/admin/channels/{}/trigger — that \
              records an occurrence and respects the channel's concurrency policy.",
             runtime.channel.channel_id
+        )));
+    }
+
+    // A channel whose driver runs its own listener (Kafka, a queue, …)
+    // receives its messages over that transport, behind that transport's
+    // authentication. Serving it here too would let anyone who can reach the
+    // port inject messages the transport would have refused. Checked after the
+    // cron arm so a cron channel keeps its more useful message, and after the
+    // 415/400 checks above so their ordering is unchanged.
+    if let Some(runtime) = channel_runtime.as_ref()
+        && !runtime.served_over_http
+    {
+        return Err(OrionError::method_not_allowed(format!(
+            "channel '{channel}' is a '{}' channel: its messages arrive over its \
+             transport, not over HTTP",
+            runtime.channel.protocol
         )));
     }
 
@@ -840,6 +857,7 @@ synchronous endpoint, where the caller already has the answer.",
         (status = 401, description = "The channel declares `auth` and the request did not satisfy it — absent, wrong, or malformed credential. One message for every cause, so a caller cannot learn which half they had right.", body = ErrorResponse),
         (status = 403, description = "`Origin` header not in the channel's `origin_allow_list`", body = ErrorResponse),
         (status = 404, description = "No channel serves this request: either no REST route matches the requested method and path, or the single-segment name is not an active channel in the registry.", body = ErrorResponse),
+        (status = 405, description = "The channel is not served over HTTP (`METHOD_NOT_ALLOWED`): a cron channel (run it now through `POST /api/v2/admin/channels/{id}/trigger`), a channel whose driver runs its own listener and receives its messages over that transport, or an OAuth2 callback route, whose redirect is the response.", body = ErrorResponse),
         (status = 409, description = "Deduplication key already seen inside the channel's dedup window", body = ErrorResponse),
         (status = 413, description = "Request body exceeded `ingest.max_payload_size` (`PAYLOAD_TOO_LARGE`)", body = ErrorResponse),
         (status = 415, description = "Non-empty body without a JSON `Content-Type`", body = ErrorResponse),

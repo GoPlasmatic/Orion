@@ -619,3 +619,95 @@ async fn a_channel_configuring_a_guard_its_protocol_never_runs_is_refused() {
         "the refusal names the field: {body}"
     );
 }
+
+/// A channel whose driver runs its own listener receives its messages over
+/// that transport, behind that transport's authentication. The HTTP data
+/// plane must not run it as well: neither sync nor `/async`, and nothing is
+/// queued or traced.
+#[tokio::test]
+async fn an_ingress_channel_is_not_served_over_the_data_plane() {
+    let (_state, app, probe) = node().await;
+    let channel_id = deploy_orders(&app, "orders.placed").await;
+    probe
+        .wait_for(|set| set.iter().any(|b| b.channel_id() == channel_id))
+        .await;
+
+    for uri in ["/api/v2/data/orders", "/api/v2/data/orders/async"] {
+        let response = app
+            .clone()
+            .oneshot(json_request("POST", uri, Some(json!({ "order_id": 7 }))))
+            .await
+            .expect("the data plane answers");
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED, "{uri}");
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "METHOD_NOT_ALLOWED", "{uri}: {body}");
+        let message = body["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains(&format!("'{PROTOCOL}' channel")),
+            "{uri}: {body}"
+        );
+    }
+
+    // Trace mode is sync on this node, so a run of either would have left a row.
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v2/admin/traces?channel=orders&limit=5",
+            None,
+        ))
+        .await
+        .expect("trace listing answers");
+    let body = body_json(response).await;
+    assert_eq!(body["data"], json!([]), "nothing ran: {body}");
+
+    // The transport still delivers.
+    let dispatched = probe
+        .host()
+        .dispatch(
+            Delivery::new(&channel_id, json!({ "order_id": 7 }))
+                .with_trigger(trigger("orders.placed")),
+        )
+        .await;
+    assert!(
+        matches!(dispatched.outcome, DispatchOutcome::Completed { .. }),
+        "{:?}",
+        dispatched.outcome
+    );
+    dispatched.settle.committed().await;
+}
+
+/// The refusal is the ingress protocol's, not the composition's: an `http`
+/// channel on a node that also composes an ingress driver is served as ever.
+#[tokio::test]
+async fn an_http_channel_beside_an_ingress_driver_is_still_served() {
+    let (_state, app, _probe) = node().await;
+    common::create_and_activate_channel(
+        &app,
+        "plain",
+        common::workflow_with_tasks(
+            "Plain Echo",
+            json!([{
+                "id": "echo",
+                "name": "Echo",
+                "function": { "name": "map", "input": { "mappings": [
+                    { "path": "data.seen", "logic": { "var": "data.order_id" } }
+                ]}}
+            }]),
+        ),
+    )
+    .await;
+
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v2/data/plain",
+            Some(json!({ "order_id": 7 })),
+        ))
+        .await
+        .expect("the data plane answers");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["data"]["seen"], 7, "{body}");
+}

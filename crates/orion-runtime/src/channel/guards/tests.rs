@@ -381,6 +381,7 @@ impl Runtime {
                 updated_at: now,
             },
             cron: None,
+            served_over_http: true,
             metrics: Default::default(),
             parsed_config: self.parsed_config,
             rate_limiter: self.rate_limiter,

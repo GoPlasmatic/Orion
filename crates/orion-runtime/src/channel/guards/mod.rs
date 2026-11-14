@@ -189,6 +189,13 @@ impl Transport {
     ///   `validation::cron`, so an author cannot write a guard this row will
     ///   silently ignore. `cron_guards_and_validation_agree` below pins the two
     ///   lists to each other.
+    ///
+    /// A channel whose driver declares `ingress` never reaches `HttpSync` or
+    /// `HttpAsync`: the data route refuses it (405) before any guard runs, as
+    /// it refuses cron, because its messages arrive over its own transport and
+    /// behind that transport's authentication. Its driver's deliveries take
+    /// the driver's declared `GuardSet` instead. `ChannelCall` may still reach
+    /// it — the caller is an authored workflow, not an anonymous client.
     pub const fn guards(self) -> GuardSet {
         match self {
             Transport::HttpSync => GuardSet {

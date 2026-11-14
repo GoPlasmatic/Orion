@@ -295,7 +295,7 @@ impl ChannelLoader {
         // A protocol is served by its driver. One this node has no driver for
         // — a row written by a build that had it — is refused, not routed by
         // guesswork and not silently dropped.
-        if deps.channel_drivers.get(&channel.protocol).is_none() {
+        let Some(driver) = deps.channel_drivers.get(&channel.protocol) else {
             tracing::error!(
                 channel = %channel.name,
                 protocol = %channel.protocol,
@@ -306,7 +306,7 @@ impl ChannelLoader {
                 channel.protocol,
                 deps.channel_drivers.protocol_ids().join(", ")
             )));
-        }
+        };
 
         // Deployment references resolve *before* the config is typed, because
         // what they stand in for is often not a string: a `var://` TTL has to
@@ -698,6 +698,12 @@ impl ChannelLoader {
             _ => None,
         };
 
+        // A driver that runs its own listener (`ingress`) receives its
+        // channel's messages over its transport; the HTTP data plane must not
+        // run that channel too, or it would be reachable without the
+        // transport's authentication. Cron fires from its scheduler alone.
+        let served_over_http = driver.capabilities().ingress.is_none() && cron.is_none();
+
         let cache_flights = parsed_config
             .cache
             .as_ref()
@@ -722,6 +728,7 @@ impl ChannelLoader {
             auth,
             oauth2_login,
             cron,
+            served_over_http,
             metrics: Default::default(),
         }))
     }

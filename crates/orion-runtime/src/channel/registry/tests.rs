@@ -288,6 +288,54 @@ async fn a_registered_driver_that_registers_routes_is_routed() {
     assert_eq!(matched.channel_name, "graph");
 }
 
+/// A driver that runs its own listener may still declare HTTP routes, and the
+/// route resolves: the data plane then refuses the channel by
+/// `served_over_http`, after resolution, so the refusal covers a matched route
+/// exactly as it covers a name.
+#[tokio::test]
+async fn an_ingress_driver_with_routes_is_routed_but_not_served_over_http() {
+    use orion_extension_api::{
+        ChannelDriver, ChannelDriverCapabilities, ChannelProtocolFields, GuardSet,
+    };
+    struct Listener;
+    impl ChannelDriver for Listener {
+        fn protocol_id(&self) -> &'static str {
+            "listener"
+        }
+        fn capabilities(&self) -> ChannelDriverCapabilities {
+            ChannelDriverCapabilities::none()
+                .sync()
+                .http_routes()
+                .ingress(GuardSet::none())
+        }
+        fn validate_fields(&self, _: &ChannelProtocolFields<'_>) -> Vec<crate::errors::FieldError> {
+            Vec::new()
+        }
+    }
+    let registry = TestRegistry::new();
+    let channel = Channel {
+        protocol: "listener".to_string(),
+        ..rest_channel("inbound", "/inbound")
+    };
+    let mut deps = TestDeps::new();
+    let mut drivers = crate::extensions::channel_driver::community_drivers();
+    drivers.push(Arc::new(Listener));
+    deps.channel_drivers =
+        crate::extensions::ChannelDriverRegistry::new(drivers).expect("distinct protocols");
+    deps.reload(&registry, &[channel, rest_channel("plain", "/plain")])
+        .await;
+
+    let matched = registry
+        .match_route("POST", "inbound")
+        .expect("valid path")
+        .expect("the driver's route is matched");
+    assert_eq!(matched.channel_name, "inbound");
+    let runtime = registry.get_by_name("inbound").expect("loaded");
+    assert!(!runtime.served_over_http, "an ingress channel");
+    let plain = registry.get_by_name("plain").expect("loaded");
+    assert!(plain.served_over_http, "a rest channel");
+}
+
 /// A REST channel that claims `route_pattern`, so it lands in the route
 /// table as well as the serving map.
 fn rest_channel(name: &str, route_pattern: &str) -> Channel {

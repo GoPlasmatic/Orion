@@ -185,6 +185,12 @@ pub struct ChannelRuntimeConfig {
     /// surface at the first fire, in a background task with no caller to answer.
     /// `None` for every other protocol.
     pub cron: Option<Arc<crate::channel::CronDescriptor>>,
+    /// Whether the HTTP data plane may run this channel: its driver declares
+    /// no `ingress` (it does not run its own listener) and it is not cron.
+    ///
+    /// Fixed at load from the node's driver registry, which is frozen for the
+    /// node's life, so a carried-over config never goes stale on it.
+    pub served_over_http: bool,
     /// This channel's per-message metric handles, resolved on first use (see
     /// [`crate::metrics::ChannelMetrics`]). Labelled with `channel.name`.
     pub metrics: crate::metrics::ChannelMetrics,
