@@ -242,10 +242,11 @@ pub struct ConnectionRevisionRow {
     /// `vault://`, …). Never a secret itself, and never a path
     /// `public_config` already holds.
     pub secret_locators: std::collections::BTreeMap<String, String>,
-    /// Over a `workflow` provider package: which connection each of the
-    /// package's declared dependency aliases calls (`alias -> connection_id`).
-    /// The deployment member for this connection requires each bound
-    /// connection, so a build deploys them together. Empty otherwise.
+    /// Over a provider that declares dependencies (a `workflow` provider
+    /// package, or a composed `rust` provider): which connection each
+    /// dependency alias calls (`alias -> connection_id`). The deployment
+    /// member for this connection requires each bound connection, so a build
+    /// deploys them together. Empty otherwise.
     #[serde(default)]
     pub bindings: std::collections::BTreeMap<String, String>,
     pub configuration_digest: Digest,
@@ -622,6 +623,12 @@ pub struct ImmutableDeploymentStore {
     /// so custom Rust providers composed via `CompositionBuilder` can be referenced by connections
     /// without requiring a dummy uploaded package.
     composed_rust: Arc<RwLock<BTreeMap<Digest, ProviderId>>>,
+    /// What each composed Direct Rust driver declares it depends on, by its
+    /// synthetic digest: a connection over it binds these aliases, the way a
+    /// connection over a workflow package binds its manifest's. Registered at
+    /// boot from the driver's `describe()`; absent for a driver declaring none.
+    composed_dependencies:
+        Arc<RwLock<BTreeMap<Digest, BTreeMap<String, orion_extension_api::DependencyDescription>>>>,
 }
 
 impl Default for ImmutableDeploymentStore {
@@ -638,7 +645,36 @@ impl ImmutableDeploymentStore {
             write_lock: Arc::default(),
             held: Arc::default(),
             composed_rust: Arc::default(),
+            composed_dependencies: Arc::default(),
         }
+    }
+
+    /// Record the dependencies a composed Direct Rust driver declares.
+    pub fn register_composed_dependencies(
+        &self,
+        driver_id: &str,
+        dependencies: BTreeMap<String, orion_extension_api::DependencyDescription>,
+    ) {
+        if dependencies.is_empty() {
+            return;
+        }
+        let digest = super::foundation::synthetic_provider_digest(driver_id);
+        self.composed_dependencies
+            .write_unpoisoned()
+            .insert(digest, dependencies);
+    }
+
+    /// The dependencies the composed Direct Rust driver under `digest`
+    /// declares; empty for one that declares none or is not composed.
+    pub fn composed_dependencies(
+        &self,
+        digest: &str,
+    ) -> BTreeMap<String, orion_extension_api::DependencyDescription> {
+        self.composed_dependencies
+            .read_unpoisoned()
+            .get(digest)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Record a composed Direct Rust driver by its synthetic provider digest.

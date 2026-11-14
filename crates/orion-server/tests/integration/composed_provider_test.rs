@@ -22,6 +22,7 @@ use tower::ServiceExt;
 use crate::common::{self, body_json, deploy, json_request};
 
 const DRIVER: &str = "com.example.echo";
+const FETCHER: &str = "com.example.fetcher";
 
 /// What the node told the provider about its lifecycle.
 #[derive(Default)]
@@ -130,6 +131,56 @@ fn failure(mode: &str) -> ConnectorError {
     }
 }
 
+/// Declares `store`, a dependency on an echo connection granting `echo`, and
+/// answers `fetch` by calling `input.op` (default `echo`) on it.
+struct FetcherProvider;
+
+#[async_trait]
+impl ProviderBackend for FetcherProvider {
+    fn kind(&self) -> ImplementationKind {
+        ImplementationKind::Rust
+    }
+
+    fn driver_id(&self) -> &str {
+        FETCHER
+    }
+
+    fn validate_config(&self, _config: &Value) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    async fn invoke(
+        &self,
+        ctx: &AttemptContext,
+        _operation: &str,
+        input: Value,
+    ) -> Result<ConnectorOutput, ConnectorError> {
+        let op = input["op"].as_str().unwrap_or("echo").to_string();
+        let bound = ctx
+            .bound_connection("store")
+            .map(|c| json!({ "id": c.connection_id.as_str(), "revision": c.revision.get() }));
+        let reply = ctx
+            .call_dependency("store", &op, json!({ "name": input["name"] }))
+            .await?;
+        Ok(ConnectorOutput::new(
+            json!({ "via": reply.data, "bound": bound }),
+        ))
+    }
+
+    fn describe(&self) -> Option<ProviderDescription> {
+        Some(
+            ProviderDescription::new()
+                .with_operation("fetch", OperationDescription::new())
+                .with_dependency(
+                    "store",
+                    orion_extension_api::DependencyDescription::new()
+                        .on_provider(DRIVER)
+                        .with_operation("echo"),
+                ),
+        )
+    }
+}
+
 async fn node() -> (
     orion::runtime::state::AppState,
     axum::Router,
@@ -139,7 +190,8 @@ async fn node() -> (
     let mut config = orion::config::AppConfig::default();
     config.trace_storage.mode = orion::config::TraceStorageMode::Sync;
     let composition = orion::extensions::CompositionRoot::community()
-        .with_provider_backend(Arc::new(EchoProvider(lifecycle.clone())));
+        .with_provider_backend(Arc::new(EchoProvider(lifecycle.clone())))
+        .with_provider_backend(Arc::new(FetcherProvider));
     let state = common::test_state_with_composition(config, composition).await;
     let app = orion::server::build_router(state.clone());
     (state, app, lifecycle)
@@ -571,4 +623,198 @@ async fn a_nested_provider_failure_reaches_the_outer_caller() {
     assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
     assert_eq!(body["error"]["connector"]["provider_code"], "ECHO_REFUSED");
     assert!(!body.to_string().contains("db-7"), "{body}");
+}
+
+/// The digest connections over the composed `driver` name.
+async fn digest_of(app: &axum::Router, driver: &str) -> String {
+    let (_, caps) = send(app, "GET", "/api/v2/admin/runtime-capabilities", None).await;
+    caps["provider_backends"]
+        .as_array()
+        .and_then(|b| b.iter().find(|b| b["driver_id"] == driver))
+        .and_then(|b| b["package_digest"].as_str())
+        .unwrap_or_else(|| unreachable!("{driver} is composed: {caps}"))
+        .to_string()
+}
+
+/// Store `revision` of `connection` over `driver` with `bindings`.
+async fn store_revision(
+    app: &axum::Router,
+    connection: &str,
+    revision: u64,
+    driver: &str,
+    public_config: Value,
+    bindings: Value,
+) -> (StatusCode, Value) {
+    let digest = digest_of(app, driver).await;
+    send(
+        app,
+        "POST",
+        &format!("/api/v2/admin/connections/{connection}/revisions"),
+        Some(json!({
+            "revision": revision,
+            "provider_digest": digest,
+            "public_config": public_config,
+            "secret_locators": {},
+            "bindings": bindings
+        })),
+    )
+    .await
+}
+
+fn refused_at(body: &Value, path: &str, code: &str) -> bool {
+    body["error"]["details"]
+        .as_array()
+        .is_some_and(|d| d.iter().any(|e| e["path"] == path && e["code"] == code))
+}
+
+/// A Rust provider's declared dependencies are what a connection over it
+/// binds, judged at upload as a workflow package's are: every required alias
+/// bound, no other alias, never itself, and a target on the provider the
+/// dependency names that declares no dependencies of its own.
+#[tokio::test]
+async fn a_rust_binding_must_match_the_declared_aliases_and_provider() {
+    let (_state, app, _lifecycle) = node().await;
+    let (status, body) = store_revision(
+        &app,
+        "greeter",
+        1,
+        DRIVER,
+        json!({ "greeting": "hi" }),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let (status, body) = store_revision(&app, "fetch", 1, FETCHER, json!({}), json!({})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(refused_at(&body, "bindings.store", "REQUIRED"), "{body}");
+
+    let (_, body) = store_revision(
+        &app,
+        "fetch",
+        1,
+        FETCHER,
+        json!({}),
+        json!({ "store": "greeter", "extra": "greeter" }),
+    )
+    .await;
+    assert!(
+        refused_at(&body, "bindings.extra", "UNKNOWN_FIELD"),
+        "{body}"
+    );
+
+    let (_, body) = store_revision(
+        &app,
+        "fetch",
+        1,
+        FETCHER,
+        json!({}),
+        json!({ "store": "fetch" }),
+    )
+    .await;
+    assert!(refused_at(&body, "bindings.store", "INVALID"), "{body}");
+
+    // A connection that is itself a fetcher: the wrong provider, and one
+    // that would chain.
+    let (status, body) = store_revision(
+        &app,
+        "fetch-a",
+        1,
+        FETCHER,
+        json!({}),
+        json!({ "store": "greeter" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (_, body) = store_revision(
+        &app,
+        "fetch",
+        1,
+        FETCHER,
+        json!({}),
+        json!({ "store": "fetch-a" }),
+    )
+    .await;
+    assert!(refused_at(&body, "bindings.store", "INVALID"), "{body}");
+
+    // A provider that declares no dependencies binds none.
+    let (_, body) = store_revision(
+        &app,
+        "greeter",
+        2,
+        DRIVER,
+        json!({ "greeting": "hi" }),
+        json!({ "store": "greeter" }),
+    )
+    .await;
+    assert!(refused_at(&body, "bindings", "INVALID"), "{body}");
+
+    let (status, body) = store_revision(
+        &app,
+        "fetch",
+        1,
+        FETCHER,
+        json!({}),
+        json!({ "store": "greeter" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["connection"]["bindings"]["store"], "greeter", "{body}");
+}
+
+/// The binding's target is pinned by the deployment: a member that binds a
+/// connection it does not require is refused when the deployment is built.
+#[tokio::test]
+async fn a_bound_target_must_be_required_by_the_deployment() {
+    let (_state, app, _lifecycle) = node().await;
+    let (_, greeter) = store_revision(
+        &app,
+        "greeter",
+        1,
+        DRIVER,
+        json!({ "greeting": "hi" }),
+        json!({}),
+    )
+    .await;
+    let (_, fetch) = store_revision(
+        &app,
+        "fetch",
+        1,
+        FETCHER,
+        json!({}),
+        json!({ "store": "greeter" }),
+    )
+    .await;
+    let digest = |b: &Value| {
+        b["connection"]["configuration_digest"]
+            .as_str()
+            .expect("a digest")
+            .to_string()
+    };
+    let (base, members) = deploy::merged(
+        &app,
+        vec![
+            deploy::Upsert {
+                kind: "connection",
+                id: "greeter".into(),
+                digest: digest(&greeter),
+                revision: Some(1),
+                requires: Vec::new(),
+            },
+            deploy::Upsert {
+                kind: "connection",
+                id: "fetch".into(),
+                digest: digest(&fetch),
+                revision: Some(1),
+                requires: Vec::new(),
+            },
+        ],
+    )
+    .await;
+    let (status, body) = deploy::apply(&app, base, members).await;
+    assert!(status.is_client_error(), "{status}: {body}");
+    assert!(
+        body.to_string().contains("does not require"),
+        "the refusal names the missing requirement: {body}"
+    );
 }

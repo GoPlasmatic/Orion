@@ -370,9 +370,10 @@ pub struct ConnectionRevisionResponse {
     pub public_config: Value,
     /// Config path → secret reference (`env://`, `vault://`, …).
     pub secret_locators: BTreeMap<String, String>,
-    /// Over a `workflow` provider package: the connection each of the
-    /// package's dependency aliases calls (`alias -> connection_id`). Empty
-    /// for any other provider.
+    /// Over a provider that declares dependencies (a `workflow` provider
+    /// package, or a composed `rust` provider whose `describe()` declares
+    /// them): the connection each dependency alias calls
+    /// (`alias -> connection_id`). Empty for any other provider.
     pub bindings: BTreeMap<String, String>,
     /// The digest over the public settings, the locators and the bindings:
     /// what a manifest member for this revision names as its
@@ -401,12 +402,14 @@ pub struct CreateConnectionRevisionRequest {
     /// used. Absent means none.
     #[serde(default)]
     pub secret_locators: BTreeMap<String, String>,
-    /// Over a `workflow` provider package: which connection each of the
-    /// package's declared dependency aliases calls (`alias -> connection_id`).
-    /// Every alias must be bound, and each target must be a stored
-    /// connection; a deployment member for this connection must require each
-    /// bound connection. Absent means none, as it must be for any other
-    /// provider.
+    /// Over a provider that declares dependencies (a `workflow` provider
+    /// package, or a composed `rust` provider whose `describe()` declares
+    /// them): which connection each dependency alias calls
+    /// (`alias -> connection_id`). Every required alias must be bound, and
+    /// each target must be a stored connection over a provider that declares
+    /// no dependencies of its own; a deployment member for this connection
+    /// must require each bound connection. Absent means none, as it must be
+    /// for any other provider.
     #[serde(default)]
     pub bindings: BTreeMap<String, String>,
 }

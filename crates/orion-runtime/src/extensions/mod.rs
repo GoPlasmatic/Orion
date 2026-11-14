@@ -320,6 +320,14 @@ impl CompositionBuilder {
             described
                 .compile(backend.as_ref())
                 .map_err(CompositionError::InvalidProviderSchema)?;
+            // A Rust provider's declared dependencies are what a connection
+            // over it binds: the deployment store judges bindings by them.
+            if backend.kind() == ImplementationKind::Rust
+                && let Some(description) = backend.describe()
+            {
+                deployments
+                    .register_composed_dependencies(backend.driver_id(), description.dependencies);
+            }
         }
         pools.extend(setup_pools);
         let pools = ResourcePoolRegistry::new(pools).map_err(CompositionError::DuplicatePool)?;

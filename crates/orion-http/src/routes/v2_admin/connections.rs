@@ -148,7 +148,7 @@ pub(crate) async fn get_connection_revision(
     path = "/api/v2/admin/connections/{id}/revisions",
     tag = "Connections",
     summary = "Create an immutable connection revision",
-    description = "Refuses a raw secret in public_config and a malformed secret locator, then judges the configuration as the node will read it — public_config with each secret reference at its locator path, the references unresolved. Over a built-in driver it is typed and checked as the connector it serves (`http`, `db` or `cache`), exactly as `orion-cli compile` checks it; over an uploaded provider package it must satisfy the package's declared `configuration_schema`. Over a `workflow` provider package, `bindings` must bind each dependency alias the package declares to a stored connection over a built-in or rust provider (the one the dependency names, when it names one), and nothing else; a deployment member for the connection must then require each bound connection. A refusal names each problem by field in `details`. Then persists an immutable, content-addressed connection revision: the same revision with the same content answers it again, with different content it is a conflict.",
+    description = "Refuses a raw secret in public_config and a malformed secret locator, then judges the configuration as the node will read it — public_config with each secret reference at its locator path, the references unresolved. Over a built-in driver it is typed and checked as the connector it serves (`http`, `db` or `cache`), exactly as `orion-cli compile` checks it; over an uploaded provider package it must satisfy the package's declared `configuration_schema`. Over a provider that declares dependencies (a `workflow` provider package, or a composed `rust` provider whose description declares them), `bindings` must bind each required dependency alias to a stored connection over a provider that declares no dependencies of its own (the one the dependency names, when it names one), and nothing else; a deployment member for the connection must then require each bound connection. A composed `rust` provider also sees the bindings in its own `validate_connection`. A refusal names each problem by field in `details`. Then persists an immutable, content-addressed connection revision: the same revision with the same content answers it again, with different content it is a conflict.",
     params(("id" = String, Path, description = "Connection identifier")),
     request_body = CreateConnectionRevisionRequest,
     responses(
@@ -258,8 +258,8 @@ fn config_problems(state: &AppState, req: &CreateConnectionRevisionRequest) -> V
         // Secret locators are unresolved here: the provider sees each as the
         // reference text it names, which is what its shape checks need and
         // never a secret.
-        return match backend.validate_connection(&crate::extensions::ValidateContext::new(&config))
-        {
+        let ctx = crate::extensions::ValidateContext::new(&config).with_bindings(&req.bindings);
+        return match backend.validate_connection(&ctx) {
             Ok(()) => Vec::new(),
             Err(refused) => {
                 let field = refused
@@ -276,8 +276,14 @@ fn config_problems(state: &AppState, req: &CreateConnectionRevisionRequest) -> V
                             .join(".")
                     })
                     .unwrap_or_default();
+                // A pointer into `bindings` names the request field itself.
+                let path = if field == "bindings" || field.starts_with("bindings.") {
+                    field
+                } else {
+                    rooted(&field)
+                };
                 vec![FieldError::new(
-                    rooted(&field),
+                    path,
                     field_codes::INVALID,
                     format!("{driver} refused the configuration: {}", refused.message),
                 )]

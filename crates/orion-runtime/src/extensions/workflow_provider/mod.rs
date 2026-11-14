@@ -47,7 +47,7 @@ mod tests;
 mod validation;
 
 pub use execution::{DependencyCall, DependencyCallConfig, WorkflowProviderBackend};
-pub use validation::{binding_problems, manifest_dependencies};
+pub use validation::{binding_problems, manifest_dependencies, provider_dependencies};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -111,6 +111,10 @@ pub struct PackageDependency {
     /// The provider id the bound connection must run on, when declared.
     pub provider_id: Option<String>,
     pub operations: BTreeSet<String>,
+    /// Whether a connection may leave the alias unbound. A workflow package's
+    /// dependencies are all required; a Rust provider may declare one
+    /// optional.
+    pub optional: bool,
 }
 
 /// An operation's entry workflow: the file it came from and the document,
@@ -150,6 +154,7 @@ pub fn declared_dependencies(manifest: &Value) -> BTreeMap<String, PackageDepend
                         .filter_map(Value::as_str)
                         .map(str::to_string)
                         .collect(),
+                    optional: false,
                 },
             ))
         })

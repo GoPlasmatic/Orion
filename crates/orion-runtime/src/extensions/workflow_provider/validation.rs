@@ -410,12 +410,49 @@ fn secrets_in(value: &Value, path: &str, found: &mut dyn FnMut(&str)) {
     }
 }
 
-/// The problems with `row`'s `bindings` as a connection over the package
-/// `provider_digest` names, for its revision create: every declared alias
+/// The provider `provider_digest` names and the dependencies it declares, by
+/// alias: a workflow package's from its manifest, a composed Direct Rust
+/// driver's from its `describe()` (registered on the store at boot). `None`
+/// for any other provider (a built-in driver, an uploaded non-workflow
+/// package, or none at all), which declares none.
+pub fn provider_dependencies(
+    store: &ImmutableDeploymentStore,
+    provider_digest: &str,
+) -> Option<(String, BTreeMap<String, PackageDependency>)> {
+    if let Some(package) = store
+        .get_package(provider_digest)
+        .filter(|p| p.implementation == ImplementationKind::Workflow)
+    {
+        return Some((
+            package.provider_id.to_string(),
+            declared_dependencies(&package.manifest_json),
+        ));
+    }
+    let driver = store.composed_rust_driver(provider_digest)?;
+    let dependencies = store
+        .composed_dependencies(provider_digest)
+        .into_iter()
+        .map(|(alias, dep)| {
+            (
+                alias.clone(),
+                PackageDependency {
+                    alias,
+                    provider_id: dep.provider,
+                    operations: dep.operations,
+                    optional: dep.optional,
+                },
+            )
+        })
+        .collect();
+    Some((driver.to_string(), dependencies))
+}
+
+/// The problems with `row`'s `bindings` as a connection over the provider
+/// `provider_digest` names, for its revision create: every required alias
 /// bound, nothing else bound, and each target a stored connection over a
-/// provider other than a workflow package (a dependency's own dependencies
-/// are not carried, so a package cannot call another), running on the
-/// provider the dependency names when it names one.
+/// provider that declares no dependencies of its own (they are not carried,
+/// so dependencies never chain), running on the provider the dependency names
+/// when it names one.
 pub fn binding_problems(
     store: &ImmutableDeploymentStore,
     connection_id: &str,
@@ -424,29 +461,27 @@ pub fn binding_problems(
 ) -> Vec<PackageProblem> {
     use orion_api::error::field_codes::{INVALID, REQUIRED, UNKNOWN_FIELD};
 
-    let package = store
-        .get_package(provider_digest)
-        .filter(|p| p.implementation == ImplementationKind::Workflow);
-    let Some(package) = package else {
+    let declared = provider_dependencies(store, provider_digest)
+        .filter(|(_, dependencies)| !dependencies.is_empty());
+    let Some((provider_id, dependencies)) = declared else {
         if bindings.is_empty() {
             return Vec::new();
         }
         return vec![PackageProblem::new(
             "bindings",
             INVALID,
-            "only a connection over a workflow provider package binds dependencies",
+            "this connection's provider declares no dependencies, so it binds none",
         )];
     };
-    let dependencies = declared_dependencies(&package.manifest_json);
     let mut problems = Vec::new();
-    for alias in dependencies.keys() {
-        if !bindings.contains_key(alias) {
+    for (alias, dependency) in &dependencies {
+        if !dependency.optional && !bindings.contains_key(alias) {
             problems.push(PackageProblem::new(
                 format!("bindings.{alias}"),
                 REQUIRED,
                 format!(
-                    "provider '{}' declares the dependency '{alias}': bind it to a connection",
-                    package.provider_id
+                    "provider '{provider_id}' declares the dependency '{alias}': bind it to a \
+                     connection"
                 ),
             ));
         }
@@ -458,10 +493,7 @@ pub fn binding_problems(
             problems.push(PackageProblem::new(
                 at,
                 UNKNOWN_FIELD,
-                format!(
-                    "provider '{}' declares no dependency '{alias}'",
-                    package.provider_id
-                ),
+                format!("provider '{provider_id}' declares no dependency '{alias}'"),
             ));
             continue;
         };
@@ -498,6 +530,20 @@ fn target_problem(
     target: &ConnectionRevisionRow,
     dependency: &PackageDependency,
 ) -> Option<String> {
+    // A dependency's own dependencies are not carried into the call, so a
+    // target that declares any could never serve: refuse the chain here.
+    if let Some((provider_id, own)) = provider_dependencies(store, &target.provider_digest)
+        && !own.is_empty()
+        && store
+            .composed_rust_driver(&target.provider_digest)
+            .is_some()
+    {
+        return Some(format!(
+            "connection '{}' runs on '{provider_id}', which declares dependencies of its own: \
+             a dependency's dependencies are not carried, so they cannot chain",
+            target.connection_id
+        ));
+    }
     let provider_id = match super::super::foundation::builtin_driver(&target.provider_digest)
         .map(ToString::to_string)
         .or_else(|| {
@@ -532,14 +578,17 @@ fn target_problem(
     }
 }
 
-/// What a manifest's connections over workflow packages depend on, keyed by
+/// What a manifest's connections over providers that declare dependencies
+/// (workflow packages and composed Rust drivers) depend on, keyed by
 /// [`dependency_key`]: each binding's target at the revision the member
 /// requires, with the operations the dependency declares.
 ///
 /// # Errors
 ///
-/// A binding whose target the member does not require, or that names a
-/// connection the store does not hold at that revision.
+/// A binding whose target the member does not require, that names a
+/// connection the store does not hold at that revision, or whose alias the
+/// provider no longer declares (a Rust driver's binary changed since the
+/// connection was stored).
 pub fn manifest_dependencies(
     store: &ImmutableDeploymentStore,
     manifest: &super::super::deployment_store::CanonicalManifest,
@@ -557,14 +606,22 @@ pub fn manifest_dependencies(
         if row.bindings.is_empty() {
             continue;
         }
-        let Some(package) = store.get_package(&row.provider_digest) else {
+        let Some((provider_id, dependencies)) = provider_dependencies(store, &row.provider_digest)
+        else {
             return Err(format!(
-                "connection '{}' binds dependencies over provider '{}', which is not uploaded",
+                "connection '{}' binds dependencies over provider '{}', which is neither an \
+                 uploaded workflow package nor a composed Rust driver",
                 row.connection_id, row.provider_digest
             ));
         };
-        let dependencies = declared_dependencies(&package.manifest_json);
         for (alias, target) in &row.bindings {
+            let Some(dependency) = dependencies.get(alias) else {
+                return Err(format!(
+                    "connection '{}' binds '{alias}', which provider '{provider_id}' no longer \
+                     declares: store a revision without it",
+                    row.connection_id
+                ));
+            };
             let Some(required) = member
                 .requires
                 .iter()
@@ -590,10 +647,7 @@ pub fn manifest_dependencies(
                     target_row.provider_digest
                 ));
             };
-            let operations = dependencies
-                .get(alias)
-                .map(|d| d.operations.clone())
-                .unwrap_or_default();
+            let operations = dependency.operations.clone();
             out.insert(
                 dependency_key(&row.connection_id, alias),
                 (target_row.reference(provider), operations),
