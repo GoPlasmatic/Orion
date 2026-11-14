@@ -12,7 +12,9 @@
 //!    headers less the hop-by-hop and credential ones, the verified claims.
 //! 3. `serve_http`, with a [`RequestHost`] executing every run on the
 //!    generation this request loaded, then released.
-//! 4. The driver's answer, as an HTTP response.
+//! 4. The driver's answer, as an HTTP response. A streamed body keeps the
+//!    request's backpressure permit and idempotency claim until it ends, and
+//!    ends when the node drains (`http_hook::stream_body`).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -107,8 +109,11 @@ pub(super) async fn serve(state: &DataPlane, req: Hooked<'_>) -> Result<Response
         Err(refused) => return Ok(super::shape_guard_rejection(refused, &channel, &runtime)),
     };
     // Held until the answer is complete; the claim stands for the window.
-    let _permit = admission.backpressure_permit;
-    let _claim = admission.dedup_claim;
+    // Both move into a streamed body; a complete one releases them here.
+    let hold = crate::http_hook::StreamHold {
+        permit: admission.backpressure_permit,
+        claim: admission.dedup_claim,
+    };
 
     // 2. The driver's view of the request.
     let request_id = orion_common::request_context::request_id().unwrap_or_default();
@@ -182,14 +187,8 @@ pub(super) async fn serve(state: &DataPlane, req: Hooked<'_>) -> Result<Response
         .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
     let body = match answer.body {
         HttpBody::Full(bytes) => axum::body::Body::from(bytes),
-        HttpBody::Stream(_) => {
-            tracing::error!(
-                channel = %channel,
-                "A hooked channel's driver answered a streamed body, which this node does not serve"
-            );
-            return Err(OrionError::internal(
-                "the driver answered a streamed body, which this node does not serve",
-            ));
+        HttpBody::Stream(stream) => {
+            axum::body::Body::from_stream(crate::http_hook::stream_body(stream, host, hold))
         }
         _ => {
             return Err(OrionError::internal(

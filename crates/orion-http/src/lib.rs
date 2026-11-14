@@ -118,9 +118,12 @@ pub fn build_router(state: AppState) -> Router {
     // handler, so raising one does not raise the other (R16).
     .layer(DefaultBodyLimit::max(max_body_size));
 
-    // Response compression (gzip/br/zstd via tower-http). Disabled by default —
-    // for small JSON responses the DEFLATE cost outweighs any bandwidth saving.
-    // Operators serving large responses should opt in.
+    // Response compression (gzip via tower-http; the only codec enabled).
+    // Disabled by default — for small JSON responses the DEFLATE cost
+    // outweighs any bandwidth saving. Operators serving large responses should
+    // opt in. The default predicate never compresses `text/event-stream`, so a
+    // hooked channel's event stream is never buffered behind the encoder
+    // (`compression_never_buffers_an_event_stream`).
     let router = if state.config.server.compression.enabled {
         router.layer(CompressionLayer::new())
     } else {

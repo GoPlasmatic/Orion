@@ -25,11 +25,21 @@
 //! holds through them; a changed one (a new workflow, a new auth policy)
 //! answers `Unavailable` and the driver ends the stream, so the client
 //! reconnects under the channel as it now stands.
+//!
+//! **What a stream holds.** [`stream_body`] adapts a driver's [`BodyStream`]
+//! to the HTTP body. The request's backpressure permit (and its idempotency
+//! claim) move into it, so a stream counts against
+//! `backpressure.max_concurrent_per_node` until it ends or its client
+//! disconnects; so does the open-streams gauge. It ends on its own when the
+//! node drains ([`StreamDrain`]), whatever the driver does, so a rolling
+//! deploy never waits for the force timeout to cut a stream off.
 
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use orion_extension_api::{DispatchOutcome, HttpHookGuards, HttpHost, NodeInfo, ShutdownSignal};
+use orion_extension_api::{
+    BodyStream, DispatchOutcome, HttpHookGuards, HttpHost, NodeInfo, ShutdownSignal,
+};
 use serde_json::{Map, Value, json};
 
 use crate::channel::guards::{GuardContext, GuardRequest, Transport};
@@ -277,4 +287,51 @@ async fn run(host: &RequestHost, data: Value, mut trigger: Map<String, Value>) -
         .metrics
         .record_message_duration(&channel, execution.duration.as_secs_f64());
     crate::ingress::outcome_of(execution)
+}
+
+/// What a streamed body keeps until it ends: the guards' tokens the request
+/// was admitted with.
+#[derive(Default)]
+pub struct StreamHold {
+    /// The channel's concurrency permit: one stream, one slot.
+    pub permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    /// The request's idempotency claim, which stands for its window.
+    pub claim: Option<crate::channel::guards::DedupClaim>,
+}
+
+/// Everything a streamed body owns while it is open.
+struct OpenBody {
+    stream: Box<dyn BodyStream>,
+    drain: ShutdownSignal,
+    _hold: StreamHold,
+    _counted: crate::metrics::OpenStream,
+    /// The request's host: what the driver's later runs go through, and the
+    /// admitted config they are held to.
+    _host: Arc<RequestHost>,
+}
+
+/// A driver's streamed body as an HTTP body: its chunks, in order, until the
+/// driver ends it, the client goes away (the body is dropped), or the node
+/// drains. Whichever ends it releases the permit and counts the stream out.
+pub fn stream_body(
+    stream: Box<dyn BodyStream>,
+    host: Arc<RequestHost>,
+    hold: StreamHold,
+) -> impl futures::Stream<Item = Result<bytes::Bytes, std::convert::Infallible>> + Send + 'static {
+    let open = OpenBody {
+        stream,
+        drain: host.deps.drain.signal(),
+        _hold: hold,
+        _counted: crate::metrics::OpenStream::open(&host.admitted.channel.name),
+        _host: host,
+    };
+    futures::stream::unfold(open, |mut open| async move {
+        // The drain signal resolves once and the stream ends then, so it is
+        // never polled again after resolving.
+        let chunk = tokio::select! {
+            chunk = open.stream.next() => chunk,
+            () = &mut open.drain => None,
+        }?;
+        Some((Ok(bytes::Bytes::from(chunk)), open))
+    })
 }

@@ -7,8 +7,9 @@
 //!   1. before signal: /readyz is 200
 //!   2. on signal: /readyz flips to 503 immediately, but NEW connections are
 //!      still accepted and served during the grace window
-//!   3. after the grace window: the server stops accepting and the serve
-//!      future completes (in-flight requests finished)
+//!   3. after the grace window: the server stops accepting, open streams of
+//!      hooked channels are told to end, and the serve future completes
+//!      (in-flight requests finished)
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -23,6 +24,7 @@ async fn drain_withdraws_readiness_before_stopping_accept() {
     let state = common::test_state_with_config(config).await;
     let ready = state.ready.clone();
     assert!(ready.load(Ordering::Acquire));
+    let stream_drain = state.stream_drain.clone();
     let cfg = state.config.clone();
     let router = orion::server::build_router(state);
 
@@ -36,6 +38,7 @@ async fn drain_withdraws_readiness_before_stopping_accept() {
         cfg,
         ready.clone(),
         router,
+        stream_drain.clone(),
         async move {
             let _ = shutdown_rx.await;
         },
@@ -78,6 +81,10 @@ async fn drain_withdraws_readiness_before_stopping_accept() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     };
     assert_eq!(resp.status(), 503, "readyz must flip to 503 during drain");
+    assert!(
+        !stream_drain.is_fired(),
+        "open streams are not ended while the load balancer still routes here"
+    );
 
     // ...but new connections still get served during the grace window.
     let resp = client
@@ -93,6 +100,10 @@ async fn drain_withdraws_readiness_before_stopping_accept() {
         .expect("server must stop within the grace window + slack")
         .expect("join");
     result.expect("serve returns cleanly");
+    assert!(
+        stream_drain.is_fired(),
+        "open streams are ended once the grace window has passed"
+    );
 
     let connect_after = tokio::net::TcpStream::connect(addr).await;
     if let Ok(stream) = connect_after {

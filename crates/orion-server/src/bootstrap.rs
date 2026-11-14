@@ -576,6 +576,7 @@ pub async fn run(
                 ready.clone(),
                 router,
                 handle,
+                state.stream_drain.clone(),
                 crate::server::shutdown_signal(),
             )
             .await
@@ -587,6 +588,7 @@ pub async fn run(
                 config.clone(),
                 ready.clone(),
                 router,
+                state.stream_drain.clone(),
                 crate::server::shutdown_signal(),
             )
             .await

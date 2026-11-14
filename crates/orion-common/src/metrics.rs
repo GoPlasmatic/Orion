@@ -257,6 +257,51 @@ pub fn record_message_duration(channel: &str, duration_secs: f64) {
         .record(duration_secs);
 }
 
+/// One open streamed body of a hooked channel, counted while it lives.
+///
+/// `orion_channel_streams_open{channel}` goes up when it is opened and down
+/// when it drops, and `orion_channel_stream_duration_seconds{channel}`
+/// observes how long it was open. A guard rather than two calls, so a stream
+/// that ends any way at all (its driver finished, the client disconnected,
+/// the node drained) is always counted out.
+#[must_use = "the stream is counted only while the guard lives"]
+pub struct OpenStream {
+    channel: String,
+    opened: std::time::Instant,
+    /// Whether the open was counted, so the close matches it even if metrics
+    /// are toggled in between.
+    counted: bool,
+}
+
+impl OpenStream {
+    /// Count one stream of `channel` as open.
+    pub fn open(channel: &str) -> Self {
+        let counted = is_enabled();
+        if counted {
+            gauge!("orion_channel_streams_open", "channel" => channel.to_owned()).increment(1.0);
+        }
+        Self {
+            channel: channel.to_owned(),
+            opened: std::time::Instant::now(),
+            counted,
+        }
+    }
+}
+
+impl Drop for OpenStream {
+    fn drop(&mut self) {
+        if !self.counted {
+            return;
+        }
+        gauge!("orion_channel_streams_open", "channel" => self.channel.clone()).decrement(1.0);
+        histogram!(
+            "orion_channel_stream_duration_seconds",
+            "channel" => std::mem::take(&mut self.channel)
+        )
+        .record(self.opened.elapsed().as_secs_f64());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Gauge helpers
 // ---------------------------------------------------------------------------
@@ -1147,6 +1192,36 @@ pub fn render_local(f: impl FnOnce()) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The guard counts a stream in while it lives and out however it ends,
+    /// observing how long it was open.
+    #[test]
+    fn stream_metrics_track_open_streams() {
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        ::metrics::with_local_recorder(&recorder, || {
+            set_enabled(true);
+            let first = OpenStream::open("ticks");
+            let second = OpenStream::open("ticks");
+            let open = handle.render();
+            assert!(
+                open.contains(r#"orion_channel_streams_open{channel="ticks"} 2"#),
+                "{open}"
+            );
+            drop(first);
+            drop(second);
+            let closed = handle.render();
+            assert!(
+                closed.contains(r#"orion_channel_streams_open{channel="ticks"} 0"#),
+                "{closed}"
+            );
+            assert!(
+                closed
+                    .contains(r#"orion_channel_stream_duration_seconds_count{channel="ticks"} 2"#),
+                "{closed}"
+            );
+        });
+    }
 
     fn ensure_recorder() {
         let _ = PrometheusBuilder::new().install_recorder();

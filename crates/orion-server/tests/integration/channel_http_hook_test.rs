@@ -2,9 +2,11 @@
 //! channels' data-plane requests itself (a GraphQL-like protocol here), behind
 //! the request's guards, running the channel's workflow once per field.
 //!
-//! The driver is a stand-in for an Enterprise one. Its "document" is a plain
-//! text body of comma-separated fields; it runs the workflow once per field
-//! and answers a JSON array of what each run returned.
+//! The drivers are stand-ins for Enterprise ones. `gql`'s "document" is a
+//! plain text body of comma-separated fields; it runs the workflow once per
+//! field and answers a JSON array of what each run returned. `ticks` answers
+//! an event stream, one event per run, that ends when a run is refused or the
+//! node drains.
 
 use std::sync::{Arc, Mutex};
 
@@ -12,7 +14,7 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use orion_extension_api::{
-    ChannelBinding, ChannelDriver, ChannelDriverCapabilities, ChannelProtocolFields,
+    BodyStream, ChannelBinding, ChannelDriver, ChannelDriverCapabilities, ChannelProtocolFields,
     DispatchOutcome, DriverError, FieldError, HttpHookGuards, HttpHost, HttpRequest, HttpResponse,
 };
 use serde_json::{Value, json};
@@ -87,12 +89,76 @@ impl ChannelDriver for GqlDriver {
     }
 }
 
+const TICKS: &str = "ticks";
+
+/// An event-stream protocol: each event is one run of the channel's workflow.
+struct TicksDriver;
+
+#[async_trait]
+impl ChannelDriver for TicksDriver {
+    fn protocol_id(&self) -> &str {
+        TICKS
+    }
+
+    fn capabilities(&self) -> ChannelDriverCapabilities {
+        ChannelDriverCapabilities::none()
+            .sync()
+            .http_routes()
+            .http_hook(HttpHookGuards::none().backpressure())
+    }
+
+    fn validate_fields(&self, _fields: &ChannelProtocolFields<'_>) -> Vec<FieldError> {
+        Vec::new()
+    }
+
+    async fn serve_http(
+        &self,
+        _channel: &ChannelBinding,
+        _request: HttpRequest,
+        host: Arc<dyn HttpHost>,
+    ) -> Result<HttpResponse, DriverError> {
+        Ok(HttpResponse::stream(200, Box::new(Ticks { host, n: 0 }))
+            .with_header("content-type", "text/event-stream"))
+    }
+}
+
+struct Ticks {
+    host: Arc<dyn HttpHost>,
+    n: u64,
+}
+
+#[async_trait]
+impl BodyStream for Ticks {
+    async fn next(&mut self) -> Option<Vec<u8>> {
+        tokio::select! {
+            () = self.host.shutdown() => None,
+            () = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
+                self.n += 1;
+                match self.host.run(json!({ "n": self.n }), serde_json::Map::new()).await {
+                    DispatchOutcome::Completed { output } => {
+                        Some(format!("data: {output}\n\n").into_bytes())
+                    }
+                    // Redeployed (or refused): end the stream; the client
+                    // reconnects.
+                    _ => None,
+                }
+            }
+        }
+    }
+}
+
 async fn node() -> (orion::runtime::state::AppState, axum::Router, Arc<Seen>) {
+    node_with(orion::config::AppConfig::default()).await
+}
+
+async fn node_with(
+    mut config: orion::config::AppConfig,
+) -> (orion::runtime::state::AppState, axum::Router, Arc<Seen>) {
     let seen = Arc::new(Seen::default());
-    let mut config = orion::config::AppConfig::default();
     config.trace_storage.mode = orion::config::TraceStorageMode::Sync;
     let composition = orion::extensions::CompositionRoot::community()
-        .with_channel_driver(Arc::new(GqlDriver(seen.clone())));
+        .with_channel_driver(Arc::new(GqlDriver(seen.clone())))
+        .with_channel_driver(Arc::new(TicksDriver));
     let state = common::test_state_with_composition(config, composition).await;
     let app = orion::server::build_router(state.clone());
     (state, app, seen)
@@ -460,4 +526,240 @@ async fn channel_call_into_a_hooked_channel_is_refused() {
         trace.to_string().contains("served by its 'gql' driver"),
         "channel_call is refused: {trace}"
     );
+}
+
+// ---- Streams ----
+
+/// Each tick echoes its number and which workflow version ran it. One
+/// workflow id across versions, so a redeploy is a new revision of it.
+fn tick_workflow(version: &str) -> Value {
+    let mut workflow = common::workflow_with_tasks(
+        "Tick",
+        json!([{
+            "id": "tick",
+            "name": "One tick",
+            "function": {
+                "name": "map",
+                "input": {
+                    "mappings": [
+                        { "path": "data.tick", "logic": { "var": "data.n" } },
+                        { "path": "data.version", "logic": version }
+                    ]
+                }
+            }
+        }]),
+    );
+    workflow["workflow_id"] = json!("tick-wf");
+    workflow
+}
+
+async fn deploy_ticks(app: &axum::Router, version: &str, config: Value) {
+    let workflow_id = common::create_and_activate_workflow(app, tick_workflow(version)).await;
+    common::deploy_channel(
+        app,
+        json!({
+            "name": "ticks",
+            "channel_type": "sync",
+            "protocol": TICKS,
+            "methods": ["GET"],
+            "route_pattern": "/ticks",
+            "workflow_id": workflow_id,
+            "config": config,
+        }),
+    )
+    .await;
+}
+
+fn open_ticks() -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri("/api/v2/data/ticks")
+        .header("accept-encoding", "gzip")
+        .body(Body::empty())
+        .expect("request")
+}
+
+type Events = axum::body::BodyDataStream;
+
+/// The next event, or `None` when the stream ended.
+async fn next_event(events: &mut Events) -> Option<Value> {
+    use futures::StreamExt;
+    let chunk = tokio::time::timeout(std::time::Duration::from_secs(10), events.next())
+        .await
+        .expect("the stream yields or ends within the bound")?
+        .expect("a body chunk");
+    let text = std::str::from_utf8(&chunk).expect("UTF-8");
+    let data = text
+        .strip_prefix("data: ")
+        .and_then(|rest| rest.strip_suffix("\n\n"))
+        .unwrap_or_else(|| unreachable!("an event per chunk: {text:?}"));
+    Some(serde_json::from_str(data).expect("JSON event"))
+}
+
+async fn open_stream(app: &axum::Router) -> Events {
+    let response = app.clone().oneshot(open_ticks()).await.expect("answers");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    response.into_body().into_data_stream()
+}
+
+#[tokio::test]
+async fn a_stream_runs_its_workflow_once_per_event() {
+    let (_state, app, _seen) = node().await;
+    deploy_ticks(&app, "v1", json!({})).await;
+    let mut events = open_stream(&app).await;
+    for expected in 1..=3 {
+        let event = next_event(&mut events).await.expect("an event");
+        assert_eq!(event["tick"], expected, "{event}");
+        assert_eq!(event["version"], "v1", "{event}");
+    }
+}
+
+#[tokio::test]
+async fn a_stream_holds_its_backpressure_permit() {
+    let (_state, app, _seen) = node().await;
+    deploy_ticks(
+        &app,
+        "v1",
+        json!({ "backpressure": { "max_concurrent_per_node": 1 } }),
+    )
+    .await;
+    let mut first = open_stream(&app).await;
+    next_event(&mut first)
+        .await
+        .expect("the first stream is open");
+
+    let refused = app.clone().oneshot(open_ticks()).await.expect("answers");
+    assert_eq!(
+        refused.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "an open stream holds the channel's only slot"
+    );
+
+    // The client goes away: the slot is released with the body.
+    drop(first);
+    let mut second = open_stream(&app).await;
+    next_event(&mut second)
+        .await
+        .expect("the slot was released");
+}
+
+#[tokio::test]
+async fn a_stream_ends_on_drain() {
+    let (state, app, _seen) = node().await;
+    deploy_ticks(&app, "v1", json!({})).await;
+    let mut events = open_stream(&app).await;
+    next_event(&mut events).await.expect("open");
+    state.stream_drain.fire();
+    let mut ended = false;
+    for _ in 0..3 {
+        if next_event(&mut events).await.is_none() {
+            ended = true;
+            break;
+        }
+    }
+    assert!(ended, "the stream ends once the node drains");
+    // A stream opened after the drain ends at once.
+    let mut late = open_stream(&app).await;
+    assert!(next_event(&mut late).await.is_none());
+}
+
+#[tokio::test]
+async fn a_redeploy_changing_the_channel_ends_its_streams() {
+    let (_state, app, _seen) = node().await;
+    deploy_ticks(&app, "v1", json!({})).await;
+    let mut events = open_stream(&app).await;
+    next_event(&mut events).await.expect("open");
+
+    // The channel itself changes (a new timeout): its config is rebuilt, and
+    // the stream admitted under the old one ends.
+    deploy_ticks(&app, "v1", json!({ "timeout_ms": 5000 })).await;
+    let mut ended = false;
+    for _ in 0..50 {
+        if next_event(&mut events).await.is_none() {
+            ended = true;
+            break;
+        }
+    }
+    assert!(
+        ended,
+        "a redeployed channel ends the streams admitted under it"
+    );
+}
+
+#[tokio::test]
+async fn an_unchanged_channel_keeps_streaming_on_the_new_workflow() {
+    let (_state, app, _seen) = node().await;
+    deploy_ticks(&app, "v1", json!({})).await;
+    let mut events = open_stream(&app).await;
+    let first = next_event(&mut events).await.expect("open");
+    assert_eq!(first["version"], "v1");
+
+    // Only the workflow changes: the channel's config is carried over, so the
+    // stream keeps running, and its later runs execute the new workflow.
+    let workflow_id = common::create_and_activate_workflow(&app, tick_workflow("v2")).await;
+    assert_eq!(
+        workflow_id, "tick-wf",
+        "a new revision of the same workflow"
+    );
+    let mut saw_v2 = false;
+    for _ in 0..200 {
+        let event = next_event(&mut events)
+            .await
+            .expect("an unchanged channel keeps streaming");
+        if event["version"] == "v2" {
+            saw_v2 = true;
+            break;
+        }
+    }
+    assert!(saw_v2, "later runs execute the new workflow");
+}
+
+#[tokio::test]
+async fn compression_never_buffers_an_event_stream() {
+    let mut config = orion::config::AppConfig::default();
+    config.server.compression.enabled = true;
+    let (_state, app, _seen) = node_with(config).await;
+    deploy_ticks(&app, "v1", json!({})).await;
+    let response = app.clone().oneshot(open_ticks()).await.expect("answers");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers().get("content-encoding").is_none(),
+        "an event stream is not compressed: {:?}",
+        response.headers()
+    );
+    let mut events = response.into_body().into_data_stream();
+    next_event(&mut events)
+        .await
+        .expect("each event arrives as it is produced");
+}
+
+#[tokio::test]
+async fn runtime_capabilities_report_the_hook() {
+    let (_state, app, _seen) = node().await;
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v2/admin/runtime-capabilities",
+            None,
+        ))
+        .await
+        .expect("answers");
+    assert_eq!(response.status(), StatusCode::OK);
+    let caps = body_json(response).await;
+    let drivers = caps["channel_driver_info"].as_array().expect("drivers");
+    let gql = drivers
+        .iter()
+        .find(|d| d["protocol"] == PROTOCOL)
+        .expect("the gql driver");
+    assert_eq!(
+        gql["http_hook"],
+        json!({ "validation": true, "deduplication": true, "backpressure": false })
+    );
+    let rest = drivers
+        .iter()
+        .find(|d| d["protocol"] == "rest")
+        .expect("rest");
+    assert!(rest.get("http_hook").is_none(), "absent, not null: {rest}");
 }

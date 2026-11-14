@@ -74,6 +74,7 @@ pub async fn serve_tls(
     ready: Arc<AtomicBool>,
     router: axum::Router,
     handle: axum_server::Handle<std::net::SocketAddr>,
+    stream_drain: crate::http_hook::StreamDrain,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<(), OrionError> {
     let rustls_config =
@@ -101,6 +102,10 @@ pub async fn serve_tls(
             std::time::Duration::from_secs(drain_secs),
         )
         .await;
+        // The load balancer has stopped routing here: end every open stream
+        // now, so its client reconnects elsewhere rather than being cut off
+        // by the force timeout.
+        stream_drain.fire();
         let force =
             (force_timeout_secs > 0).then(|| std::time::Duration::from_secs(force_timeout_secs));
         shutdown_handle.graceful_shutdown(force);
@@ -176,6 +181,7 @@ pub async fn serve_plain_http(
     config: Arc<AppConfig>,
     ready: Arc<AtomicBool>,
     router: axum::Router,
+    stream_drain: crate::http_hook::StreamDrain,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<(), OrionError> {
     let drain_secs = config.server.shutdown_drain_secs;
@@ -195,6 +201,8 @@ pub async fn serve_plain_http(
     let (drained_tx, drained_rx) = tokio::sync::oneshot::channel::<()>();
     let gate = async move {
         super::drain::drain_gate(shutdown, ready, std::time::Duration::from_secs(drain_secs)).await;
+        // As on the TLS path: open streams end once routing has moved away.
+        stream_drain.fire();
         let _ = drained_tx.send(());
     };
     let serve = axum::serve(
