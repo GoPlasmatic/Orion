@@ -9,16 +9,6 @@ use serde_json::json;
 use crate::common;
 use orion::config::AppConfig;
 
-async fn memory_pool() -> orion::storage::DbPool {
-    orion::storage::init_pool(&orion::config::StorageConfig {
-        url: "sqlite::memory:".to_string(),
-        max_connections: 5,
-        ..Default::default()
-    })
-    .await
-    .unwrap()
-}
-
 /// Boot again over `pool`, as a restarted node would.
 async fn restart(
     config: AppConfig,
@@ -39,10 +29,13 @@ async fn restart(
 /// A node with no configured identity mints one; a configured one is kept.
 #[tokio::test]
 async fn the_storage_phase_resolves_the_nodes_identity_once() {
-    let minted =
-        orion::bootstrap::open_storage(Arc::new(AppConfig::default()), memory_pool().await, None)
-            .await
-            .unwrap();
+    let minted = orion::bootstrap::open_storage(
+        Arc::new(AppConfig::default()),
+        common::memory_pool().await,
+        None,
+    )
+    .await
+    .unwrap();
     assert!(!minted.config.cluster.instance_id.is_empty());
     assert_eq!(
         minted.cluster.instance_id,
@@ -51,7 +44,7 @@ async fn the_storage_phase_resolves_the_nodes_identity_once() {
 
     let mut config = AppConfig::default();
     config.cluster.instance_id = "node-7".into();
-    let kept = orion::bootstrap::open_storage(Arc::new(config), memory_pool().await, None)
+    let kept = orion::bootstrap::open_storage(Arc::new(config), common::memory_pool().await, None)
         .await
         .unwrap();
     assert_eq!(kept.config.cluster.instance_id, "node-7");
@@ -82,7 +75,7 @@ async fn a_registered_store_with_the_cluster_disabled_still_boots() {
 async fn community_does_not_boot_a_cluster() {
     let mut config = AppConfig::default();
     config.cluster.enabled = true;
-    let Err(refused) = restart(config, memory_pool().await).await else {
+    let Err(refused) = restart(config, common::memory_pool().await).await else {
         unreachable!("Community ships no cluster store");
     };
     assert!(

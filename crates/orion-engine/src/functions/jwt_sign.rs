@@ -20,7 +20,7 @@ use super::schema::{FieldKind, RetrySafety};
 use crate::kit::{self, KeyMaterial, read};
 use crate::{ErrorClass, HandlerError};
 
-/// This handler's name in metrics, profiles and error messages (F48).
+/// This handler's name in metrics, profiles and error messages.
 pub const NAME: &str = "jwt_sign";
 
 /// Ten years: past this, "expiring" is a fiction and the author should say
@@ -117,22 +117,20 @@ fn require_numeric_date(value: &Value, claim: &'static str) -> Result<(), Handle
 
 // -- dataflow-rs 4 --
 
-/// I185's Defect for a literal root: the token is a string, which no
-/// context root takes (break 21), so it is refused on every call.
+/// The Defect for a literal root: the token is a string, which no context
+/// root takes, so it is refused on every call.
 const ROOT_OUTPUT: &str = "`jwt_sign` writes a token string, and a context root takes only \
     an object (break 21): set `output` to a path below it, such as `data.token`";
 
-/// `jwt_sign`'s input on dataflow-rs 4, in its field table's order (I179),
-/// each field in the position 1.12 executed it in (I183). The algorithm and
-/// the key encoding are literals, read as written; the key is key
-/// material; `claims` and `audience` are documents of `var` holes, as 1.12
-/// folded them (`audience`'s table marks it a template, which 1.12 compiled
-/// and never evaluated); `expires_in`, `issuer`, `not_before` and `kid` are
-/// expressions, read by `kit::read`'s twins of 1.12's readers. A computed
-/// `output` is evaluated where 1.12 read `output`, where it never evaluated
-/// it and wrote at `data` (a change O11b's CHANGELOG names). A task missing
-/// `algorithm` or `key` is refused at load (I183), and its `check` is
-/// 1.12's authoring-time rules.
+/// `jwt_sign`'s input, in its field table's order, each field in the order it
+/// is read at execution. The algorithm and the key encoding are literals,
+/// read as written; the key is key material; `claims` and `audience` are
+/// documents of `var` holes, folded at execution (`audience`'s table marks it
+/// a template, and its holes are folded the same way); `expires_in`,
+/// `issuer`, `not_before` and `kid` are expressions, read by `kit::read`'s
+/// readers. A computed `output` is evaluated in its own place in that order,
+/// after the `kid` and before the claims. A task missing `algorithm` or `key`
+/// is refused at load, and its `check` applies the authoring-time rules.
 #[derive(Debug, FunctionConfig)]
 #[config(check = check)]
 pub struct JwtSignConfig {
@@ -163,11 +161,10 @@ pub struct JwtSignConfig {
     output: Output,
 }
 
-/// 1.12's authoring-time rules for `jwt_sign` ([`validate_static_input`], by
-/// which create, update, import, validate and `lint` refused a task), on the
-/// config at load: a supported algorithm, and an `expires_in` that is a
-/// duration, or an explicit `exp` claim, each refused at the field 1.12
-/// named, in its words.
+/// The authoring-time rules for `jwt_sign` ([`validate_static_input`], shared
+/// by create, update, import, validate and `lint`), applied to the config at
+/// load: a supported algorithm, and an `expires_in` that is a duration, or an
+/// explicit `exp` claim, each refused at its field, in its words.
 fn check(cfg: &JwtSignConfig, cx: &mut CompileCx<'_>) {
     let mut input = Map::new();
     input.insert(
@@ -183,8 +180,8 @@ fn check(cfg: &JwtSignConfig, cx: &mut CompileCx<'_>) {
     super::report_static(validate_static_input(&input), cx);
 }
 
-/// `jwt_sign` as a function: the token 1.12's handler minted, each field
-/// read in the same order, the key last.
+/// `jwt_sign` as a function: the token it mints, each field read in order,
+/// the key last.
 pub struct JwtSignFunction;
 
 impl OrionFunction for JwtSignFunction {
@@ -239,9 +236,9 @@ impl Function for JwtSignFunction {
         super::definition::spec::<Self>()
     }
 
-    /// I185: the token is never an object, so an `output` that is a literal
-    /// context root, the default `data` included, is a Defect at `output`.
-    /// A computed one is judged per call, when its path is known.
+    /// The token is never an object, so an `output` that is a literal context
+    /// root, the default `data` included, is a Defect at `output`. A computed
+    /// one is judged per call, when its path is known.
     fn prepare(&self, cfg: &mut JwtSignConfig, _p: &Prepare<'_>) -> Result<(), Vec<Issue>> {
         kit::root_output_defect(&cfg.output, ROOT_OUTPUT)
     }
@@ -274,17 +271,16 @@ fn duration_secs(
     read::duration_secs(value.as_deref(), name, NAME)
 }
 
-/// Where the token goes and the token minted for this call, read in 1.12's
-/// order: the literal prologue, the key's presence,
-/// the kid, the output, the claims and their conveniences, the dates, then
-/// the key's material.
+/// Where the token goes and the token minted for this call, read in order:
+/// the literal prologue, the key's presence, the kid, the output, the claims
+/// and their conveniences, the dates, then the key's material.
 async fn token<'c>(
     ctx: &Ctx<'_>,
     cfg: &'c JwtSignConfig,
 ) -> Result<(Cow<'c, dataflow_rs::Path>, String), HandlerError> {
     let algorithm = crate::jwt::parse_algorithm(&cfg.algorithm).map_err(|e| invalid(&e))?;
-    // Presence only: a `null` key, which 1.12 refused before reading
-    // anything the message can change (F58).
+    // Presence only: a `null` key is refused before anything the
+    // message can change is read.
     if matches!(&cfg.key, KeyMaterial::Expr(expr) if expr.raw().is_null()) {
         return Err(invalid(
             "requires 'key' ({\"secret\": \"name\"}, a secret reference like \
@@ -307,7 +303,7 @@ async fn token<'c>(
     if let Some(iss) = optional_str(ctx, &cfg.issuer, "issuer")? {
         claims.insert("iss".to_string(), Value::String(iss));
     }
-    // An authored `null` is no audience, as 1.12 skipped it.
+    // An authored `null` is no audience.
     if let Some(aud) = cfg.audience.as_ref().filter(|doc| !doc.raw().is_null()) {
         claims.insert("aud".to_string(), kit::rendered(ctx, aud)?);
     }

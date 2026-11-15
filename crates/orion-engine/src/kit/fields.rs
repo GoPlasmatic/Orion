@@ -1,4 +1,4 @@
-//! Orion's own config field types (I183): key material, a list of it, one
+//! Orion's own config field types: key material, a list of it, one
 //! value of it read as written, an expression a function evaluates over a
 //! root of its own, and a map that keeps its members in the order they were
 //! written.
@@ -20,13 +20,12 @@ use crate::connector::secrets::resolve_secret_string;
 use crate::functions::secret_ref::secret_name;
 use crate::{ErrorClass, HandlerError};
 
-/// A refusal of key material: the caller's to fix, as dataflow-rs 3's
-/// `Validation` was.
+/// A refusal of key material: the caller's to fix.
 fn refused(message: impl Into<String>) -> HandlerError {
     HandlerError::new(ErrorClass::CallerInput, message.into())
 }
 
-/// `v` as the JSON value dataflow-rs 3 handed its reader for it.
+/// `v` as its JSON value.
 fn json(v: &OwnedDataValue) -> Value {
     Value::from(v)
 }
@@ -66,8 +65,8 @@ impl std::fmt::Debug for KeyMaterial {
 }
 
 impl ConfigField for KeyMaterial {
-    /// `null` is an expression, refused at call as dataflow-rs 3 refused it
-    /// ("must resolve to a string, got null"), not an unset field.
+    /// `null` is an expression, refused at call ("must resolve to a string,
+    /// got null"), not an unset field.
     const NULL_IS_VALUE: bool = true;
 
     fn compile(raw: &Value, cx: &mut CompileCx<'_>) -> Option<Self> {
@@ -162,7 +161,7 @@ pub async fn key_material(
 /// `{"var": …}` is read from the message, and any other operator stays data.
 /// A `{"secret": …}` node, as the field or as an element, is one item read
 /// from the store; a string is a literal or an `env://` reference; a `null`
-/// element is dropped. Anything else is refused at call, as it was. What a
+/// element is dropped. Anything else is refused at call. What a
 /// hole yields is judged by the same rules at call: a string resolves as a
 /// reference, a `{"secret": …}` object reads the store.
 pub struct KeyMaterialList {
@@ -492,16 +491,15 @@ pub async fn key_material_list(
 }
 
 /// One key-material value read as written, with no expression around it:
-/// `jwt_verify`'s `keys[].key` (`secret_ref::key_material`'s rules, I183).
+/// `jwt_verify`'s `keys[].key` (`secret_ref::key_material`'s rules).
 ///
 /// A string is [`Self::Text`], a literal or an `env://` / `vault://`
 /// reference resolved at call. A `{"secret": "name"}` node, or
 /// `{"secret": ["name"]}`, is [`Self::Secret`], read from the engine's
-/// store, a miss and a non-string refused in 1.12's words. Anything else,
-/// `null` and an expression included, is [`Self::Other`], refused at call as
-/// 1.12 refused it: the value is never evaluated, so a `{"var": …}` cannot
-/// hand the call key material from the message, where [`KeyMaterial`]
-/// would evaluate it.
+/// store, a miss and a non-string refused. Anything else, `null` and an
+/// expression included, is [`Self::Other`], refused at call: the value is
+/// never evaluated, so a `{"var": …}` cannot hand the call key material from
+/// the message, where [`KeyMaterial`] would evaluate it.
 pub enum KeyRef {
     /// A literal, or a secret reference resolved at call.
     Text(String),
@@ -534,8 +532,8 @@ impl std::fmt::Debug for KeyRef {
 }
 
 impl ConfigField for KeyRef {
-    /// `null` is a value, refused at call ("is required") as 1.12 refused
-    /// it, not an unset field.
+    /// `null` is a value, refused at call ("is required"), not an unset
+    /// field.
     const NULL_IS_VALUE: bool = true;
 
     fn compile(raw: &Value, cx: &mut CompileCx<'_>) -> Option<Self> {
@@ -579,7 +577,7 @@ impl ConfigField for KeyRef {
 
 impl KeyRef {
     /// Whether the value is `null`, which its caller refuses in its own
-    /// words, as 1.12's did (`'keys[0].key' is required`).
+    /// words (`'keys[0].key' is required`).
     pub fn is_null(&self) -> bool {
         matches!(self, Self::Other(Value::Null))
     }
@@ -603,8 +601,8 @@ impl KeyRef {
 }
 
 /// An object field whose members are kept in the order the task wrote them,
-/// each value a `T`: `send_email.headers`, whose members 1.12 judged and
-/// rendered in that order (I183), where a `BTreeMap` sorts them. The input
+/// each value a `T`: `send_email.headers`, whose members are judged and
+/// rendered in that order, where a `BTreeMap` sorts them. The input
 /// object's order is the authored one, since Orion's graph builds
 /// `serde_json` with `preserve_order`.
 ///

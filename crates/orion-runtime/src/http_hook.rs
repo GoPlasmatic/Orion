@@ -41,11 +41,10 @@ use async_trait::async_trait;
 use orion_extension_api::{
     BodyStream, DispatchOutcome, HttpHookGuards, HttpHost, NodeInfo, ShutdownSignal,
 };
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
 use crate::channel::guards::{GuardContext, GuardRequest, Transport};
 use crate::channel::registry::ChannelRuntimeConfig;
-use crate::engine::TRIGGER_KEY;
 use crate::queue::TracePersistenceQueue;
 use crate::runtime::{RuntimeGeneration, RuntimeHandle};
 
@@ -190,17 +189,16 @@ async fn run(host: &RequestHost, data: Value, mut trigger: Map<String, Value>) -
 
     // The metadata every ingress builds: platform-owned keys only, with the
     // request's id on the trigger so its runs can be grouped.
-    trigger.insert("type".to_string(), Value::String(protocol.clone()));
     trigger.insert(
         "request_id".to_string(),
         Value::String(host.request_id.clone()),
     );
-    let mut metadata = json!({ "channel": channel, TRIGGER_KEY: Value::Object(trigger) });
-    crate::engine::clear_error_context(&mut metadata);
-    crate::engine::stamp_vars(&mut metadata, deps.vars.as_deref());
-    if let Some(claims) = host.claims.clone() {
-        metadata = crate::channel::guards::merge_auth_claims(metadata, claims);
-    }
+    let metadata =
+        crate::ingress::ingress_metadata(&channel, &protocol, trigger, deps.vars.as_deref());
+    let metadata = match host.claims.clone() {
+        Some(claims) => crate::channel::guards::merge_auth_claims(metadata, claims),
+        None => metadata,
+    };
 
     let mut context = GuardContext::new(data, metadata);
     let no_headers = |_: &str| -> Option<&str> { None };
@@ -229,58 +227,22 @@ async fn run(host: &RequestHost, data: Value, mut trigger: Map<String, Value>) -
         Err(refused) => return crate::ingress::refusal(&refused),
     };
 
-    let capture = runtime
-        .trace_storage
-        .task_details
-        .then_some(crate::engine::TraceCapture {
-            max_snapshot_bytes: deps.max_result_size_bytes,
-        });
-    let execution = crate::runtime::execute_admitted_on_generation(
-        &generation,
-        &channel,
-        context.data(),
-        context.metadata(),
-        crate::engine::ExecOpts {
-            cancel: None,
-            accountant: None,
-            timeout_ms: admission.timeout_ms,
-            capture,
-            // Every run of one request routes alike, so a document's fields
-            // never straddle two rollout versions.
-            routing_bucket: Some(crate::engine::utils::rollout_bucket_for_identity(Some(
-                &host.request_id,
-            ))),
-            profile: None,
-        },
-    )
-    .await;
-    runtime
-        .metrics
-        .record_message(&channel, execution.outcome.status_label());
-    runtime
-        .metrics
-        .record_message_duration(&channel, execution.duration.as_secs_f64());
-
-    // The generation is not needed past execution; drop it before the trace
-    // write, which may wait on the database.
-    let channel_id = runtime.channel.channel_id.clone();
-    let trace_storage = runtime.trace_storage;
-    drop(runtime);
-    drop(generation);
-
-    crate::queue::trace_record::record_run(
-        crate::queue::trace_record::RunTraceSink {
-            trace_storage,
-            trace_repo: &*deps.traces,
-            persistence_queue: &deps.persistence_queue,
-            max_result_size_bytes: deps.max_result_size_bytes,
-        },
-        &protocol,
-        &channel_id,
-        &channel,
-        Some(context.data()),
-        &execution,
-    )
+    // Every run of one request routes alike, so a document's fields never
+    // straddle two rollout versions.
+    let execution = crate::ingress::run_traced(crate::ingress::TracedRun {
+        generation,
+        channel_runtime: runtime,
+        channel: &channel,
+        protocol: &protocol,
+        timeout_ms: admission.timeout_ms,
+        routing_bucket: Some(crate::engine::utils::rollout_bucket_for_identity(Some(
+            &host.request_id,
+        ))),
+        context: &context,
+        trace_repo: &*deps.traces,
+        persistence_queue: &deps.persistence_queue,
+        max_result_size_bytes: deps.max_result_size_bytes,
+    })
     .await;
     crate::ingress::outcome_of(execution)
 }

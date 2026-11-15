@@ -14,7 +14,7 @@ use super::schema::{FieldKind, RetrySafety};
 use crate::kit::{self, KeyMaterialList, KeyRef, read};
 use crate::{ErrorClass, HandlerError};
 
-/// This handler's name in metrics, profiles and error messages (F48).
+/// This handler's name in metrics, profiles and error messages.
 pub const NAME: &str = "jwt_verify";
 
 /// A caller-fixable refusal, named: `jwt_verify`'s messages carry the
@@ -34,11 +34,10 @@ fn rejected(reason: crate::jwt::RejectReason) -> HandlerError {
 
 // -- dataflow-rs 4 --
 
-/// One static verification key, as 1.12's element reader read it: `kid` and
-/// `key_encoding` read only when they are strings, anything else read as
-/// unset, as 1.12 read it; `algorithm` a literal, required at load; `key` as
-/// written, a string or a `{"secret": …}` node ([`KeyRef`]), never an
-/// expression.
+/// One static verification key: `kid` and `key_encoding` read only when they
+/// are strings, anything else read as unset; `algorithm` a literal, required
+/// at load; `key` as written, a string or a `{"secret": …}` node ([`KeyRef`]),
+/// never an expression.
 #[derive(Debug, FunctionConfig)]
 pub struct JwtKey {
     /// The key id a token's header names it by, for rotation.
@@ -51,16 +50,14 @@ pub struct JwtKey {
     key_encoding: Option<Value>,
 }
 
-/// `jwt_verify`'s input on dataflow-rs 4, in its field table's order
-/// (I179), each field in the position 1.12 executed it in (I183). The
-/// algorithms, the keys, the JWKS URL and `require_exp` are literals, read
-/// as written; `token` and `leeway_secs` are expressions, read by
-/// `kit::read`'s twins of 1.12's readers; `issuer` and `audience` are key
-/// material lists, `string_or_vec`'s reading, K51 included. A computed
-/// `output` is evaluated where 1.12 read `output`, before the token and any
-/// JWKS fetch, where 1.12 never evaluated it and wrote at `data` (a change
-/// O11b's CHANGELOG names). A task missing `token` or `algorithms` is
-/// refused at load (I183), and its `check` is 1.12's authoring-time rules.
+/// `jwt_verify`'s input, in its field table's order, each field in the order
+/// it is read at execution. The algorithms, the keys, the JWKS URL and
+/// `require_exp` are literals, read as written; `token` and `leeway_secs` are
+/// expressions, read by `kit::read`'s readers; `issuer` and `audience` are key
+/// material lists, `string_or_vec`'s reading. A computed `output` is evaluated
+/// in its own place in that order, before the token and any JWKS fetch. A task
+/// missing `token` or `algorithms` is refused at load, and its `check` applies
+/// the authoring-time rules.
 #[derive(Debug, FunctionConfig)]
 #[config(check = check)]
 pub struct JwtVerifyConfig {
@@ -89,12 +86,11 @@ pub struct JwtVerifyConfig {
     output: Output,
 }
 
-/// 1.12's authoring-time rules for `jwt_verify` ([`validate_static_input`],
-/// by which create, update, import, validate and `lint` refused a task), on
-/// the config at load: a non-empty allowlist of supported algorithms, keys
-/// or a JWKS URL, and an HTTPS JWKS URL, each refused at the field 1.12
-/// named, in its words. Only whether `keys` is set is judged, as 1.12
-/// judged it.
+/// The authoring-time rules for `jwt_verify` ([`validate_static_input`],
+/// shared by create, update, import, validate and `lint`), applied to the
+/// config at load: a non-empty allowlist of supported algorithms, keys or a
+/// JWKS URL, and an HTTPS JWKS URL, each refused at its field, in its words.
+/// Only whether `keys` is set is judged.
 fn check(cfg: &JwtVerifyConfig, cx: &mut CompileCx<'_>) {
     let mut input = Map::new();
     input.insert(
@@ -110,8 +106,8 @@ fn check(cfg: &JwtVerifyConfig, cx: &mut CompileCx<'_>) {
     super::report_static(validate_static_input(&input), cx);
 }
 
-/// `jwt_verify` as a function: the verification 1.12's handler ran, each
-/// field read in the same order, a JWKS fetch inside the run's deadline.
+/// `jwt_verify` as a function: the verification it runs, each field read in
+/// order, a JWKS fetch inside the run's deadline.
 pub struct JwtVerifyFunction {
     /// The instance's JWKS cache, shared with the channel `jwt` auth mode.
     pub jwks: std::sync::Arc<crate::jwt::jwks::JwksCache>,
@@ -180,9 +176,9 @@ impl Function for JwtVerifyFunction {
 }
 
 impl JwtVerifyFunction {
-    /// Where the claims go and the verified claims, read in 1.12's order: the allowlist, the output, the
-    /// token, each static key, the JWKS URL, the issuer and audience, the
-    /// leeway, then the verification.
+    /// Where the claims go and the verified claims, read in order: the
+    /// allowlist, the output, the token, each static key, the JWKS URL, the
+    /// issuer and audience, the leeway, then the verification.
     async fn claims<'c>(
         &self,
         ctx: &Ctx<'_>,

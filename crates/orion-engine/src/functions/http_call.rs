@@ -2,8 +2,8 @@
 //! policy, its auth (managed OAuth2 included) and the circuit breaker.
 //!
 //! [`HttpCallFunction`] reads the task through Orion's own
-//! [`HttpCallConfig`] (break 10), resolving its fields in 1.12's order, and
-//! hands the request to one `send`.
+//! [`HttpCallConfig`], resolving its fields in order, and hands the request
+//! to one `send`.
 
 use super::definition::{Definition, FieldOverlay, NullOutput, OrionFunction};
 use std::collections::{BTreeMap, HashMap};
@@ -25,15 +25,15 @@ use crate::retry::{RetryPolicy, retry_with_attempts};
 use crate::{HandlerError, http_status};
 
 /// This function's name, for the free functions below — a reference to the
-/// one place it is written (F48), not a second spelling of it.
+/// one place it is written, not a second spelling of it.
 pub(crate) const NAME: &str = "http_call";
 
-/// The methods a task may name, in dataflow-rs 3's `HttpMethod::ALL` order:
-/// the vocabulary its `HttpMethod` deserialized, upper case only.
+/// The methods a task may name, in the order of the `HttpMethod` vocabulary
+/// it deserializes: upper case only.
 const METHODS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
-/// Whether a retry may resend `method` (RFC 9110): dataflow-rs 3's
-/// `HttpMethod::is_idempotent`.
+/// Whether a retry may resend `method` (RFC 9110): the idempotent methods
+/// of the `HttpMethod` vocabulary.
 fn is_idempotent(method: &str) -> bool {
     matches!(method, "GET" | "PUT" | "DELETE")
 }
@@ -65,12 +65,12 @@ async fn send(
 ) -> dataflow_rs::Result<Value> {
     let url = build_url(&http_config.url, req.path);
 
-    // F8: retrying a non-idempotent method resends the side effect. A POST
-    // that times out is indistinguishable from one the server applied, so
-    // re-sending it means double charges and double orders — out of the
-    // box, since max_retries defaults to 3. Idempotent methods retry as
-    // before; others need an explicit per-connector opt-in (the workflow
-    // can carry its own idempotency key in headers).
+    // Retrying a non-idempotent method resends the side effect. A POST that
+    // times out is indistinguishable from one the server applied, so
+    // re-sending it means double charges and double orders — out of the box,
+    // since max_retries defaults to 3. Idempotent methods retry; others need
+    // an explicit per-connector opt-in (the workflow can carry its own
+    // idempotency key in headers).
     let retryable_method = req.idempotent || http_config.retry_non_idempotent;
     let retry_config = &http_config.retry;
     let max_retries = if retryable_method {
@@ -81,16 +81,15 @@ async fn send(
     let policy = RetryPolicy {
         max_retries,
         retry_delay_ms: retry_config.retry_delay_ms,
-        // F47: the ceiling is the sum of the attempts' own budgets —
+        // The ceiling is the sum of the attempts' own budgets —
         // `timeout_ms × (max_retries + 1)`, backoff included, since the
         // deadline is measured from the first attempt. On shipped defaults
-        // (30 s × 4) that is 120 s. What it does is make the loop *bounded*:
-        // with attempts plus backoff unbounded, a 60 s channel timeout could
-        // sit under a ~127 s retry loop still burning a connection after the
-        // caller gave up. The run's own deadline is not
-        // this loop's: the engine races every host call against the run's
-        // deadline. Non-retryable methods get `max_retries = 0`, so their budget is
-        // exactly one `timeout_ms`.
+        // (30 s × 4) that is 120 s. It makes the loop *bounded*: with attempts
+        // plus backoff unbounded, a 60 s channel timeout could sit under a
+        // ~127 s retry loop still burning a connection after the caller gave
+        // up. The run's own deadline is not this loop's: the engine races
+        // every host call against the run's deadline. Non-retryable methods
+        // get `max_retries = 0`, so their budget is exactly one `timeout_ms`.
         deadline: Some(req.timeout.saturating_mul(max_retries.saturating_add(1))),
     };
 
@@ -101,12 +100,11 @@ async fn send(
         .await
         .map_err(http_common::oauth_error_to_dataflow)?;
 
-    // F6: the breaker is applied by the caller's shell, the same one every
-    // other egress path uses. `retry_with_attempts` rather than
-    // `retry_with_policy`: the loop (dataflow-rs 3.15's, vendored as
-    // `engine::retry`) logs each retry at `debug` only. Taking the count
-    // back means one warning naming how many attempts a call actually
-    // cost, and it says the same thing about a call that eventually
+    // The breaker is applied by the caller's shell, the same one every other
+    // egress path uses. `retry_with_attempts` rather than `retry_with_policy`:
+    // the loop (vendored as `engine::retry`) logs each retry at `debug` only.
+    // Taking the count back means one warning naming how many attempts a call
+    // actually cost, and it says the same thing about a call that eventually
     // *succeeded*.
     let (result, attempts) = retry_with_attempts(policy, "HTTP call", || {
         http_common::execute_request(
@@ -151,22 +149,19 @@ async fn send(
     result
 }
 
-/// `http_call`'s input on dataflow-rs 4: Orion's own config, in place of
-/// dataflow-rs 3's `HttpCallConfig` (break 10), each field read as 3.15's
-/// read it (I183).
+/// `http_call`'s input: Orion's own config, each field read in the order it
+/// is read at execution.
 ///
 /// The keys are the canonical ones. `path_logic`, `body_logic` and
-/// `response_path`, 3.15's serde aliases, are unknown keys like any other
-/// (I186): the loader reads a definition as stored. A computed `connector` is
-/// refused here, where 3.15 accepted one at load and refused it on every
-/// call. `method` is one of 3.15's five, upper
-/// case, as its `HttpMethod` read it; the config's check refuses anything
-/// else with that type's own message.
+/// `response_path` are unknown keys like any other: the loader reads a
+/// definition as stored. A computed `connector` is refused at load. `method`
+/// is one of the five methods the `HttpMethod` vocabulary reads, upper case;
+/// the config's check refuses anything else with that type's own message.
 ///
 /// The string parameters are read with [`read::plain_str`] and `timeout_ms`
 /// with [`read::template_u64`], `Template::resolve_string`'s and
 /// `resolve_u64`'s readings, and an optional parameter written as `null` is
-/// unset ([`read::present`]), as serde read an `Option<Template>`.
+/// unset ([`read::present`]), as serde reads an `Option<Template>`.
 #[derive(Debug, FunctionConfig)]
 #[config(check = HttpCallConfig::check)]
 pub struct HttpCallConfig {
@@ -200,8 +195,8 @@ pub struct HttpCallConfig {
 }
 
 impl HttpCallConfig {
-    /// `method` is one of [`METHODS`]: 3.15 refused anything else when it
-    /// deserialized the task, and so does this, with that refusal's text.
+    /// `method` is one of [`METHODS`]: anything else is refused at load, with
+    /// serde's text for an unknown variant.
     fn check(cfg: &Self, cx: &mut CompileCx<'_>) {
         if !METHODS.contains(&cfg.method.as_str()) {
             cx.at("method", |cx| {
@@ -211,7 +206,7 @@ impl HttpCallConfig {
     }
 }
 
-/// serde's refusal of an unknown `HttpMethod`, as 3.15 gave it.
+/// The message serde gives for an unknown `HttpMethod` variant.
 fn unknown_method(method: &str) -> String {
     let expected: Vec<String> = METHODS.iter().map(|m| format!("`{m}`")).collect();
     format!(
@@ -220,8 +215,8 @@ fn unknown_method(method: &str) -> String {
     )
 }
 
-/// `http_call` as a function: the request 1.12's handler sent, read in the
-/// same order.
+/// `http_call` as a function: the request it sends, each field read in
+/// order.
 pub struct HttpCallFunction {
     pub registry: Arc<ConnectorRegistry>,
     pub client: reqwest::Client,
@@ -299,8 +294,8 @@ impl Function for HttpCallFunction {
             .as_ref()
             .map(|out| Self::DEFINITION.output_path(ctx, out))
             .transpose()?;
-        // `parse`'s half, before the connector is looked up (F58): the
-        // formats, the timeout and the headers, in that order.
+        // `parse`'s half, before the connector is looked up: the formats,
+        // the timeout and the headers, in that order.
         let method =
             reqwest::Method::from_bytes(cfg.method.as_bytes()).unwrap_or(reqwest::Method::GET);
         let body_format = BodyFormat::parse(plain(ctx, &cfg.body_format)?.as_deref())
@@ -318,45 +313,49 @@ impl Function for HttpCallFunction {
             })
             .collect::<dataflow_rs::Result<HashMap<_, _>>>()?;
 
-        let mut response = None;
-        kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
-            let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
-            let http_config = kit::require_connector::<<Self as OrionFunction>::Connector>(
-                &config,
-                &cfg.connector,
-            )?;
-            kit::require_method_allowed(&http_config.operations, method.as_str(), &cfg.connector)?;
-            // The only message-dependent reads after the gate (F58).
-            let path = plain(ctx, &cfg.path)?;
-            let body = read::present(&cfg.body)
-                .map(|expr| ctx.eval(expr).map(|v| Value::from(&*v)))
-                .transpose()?;
-            response = Some(
-                send(
-                    &self.registry,
-                    &self.client,
-                    &cfg.connector,
-                    http_config,
-                    Request {
-                        method: &method,
-                        idempotent: is_idempotent(&cfg.method),
-                        path: path.as_deref(),
-                        headers: &headers,
-                        body: body.as_ref(),
-                        body_format,
-                        response_format,
-                        timeout,
-                    },
-                )
-                .await?,
-            );
-            Ok(Outcome::Ok)
-        })
+        let response = kit::with_connector::<<Self as OrionFunction>::Connector, _, _, _>(
+            NAME,
+            &self.registry,
+            &cfg.connector,
+            channel,
+            |conn| {
+                let ctx = &mut *ctx;
+                async move {
+                    kit::require_method_allowed(
+                        &conn.config().operations,
+                        method.as_str(),
+                        &cfg.connector,
+                    )?;
+                    // The only message-dependent reads after the gate.
+                    let path = plain(ctx, &cfg.path)?;
+                    let body = read::present(&cfg.body)
+                        .map(|expr| ctx.eval(expr).map(|v| Value::from(&*v)))
+                        .transpose()?;
+                    send(
+                        &self.registry,
+                        &self.client,
+                        &cfg.connector,
+                        conn.config(),
+                        Request {
+                            method: &method,
+                            idempotent: is_idempotent(&cfg.method),
+                            path: path.as_deref(),
+                            headers: &headers,
+                            body: body.as_ref(),
+                            body_format,
+                            response_format,
+                            timeout,
+                        },
+                    )
+                    .await
+                }
+            },
+        )
         .await?;
 
         // `output` is optional: leaving it unset discards the body.
-        if let (Some(path), Some(body)) = (&output, response) {
-            ctx.set(path, OwnedDataValue::from(body))?;
+        if let Some(path) = &output {
+            ctx.set(path, OwnedDataValue::from(response))?;
         }
         Ok(Outcome::Ok)
     }

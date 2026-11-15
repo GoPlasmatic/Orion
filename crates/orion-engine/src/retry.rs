@@ -1,20 +1,18 @@
 //! Retrying an operation that failed for a reason worth retrying.
 //!
-//! Vendored from dataflow-rs 3.15.0's `src/engine/retry.rs`
-//! (<https://github.com/GoPlasmatic/dataflow-rs>, Apache-2.0), whose loop
-//! `http_call` has run since dataflow-rs 3.7. dataflow-rs 4 ships no retry
-//! loop — whether a call is worth repeating is the host's policy, since only
-//! the host knows which calls are idempotent — so Orion keeps the loop here.
-//! The behaviour is 3.15.0's: the same three policy fields, the same doubling
-//! backoff under a 60s per-sleep ceiling, the same whole-loop deadline with a
-//! backoff that would cross it skipped rather than slept, and the same
+//! Vendored from dataflow-rs's `src/engine/retry.rs`
+//! (<https://github.com/GoPlasmatic/dataflow-rs>, Apache-2.0), the loop
+//! `http_call` runs. The engine ships no retry loop — whether a call is worth
+//! repeating is the host's policy, since only the host knows which calls are
+//! idempotent — so Orion keeps the loop here. The behaviour: three policy
+//! fields, a doubling backoff under a 60s per-sleep ceiling, a whole-loop
+//! deadline with a backoff that would cross it skipped rather than slept, and
 //! `tokio::time::Instant`, so a paused test clock stays coherent with the
 //! sleeps.
 //!
-//! Two changes from the original: the loop takes the engine's
-//! [`dataflow_rs::Error`] (its `is_retryable` is the one classification
-//! Orion has), and its debug lines go through `tracing`, Orion's logger,
-//! rather than `log`.
+//! The loop takes the engine's [`dataflow_rs::Error`] (its `is_retryable` is
+//! the one classification Orion has), and its debug lines go through
+//! `tracing`, Orion's logger.
 //!
 //! It is deliberately **not** engine-level automatic retry: the engine cannot
 //! know which handlers are idempotent — an SMTP send that times out after
@@ -154,7 +152,7 @@ where
 
 /// Full jitter: a uniform point in `[0, backoff]`.
 ///
-/// P-15: a pure doubling makes every in-flight call retry at the same
+/// A pure doubling makes every in-flight call retry at the same
 /// instants, so a recovering upstream is hit by a synchronized wave. Full
 /// jitter keeps the expectation and spreads the arrivals. A zero backoff stays
 /// zero.

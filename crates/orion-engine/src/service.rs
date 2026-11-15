@@ -42,7 +42,7 @@ fn circuit_open_message(connector: &str, channel: &str) -> String {
 }
 
 /// The caller-facing half of a [`kind::CONNECTOR_DETAIL`] refusal: the caller
-/// gets this, and the text naming internal topology (G3) is logged and kept
+/// gets this, and the text naming internal topology is logged and kept
 /// on the trace.
 const CONNECTOR_DETAIL_MESSAGE: &str = "Request validation failed";
 

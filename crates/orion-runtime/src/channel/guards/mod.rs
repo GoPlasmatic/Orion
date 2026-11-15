@@ -50,11 +50,11 @@
 //! deadline everywhere; it can only lengthen it where nothing else depends on
 //! it.
 //!
-//! N16: every `❌` cell is a decision, not an omission, and each is justified
-//! on [`Transport::guards`]. An omission is how a guard goes missing on one
-//! path — `channel_call` with no rate limit, or a channel timing out at its
-//! `timeout_ms` over HTTP and at the global `trace_queue.processing_timeout_ms`
-//! over `/async`.
+//! Every `❌` cell is a decision, not an omission, and each is justified on
+//! [`Transport::guards`]. An exclusion left implicit is how a guard goes
+//! missing on one path — `channel_call` with no rate limit, or a channel
+//! timing out at its `timeout_ms` over HTTP and at the global
+//! `trace_queue.processing_timeout_ms` over `/async`.
 //!
 //! A ✅ in the rate-limit row means *the same limiter is consulted*, not that
 //! the ingresses share one bucket. The bucket key defaults to whatever
@@ -76,8 +76,8 @@
 //! origin allow-list, `validation_logic`, backpressure).
 //!
 //! The split is by concept and not by size: each guard has exactly one caller
-//! — [`apply_guards`] — so the seam was already there, and someone changing
-//! the dedup policy should not have to scroll past rate limiting to find it.
+//! — [`apply_guards`] — and someone changing the dedup policy should not have
+//! to scroll past rate limiting to find it.
 //! The tests stay here because they test *this*: they drive `apply_guards`
 //! across the transport matrix, and most guards have no direct test at all,
 //! because a guard's contract is what the matrix does with it.
@@ -103,15 +103,15 @@ pub use response_cache::{CacheFlights, CacheStoreCtx};
 /// Refuse an object with more than one key anywhere inside a channel
 /// expression.
 ///
-/// N3/N4 refuse a channel whose guard config does not compile rather than
-/// serve it with a weaker control than the one configured, but a multi-key
+/// A channel whose guard config does not compile is refused rather than
+/// served with a weaker control than the one configured, but a multi-key
 /// object compiles. The serving engine is dataflow-rs's, so channel
 /// expressions speak the same dialect workflow expressions do — which is what
 /// lets them read `{"secret": …}` — and it runs in **templating mode**, where a
 /// multi-key object is a legal template emitting a structured object. A typo'd
 /// `{"==": [1, 1], "!=": [1, 2]}` would compile to a truthy object and
 /// `validate_input` would then admit everything, silently — precisely the
-/// outcome N4 exists to prevent.
+/// outcome that refusal exists to prevent.
 ///
 /// So the refusal is stated here rather than inherited from a compiler mode.
 /// Nothing is lost by it: every channel expression is a predicate or a key, and
@@ -138,8 +138,8 @@ pub(crate) fn refuse_multi_key_object(logic: &Value, field: &str) -> Result<(), 
 ///
 /// One helper so every expression a channel carries — `validation_logic`, both
 /// rate-limit `key_logic`s, the cache key and `auth.authorization_logic` —
-/// gets the same refusal. Missing it on one field is what let a typo'd
-/// authorization expression authorize every token (B-01).
+/// gets the same refusal. A field that bypassed it would let a typo'd
+/// authorization expression authorize every token.
 pub(crate) fn compile_guard_expr(
     engine: &ExprEngine,
     logic: &Value,
@@ -190,7 +190,7 @@ pub enum Transport {
 pub struct GuardRow {
     /// Authenticate the caller against the channel's `auth` config.
     pub auth: bool,
-    /// Reject an `Origin` header the channel does not list (N24: a
+    /// Reject an `Origin` header the channel does not list (a
     /// server-side allow-list, not CORS negotiation).
     pub origin_allow_list: bool,
     /// Per-channel token bucket / shared-store window.
@@ -460,7 +460,7 @@ pub struct GuardRequest<'a> {
     /// and the metadata, built once by the transport (see [`GuardContext`]).
     pub context: &'a mut GuardContext,
     /// The process's expression engine, which compiled the channel's
-    /// expressions and evaluates them (I188).
+    /// expressions and evaluates them.
     pub exprs: &'a ExprEngine,
     /// `Origin` header value, when the transport carries one.
     pub origin: Option<&'a str>,
@@ -470,7 +470,7 @@ pub struct GuardRequest<'a> {
     pub caller_identity: &'a str,
     /// Named header lookup (see [`HeaderLookup`]).
     pub header: HeaderLookup<'a, 'a>,
-    /// Failed-credential budget for `auth.mode = "api_key"` / `"hmac"` (S12).
+    /// Failed-credential budget for `auth.mode = "api_key"` / `"hmac"`.
     /// `None` for the transports that present no credential — an in-process
     /// `channel_call` authenticated at the edge, and a cron occurrence has no
     /// caller — so there is nothing to count and no client to count it
@@ -658,11 +658,11 @@ pub enum GuardVerdict {
 
 /// Apply the target channel's ingress guards for one transport.
 ///
-/// The single enforcement point for N16's matrix: which guards run is read
-/// from [`Transport::guards`], so adding an ingress is adding a row, not
-/// remembering four call sites. Only a transport that caches calls this
-/// directly; the other three go through [`admit`], which is this function
-/// with the unreachable [`GuardVerdict::CacheHit`] already resolved.
+/// The single enforcement point for the guard matrix: which guards run is read
+/// from [`Transport::guards`], so adding an ingress is adding a row. Only a
+/// transport that caches calls this directly; the other three go through
+/// [`admit`], which is this function with the unreachable
+/// [`GuardVerdict::CacheHit`] already resolved.
 ///
 /// Order is deliberate. The rate limit is first so a refusal costs the least
 /// work and so rejected requests (a disallowed origin, a failing predicate)
@@ -735,8 +735,8 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
     // one context both readers below evaluate against: `validation_logic` and
     // the response cache's `key_logic`. The cache key must read this view and
     // never the metadata before the merge — keyed on the subject before it, it
-    // read whatever the caller wrote at `metadata.auth` and stored one
-    // caller's body under another's key (#354). Only a channel with an
+    // would read whatever the caller wrote at `metadata.auth` and store one
+    // caller's body under another's key. Only a channel with an
     // expression to read the claims pays for the copy of the claims:
     // `validate_input` returns before looking without `validation_logic`, and
     // the cache key reads metadata beyond params and query only through
@@ -960,7 +960,7 @@ pub fn merge_auth_claims(
 /// `timeout_ms` when it has one, else the transport's default — clamped to
 /// `max_timeout_ms` where the transport has a ceiling.
 ///
-/// N16: one resolution for every path, so a channel never times out at its
+/// One resolution for every path, so a channel never times out at its
 /// configured value over HTTP and at the global
 /// `trace_queue.processing_timeout_ms` over `/async`. Both the guard chain
 /// and the async worker (which re-resolves at dequeue time, when the config
@@ -986,10 +986,10 @@ pub fn effective_timeout_ms(
 
 /// JSONLogic truthiness: false, null, 0, "", and [] are falsy; everything else is truthy.
 ///
-/// Read off the evaluated value as 1.12 read the JSON it became
+/// Read off the evaluated value through the JSON it becomes
 /// ([`result_json`](crate::engine::operators::result_json)): a number JSON
-/// cannot spell — an infinity or a NaN — was `null` there and is falsy here,
-/// and a datetime or a duration was an object and is truthy.
+/// cannot spell — an infinity or a NaN — is `null` and falsy, and a datetime
+/// or a duration is an object and truthy.
 pub(crate) fn is_truthy(val: &OwnedDataValue) -> bool {
     match val {
         OwnedDataValue::Null => false,

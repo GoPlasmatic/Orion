@@ -15,13 +15,12 @@ use crate::connector::{CacheConnectorConfig, ConnectorRegistry};
 use crate::kit::{self, read};
 use crate::{ErrorClass, HandlerError};
 
-/// This function's name, for the free functions below (F48).
+/// This function's name, for the free functions below.
 pub(crate) const NAME: &str = "cache_read";
 
-/// The refusal of a task naming both `key` and `keys`, or neither, in
-/// 1.12's words: `both` says which. dataflow-rs 4's config refuses both
-/// shapes at load, as 1.12's authoring did, so a call meets it only as a
-/// defensive fallback.
+/// The refusal of a task naming both `key` and `keys`, or neither: `both`
+/// says which. The config refuses both shapes at load, so a call meets it
+/// only as a defensive fallback.
 fn not_one_key_choice(name: &str, both: bool) -> HandlerError {
     HandlerError::new(
         ErrorClass::CallerInput,
@@ -48,7 +47,7 @@ async fn look_up(
     conn: &CacheConnectorConfig,
     lookup: &Lookup<'_>,
 ) -> Result<Value, HandlerError> {
-    // Workflow-purpose namespace (S19) — the mirror of `cache_write`, so a
+    // Workflow-purpose namespace — the mirror of `cache_write`, so a
     // workflow reads exactly what workflows wrote and never the dedup store
     // or response cache.
     let backend = pool
@@ -70,24 +69,23 @@ async fn look_up(
     }
 }
 
-/// I185's Defect: `keys` answers an array, which no context root takes
-/// (break 21), so an `output` that is one fails every call.
+/// The Defect for `keys`: it answers an array, which no context root takes,
+/// so an `output` that is one fails every call.
 const ROOT_OUTPUT: &str = "`cache_read` with `keys` writes an array of values, and a context \
     root takes only an object (break 21): set `output` to a path below it, such as \
     `data.values`";
 
 /// One key's value may be an object or not, so a literal root `output` is
-/// an Advisory: a miss or a non-object value fails the call (break 21).
+/// an Advisory: a miss or a non-object value fails the call.
 const ONE_AT_ROOT: &str = "`cache_read` writes one key's cached value at `output`, and a \
     context root takes only an object (break 21): a miss (`null`) or a non-object value fails \
     the call; set `output` to a path below it, such as `data.cached`";
 
-/// `cache_read`'s input on dataflow-rs 4, in its field table's order (I179).
-/// The connector is a literal, required at load (I183); `key` and `keys`
-/// are expressions, read by `kit::read`'s twins of `resolve_required_str`
-/// and `resolve_required_str_list` (I183), the bound of 1000 applied per
-/// call, as 1.12 applied it. Its `check` is 1.12's authoring-time rule,
-/// exactly one of `key` and `keys`.
+/// `cache_read`'s input, in its field table's order. The connector is a
+/// literal, required at load; `key` and `keys` are expressions, read by
+/// `kit::read`'s `resolve_required_str` and `resolve_required_str_list`, the
+/// bound of 1000 applied per call. Its `check` applies the authoring-time
+/// rule, exactly one of `key` and `keys`.
 #[derive(Debug, FunctionConfig)]
 #[config(check = check)]
 pub struct CacheReadConfig {
@@ -105,11 +103,11 @@ pub struct CacheReadConfig {
     output: Output,
 }
 
-/// 1.12's authoring-time rule for `cache_read` ([`validate_static_input`],
-/// by which create, update, import, validate and `lint` refused a task),
-/// on the config at load: exactly one of `key` and `keys`, refused at the
-/// field 1.12 named, in its words. Every call 1.12 made with either shape
-/// failed, so no task that ran is refused.
+/// The authoring-time rule for `cache_read` ([`validate_static_input`],
+/// shared by create, update, import, validate and `lint`), applied to the
+/// config at load: exactly one of `key` and `keys`, refused at its field, in
+/// its words. A task with either shape never ran successfully, so refusing it
+/// at load costs no working definition.
 fn check(cfg: &CacheReadConfig, cx: &mut CompileCx<'_>) {
     let mut input = Map::new();
     for (field, expr) in [("key", &cfg.key), ("keys", &cfg.keys)] {
@@ -120,8 +118,7 @@ fn check(cfg: &CacheReadConfig, cx: &mut CompileCx<'_>) {
     super::report_static(validate_static_input(&input), cx);
 }
 
-/// `cache_read` as a dataflow-rs 4 function: the lookup `CacheReadHandler`
-/// makes, read in the same order.
+/// `cache_read` as a function: the lookup it makes, read in order.
 pub struct CacheReadFunction {
     pub cache_pool: Arc<CachePool>,
     pub registry: Arc<ConnectorRegistry>,
@@ -169,10 +166,10 @@ impl Function for CacheReadFunction {
     }
 
     /// An `output` that is a literal context root, the default `data`
-    /// included: with `keys` set, I185's Defect at `output`, since the
-    /// array never fits; with one `key`, an Advisory there, since the value
-    /// may be an object, and a miss or anything else fails the call (break
-    /// 21). A computed output is judged per call.
+    /// included: with `keys` set, a Defect at `output`, since the array never
+    /// fits; with one `key`, an Advisory there, since the value may be an
+    /// object, and a miss or anything else fails the call. A computed output
+    /// is judged per call.
     fn prepare(&self, cfg: &mut CacheReadConfig, _p: &Prepare<'_>) -> Result<(), Vec<Issue>> {
         match (&cfg.key, &cfg.keys) {
             (_, Some(_)) => kit::root_output_defect(&cfg.output, ROOT_OUTPUT),
@@ -200,22 +197,19 @@ impl Function for CacheReadFunction {
                 return Err(not_one_key_choice(NAME, key.is_some()).into());
             }
         };
-        let mut value = None;
-        kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
-            let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
-            let conn = kit::require_connector::<<Self as OrionFunction>::Connector>(
-                &config,
-                &cfg.connector,
-            )?;
-            // F22e: a cache connector can be made write-only in its config.
-            kit::require_op(conn.operations.read, "read", &cfg.connector)?;
-            value = Some(look_up(&self.cache_pool, &cfg.connector, conn, &lookup).await?);
-            Ok(Outcome::Ok)
-        })
+        let value = kit::with_connector::<<Self as OrionFunction>::Connector, _, _, _>(
+            NAME,
+            &self.registry,
+            &cfg.connector,
+            channel,
+            |conn| async move {
+                // A cache connector can be made write-only in its config.
+                kit::require_op(conn.config().operations.read, "read", &cfg.connector)?;
+                Ok(look_up(&self.cache_pool, &cfg.connector, conn.config(), &lookup).await?)
+            },
+        )
         .await?;
-        if let Some(value) = value {
-            ctx.set(&output, OwnedDataValue::from(value))?;
-        }
+        ctx.set(&output, OwnedDataValue::from(value))?;
         Ok(Outcome::Ok)
     }
 }

@@ -3,17 +3,16 @@
 //!
 //! A reload rebuilds two things — the channel snapshot (routes, guards, rate
 //! limiters, compiled validation) and the engine (the workflows themselves).
-//! Published as two `ArcSwap`s, each store would be atomic but the *pair*
-//! would not: between them the node serves the new channel estate against the
-//! old engine, and no store order removes the mismatch, it only picks which
-//! one you get:
+//! Two separate stores would each be atomic but the *pair* would not: between
+//! them the node would serve the new channel estate against the old engine,
+//! and no store order removes the mismatch, it only picks which one you get:
 //!
-//! - a just-activated channel is routable while the old engine has no
-//!   workflow for it, so `process_message_for_channel` matches zero workflows,
-//!   returns `Ok`, and the caller is handed back its own input with a `200`
-//!   — a success that did nothing;
-//! - a channel repointed to a different `workflow_id` is admitted under its
-//!   new guards and executed by its old workflow.
+//! - a just-activated channel would be routable while the old engine has no
+//!   workflow for it, so `process_message_for_channel` would match zero
+//!   workflows, return `Ok`, and hand the caller back its own input with a
+//!   `200` — a success that did nothing;
+//! - a channel repointed to a different `workflow_id` would be admitted under
+//!   its new guards and executed by its old workflow.
 //!
 //! So: one value, one store. A request loads a [`RuntimeGeneration`] once and
 //! holds it for its whole life, so every answer it gives comes from a single
@@ -48,8 +47,8 @@ tokio::task_local! {
 /// from.
 ///
 /// Cheap to hold: the channels of an unchanged row are carried over by `Arc`
-/// between generations (N6/N17), so retaining one for the length of a request
-/// retains a `HashMap` and a route table, not a copy of the estate.
+/// between generations, so retaining one for the length of a request retains
+/// a `HashMap` and a route table, not a copy of the estate.
 pub struct RuntimeGeneration {
     /// Monotonic, starting at 0 for the empty generation a node boots on.
     /// Assigned by [`RuntimeHandle::publish`] — a generation cannot be built
@@ -57,7 +56,7 @@ pub struct RuntimeGeneration {
     /// times this node has republished".
     pub id: u64,
     /// The engine built from the same rows: every row compiled on its
-    /// `Registry`, whose verdict decided which channels load (I182).
+    /// `Registry`, whose verdict decides which channels load.
     /// `channel_call` runs its child on it, and a reload that keeps the
     /// plugins compiles on its compiler. Empty on the boot generation, which
     /// no request sees: generation 1 is published before the node serves.
@@ -136,10 +135,8 @@ impl RuntimeGeneration {
 /// until it drops the `Arc`, so publication needs no timeout to bound how long
 /// it might hold readers off.
 ///
-/// This was two handles — `EngineHandle` around the engine and an `ArcSwap`
-/// inside `ChannelRegistry` — and the argument above was written out for each
-/// of them separately. It was true of each and false of the pair, which is the
-/// bug this type exists to make unrepresentable.
+/// The engine and the channel estate publish as one value, so a request can
+/// never see one generation's engine beside another's estate.
 ///
 /// Serialising *reloads* is a separate concern and not what this type is for:
 /// two concurrent reloads would each build from a possibly stale read, and the

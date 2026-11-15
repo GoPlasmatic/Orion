@@ -83,6 +83,24 @@ fn audit_event(
     event
 }
 
+/// The principal behind an admin mutation: the authenticated key id, else the
+/// anonymous label. One derivation for both admin APIs' audit rows (M-14).
+pub(crate) struct Actor<'a>(&'a str);
+
+impl<'a> Actor<'a> {
+    pub(crate) fn from_principal(principal: &'a Option<Extension<AdminPrincipal>>) -> Self {
+        Self(
+            principal
+                .as_ref()
+                .map_or(ANONYMOUS_PRINCIPAL, |e| e.0.key_id.as_str()),
+        )
+    }
+
+    pub(crate) fn id(&self) -> &'a str {
+        self.0
+    }
+}
+
 /// One audit event and nothing else: the row a mutation that owns its
 /// transaction writes inside it (the v2 deployment head move). Its log line
 /// and counter wait for the commit — [`emit_audit_trail`] — so a mutation
@@ -93,10 +111,7 @@ pub(crate) fn audit_record(
     resource_type: &str,
     resource_id: &str,
 ) -> crate::queue::audit_queue::AuditEvent {
-    let who = principal
-        .as_ref()
-        .map(|e| e.0.key_id.as_str())
-        .unwrap_or(ANONYMOUS_PRINCIPAL);
+    let who = Actor::from_principal(principal).id();
     crate::queue::audit_queue::AuditEvent {
         principal: who.to_string(),
         action: action.to_string(),

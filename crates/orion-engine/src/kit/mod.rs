@@ -1,7 +1,6 @@
-//! The handler kit (I189): what every dataflow-rs 4 function of Orion's
-//! shares.
+//! The handler kit: what every dataflow-rs 4 function of Orion's shares.
 //!
-//! - [`read`]: Orion's field readers, with today's coercions (I183).
+//! - [`read`]: Orion's field readers, and the coercions they apply.
 //! - [`fields`]: the key-material and detached-expression field types.
 //! - [`guarded`]: the connector shell — the circuit breaker and the
 //!   connector metrics — around a connector function's work.
@@ -10,10 +9,9 @@
 //!   [`require_method_allowed`], the connector's operation gates.
 //! - [`retry`]: Orion's retry safety on dataflow-rs 4's answers; each
 //!   function owns its spec in `functions::definition`.
-//! - [`output_path`]: where a call's result goes, resolved before its work,
-//!   as 1.12's connector shell resolved it; [`root_output_defect`], I185's
-//!   Defect for a result no context root takes; and [`root_output_advisory`]
-//!   for one a root may not take.
+//! - [`output_path`]: where a call's result goes, resolved before its work;
+//!   [`root_output_defect`], the Defect for a result no context root takes;
+//!   and [`root_output_advisory`] for one a root may not take.
 //! - [`rendered`]: a document field rendered for this call, as JSON.
 //! - [`ProfileLayer`]: the per-request profile, as one registry layer
 //!   around every host call.
@@ -21,7 +19,8 @@
 //!   registered with no `AppState`.
 //!
 //! The errors are [`HandlerError`](crate::HandlerError)s, which `?`
-//! turns into dataflow-rs 4's `Error` with the codes 1.12 recorded (I184).
+//! turns into dataflow-rs 4's `Error` with the code and retryability its
+//! class names.
 
 pub mod fields;
 pub mod read;
@@ -56,27 +55,24 @@ pub fn channel<'r>(ctx: &Ctx<'r>) -> &'r str {
 /// The `data` root: the default `output` of the connector functions.
 pub static DATA: LazyLock<Path> = LazyLock::new(|| "data".parse().expect("`data` is a path"));
 
-/// Where a call's result goes, resolved before the call does any work, as
-/// 1.12's connector shell resolved `output` in its prologue (I183): an
-/// output that names no path fails before anything is sent or signed, and
+/// Where a call's result goes, resolved before the call does any work: an
+/// `output` that names no path fails before anything is sent or signed, and
 /// the call writes to the path given here with `Ctx::set` once its work is
 /// done.
 ///
 /// A literal output is its compiled path, read at no cost. A computed one
-/// is evaluated now, against the context as the call sees it, and read as
-/// 1.12's `resolve_output_path` read it: a dotted path is the path; `null`
-/// is `on_null` (the output's default, which 1.12 applied), or refused when
-/// there is none to apply; anything else is refused with 1.12's text. A
-/// string 1.12 took as a dotted path but that names no context root
-/// (`"result"`) is refused here too: 1.12 wrote it to a context key no
-/// response shows, and dataflow-rs 4 has no such key to write.
+/// is evaluated now, against the context as the call sees it: a dotted path
+/// is the path; `null` is `on_null` (the output's default), or refused when
+/// there is none to apply; anything else is refused. A string taken as a
+/// dotted path but naming no context root (`"result"`) is refused here too:
+/// it would write to a context key no response shows, and dataflow-rs 4 has
+/// no such key to write.
 ///
 /// # Errors
 ///
-/// A [`ErrorClass::CallerInput`](crate::ErrorClass::CallerInput)
-/// error for a result that is not a path, `VALIDATION_ERROR` as 1.12's was;
-/// the evaluation's own error when the expression fails, `LOGIC_ERROR` as
-/// 1.12's was.
+/// A [`ErrorClass::CallerInput`](crate::ErrorClass::CallerInput) error for a
+/// result that is not a path, `VALIDATION_ERROR`; the evaluation's own error
+/// when the expression fails, `LOGIC_ERROR`.
 pub fn output_path<'o>(
     ctx: &Ctx<'_>,
     out: &'o Output,
@@ -88,9 +84,9 @@ pub fn output_path<'o>(
     if let Ok(path) = ctx.eval(out.path()) {
         return Ok(path);
     }
-    // Not a path, or not evaluated at all: the value, as 1.12 judged it. It
-    // compiled when the output did, on the same engine, so this compiles too;
-    // and only a call that is about to fail pays for it.
+    // Not a path, or not evaluated at all: the value. It compiled when the
+    // output did, on the same engine, so this compiles too; and only a call
+    // that is about to fail pays for it.
     let value = ctx.exprs().compile::<OwnedDataValue>(out.path().raw())?;
     let value = ctx.eval(&value)?;
     let not_a_path = |got: &str| -> dataflow_rs::Error {
@@ -120,12 +116,11 @@ pub fn output_path<'o>(
     }
 }
 
-/// I185's Defect, from a function's `prepare`, for a result that is never
-/// an object (an array of rows, a URL, a token): an `output` that is a
-/// literal context root, the default `data` included, fails every call,
-/// since a root takes only an object (break 21), where 1.12 replaced the root
-/// with the result. `message` names the function and the fix. A computed
-/// output is judged per call, when its path is known.
+/// The Defect, from a function's `prepare`, for a result that is never an
+/// object (an array of rows, a URL, a token): an `output` that is a literal
+/// context root, the default `data` included, fails every call, since a root
+/// takes only an object. `message` names the function and the fix. A
+/// computed output is judged per call, when its path is known.
 ///
 /// # Errors
 ///
@@ -138,8 +133,8 @@ pub(crate) fn root_output_defect(out: &Output, message: &str) -> Result<(), Vec<
 /// [`root_output_defect`]'s Advisory, for a result that may be an object
 /// and may not (one key's cached value): an `output` that is a literal
 /// context root, the default `data` included, fails each call whose result
-/// is not an object (break 21), where 1.12 replaced the root. The call is
-/// not refused, since an object is written fine, so it never quarantines.
+/// is not an object. The call is not refused, since an object is written
+/// fine, so it never quarantines.
 ///
 /// # Errors
 ///
@@ -163,9 +158,9 @@ fn root_output_issue(out: &Output, message: &str, severity: Severity) -> Result<
     }
 }
 
-/// `doc` rendered for this call, serialized straight into the JSON a
-/// dataflow-rs 3 reader took (`resolve_value`'s fold of the same document),
-/// with no tree of the rendered document's own.
+/// `doc` rendered for this call, serialized straight into the JSON
+/// (`resolve_value`'s fold of the same document), with no tree of the
+/// rendered document's own.
 ///
 /// # Errors
 ///
@@ -180,7 +175,7 @@ pub fn rendered(
         .map_err(|e| crate::HandlerError::new(crate::ErrorClass::Backend, e))
 }
 
-/// Orion's retry safety on dataflow-rs 4's three answers (I179): `Pure`,
+/// Orion's retry safety on dataflow-rs 4's three answers: `Pure`,
 /// `Read` and `IdempotentWrite` are `Idempotent`, `UnsafeWrite` is
 /// `NotIdempotent`, `DependsOn` is `Unknown`. A host function reads it from
 /// its declaration, and a plugin function from its registry entry.
@@ -200,7 +195,7 @@ pub fn retry(safety: schema::RetrySafety) -> dataflow_rs::function::RetrySafety 
 ///
 /// [`HandlerError`]: crate::HandlerError
 pub use crate::functions::connector_helpers::{
-    require_connector, require_method_allowed, require_op, resolve_connector,
+    Typed, require_connector, require_method_allowed, require_op, resolve_connector, with_connector,
 };
 
 /// `guarded_handler` on dataflow-rs 4's types: the circuit breaker and the
@@ -221,15 +216,15 @@ pub use crate::functions::connector_helpers::{
 ///
 /// The work's own error, or the open breaker's `circuit_open`, which is
 /// retryable and never reaches the work.
-pub async fn guarded<F>(
+pub async fn guarded<T, F>(
     name: &'static str,
     registry: &ConnectorRegistry,
     connector: &str,
     channel: &str,
     fut: F,
-) -> dataflow_rs::Result<Outcome>
+) -> dataflow_rs::Result<T>
 where
-    F: Future<Output = dataflow_rs::Result<Outcome>>,
+    F: Future<Output = dataflow_rs::Result<T>>,
 {
     let metrics = registry.connector_metrics(channel, connector);
     if !registry.circuit_breaker_enabled() {
@@ -265,14 +260,14 @@ where
 }
 
 /// The connector request and latency metrics, around the work.
-async fn observed<F>(
+async fn observed<T, F>(
     metrics: Arc<crate::metrics::ConnectorMetrics>,
     connector: &str,
     channel: &str,
     fut: F,
-) -> dataflow_rs::Result<Outcome>
+) -> dataflow_rs::Result<T>
 where
-    F: Future<Output = dataflow_rs::Result<Outcome>>,
+    F: Future<Output = dataflow_rs::Result<T>>,
 {
     let start = std::time::Instant::now();
     let result = fut.await;
@@ -285,7 +280,7 @@ where
     result
 }
 
-/// The per-request profile as one registry [`CallLayer`] (I189): while a
+/// The per-request profile as one registry [`CallLayer`]: while a
 /// [`ProfileCollector`](crate::profile::ProfileCollector) is in scope,
 /// each host call is one sample, nested at the collector's depth, named by
 /// the function it was called by and attributed to its input's `connector`,
@@ -295,8 +290,7 @@ where
 /// read.
 ///
 /// One layer for every host function, so the functions outside the
-/// connector shell are profiled too, where 1.12 sampled only the connector
-/// handlers and `channel_call`.
+/// connector shell are profiled too.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ProfileLayer;
 
@@ -318,8 +312,8 @@ impl CallLayer for ProfileLayer {
 }
 
 /// What a sample is attributed to: the input's `connector` (or `connection`
-/// for `connector_call`), else the `channel` a `channel_call` reaches (the
-/// label 1.12 gave it). Read from [`Ctx::input`], which evaluates no
+/// for `connector_call`), else the `channel` a `channel_call` reaches. Read
+/// from [`Ctx::input`], which evaluates no
 /// secret-reading field, and only while profiling.
 fn profile_target(ctx: &Ctx<'_>) -> Option<String> {
     let input = ctx.input().ok()?;

@@ -43,49 +43,33 @@ fn sample_archive_entries() -> Vec<ArchiveEntryInput> {
 
 #[tokio::test]
 async fn two_replicas_converge_on_apply_rollback_and_revocation() {
-    use std::str::FromStr;
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect_with(sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:").unwrap())
-        .await
-        .unwrap();
-    orion::storage::migrator_for(orion::storage::DbBackend::Sqlite)
-        .run(&pool)
-        .await
-        .unwrap();
-    let db_pool = orion::storage::DbPool::Sqlite(pool);
-
-    let metrics_handle = orion::metrics::init_metrics_with_instance(None);
+    let db_pool = crate::common::memory_pool().await;
 
     let mut cfg_a = orion::config::AppConfig::default();
     cfg_a.cluster.instance_id = "replica-a".to_string();
     cfg_a.cluster.epoch_poll_interval_ms = 20;
-    let assembled_a = orion::bootstrap::assemble(
-        orion::bootstrap::AssembleParams {
-            config: std::sync::Arc::new(cfg_a),
-            pool: db_pool.clone(),
-            metrics_handle: metrics_handle.clone(),
-        },
+    // The nodes are kept alive: each holds the background tasks and the
+    // serving generation, which the states below borrow from.
+    let node_a = orion::testing::TestNode::start_on(
+        cfg_a,
+        db_pool.clone(),
         orion::extensions::CompositionRoot::community(),
     )
     .await
     .expect("assemble replica A");
-    let state_a = assembled_a.state;
+    let state_a = node_a.state().clone();
 
     let mut cfg_b = orion::config::AppConfig::default();
     cfg_b.cluster.instance_id = "replica-b".to_string();
     cfg_b.cluster.epoch_poll_interval_ms = 20;
-    let assembled_b = orion::bootstrap::assemble(
-        orion::bootstrap::AssembleParams {
-            config: std::sync::Arc::new(cfg_b),
-            pool: db_pool.clone(),
-            metrics_handle,
-        },
+    let node_b = orion::testing::TestNode::start_on(
+        cfg_b,
+        db_pool.clone(),
         orion::extensions::CompositionRoot::community(),
     )
     .await
     .expect("assemble replica B");
-    let state_b = assembled_b.state;
+    let state_b = node_b.state().clone();
 
     // The definitions revision 1 names, stored as a deployment uploads them.
     let wf_v1 = crate::common::store_definition(

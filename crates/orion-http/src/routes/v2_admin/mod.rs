@@ -245,9 +245,9 @@ impl IntoResponse for V2Error {
 }
 
 pub(super) fn principal_id(ext: &Option<Extension<AdminPrincipal>>) -> String {
-    ext.as_ref()
-        .map(|Extension(p)| p.key_id.clone())
-        .unwrap_or_else(|| crate::routes::admin::ANONYMOUS_PRINCIPAL.to_string())
+    crate::routes::admin::Actor::from_principal(ext)
+        .id()
+        .to_string()
 }
 
 /// The files of an upload, each UTF-8 text or `base64:<…>`.

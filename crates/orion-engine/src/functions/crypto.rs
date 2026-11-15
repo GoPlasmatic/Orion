@@ -34,7 +34,7 @@ use crate::crypto::{Codec, decode_bytes, encode_bytes, mac_compute, mac_verify};
 use crate::kit::{self, KeyMaterial, read};
 use crate::{ErrorClass, HandlerError};
 
-/// This handler's name in metrics, profiles and error messages (F48).
+/// This handler's name in metrics, profiles and error messages.
 pub const NAME: &str = "crypto";
 
 // -- Capability tables (op × algorithm) --
@@ -324,8 +324,8 @@ fn mac_matches(
 
 /// The presented MAC of an `hmac_verify`: hex, base64, or base64url,
 /// auto-detected. (Channel HMAC auth's auto-detection is deliberately
-/// narrower — hex then standard base64, its pre-#264 behaviour — so the two
-/// rules are related but not identical.)
+/// narrower — hex then standard base64 — so the two rules are related but not
+/// identical.)
 fn decode_presented_signature(s: &str) -> Result<Vec<u8>, HandlerError> {
     decode_bytes(Codec::Hex, s)
         .or_else(|_| decode_bytes(Codec::Base64, s))
@@ -441,7 +441,7 @@ async fn hash_password(params: PasswordParams, password: String) -> Result<Value
         } => {
             // Memory-hard by design, so off the async worker (W: ~20 MiB and
             // tens of milliseconds per call at the defaults) and gated by
-            // KdfAdmission (`TD-04`).
+            // KdfAdmission.
             spawn_hashing(memory_kib, move || {
                 use argon2::password_hash::PasswordHasher;
                 use argon2::{Algorithm, Argon2, Params, Version};
@@ -540,7 +540,7 @@ async fn verify_password(password: String, hash: String) -> Result<Value, Handle
     // bcrypt → argon2id migration into a verify-then-rehash pair inside one
     // login workflow. Wrong password → false; a *malformed* stored hash or an
     // encoded cost outside policy bounds is a task error — validated before
-    // spawning onto the blocking pool (`TD-04`).
+    // spawning onto the blocking pool.
     let memory_kib = preflight_verify_hash(&hash)?;
     spawn_hashing(memory_kib, move || {
         if hash.starts_with("$argon2") {
@@ -590,7 +590,7 @@ where
     tokio::task::spawn_blocking(move || {
         // Hold the KDF permit inside the blocking closure so an abandoned
         // caller cannot release concurrency/memory permits while the CPU/memory
-        // work is still executing on the blocking thread (`TD-04`).
+        // work is still executing on the blocking thread.
         let _permit = permit;
         f()
     })
@@ -601,22 +601,19 @@ where
 
 // -- dataflow-rs 4 --
 
-/// I185's Defect for a literal root: no op's result is an object (a digest,
-/// a MAC or a password hash is a string; a verification is a boolean), so
-/// a context root, which takes only an object (break 21), refuses it on
-/// every call.
+/// The Defect for a literal root: no op's result is an object (a digest, a
+/// MAC or a password hash is a string; a verification is a boolean), so a
+/// context root, which takes only an object, refuses it on every call.
 const ROOT_OUTPUT: &str = "`crypto` writes a string or a boolean, and a context root takes \
     only an object (break 21): set `output` to a path below it, such as `data.digest`";
 
-/// `crypto`'s input on dataflow-rs 4, in its field table's order (I179),
-/// each field in the position 1.12 executed it in (I183). The op, the
-/// algorithm, the three encodings and `params` are literals, read as
-/// written, as 1.12 read them; `data`, `signature`, `password` and `hash`
-/// are expressions, read by `kit::read`'s twin of `resolve_required_str`
-/// where 1.12 read them with it; `key` is key material. A computed `output`
-/// is evaluated before the op, where 1.12 never evaluated it and wrote at
-/// `data` (a change O11b's CHANGELOG names). A task missing `op` is refused
-/// at load (I183), and its `check` is 1.12's authoring-time rules.
+/// `crypto`'s input, in its field table's order, each field in the order it
+/// is read at execution. The op, the algorithm, the three encodings and
+/// `params` are literals, read as written; `data`, `signature`, `password`
+/// and `hash` are expressions, read by `kit::read`'s `resolve_required_str`;
+/// `key` is key material. A computed `output` is evaluated before the op. A
+/// task missing `op` is refused at load, and its `check` applies the
+/// authoring-time rules.
 #[derive(Debug, FunctionConfig)]
 #[config(check = check)]
 pub struct CryptoConfig {
@@ -655,10 +652,10 @@ pub struct CryptoConfig {
 }
 
 impl CryptoConfig {
-    /// The task's input as 1.12's authoring check judged it: every field
-    /// the task sets, as written, in the field table's order. A literal
-    /// `null` in a string field, 1.12's `TYPE_MISMATCH` at authoring, is
-    /// unset here, so it is not judged again.
+    /// The task's input, as the authoring check judges it: every field the
+    /// task sets, as written, in the field table's order. A literal `null` in
+    /// a string field, a `TYPE_MISMATCH` at authoring, is unset here, so it is
+    /// not judged again.
     fn authored(&self) -> Map<String, Value> {
         let mut input = Map::new();
         input.insert("op".to_string(), Value::String(self.op.clone()));
@@ -697,17 +694,17 @@ impl CryptoConfig {
     }
 }
 
-/// 1.12's authoring-time rules for `crypto` ([`validate_static_input`], by
-/// which create, update, import, validate and `lint` refused a task), on
-/// the config at load: the op's membership, its algorithm table, its
-/// required fields and the fields it does not take, the encodings and the
-/// `params` bounds, each refused at the field 1.12 named, in its words.
+/// The authoring-time rules for `crypto` ([`validate_static_input`], shared
+/// by create, update, import, validate and `lint`), applied to the config at
+/// load: the op's membership, its algorithm table, its required fields and
+/// the fields it does not take, the encodings and the `params` bounds, each
+/// refused at its field, in its words.
 fn check(cfg: &CryptoConfig, cx: &mut CompileCx<'_>) {
     super::report_static(validate_static_input(&cfg.authored()), cx);
 }
 
-/// `crypto` as a function: the op, each field read in 1.12's order, the
-/// hashing on the blocking pool.
+/// `crypto` as a function: the op, each field read in order, the hashing on
+/// the blocking pool.
 pub struct CryptoFunction;
 
 impl OrionFunction for CryptoFunction {
@@ -761,16 +758,15 @@ impl Function for CryptoFunction {
         super::definition::spec::<Self>()
     }
 
-    /// I185: no op's result is an object, so an `output` that is a literal
-    /// context root, the default `data` included, is a Defect at `output`.
-    /// A computed one is judged per call, when its path is known.
+    /// No op's result is an object, so an `output` that is a literal context
+    /// root, the default `data` included, is a Defect at `output`. A computed
+    /// one is judged per call, when its path is known.
     fn prepare(&self, cfg: &mut CryptoConfig, _p: &Prepare<'_>) -> Result<(), Vec<Issue>> {
         kit::root_output_defect(&cfg.output, ROOT_OUTPUT)
     }
 
-    /// The output, where 1.12 read it, before the op; the op, its refusals
-    /// named once with the handler's name, as 1.12 named them; then the one
-    /// write.
+    /// The output, read before the op; the op, its refusals named once with
+    /// the handler's name; then the one write.
     async fn call(&self, ctx: &mut Ctx<'_>, cfg: &CryptoConfig) -> dataflow_rs::Result<Outcome> {
         let output = Self::DEFINITION.output_path(ctx, &cfg.output)?;
         let result = compute(ctx, cfg).await.map_err(|e| e.prefixed(NAME))?;
@@ -807,7 +803,7 @@ fn required(
 }
 
 /// `data`'s bytes for this call: `data` evaluated, then the codec judged,
-/// then the evaluation's error, in that order, as 1.12 judged them.
+/// then the evaluation's error, in that order.
 fn data_bytes(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Vec<u8>, HandlerError> {
     let Some(expr) = &cfg.data else {
         return Err(HandlerError::caller_input("this op requires 'data'"));

@@ -18,13 +18,13 @@
 //! call site `.map_err(to_connect_error)` reads better than a struct literal;
 //! they build a `HandlerError`, and `?` converts it.
 //!
-//! **One table, 1.12's codes.** Each class becomes a service error carrying
-//! the code 1.12 recorded for it (`VALIDATION_ERROR`, `IO_ERROR`,
-//! `FUNCTION_ERROR`, `TIMEOUT_ERROR`), its retryability, and a message opening
-//! with the label 1.12 printed ("Validation error: …"), so a workflow branching
-//! on `errors[].code` and a DLQ retrying on retryability read what they always
-//! did. An engine error converted into a `HandlerError` is carried whole and
-//! handed back as itself.
+//! **One table, one code per class.** Each class becomes a service error
+//! carrying the code for that class (`VALIDATION_ERROR`, `IO_ERROR`,
+//! `FUNCTION_ERROR`, `TIMEOUT_ERROR`), its retryability, and a message
+//! opening with the class's label ("Validation error: …"), so a workflow
+//! branching on `errors[].code` and a DLQ retrying on retryability read the
+//! same answer everywhere. An engine error converted into a `HandlerError` is
+//! carried whole and handed back as itself.
 
 use dataflow_rs::ErrorKind;
 
@@ -52,7 +52,7 @@ pub enum ErrorClass {
     /// The backend could not be *reached* — pool acquisition, connection
     /// setup, DNS.
     ///
-    /// Retryable, on every backend alike (F42): a dead Postgres or MySQL
+    /// Retryable, on every backend alike: a dead Postgres or MySQL
     /// database is the same outage as an unreachable HTTP host, and DLQ retry
     /// policy has no principled reason to differ between them.
     Connector,
@@ -66,8 +66,8 @@ pub enum ErrorClass {
 }
 
 impl ErrorClass {
-    /// The code a class records and the label its message opens with: 1.12's,
-    /// so a record reads "Task t error: <label><message>" as it always did.
+    /// The code a class records and the label its message opens with, so a
+    /// record reads "Task t error: <label><message>".
     fn face(self) -> (&'static str, &'static str) {
         match self {
             ErrorClass::CallerInput | ErrorClass::Limit => {
@@ -198,7 +198,7 @@ impl HandlerError {
         self
     }
 
-    /// The engine error this class maps to, built from `msg` (I184): the
+    /// The engine error this class maps to, built from `msg`: the
     /// class's code and retryability (a connection failure and a timeout are
     /// retried), and `msg` under its label. The connector failure, or else
     /// `detail`, rides as the source, which the error's JSON never carries.
@@ -222,15 +222,15 @@ impl std::fmt::Display for HandlerError {
     }
 }
 
-/// The code 1.12 recorded for an upstream's non-2xx answer, and the one an
+/// The code an upstream's non-2xx answer records, and the one an
 /// [`http_error`] carries.
 pub const HTTP_ERROR: &str = "HTTP_ERROR";
 
-/// A non-2xx answer from an upstream, as an engine error whose code
-/// ([`HTTP_ERROR`]), retryability (a 5xx, a 429, a 408, or no status at
-/// all) and recorded text (`"HTTP error: {status} - {message}"`) are
-/// 1.12's. The status and the bare message ride as the source, an
-/// [`HttpFailure`], so a caller reads the status with [`http_status`].
+/// A non-2xx answer from an upstream, as an engine error carrying
+/// [`HTTP_ERROR`], retryable for a 5xx, a 429, a 408, or no status at all,
+/// and reading `"HTTP error: {status} - {message}"`. The status and the bare
+/// message ride as the source, an [`HttpFailure`], so a caller reads the
+/// status with [`http_status`].
 pub fn http_error(status: u16, message: impl Into<String>) -> dataflow_rs::Error {
     let failure = HttpFailure {
         status,
@@ -263,8 +263,8 @@ pub struct HttpFailure {
 }
 
 impl HttpFailure {
-    /// 1.12's rule: a server error, a rate limit, a
-    /// request timeout, or a connection that gave no status.
+    /// Retryable: a server error, a rate limit, a request timeout, or a
+    /// connection that gave no status.
     fn is_retryable(&self) -> bool {
         self.status >= 500 || matches!(self.status, 429 | 408 | 0)
     }
@@ -280,7 +280,7 @@ impl HttpFailure {
     }
 }
 
-/// The text 1.12 recorded for an upstream's non-2xx answer.
+/// The text an upstream's non-2xx answer records.
 impl std::fmt::Display for HttpFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "HTTP error: {} - {}", self.status, self.message)
@@ -289,11 +289,11 @@ impl std::fmt::Display for HttpFailure {
 
 impl std::error::Error for HttpFailure {}
 
-/// The one place a classification becomes an engine error (I184).
+/// The one place a classification becomes an engine error.
 ///
-/// The code each class records, and its retryability, are 1.12's, so a
-/// workflow branching on `errors[].code` and a DLQ retrying on retryability
-/// read the answer they always did.
+/// Each class records one code and its retryability, so a workflow branching
+/// on `errors[].code` and a DLQ retrying on retryability read the same answer
+/// everywhere.
 impl From<HandlerError> for dataflow_rs::Error {
     fn from(mut e: HandlerError) -> Self {
         // An error that came from an engine and was not rewritten goes back as

@@ -31,21 +31,21 @@ orion-runtime.workspace = true
 orion-storage.workspace = true
 dataflow-rs.workspace = true
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path", "multipart"] }
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "sqlite", "postgres", "mysql"] }
+sqlx = { workspace = true, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "sqlite", "postgres", "mysql"] }
 tower-http = { version = "0.7", features = ["trace", "cors", "request-id", "catch-panic", "compression-gzip"] }
 tracing = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid.workspace = true
-chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+chrono = { workspace = true, features = ["clock", "std", "serde"] }
 url = "2"
 ipnet = "2"
 sha2 = "0.11"
 hex = "0.4"
 base64 = "0.23"
 tower = { version = "0.5", default-features = false, features = ["util"] }
-utoipa = { version = "6", features = ["axum_extras", "chrono"] }
+utoipa = { workspace = true, features = ["axum_extras", "chrono"] }
 utoipa-swagger-ui = { version = "10.0.2", features = ["axum"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std"] }

@@ -31,7 +31,7 @@ use crate::storage::detect_backend;
 use crate::{ErrorClass, HandlerError};
 
 /// This handler's name, for the helpers that take it as an argument — a
-/// reference to the one place it is written (F48).
+/// reference to the one place it is written.
 pub(crate) const NAME: &str = "data_query";
 
 /// Parent keys per `include` child query.
@@ -40,7 +40,7 @@ pub(crate) const NAME: &str = "data_query";
 /// ceiling on those: PostgreSQL's protocol stops at 65535 per statement, and
 /// SQLite builds before 3.32 at 999. Neither is reachable at the default
 /// `query.max_limit` of 1000 — which is why this is the batch size, so a
-/// default deployment issues exactly the one query it always did — but
+/// default deployment issues exactly one query — but
 /// `max_limit` is a documented knob, and raising it should not turn an
 /// `include` into a driver error naming neither the knob nor the relation.
 const MAX_INCLUDE_KEYS_PER_QUERY: usize = 1000;
@@ -62,7 +62,7 @@ pub struct DataQuery<'a> {
 struct Backends<'a> {
     pool_cache: &'a SqlPoolCache,
     /// Connector-registry generation, so the pool cache can reuse the config
-    /// digest across one reload (P-01).
+    /// digest across one reload.
     generation: u64,
     limits: &'a crate::config::QueryConfig,
 }
@@ -85,8 +85,8 @@ async fn run_query(
     connector: &str,
     run_deadline: Option<dataflow_rs::run::Instant>,
 ) -> Result<Value, HandlerError> {
-    // F24: with no schema the registry rejects rather than passing every
-    // name through, and the connector's own guards apply on top.
+    // With no schema the registry rejects rather than passing every name
+    // through, and the connector's own guards apply on top.
     let registry = build_entity_registry(parsed.schema.as_deref(), db, connector)?;
     let query = &*parsed.query;
     let params = &parsed.params;
@@ -128,16 +128,16 @@ fn reads_rows(query: &Value) -> bool {
     query.get("count").and_then(Value::as_bool) != Some(true)
 }
 
-/// I185's Defect: a row read's result is an array, which no context root
-/// takes (break 21), so an `output` that is one fails every call.
+/// A row read's result is an array, and a context root takes only an object,
+/// so an `output` that is one is a Defect at `output`.
 const ROOT_OUTPUT: &str = "`data_query` writes an array of rows, and a context root takes \
     only an object (break 21): set `output` to a path below it, such as `data.rows`";
 
-/// `data_query`'s input on dataflow-rs 4, in its field table's order (I179).
-/// The connector and the envelope are required at load (I183). The envelope
-/// and the schema are literal documents, `{"param": …}` holes and all, for
-/// Orion's own dialect to fold; `params` and the rendering choices are
-/// documents of `var` holes, as 1.12 folded them.
+/// `data_query`'s input on dataflow-rs 4, in its field table's order. The
+/// connector and the envelope are required at load. The envelope and the
+/// schema are literal documents, `{"param": …}` holes and all, for Orion's
+/// own dialect to fold; `params` and the rendering choices are documents of
+/// `var` holes.
 #[derive(Debug, FunctionConfig)]
 pub struct DataQueryConfig {
     /// Name of the db (SQL) connector to query.
@@ -154,7 +154,7 @@ pub struct DataQueryConfig {
     params: Option<Interpolated>,
     /// Inline entity schema (renames, type hints, allowlist, relations) enabling some/all/none
     /// and typed coercion. Undeclared entities and columns are rejected, so a query without one
-    /// reaches nothing; pass {"unmapped": "identity"} for pre-1.0 pass-through.
+    /// reaches nothing; pass {"unmapped": "identity"} to pass every name through.
     schema: Option<Value>,
     /// How an arbitrary-precision decimal column is rendered: "number" (default) or "string". A
     /// number is computable in JSONLogic and rounds beyond 2^53 or on most decimal fractions; a
@@ -238,9 +238,9 @@ impl Function for DataQueryFunction {
         super::definition::spec::<Self>()
     }
 
-    /// I185: a row read whose `output` is a literal context root, the
-    /// default `data` included, is a Defect at `output`. A count answers an
-    /// object, which a root takes.
+    /// A row read whose `output` is a literal context root, the default
+    /// `data` included, is a Defect at `output`. A count answers an object,
+    /// which a root takes.
     fn prepare(&self, cfg: &mut DataQueryConfig, _p: &Prepare<'_>) -> Result<(), Vec<Issue>> {
         if reads_rows(&cfg.query) {
             kit::root_output_defect(&cfg.output, ROOT_OUTPUT)
@@ -271,29 +271,33 @@ impl Function for DataQueryFunction {
             schema: cfg.schema.as_ref().map(Cow::Borrowed),
         };
         let run_deadline = ctx.deadline();
-        let mut answer = None;
-        kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
-            let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
-            let conn = kit::require_connector::<<Self as OrionFunction>::Connector>(
-                &config,
-                &cfg.connector,
-            )?;
-            gate(conn, &cfg.connector)?;
-            let backends = Backends {
-                pool_cache: &self.pool_cache,
-                generation: self.registry.config_generation(),
-                limits: &self.limits,
-            };
-            answer = Some(run_query(backends, &parsed, conn, &cfg.connector, run_deadline).await?);
-            Ok(Outcome::Ok)
-        })
+        let answer = kit::with_connector::<<Self as OrionFunction>::Connector, _, _, _>(
+            NAME,
+            &self.registry,
+            &cfg.connector,
+            channel,
+            |conn| async move {
+                gate(conn.config(), &cfg.connector)?;
+                let backends = Backends {
+                    pool_cache: &self.pool_cache,
+                    generation: self.registry.config_generation(),
+                    limits: &self.limits,
+                };
+                Ok(run_query(
+                    backends,
+                    &parsed,
+                    conn.config(),
+                    &cfg.connector,
+                    run_deadline,
+                )
+                .await?)
+            },
+        )
         .await?;
-        if let Some(answer) = answer {
-            ctx.set(
-                &output,
-                dataflow_rs::datavalue::OwnedDataValue::from(answer),
-            )?;
-        }
+        ctx.set(
+            &output,
+            dataflow_rs::datavalue::OwnedDataValue::from(answer),
+        )?;
         Ok(Outcome::Ok)
     }
 }
@@ -368,11 +372,11 @@ async fn run_sql_count(
 /// [`query::backend::sql::build_include_select`]), not here: fetching every
 /// child of every parent on the page and truncating afterwards would
 /// materialise ten million rows for a thousand parents with ten thousand
-/// children each, to return five apiece — in an order nothing defined (F27).
+/// children each, to return five apiece — in an order nothing defined.
 ///
 /// Grouping is by [`query::GroupKey`], not by the key's JSON text, so a parent
 /// key and a child foreign key that the driver rendered differently (`"7"` vs
-/// `7`) still join (W14).
+/// `7`) still join.
 ///
 /// Every round trip — the main query and one child query per include relation —
 /// shares a single [`QueryBudget`]. A `timed_query` per round trip would be a
@@ -411,7 +415,7 @@ async fn run_sql_with_includes(
     let (sql, values) = query::backend::sql::build_for(dialect, &plan.main);
     // `SqlxValues` implements `IntoArguments` for all three drivers as well as
     // `Any`, so the builder above needs no change — only the execute site
-    // dispatches (#309).
+    // dispatches.
     let mut parents: Vec<Value> = crate::connector::pool_cache::dispatch_sql_pool!(
         pool, p, rows_to_json, _bind, typed_args, _write_result => {
             // One connection per leg, not one for the handler: a prepared

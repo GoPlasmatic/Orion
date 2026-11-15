@@ -152,7 +152,7 @@ fn read_val(arg: &Value, scoped: bool, out: &mut Reads) {
 /// Where a task writes, and whether that list is complete.
 ///
 /// The mirror of [`Reads`], and for the same reason: a destination can be an
-/// expression now — `{"output": {"cat": ["data.by_tenant.", {"var": …}]}}` —
+/// expression — `{"output": {"cat": ["data.by_tenant.", {"var": …}]}}` —
 /// and a path this walk cannot name is not the same as no path at all. A rule
 /// that reasons about overwrites has to know the difference, or it concludes
 /// "nothing later writes this" from a step that might write anything.
@@ -185,7 +185,7 @@ pub(crate) fn task_write_facts(task: &Value, functions: &FunctionRegistry) -> Wr
     // A fan-out folds each call's writes back onto the message, so the
     // function's own destinations stand, and adds two of its own: `collect`,
     // the slot each call writes its result to (left holding the last
-    // element's), and `into`, the array the results land in (#351). The
+    // element's), and `into`, the array the results land in. The
     // element bindings live only in each call's copy and are not writes.
     if let Some(for_each) = task.get("for_each") {
         for key in ["collect", "into"] {
@@ -259,10 +259,9 @@ fn function_write_facts(task: &Value, functions: &FunctionRegistry) -> Writes {
 
 /// Whether a `map` mapping keeps the value already at its `path`.
 ///
-/// `"mode": "append"` and `"extend"` (dataflow-rs 3.15) push onto the array
-/// there instead of replacing it, so the mapping reads its target as well as
-/// writing it: a rule reasoning about overwrites must not call the value
-/// before it dead.
+/// `"mode": "append"` and `"extend"` push onto the array there instead of
+/// replacing it, so the mapping reads its target as well as writing it: a
+/// rule reasoning about overwrites must not call the value before it dead.
 pub(crate) fn mapping_keeps_target(mapping: &Value) -> bool {
     matches!(
         mapping.get("mode").and_then(Value::as_str),

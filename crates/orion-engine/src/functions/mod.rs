@@ -56,8 +56,8 @@ pub mod stub;
 
 /// A `validate_static_input`'s refusals as a dataflow-rs 4 config check's
 /// issues: each Rejected, `INPUT_PARSE`, at the field it names, with its
-/// message. 1.12's own code for each (`unknown_op`, `unknown_stage`, …) has
-/// no place on an `Issue`, whose codes are the engine's.
+/// message. An `Issue` carries the engine's codes, so a refusal's own code
+/// (`unknown_op`, `unknown_stage`, …) has no place on it.
 pub(super) fn report_static(
     refusals: Vec<(&'static str, &'static str, String)>,
     cx: &mut dataflow_rs::expr::CompileCx<'_>,

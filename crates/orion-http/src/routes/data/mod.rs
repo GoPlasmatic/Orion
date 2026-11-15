@@ -328,6 +328,18 @@ pub(crate) async fn dynamic_handler(
         .as_ref()
         .and_then(|rt| rt.parsed_config.request.as_ref());
     let body_mode = request_config.map(|r| r.body_mode).unwrap_or_default();
+    // P-10: when the payload is the request body itself, those bytes already
+    // are the JSON the trace and the pending row store, so the parsed value
+    // need not be serialized again. A body carrying the `data` envelope still
+    // has to be built from its parsed halves.
+    let raw_input = match (&parsed_body, body_mode) {
+        (Some(Value::Object(obj)), BodyMode::Auto) => (!obj.contains_key("data")
+            && !obj.contains_key("metadata"))
+        .then(|| std::str::from_utf8(&body).ok())
+        .flatten(),
+        (Some(_), BodyMode::Payload) => std::str::from_utf8(&body).ok(),
+        _ => None,
+    };
     let ProcessRequest {
         data,
         metadata: req_metadata,
@@ -489,6 +501,7 @@ pub(crate) async fn dynamic_handler(
             &state,
             channel,
             data,
+            raw_input,
             metadata,
             channel_config,
             profile_requested,
@@ -501,6 +514,7 @@ pub(crate) async fn dynamic_handler(
         &state,
         &channel,
         data,
+        raw_input,
         metadata,
         sync::AdmittedOn {
             generation,
@@ -743,10 +757,15 @@ fn build_request_metadata(parts: RequestMetadataParts<'_>) -> Value {
 /// The async-submission branch of [`dynamic_handler`]: create the pending
 /// trace (or a synthetic id in `off` mode), enqueue the message, and answer
 /// 202.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the raw input joins the payload the request already carried"
+)]
 async fn submit_async(
     state: &DataPlane,
     channel: String,
     data: Value,
+    raw_input: Option<&str>,
     metadata: Value,
     channel_runtime: std::sync::Arc<crate::channel::ChannelRuntimeConfig>,
     profile_requested: bool,
@@ -769,9 +788,11 @@ async fn submit_async(
 
     // The payload serialized once, here: it is the pending row's `input_json`,
     // and its length is the payload half of the queue's memory estimate, which
-    // the admission check and the reservation both use. Each of the three used
-    // to serialize the payload for itself.
-    let input_json = serde_json::to_string(&data).ok();
+    // the admission check and the reservation both use. When the request body
+    // is the payload, its bytes are already that string (P-10).
+    let input_json = raw_input
+        .map(str::to_owned)
+        .or_else(|| serde_json::to_string(&data).ok());
     let queued_bytes = crate::queue::message_size(&data, input_json.as_deref(), &metadata);
 
     // PERF-03: fast in-memory admission check before allocating tokens or

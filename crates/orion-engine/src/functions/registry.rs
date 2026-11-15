@@ -67,8 +67,8 @@ impl FieldSpec {
     /// `Template` position, which may be an operator call; a `{"var": ..}`
     /// node in a `resolvable` field; a `{"secret": ..}` node where the field
     /// reads key material at its root. A plugin function's dataflow-rs 4
-    /// config asks it of each `resolvable` field at load, as 1.12's
-    /// `parse_input_with` did, so the two cannot disagree.
+    /// config asks it of each `resolvable` field at load, so the two cannot
+    /// disagree.
     pub fn admits(&self, v: &Value) -> bool {
         self.kind.matches(v)
             // A `Template` field's kind describes the *resolved* value. An
@@ -182,7 +182,7 @@ impl FunctionEntry {
 ///
 /// Every name a workflow may use, not only the functions Orion input-schema
 /// validates: those omit `map`, `filter`, `parse_json` and the rest, which are
-/// the ones people actually type — in the deployment that reported it (#288)
+/// the ones people actually type — in the deployment that reported it
 /// such names were 425 of 631 tasks, `map` alone 310. A completion
 /// source offering the connector functions and none of those is not an
 /// incomplete catalogue, it is the wrong one.
@@ -311,9 +311,8 @@ impl FunctionRegistry {
     /// engine Orion actually builds be able to run this task?", and the answer
     /// is membership: an engine built-in is here only if it runs with no
     /// registration (`enrich` needs a handler Orion never registers, so it is
-    /// absent — F54, the case where a hand-copied list accepted it and every
-    /// `enrich` workflow failed its every request), and a handler-backed name
-    /// is here only if `register_functions` registers it.
+    /// absent), and a handler-backed name is here only if `register_functions`
+    /// registers it.
     /// `the_create_time_gate_agrees_with_the_running_engine` pins that to a
     /// live engine's `can_dispatch` in both directions.
     pub fn contains(&self, name: &str) -> bool {
@@ -495,8 +494,8 @@ impl FunctionEntry {
             ));
         }
 
-        // Cross-field: data_write's mutation envelope. Nested under `write`
-        // since W7; the pre-1.0 flat form is still accepted, and whichever
+        // Cross-field: data_write's mutation envelope. It is nested under
+        // `write`, or flat with its keys beside the handler keys; whichever
         // shape the task uses is checked against the same field list.
         if function_name == "data_write" {
             match obj.get("write") {
@@ -508,7 +507,7 @@ impl FunctionEntry {
                     function_name,
                 )),
                 Some(_) => {}
-                // Legacy flat form: envelope keys sit alongside the handler keys.
+                // Flat form: envelope keys sit alongside the handler keys.
                 None if obj.contains_key("op") => errors.extend(check_fields(
                     &DATA_WRITE_ENVELOPE,
                     input,
@@ -552,7 +551,7 @@ impl FunctionEntry {
 
         // Cross-field rules registered on the entry — each lives next to its
         // handler as `validate_static_input` and shares the execution path's
-        // tables (#263 and friends), so the authoring-time rules and the
+        // tables, so the authoring-time rules and the
         // runtime cannot drift, and a new function's rules are one registry
         // field.
         if let Some(validate) = entry.validate_static {
@@ -603,8 +602,8 @@ impl FunctionEntry {
                 && let Err(e) = encode_body(body, format)
             {
                 // `encode_body` refuses only as the caller's to fix, so the
-                // guidance is the message without the class label its
-                // record carries: dataflow-rs 3's `Validation` payload.
+                // guidance is the message without the class label its error
+                // record carries.
                 let msg = crate::HandlerError::from(e).msg;
                 errors.push(FieldError::new(
                     format!("{input_path}.body"),

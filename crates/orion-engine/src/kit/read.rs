@@ -1,11 +1,10 @@
-//! Orion's field readers, over the value a dataflow-rs 4 call evaluated
-//! (I183).
+//! Orion's field readers, over the value a dataflow-rs 4 call evaluated.
 //!
 //! A function's expression fields are `Expr<OwnedDataValue>`, not typed
 //! expressions, because the readers here coerce where a typed `Expr<String>`
 //! or `Expr<i64>` would refuse: `required_str` spells a number or a boolean
 //! out as a key, `optional_i64` reads a `null` result as absent. Running
-//! workflows rely on both, so each reader keeps 1.12's coercions, `null`
+//! workflows rely on both, so each reader keeps its coercions, `null`
 //! handling, message and class over the value `Ctx::eval` lends, and the
 //! tests below pin them.
 //!
@@ -28,12 +27,12 @@ use crate::functions::connector_helpers::{json_type_name, parse_duration_secs};
 use crate::{ErrorClass, HandlerError};
 
 /// A reader's refusal: every one is the caller's to fix, a `400` with the
-/// message kept, as dataflow-rs 3's `Validation` was.
+/// message kept.
 fn refused(message: String) -> HandlerError {
     HandlerError::new(ErrorClass::CallerInput, message)
 }
 
-/// `v` as the JSON value dataflow-rs 3 handed its reader for it.
+/// `v` as its JSON value.
 fn json(v: &OwnedDataValue) -> Value {
     Value::from(v)
 }
@@ -380,11 +379,9 @@ pub(crate) fn row_format(
     ))
 }
 
-/// dataflow-rs 3's `Template::resolve_string`, the reading of every string
-/// parameter of its typed configs (`http_call`'s path, headers and
-/// formats): a string as itself, anything else its
-/// compact JSON, so `7` is `"7"` and `null` is `"null"`. Never refused, as it
-/// never was; a string is lent.
+/// The reading of every string parameter (`http_call`'s path, headers and
+/// formats): a string as itself, anything else its compact JSON, so `7` is
+/// `"7"` and `null` is `"null"`. Never refused; a string is lent.
 pub(crate) fn plain_str(v: &OwnedDataValue) -> Cow<'_, str> {
     match v {
         OwnedDataValue::String(s) => Cow::Borrowed(s),
@@ -392,9 +389,9 @@ pub(crate) fn plain_str(v: &OwnedDataValue) -> Cow<'_, str> {
     }
 }
 
-/// dataflow-rs 3's `Template::resolve_u64` (`http_call.timeout_ms`): any
-/// finite number from `0` to `u64::MAX`, a fraction cut to its whole part,
-/// so `2.5` is `2`. `label` opens the refusal, which quotes the value.
+/// `http_call.timeout_ms`: any finite number from `0` to `u64::MAX`, a
+/// fraction cut to its whole part, so `2.5` is `2`. `label` opens the
+/// refusal, which quotes the value.
 ///
 /// # Errors
 ///
@@ -416,11 +413,10 @@ pub(crate) fn template_u64(v: &OwnedDataValue, label: &str) -> Result<u64, Handl
     })
 }
 
-/// A parameter dataflow-rs 3's typed configs declared `Option<Template>`
-/// (`http_call`'s `path`, `body`, `body_format` and `response_format`), as
-/// serde read it: an explicit
-/// `null` is the parameter left unset. dataflow-rs 4 compiles a `null` as a
-/// constant expression, so the caller asks here first.
+/// An optional parameter (`http_call`'s `path`, `body`, `body_format` and
+/// `response_format`): an explicit `null` is the parameter left unset.
+/// dataflow-rs 4 compiles a `null` as a constant expression, so the caller
+/// asks here first.
 pub fn present<T: FromValue>(field: &Option<Expr<T>>) -> Option<&Expr<T>> {
     field.as_ref().filter(|expr| !expr.raw().is_null())
 }

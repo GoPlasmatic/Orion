@@ -33,8 +33,9 @@ use super::runner::TraceCapture;
 pub enum RunOutcome {
     /// Every workflow that matched ran, and none reported a task error.
     Ok,
-    /// The run completed and the message carries task errors. Carries the joined `code: message` summary, which is what
-    /// all three of the transports that look at it were building by hand.
+    /// The run completed and the message carries task errors. Carries the
+    /// joined `code: message` summary, which every transport that looks at it
+    /// reads.
     WorkflowErrors(String),
     /// The deadline expired, with the budget in milliseconds.
     Timeout(u64),
@@ -81,7 +82,7 @@ impl RunOutcome {
         match self {
             Self::Ok => None,
             Self::WorkflowErrors(summary) => Some(summary.clone()),
-            // Phrased as the async and cron rows always were, under the code.
+            // Phrased as the async and cron rows are, under the code.
             Self::Timeout(ms) => Some(format!(
                 "{}: processing timed out after {ms}ms on channel '{channel}'",
                 orion_api::codes::TIMEOUT
@@ -91,7 +92,7 @@ impl RunOutcome {
     }
 }
 
-/// A cancelled run, as the timeout 1.12 recorded for it.
+/// A cancelled run, as the timeout is recorded for it.
 fn cancelled() -> dataflow_rs::Error {
     dataflow_rs::Error::service("TIMEOUT_ERROR", "Timeout error: cancelled").with_retryable(true)
 }
@@ -141,7 +142,7 @@ impl Execution {
 }
 
 fn trace_options(max_snapshot_bytes: usize) -> dataflow_rs::observe::TraceOptions {
-    // Parsed once for the process: this runs on every traced request (P-16).
+    // Parsed once for the process: this runs on every traced request.
     static REDACT: std::sync::LazyLock<Vec<dataflow_rs::expr::Path>> =
         std::sync::LazyLock::new(|| {
             ["metadata.headers", "metadata.cookies", "metadata.oauth"]

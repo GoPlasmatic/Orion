@@ -14,7 +14,7 @@ use crate::connector::cache_backend::{CachePool, CachePurpose};
 use crate::connector::{CacheConnectorConfig, ConnectorRegistry};
 use crate::kit::{self, read};
 
-/// This function's name, for the free functions below (F48).
+/// This function's name, for the free functions below.
 pub(crate) const NAME: &str = "cache_delete";
 
 /// The delete, against a resolved and gated cache connector: how many of
@@ -25,9 +25,9 @@ async fn delete(
     conn: &CacheConnectorConfig,
     keys: &[String],
 ) -> Result<u64, HandlerError> {
-    // Workflow-purpose namespace (S19), like `cache_read` and
-    // `cache_write`: a memory backend here can never reach the dedup store
-    // or the response cache.
+    // Workflow-purpose namespace, like `cache_read` and `cache_write`: a
+    // memory backend here can never reach the dedup store or the response
+    // cache.
     let backend = pool
         .get_backend(CachePurpose::Workflow, connector, conn)
         .await
@@ -37,11 +37,11 @@ async fn delete(
     Ok(deleted)
 }
 
-/// `cache_delete`'s input on dataflow-rs 4, in its field table's order
-/// (I179). The connector is a literal and `keys` an expression, read by
-/// `kit::read`'s twin of `resolve_required_str_list` with 1.12's bound of
-/// 1000 per call; both are required at load (I183). `output` is optional:
-/// unset, nothing is written (I190's primary output).
+/// `cache_delete`'s input on dataflow-rs 4, in its field table's order. The
+/// connector is a literal and `keys` an expression, read by `kit::read`'s
+/// twin of `resolve_required_str_list` with a bound of 1000 per call; both
+/// are required at load. `output` is optional and the primary output: unset,
+/// nothing is written.
 #[derive(Debug, FunctionConfig)]
 pub struct CacheDeleteConfig {
     /// Name of the cache connector to delete from.
@@ -100,7 +100,7 @@ impl Function for CacheDeleteFunction {
     ) -> dataflow_rs::Result<Outcome> {
         let channel = kit::channel(ctx);
         // The prologue's output, when one is set, before the keys are read.
-        // A computed one that resolves to `null` is `data`, as 1.12's was.
+        // A computed one that resolves to `null` is `data`.
         let output = cfg
             .output
             .as_ref()
@@ -108,21 +108,20 @@ impl Function for CacheDeleteFunction {
             .transpose()?;
         let keys = ctx.eval(&cfg.keys)?;
         let keys = read::required_str_list(Some(&keys), "keys", NAME, MAX_KEYS)?;
-        let mut deleted = None;
-        kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
-            let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
-            let conn = kit::require_connector::<<Self as OrionFunction>::Connector>(
-                &config,
-                &cfg.connector,
-            )?;
-            // A delete changes what later reads see, so a read-only connector
-            // refuses it exactly as it refuses `cache_write`.
-            kit::require_op(conn.operations.write, "write", &cfg.connector)?;
-            deleted = Some(delete(&self.cache_pool, &cfg.connector, conn, &keys).await?);
-            Ok(Outcome::Ok)
-        })
+        let deleted = kit::with_connector::<<Self as OrionFunction>::Connector, _, _, _>(
+            NAME,
+            &self.registry,
+            &cfg.connector,
+            channel,
+            |conn| async move {
+                // A delete changes what later reads see, so a read-only
+                // connector refuses it exactly as it refuses `cache_write`.
+                kit::require_op(conn.config().operations.write, "write", &cfg.connector)?;
+                Ok(delete(&self.cache_pool, &cfg.connector, conn.config(), &keys).await?)
+            },
+        )
         .await?;
-        if let (Some(path), Some(deleted)) = (output, deleted) {
+        if let (Some(path), Some(deleted)) = (output, Some(deleted)) {
             let answer = OwnedDataValue::Object(vec![("deleted".to_string(), deleted.into())]);
             ctx.set(&path, answer)?;
         }

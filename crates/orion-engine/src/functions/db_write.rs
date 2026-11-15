@@ -15,7 +15,7 @@ use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::{ConnectorRegistry, DbConnectorConfig};
 use crate::kit;
 
-/// This handler's name, for the shared write below (F48).
+/// This handler's name, for the shared write below.
 pub(crate) const NAME: &str = "db_write";
 
 /// The connector's gate for a raw write: its `raw_write` operation.
@@ -63,9 +63,8 @@ async fn write_rows(
                 .await?;
                 // `AssertSqlSafe` states what this handler is: the
                 // raw-SQL escape hatch, whose statement is authored in the
-                // workflow rather than assembled here. sqlx 0.9 asks the
-                // caller to own that, and the answer is the same as it was
-                // before it asked — the text comes from the definition, the
+                // workflow rather than assembled here. sqlx 0.9 makes the
+                // caller own that: the text comes from the definition, the
                 // author-supplied *values* travel as bind parameters beside
                 // it, and a definition reaches the runtime only through the
                 // admin API. Authors who want values checked use the
@@ -108,9 +107,9 @@ async fn write_rows(
     Ok(out)
 }
 
-/// `db_write`'s input on dataflow-rs 4, in its field table's order (I179):
-/// the connector and the statement literals required at load (I183), the
-/// binds a document of `var` holes, as 1.12 folded them.
+/// `db_write`'s input on dataflow-rs 4, in its field table's order: the
+/// connector and the statement literals required at load, the binds a
+/// document of `var` holes.
 #[derive(Debug, FunctionConfig)]
 pub struct DbWriteConfig {
     /// Name of the SQL connector to execute against.
@@ -174,34 +173,29 @@ impl Function for DbWriteFunction {
         let output = Self::DEFINITION.output_path(ctx, &cfg.output)?;
         let write = DbRead::statement(ctx, &cfg.query, cfg.params.as_ref(), NAME)?;
         let run_deadline = ctx.deadline();
-        let mut answer = None;
-        kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
-            let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
-            let db = kit::require_connector::<<Self as OrionFunction>::Connector>(
-                &config,
-                &cfg.connector,
-            )?;
-            gate(db, &cfg.connector)?;
-            answer = Some(
-                write_rows(
+        let answer = kit::with_connector::<<Self as OrionFunction>::Connector, _, _, _>(
+            NAME,
+            &self.registry,
+            &cfg.connector,
+            channel,
+            |conn| async move {
+                gate(conn.config(), &cfg.connector)?;
+                Ok(write_rows(
                     &self.pool_cache,
                     &cfg.connector,
-                    db,
+                    conn.config(),
                     &write,
                     run_deadline,
                     self.registry.config_generation(),
                 )
-                .await?,
-            );
-            Ok(Outcome::Ok)
-        })
+                .await?)
+            },
+        )
         .await?;
-        if let Some(answer) = answer {
-            ctx.set(
-                &output,
-                dataflow_rs::datavalue::OwnedDataValue::from(answer),
-            )?;
-        }
+        ctx.set(
+            &output,
+            dataflow_rs::datavalue::OwnedDataValue::from(answer),
+        )?;
         Ok(Outcome::Ok)
     }
 }

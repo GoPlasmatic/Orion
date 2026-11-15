@@ -81,7 +81,7 @@ fn reject_stray_secret_references(
     ))
 }
 
-/// The keys dataflow-rs reads on a `loop` (3.14).
+/// The keys dataflow-rs reads on a `loop`.
 const LOOP_FIELDS: &[&str] = &[
     "counter",
     "init",
@@ -93,15 +93,15 @@ const LOOP_FIELDS: &[&str] = &[
     "setup",
 ];
 
-/// The keys dataflow-rs reads on a task's `for_each` (3.14).
+/// The keys dataflow-rs reads on a task's `for_each`.
 const FOR_EACH_FIELDS: &[&str] = &["over", "as", "max_concurrency", "collect", "into"];
 
 /// A key the engine does not read, each as an `UNKNOWN_FIELD` at `at.<key>`.
 ///
 /// dataflow-rs parses neither `loop` nor `for_each` with
 /// `deny_unknown_fields`, so a typo there is dropped without a word:
-/// `max_concurency: 8` runs one call at a time and `steup` runs no setup
-/// (#351). The engine's answer is to ignore it; an author's is almost always
+/// `max_concurency: 8` runs one call at a time and `steup` runs no setup.
+/// The engine's answer is to ignore it; an author's is almost always
 /// a misspelling, which is what the suggestion is for.
 fn unknown_keys(
     obj: &serde_json::Map<String, Value>,
@@ -309,10 +309,10 @@ pub fn validate_workflow_tasks_schema(
         return Vec::new();
     }
     let mut errors = Vec::new();
-    // Flattened: since dataflow-rs 3.6 an element carrying `tasks` is a group,
-    // and its members are tasks the engine will run. Validating only the top
-    // level would accept a workflow whose guarded half was never checked, and
-    // report the group itself as a task missing its `name` and `function`.
+    // Flattened: an element carrying `tasks` is a group, and its members are
+    // tasks the engine will run. Validating only the top level would accept a
+    // workflow whose guarded half was never checked, and report the group
+    // itself as a task missing its `name` and `function`.
     let steps = crate::engine::walk_steps(tasks, loop_config.filter(|l| !l.is_null()));
 
     // Ids are one namespace across tasks and groups — both name a step, and

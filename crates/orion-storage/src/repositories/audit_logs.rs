@@ -94,31 +94,7 @@ pub struct AuditEvent {
 #[async_trait]
 pub trait AuditLogRepository: Send + Sync {
     /// Insert an audit log entry.
-    async fn insert(
-        &self,
-        principal: &str,
-        action: &str,
-        resource_type: &str,
-        resource_id: &str,
-        details: Option<&str>,
-    ) -> Result<(), OrionError>;
-
-    /// Insert an audit log entry inside a caller-owned transaction, so it
-    /// commits with the mutation it describes (§2.6).
-    ///
-    /// The difference from [`Self::insert`] is the whole point of the method:
-    /// an audit row written after its entity write has committed can be lost —
-    /// the process can exit, or the queue can be full — leaving a change that
-    /// is *live* with no record of who made it. Inside the transaction there
-    /// is no window: either both rows are there or neither is.
-    ///
-    /// Takes `&mut DbTransaction` rather than beginning one, because the
-    /// entity write owns the transaction and this joins it.
-    async fn insert_tx(
-        &self,
-        tx: &mut crate::DbTransaction,
-        event: &AuditEvent,
-    ) -> Result<(), OrionError>;
+    async fn insert(&self, event: &AuditEvent) -> Result<(), OrionError>;
 
     /// List audit log entries matching `filter`, newest first. `total` counts
     /// the rows matching the filter, not the whole table.
@@ -144,13 +120,7 @@ impl SqlAuditLogRepository {
 
 /// The INSERT both sinks run — the queue's own connection, and the caller's
 /// transaction. One builder so the two can never write different rows.
-fn insert_statement(
-    principal: &str,
-    action: &str,
-    resource_type: &str,
-    resource_id: &str,
-    details: Option<&str>,
-) -> sea_query::InsertStatement {
+fn insert_statement(event: &AuditEvent) -> sea_query::InsertStatement {
     let id = uuid::Uuid::now_v7().to_string();
 
     // `columns()` REPLACES the column list and `values_panic()` appends
@@ -165,12 +135,12 @@ fn insert_statement(
     ];
     let mut row: Vec<SimpleExpr> = vec![
         Expr::val(id.as_str()),
-        Expr::val(principal),
-        Expr::val(action),
-        Expr::val(resource_type),
-        Expr::val(resource_id),
+        Expr::val(event.principal.as_str()),
+        Expr::val(event.action.as_str()),
+        Expr::val(event.resource_type.as_str()),
+        Expr::val(event.resource_id.as_str()),
     ];
-    if let Some(d) = details {
+    if let Some(d) = event.details.as_deref() {
         columns.push(AuditLogs::Details);
         row.push(Expr::val(d));
     }
@@ -191,16 +161,7 @@ pub async fn insert_in_tx(
     event: &AuditEvent,
 ) -> Result<(), OrionError> {
     orion_common::metrics::timed_db_op("audit_logs.insert_tx", async {
-        let (sql, values) = build_sqlx(
-            tx.backend(),
-            &mut insert_statement(
-                &event.principal,
-                &event.action,
-                &event.resource_type,
-                &event.resource_id,
-                event.details.as_deref(),
-            ),
-        );
+        let (sql, values) = build_sqlx(tx.backend(), &mut insert_statement(event));
         tx.execute_query(&sql, values).await?;
         Ok(())
     })
@@ -209,31 +170,13 @@ pub async fn insert_in_tx(
 
 #[async_trait]
 impl AuditLogRepository for SqlAuditLogRepository {
-    async fn insert(
-        &self,
-        principal: &str,
-        action: &str,
-        resource_type: &str,
-        resource_id: &str,
-        details: Option<&str>,
-    ) -> Result<(), OrionError> {
+    async fn insert(&self, event: &AuditEvent) -> Result<(), OrionError> {
         orion_common::metrics::timed_db_op("audit_logs.insert", async {
-            let (sql, values) = build_sqlx(
-                self.pool.backend(),
-                &mut insert_statement(principal, action, resource_type, resource_id, details),
-            );
+            let (sql, values) = build_sqlx(self.pool.backend(), &mut insert_statement(event));
             self.pool.execute_query(&sql, values).await?;
             Ok(())
         })
         .await
-    }
-
-    async fn insert_tx(
-        &self,
-        tx: &mut crate::DbTransaction,
-        event: &AuditEvent,
-    ) -> Result<(), OrionError> {
-        insert_in_tx(tx, event).await
     }
 
     async fn list_paginated(
@@ -306,6 +249,22 @@ impl AuditLogRepository for SqlAuditLogRepository {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    fn audit_event(
+        principal: &str,
+        action: &str,
+        resource_type: &str,
+        resource_id: &str,
+        details: Option<&str>,
+    ) -> AuditEvent {
+        AuditEvent {
+            principal: principal.to_string(),
+            action: action.to_string(),
+            resource_type: resource_type.to_string(),
+            resource_id: resource_id.to_string(),
+            details: details.map(str::to_string),
+        }
+    }
 
     #[test]
     fn parses_rfc3339_and_naive_timestamps() {
@@ -382,7 +341,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn test_insert_without_details_persists() {
         let repo = test_repo().await;
-        repo.insert("admin...", "create", "workflow", "wf-1", None)
+        repo.insert(&audit_event("admin...", "create", "workflow", "wf-1", None))
             .await
             .expect("insert without details");
 
@@ -398,9 +357,15 @@ pub(crate) mod tests {
     async fn test_insert_with_details_persists_and_reads_back() {
         let repo = test_repo().await;
         let details = r#"{"request_id":"req-123"}"#;
-        repo.insert("admin...", "activate", "workflow", "wf-1", Some(details))
-            .await
-            .expect("insert with details must build valid SQL");
+        repo.insert(&audit_event(
+            "admin...",
+            "activate",
+            "workflow",
+            "wf-1",
+            Some(details),
+        ))
+        .await
+        .expect("insert with details must build valid SQL");
 
         let page = list_all(&repo).await;
         assert_eq!(page.data.len(), 1, "exactly one row, not two");
@@ -419,12 +384,14 @@ pub(crate) mod tests {
         let pool = crate::test_sqlite_pool().await;
         let repo = SqlAuditLogRepository::new(pool.clone());
 
-        repo.insert("admin...", "create", "workflow", "old", None)
+        repo.insert(&audit_event("admin...", "create", "workflow", "old", None))
             .await
             .expect("insert old");
-        repo.insert("admin...", "create", "workflow", "recent", None)
-            .await
-            .expect("insert recent");
+        repo.insert(&audit_event(
+            "admin...", "create", "workflow", "recent", None,
+        ))
+        .await
+        .expect("insert recent");
         backdate(&pool, "old", 120).await;
         backdate(&pool, "recent", 10).await;
 
@@ -441,7 +408,7 @@ pub(crate) mod tests {
         let pool = crate::test_sqlite_pool().await;
         let repo = SqlAuditLogRepository::new(pool.clone());
 
-        repo.insert("admin...", "create", "workflow", "wf-1", None)
+        repo.insert(&audit_event("admin...", "create", "workflow", "wf-1", None))
             .await
             .expect("insert");
 
@@ -460,9 +427,15 @@ pub(crate) mod tests {
             ("bob...", "activate", "channel", "ch-1"),
             ("bob...", "delete", "connector", "conn-1"),
         ] {
-            repo.insert(principal, action, resource_type, resource_id, None)
-                .await
-                .expect("seed");
+            repo.insert(&audit_event(
+                principal,
+                action,
+                resource_type,
+                resource_id,
+                None,
+            ))
+            .await
+            .expect("seed");
         }
         repo
     }
@@ -639,10 +612,10 @@ pub(crate) mod tests {
     async fn test_time_range_filter() {
         let pool = crate::test_sqlite_pool().await;
         let repo = SqlAuditLogRepository::new(pool.clone());
-        repo.insert("alice...", "create", "workflow", "old", None)
+        repo.insert(&audit_event("alice...", "create", "workflow", "old", None))
             .await
             .expect("seed old");
-        repo.insert("alice...", "create", "workflow", "new", None)
+        repo.insert(&audit_event("alice...", "create", "workflow", "new", None))
             .await
             .expect("seed new");
         backdate(&pool, "old", 30).await;

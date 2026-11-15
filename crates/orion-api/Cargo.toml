@@ -27,8 +27,8 @@ workspace = true
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
-utoipa = { version = "6", features = ["chrono"], optional = true }
+chrono = { workspace = true, features = ["std", "serde"] }
+utoipa = { workspace = true, features = ["chrono"], optional = true }
 
 [features]
 # The server enables this to publish the shared types in its OpenAPI document.

@@ -15,28 +15,25 @@ use serde_json::Value;
 /// `preflight` — each want the whole set.
 ///
 /// - `logic.escaped_template_key` — a `$`-prefixed key in a template position.
-///   dataflow-rs 3.9 made the escape unconditional: one `$` comes off *every*
-///   key in such a position, whether or not the name collides with an
-///   operator. So `{"$set": …}` composed in a `map` — a MongoDB update
-///   document, the commonest way this appears — goes out as `{"set": …}` and
-///   the write replaces the document instead of updating it; `$ref` and
-///   `$schema` in a composed JSON Schema are the same story. Nothing fails at
-///   any gate. The fix is mechanical — double the prefix, `$$set` — which is
-///   why it is worth reporting mechanically, and why the doubled spelling is
-///   kept silent here: doubling is also how an author
-///   *deliberately* emits a `$` key, and an author who has done the right
-///   thing must not be left with a warning they cannot clear. This one has a
-///   second half: a host function's `input` is a config document to
-///   dataflow-rs, not a template — which of its fields are templates is the
-///   function's business — so the bare check here skips it, and
-///   [`FunctionRegistry::template_paths`], where that business
-///   is declared, is what closes the gap.
+///   The escape is unconditional: one `$` comes off *every* key in such a
+///   position, whether or not the name collides with an operator. So
+///   `{"$set": …}` composed in a `map` — a MongoDB update document, the
+///   commonest way this appears — goes out as `{"set": …}` and the write
+///   replaces the document instead of updating it; `$ref` and `$schema` in a
+///   composed JSON Schema are the same story. Nothing fails at any gate. The
+///   fix is mechanical — double the prefix, `$$set` — which is why it is worth
+///   reporting mechanically, and why the doubled spelling is kept silent here:
+///   doubling is also how an author *deliberately* emits a `$` key, and an
+///   author who has done the right thing must not be left with a warning they
+///   cannot clear. This one has a second half: a host function's `input` is a
+///   config document to dataflow-rs, not a template — which of its fields are
+///   templates is the function's business — so the bare check here skips it,
+///   and [`FunctionRegistry::template_paths`], where that business is declared,
+///   is what closes the gap.
 /// - `engine.unguarded_validation` — a `validation` task whose failure changes
 ///   nothing, because a failing rule records `400` and its `on_rejection` is
-///   `continue`. This is the shape that shipped a decorative CSRF check
-///   ([#308](https://github.com/GoPlasmatic/Orion/issues/308)): the check read
-///   correct, did nothing, and nothing said so. `"on_rejection": "halt"` is
-///   the fix.
+///   `continue`. A check in this shape reads correct, does nothing, and
+///   nothing says so. `"on_rejection": "halt"` is the fix.
 ///
 /// Every one fires on a definition that builds and runs — that is the engine's
 /// classification, not a choice made here — so what a caller does with the
@@ -68,8 +65,7 @@ pub fn engine_advisories(
     };
 
     // Escaped keys first, then the walk that finds the ones the engine cannot,
-    // then the shape findings — the order the three callers reported these in
-    // when they were two functions called one after the other.
+    // then the shape findings — the order the three callers report them in.
     let mut out: Vec<EngineAdvisory> = issues
         .iter()
         .filter(|issue| issue.code == IssueCode::EscapedTemplateKey)

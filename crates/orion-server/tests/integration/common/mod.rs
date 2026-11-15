@@ -20,6 +20,18 @@ use axum::http::Request;
 use serde_json::Value;
 use tower::ServiceExt;
 
+/// A migrated in-memory SQLite pool, for a test that assembles a node around
+/// a pool it holds or shares one store between two nodes.
+pub async fn memory_pool() -> orion::storage::DbPool {
+    orion::storage::init_pool(&orion::config::StorageConfig {
+        url: "sqlite::memory:".to_string(),
+        max_connections: 5,
+        ..Default::default()
+    })
+    .await
+    .expect("an in-memory SQLite pool")
+}
+
 /// An empty serving generation: no engine and an estate with no channels.
 ///
 /// For the component tests that drive a queue, a consumer or a handler

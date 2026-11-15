@@ -173,8 +173,8 @@ impl PluginFunctionHandler {
     /// site for the log.
     ///
     /// The detail goes to the log and nowhere else: the error carries none,
-    /// as 1.12's did not, so a guest's own strings and Wasmtime's text never
-    /// ride on an error, its source included.
+    /// so a guest's own strings and Wasmtime's text never ride on an error,
+    /// its source included.
     fn settle<T>(
         &self,
         started: Instant,
@@ -265,13 +265,13 @@ impl PluginFunction {
     /// Each field the guest receives, with its value for this call, in
     /// declaration order: every declared field but `output` that has one,
     /// through [`Templated::get`]. A literal, and a template that folded to
-    /// a constant, are lent from the config (I131); a template is evaluated,
-    /// and an interpolated field rendered, owned. A field the task left
-    /// unset is absent, as 1.12 passed the guest only the fields a task set.
+    /// a constant, are lent from the config; a template is evaluated, and an
+    /// interpolated field rendered, owned. A field the task left unset is
+    /// absent: the guest receives only the fields a task set.
     ///
     /// # Errors
     ///
-    /// 1.12's refusal of a template that did not evaluate, the first in
+    /// The refusal of a template that did not evaluate, the first in
     /// declaration order.
     pub(crate) fn read_fields<'s, 'c>(
         &'s self,
@@ -289,7 +289,7 @@ impl PluginFunction {
         Ok(read)
     }
 
-    /// 1.12's prologue, before anything enters the sandbox: where the result
+    /// The prologue, before anything enters the sandbox: where the result
     /// goes, and the guest's input as JSON.
     ///
     /// The destination is the task's `output`, else the function's declared
@@ -337,25 +337,23 @@ impl dataflow_rs::Function for PluginFunction {
             .with_runtime_fields(self.fields.to_vec())
     }
 
-    /// The load rules 1.12 applied (`parse_input_with`, over the entry's
-    /// table) that a `Templated` config does not apply itself, read off the
-    /// authored values the config's visit reports, so a value refused here
-    /// quarantined its channel on 1.12 too:
+    /// The load rules (`parse_input_with`, over the entry's table) that a
+    /// `Templated` config does not apply itself, read off the authored values
+    /// the config's visit reports, so a value refused here quarantines its
+    /// channel:
     ///
-    /// - **`output`** is a literal path, as 1.12 read it: a string, or the
-    ///   refusal of every call. An expression, which a dataflow-rs 4
-    ///   `Output` would evaluate, is refused as 1.12 refused it
-    ///   (`TYPE_MISMATCH`: the field is a literal string).
+    /// - **`output`** is a literal path: a string, or the refusal of every
+    ///   call. An expression, which a dataflow-rs 4 `Output` would evaluate,
+    ///   is refused (`TYPE_MISMATCH`: the field is a literal string).
     /// - **A `resolvable` field** holds a value of its kind or one `var`
-    ///   node, as 1.12 checked it. An interpolated document takes any JSON,
-    ///   and a value of another kind renders to that kind, so it would fail
-    ///   every call; 1.12 refused it at load, and so does this.
+    ///   node. An interpolated document takes any JSON, and a value of
+    ///   another kind renders to that kind, so it would fail every call; such
+    ///   a value is refused at load.
     ///
     /// A literal of the wrong kind, and a template that folds to one, are
     /// the config's own refusals. Then, for an output that is a literal
-    /// context root, the default root included, I185's Advisory: a guest's
-    /// result may be an object or may not, and a root takes only an object
-    /// (break 21).
+    /// context root, the default root included, an Advisory: a guest's
+    /// result may be an object or may not, and a root takes only an object.
     fn prepare(&self, cfg: &mut Templated, _p: &Prepare<'_>) -> Result<(), Vec<Issue>> {
         let mut authored = Authored {
             entry: &self.handler.entry,
@@ -377,13 +375,13 @@ impl dataflow_rs::Function for PluginFunction {
         }
     }
 
-    /// 1.12's call: the prologue, then the handler's sandboxed invocation,
+    /// The call: the prologue, then the handler's sandboxed invocation,
     /// then the result written at `output`.
     ///
     /// The run's deadline and cancellation race the call in the engine, so
     /// a run that ends first ends it `TimedOut` or `Cancelled` with nothing
     /// written; the function's own ceiling (`timeout_ms`: the permit wait,
-    /// the epoch and the wall clock) gives 1.12's refusals as before.
+    /// the epoch and the wall clock) refuses a call that outlasts it.
     async fn call(&self, ctx: &mut Ctx<'_>, cfg: &Templated) -> dataflow_rs::Result<Outcome> {
         let started = Instant::now();
         let result = match self.prologue(ctx, cfg) {
@@ -398,18 +396,17 @@ impl dataflow_rs::Function for PluginFunction {
         let (workflow, task) = (info.workflow_id, info.task_id);
         let (path, value) = self.handler.settle(started, result, workflow, task)?;
         // After the invocation is counted, as the success it was: a write a
-        // root refuses (a result that is not an object, break 21) is the
-        // engine's error, not the plugin's.
+        // root refuses (a result that is not an object) is the engine's
+        // error, not the plugin's.
         ctx.set(path, OwnedDataValue::from(value))?;
         Ok(Outcome::Ok)
     }
 }
 
-/// 1.12's refusal of a template field whose expression failed, from the
-/// engine's error: the error worded as 1.12 worded it, an
-/// evaluation's under "Logic evaluation error: " and a budget refusal's as
-/// datalogic does, and the caller's class, so its code is `VALIDATION_ERROR`
-/// for a budget refusal too, as 1.12's was.
+/// The refusal of a template field whose expression failed, from the
+/// engine's error: an evaluation's message under "Logic evaluation error: "
+/// and a budget refusal's as datalogic words it, and the caller's class, so
+/// its code is `VALIDATION_ERROR` for a budget refusal too.
 fn did_not_evaluate(field: &str, e: &dataflow_rs::Error) -> Failure {
     let label = match e.kind() {
         ErrorKind::Eval => "Logic evaluation error: ",
@@ -421,7 +418,7 @@ fn did_not_evaluate(field: &str, e: &dataflow_rs::Error) -> Failure {
     )
 }
 
-/// I185's Advisory for a plugin function whose output is a literal root.
+/// The Advisory for a plugin function whose output is a literal root.
 fn at_root(function: &str) -> String {
     format!(
         "`{function}` writes its result at `output`, and a context root takes only an object \
@@ -430,7 +427,7 @@ fn at_root(function: &str) -> String {
     )
 }
 
-/// The visitor behind [`PluginFunction`]'s `prepare`: 1.12's load rules
+/// The visitor behind [`PluginFunction`]'s `prepare`: the load rules
 /// over a plugin task's authored input, its issues collected.
 struct Authored<'e> {
     entry: &'e FunctionEntry,
@@ -450,7 +447,8 @@ impl<'e> Authored<'e> {
             .find(|field| field.name == **name)
     }
 
-    /// 1.12's `TYPE_MISMATCH` for `field`, at `at`, in its words.
+    /// The `TYPE_MISMATCH` for `field`, at `at`, worded as the load rules
+    /// word it.
     fn mismatch(&mut self, at: &AuthoredPath, field: &crate::engine::FieldSpec) {
         self.issues.push(Issue::new(
             IssueCode::InputParse,

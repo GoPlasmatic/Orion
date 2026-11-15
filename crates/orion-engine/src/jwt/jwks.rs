@@ -1,4 +1,4 @@
-//! JWKS cache (#267): one component serving both verify surfaces (the channel
+//! JWKS cache: one component serving both verify surfaces (the channel
 //! mode and `jwt_verify`).
 //!
 //! Lifecycle: HTTPS-only fetches through the process's shared, SSRF-pinned
@@ -10,15 +10,12 @@
 //! forces one refetch, rate-limited to one per 30 s per URL, which is what
 //! makes issuer-side key rotation invisible.
 //!
-//! **Why it is owned rather than global.** This was a pair of `OnceLock`s: a
-//! process-wide entry map and a `reqwest::Client` built here. That client was
-//! the one HTTP client in the process without `PinnedDnsResolver`, and
+//! **Why it is owned rather than global.** The cache hangs off `AppState`,
+//! is constructed with the serving client, and address-checks every fetch.
 //! `jwks_url` is authored input (`jwt_verify` takes it as a task field), so a
-//! definition could reach an internal HTTPS host through the one egress path
-//! that neither pinned its lookups nor consulted
-//! [`orion_common::ssrf::validate_url_not_private`]. The cache now hangs off
-//! `AppState`, is constructed with the serving client, and address-checks
-//! every fetch.
+//! definition could otherwise reach an internal HTTPS host through an egress
+//! path that neither pinned its lookups nor consulted
+//! [`orion_common::ssrf::validate_url_not_private`].
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -44,15 +41,15 @@ pub const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 /// call belongs to (`Ctx::deadline`): [`FETCH_TIMEOUT`], or none when the
 /// run's deadline comes first.
 ///
-/// When the fetch timeout ends first, the fetch fails as it always has, and
-/// the verification with it (`keys_unavailable`, or the stale keys served).
-/// When the run's deadline ends first, no timer of the fetch's own is armed:
-/// dataflow-rs 4 races every host call against the run's deadline and drops
-/// the call when it passes, ending the run `TimedOut`, as 1.12's channel
-/// timeout dropped the run. A timer at the same instant would win that race
-/// (the engine polls the call first) and turn the run's timeout into the
-/// task's error, which is a different response. Decided per fetch, so a
-/// rotation's second fetch is judged against the time left when it starts.
+/// When the fetch timeout ends first, the fetch fails, and the verification
+/// with it (`keys_unavailable`, or the stale keys served). When the run's
+/// deadline ends first, no timer of the fetch's own is armed: the engine races
+/// every host call against the run's deadline and drops the call when it
+/// passes, ending the run `TimedOut`, as a channel timeout ends it. A timer at
+/// the same instant would win that race (the engine polls the call first) and
+/// turn the run's timeout into the task's error, which is a different
+/// response. Decided per fetch, so a rotation's second fetch is judged against
+/// the time left when it starts.
 pub(crate) fn fetch_timeout(run: Option<Instant>) -> Option<Duration> {
     let own = tokio::time::Instant::now() + FETCH_TIMEOUT;
     match run.map(tokio::time::Instant::from_std) {

@@ -14,10 +14,10 @@ use crate::connector::ConnectorRegistry;
 
 /// Everything Orion's own handlers need to be constructed.
 ///
-/// F44: this was ten positional parameters carrying
-/// `#[allow(clippy::too_many_arguments)]`, and the full call was written out
-/// twice — once at boot and once in `POST /definitions/test`, which builds a
-/// throwaway engine over the same dependencies. Two call sites with ten
+/// One struct rather than positional parameters carrying
+/// `#[allow(clippy::too_many_arguments)]`. The full construction is written
+/// out twice — once at boot and once in `POST /definitions/test`, which builds
+/// a throwaway engine over the same dependencies. Two call sites with
 /// same-typed `Arc`s between them is a silent-transposition hazard the compiler
 /// cannot see; every field here already lives on `AppState`, so
 /// `runtime::handler_deps` is the only form the second call site needs. That
@@ -29,7 +29,7 @@ pub struct HandlerDeps<'a> {
     /// The node `channel_call` dispatches back into: the target channel's
     /// guards and an engine to run it on, both from one generation.
     pub channel_calls: Arc<dyn functions::channel_call::ChannelCallHost>,
-    /// The process's expression engine (I188), which the registry is built on.
+    /// The process's expression engine, which the registry is built on.
     pub exprs: dataflow_rs::expr::ExprEngine,
     /// The instance's JWKS cache — `jwt_verify`'s key source, shared with the
     /// channel `jwt` auth mode so both see one issuer rotation at once.
@@ -47,16 +47,16 @@ pub struct HandlerDeps<'a> {
     pub connector_calls: Arc<dyn functions::connector_call::ConnectorCallHost>,
 }
 
-/// Register Orion's functions, each under its 1.12 name (F48).
+/// Register Orion's functions, each under the name a workflow names it by.
 pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDeps<'_>) {
     functions::register(registry, &deps);
 }
 
 /// The dataflow-rs 4 `Registry` a generation compiles and runs on, before
 /// its plugins: every Orion function ([`register_functions`]), on the
-/// process's expression engine (I188, `deps.exprs`), with the per-request
+/// process's expression engine (`deps.exprs`), with the per-request
 /// profile as its one call layer
-/// ([`kit::ProfileLayer`](crate::kit::ProfileLayer), I189).
+/// ([`kit::ProfileLayer`](crate::kit::ProfileLayer)).
 ///
 /// Boot and every reload assemble it. The generation's plugin functions join it
 /// ([`register_plugin_functions`]) before anything compiles, since a
@@ -108,8 +108,8 @@ pub trait NamedFunction: dataflow_rs::Function {
     fn name(&self) -> &str;
 }
 
-/// Whether `Registry::register` refuses `name` with a panic (I43, amended by
-/// I57): a name the engine reserves, either a built-in
+/// Whether `Registry::register` refuses `name` with a panic: a name the
+/// engine reserves, either a built-in
 /// ([`dataflow_rs::def::BUILTIN_FUNCTIONS`]) or one of its own aliases. A host
 /// registering names from data checks them first, as `register`'s
 /// documentation asks.

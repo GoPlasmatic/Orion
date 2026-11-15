@@ -380,7 +380,6 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                 &self.pool,
                 super::helpers::WriteStatement::Insert(&mut insert),
                 &mut dlq_select(&id),
-                OrionError::Storage,
                 || OrionError::Internal {
                     context: "Failed to fetch inserted DLQ entry".to_string(),
                     source: None,
@@ -551,7 +550,6 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                 &self.pool,
                 super::helpers::WriteStatement::Update(&mut update),
                 &mut dlq_select(id),
-                OrionError::Storage,
                 || OrionError::not_found(format!("DLQ entry '{id}' not found")),
             )
             .await

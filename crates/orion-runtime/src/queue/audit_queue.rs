@@ -169,16 +169,7 @@ pub fn start(
         // scope, which is what makes a depth of zero mean "written", not
         // merely "dequeued".
         while let Some(event) = rx.recv_leased().await {
-            if let Err(e) = repo
-                .insert(
-                    &event.principal,
-                    &event.action,
-                    &event.resource_type,
-                    &event.resource_id,
-                    event.details.as_deref(),
-                )
-                .await
-            {
+            if let Err(e) = repo.insert(&event).await {
                 crate::metrics::record_audit_event_dropped("write_failed");
                 tracing::error!(
                     error = %e,
@@ -227,22 +218,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AuditLogRepository for RecordingRepo {
-        async fn insert_tx(
-            &self,
-            _tx: &mut crate::storage::DbTransaction,
-            _event: &AuditEvent,
-        ) -> Result<(), OrionError> {
-            unreachable!("this fake is only driven through the queue, which uses `insert`")
-        }
-
-        async fn insert(
-            &self,
-            principal: &str,
-            action: &str,
-            _resource_type: &str,
-            _resource_id: &str,
-            _details: Option<&str>,
-        ) -> Result<(), OrionError> {
+        async fn insert(&self, event: &AuditEvent) -> Result<(), OrionError> {
             if let Some(d) = self.block {
                 tokio::time::sleep(d).await;
             }
@@ -252,7 +228,7 @@ mod tests {
             self.rows
                 .lock()
                 .expect("test mutex")
-                .push((principal.to_string(), action.to_string()));
+                .push((event.principal.clone(), event.action.clone()));
             Ok(())
         }
 

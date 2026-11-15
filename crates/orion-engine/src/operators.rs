@@ -1,5 +1,5 @@
-//! Orion's custom JSONLogic operators — the encoding glue of #259(c), the
-//! `random` generator of #260, and the string operators of #276.
+//! Orion's custom JSONLogic operators — the encoding glue, the `random`
+//! generator, and the string operators.
 //!
 //! Eight pure encoding operators (`base64_encode`/`base64_decode`,
 //! `base64url_encode`/`base64url_decode`, `hex_encode`/`hex_decode`,
@@ -16,7 +16,7 @@
 //! test pins each one against the live engine, which would also surface any
 //! future upstream collision.
 //!
-//! Byte/text model (shared with the `crypto` function's spec in #259):
+//! Byte/text model (shared with the `crypto` function's spec):
 //!
 //! - Encoders take text: a string encodes as its UTF-8 bytes; a non-string
 //!   value encodes as its compact-JSON text (deterministic — key order is
@@ -211,7 +211,7 @@ impl CustomOperator for Decode {
     }
 }
 
-/// The generator kinds `random` accepts — the extensible axis of #260. A new
+/// The generator kinds `random` accepts — the extensible axis. A new
 /// generator is a row here (plus its arm), never a new operator name.
 const RANDOM_KINDS: &[&str] = &["uuid", "digits", "int", "string", "bytes"];
 
@@ -224,7 +224,7 @@ const MAX_DIGITS: i64 = 64;
 /// value.
 const MAX_SAFE_INT: i64 = 9_007_199_254_740_991;
 
-/// `random` — CSPRNG-backed value generation, kind-selected (#260).
+/// `random` — CSPRNG-backed value generation, kind-selected.
 ///
 /// Never constant-folded and never CSE-memoized: datalogic's optimizers
 /// classify every custom operator as opaque and impure (the `now` treatment),
@@ -235,7 +235,7 @@ const MAX_SAFE_INT: i64 = 9_007_199_254_740_991;
 ///
 /// A custom operator has no compile-time specialisation hook, so an unknown
 /// kind or an out-of-bounds argument is an evaluation-time error naming what
-/// is allowed — the trade #260 records.
+/// is allowed — the trade this operator makes.
 struct Random;
 
 impl CustomOperator for Random {
@@ -577,7 +577,7 @@ enum OrionOperator {
 
 impl OrionOperator {
     /// Whether the same arguments always give the same result: every one but
-    /// `random`, whose whole job is a fresh value per evaluation (#260).
+    /// `random`, whose whole job is a fresh value per evaluation.
     fn deterministic(&self) -> bool {
         !matches!(self, OrionOperator::Random(_))
     }
@@ -601,8 +601,8 @@ impl CustomOperator for OrionOperator {
     }
 }
 
-/// The one expression engine the process evaluates with outside a workflow
-/// (I188): channel guards, channel auth, cron and the admin `/validate`
+/// The one expression engine the process evaluates with outside a workflow:
+/// channel guards, channel auth, cron and the admin `/validate`
 /// endpoint compile and evaluate on it. Built once at boot, held on
 /// `AppState`, and kept across every reload.
 ///
@@ -645,12 +645,11 @@ pub fn orion_exprs(
     builder.build()
 }
 
-/// An expression's result as the `serde_json::Value` 1.12 handed back for it
-/// (`session().eval_into::<Value>()`), for the readers that act on that
-/// JSON: a rate-limit key's text and a response-cache key's bytes.
+/// An expression's result as a `serde_json::Value`, for the readers that act
+/// on JSON: a rate-limit key's text and a response-cache key's bytes.
 ///
 /// Built by datalogic's own conversion over the value's arena view, the one
-/// `eval_into` used, so it is that JSON exactly: a datetime is its
+/// `eval_into` uses, so it is that JSON exactly: a datetime is its
 /// `{"datetime": …}` sentinel and a non-finite number is `null`.
 ///
 /// The view's arena is one per thread, reset after each call rather than

@@ -14,15 +14,14 @@ use crate::metrics;
 
 /// Check the channel's rate limit.
 ///
-/// S15: this lives with the guards, not in the HTTP layer, so
-/// [`apply_guards`] runs it on every transport. A limiter that resolves the
-/// target channel from the URI applies to HTTP ingress and nothing else, and
-/// `channel_call` would reach the workflow with the limit unenforced.
+/// This lives with the guards, not in the HTTP layer, so [`apply_guards`] runs
+/// it on every transport. A limiter that resolves the target channel from the
+/// URI would apply to HTTP ingress and nothing else, and `channel_call` would
+/// reach the workflow with the limit unenforced.
 ///
 /// `Err(RateLimited)` = over limit; `Err(ServiceUnavailable)` = the backend
-/// could not answer and the channel is configured to fail closed (N7 —
-/// deliberately not a `429`: the caller is not over any limit, the control is
-/// unavailable).
+/// could not answer and the channel is configured to fail closed (deliberately
+/// not a `429`: the caller is not over any limit, the control is unavailable).
 pub(super) async fn check_rate_limit(
     channel: &str,
     cfg: &ChannelRuntimeConfig,
@@ -62,8 +61,8 @@ pub(super) async fn check_rate_limit(
 /// Derive the bucket key one limiter counts against.
 ///
 /// One function for the address and principal limiters: the context, the
-/// fail-closed `unavailable` refusal and the `null`/blank collapse are the
-/// N5 policy, and stating it twice is how the two drift (M-05).
+/// fail-closed `unavailable` refusal and the `null`/blank collapse are one
+/// policy, and one statement of it keeps the two from drifting.
 #[expect(
     clippy::too_many_arguments,
     reason = "all of these are the context one key is derived from"
@@ -90,8 +89,8 @@ fn rate_limit_key(
         obj.insert("auth".to_string(), claims.clone());
     }
 
-    // N5: a key that cannot be computed is rejected, never replaced by the
-    // caller identity. Its own variant because only this failure is terminal.
+    // A key that cannot be computed is rejected, never replaced by the caller
+    // identity. Its own variant because only this failure is terminal.
     let unavailable = |reason: &str| {
         crate::metrics::record_error("rate_limit_key_unavailable");
         tracing::warn!(
@@ -110,11 +109,11 @@ fn rate_limit_key(
     }
 }
 
-/// The bucket key an evaluated `key_logic` names, read as 1.12 read the JSON
-/// the expression gave ([`result_json`](crate::engine::operators::result_json)):
-/// `null` — a number JSON cannot spell included, which it was — and an
-/// all-whitespace string are no key, and say which; a string is itself;
-/// anything else is its compact JSON.
+/// The bucket key an evaluated `key_logic` names, read through the JSON form
+/// of the expression's value
+/// ([`result_json`](crate::engine::operators::result_json)): `null` — a number
+/// JSON cannot spell included — and an all-whitespace string are no key, and
+/// say which; a string is itself; anything else is its compact JSON.
 pub(super) fn key_text(value: OwnedDataValue) -> Result<String, &'static str> {
     match value {
         OwnedDataValue::String(s) if s.trim().is_empty() => {
@@ -149,8 +148,8 @@ pub(crate) const COMMON_KEY_HEADERS: &[&str] = &[
 /// Build the context object `rate_limit.key_logic` is evaluated against.
 ///
 /// `client_ip` is the transport's caller identity — the HTTP client IP or
-/// the calling channel — and keeps its historical name so
-/// stored `key_logic` expressions keep resolving. Headers are limited to
+/// the calling channel — under a fixed name, so stored `key_logic`
+/// expressions keep resolving. Headers are limited to
 /// [`COMMON_KEY_HEADERS`] plus whatever the channel declared, so a request does
 /// not pay an allocation per header for a key that references two of them.
 pub(super) fn rate_limit_context(
@@ -245,9 +244,9 @@ pub(crate) fn key_logic_header_paths(logic: &Value) -> Vec<String> {
 ///
 /// `claims` are the verified claims `check_auth` returned. They reach the key
 /// expression at `auth`, alongside everything the outer limiter sees. There is
-/// no fallback when the key cannot be computed — the same argument as N5, and
-/// sharper here: falling back to the address would silently turn a per-user
-/// quota into a per-address one.
+/// no fallback when the key cannot be computed — the same argument as for the
+/// address limiter, and sharper here: falling back to the address would
+/// silently turn a per-user quota into a per-address one.
 pub(super) async fn check_principal_rate_limit(
     channel: &str,
     cfg: &ChannelRuntimeConfig,
@@ -290,12 +289,13 @@ pub(super) async fn check_principal_rate_limit(
     .await
 }
 
-/// One limiter verdict, with the N7 policy applied: an over-limit answer is
-/// the one `429`, and a backend error either fails open or refuses as
-/// `GuardBackend` according to the channel's `on_backend_error`.
+/// One limiter verdict, with the channel's backend-error policy applied: an
+/// over-limit answer is the one `429`, and a backend error either fails open
+/// or refuses as `GuardBackend` according to the channel's
+/// `on_backend_error`.
 ///
-/// One function for the address and principal limiters, which had the whole
-/// Allow/Deny match copied (M-05). `what` names which limiter in the log line.
+/// One function for the address and principal limiters, so the Allow/Deny
+/// match exists once. `what` names which limiter in the log line.
 async fn consult(
     limiter: &dyn crate::channel::RateLimitBackend,
     key: String,

@@ -65,11 +65,16 @@ orion-storage = { version = "=2.0.0-rc.1", path = "crates/orion-storage" }
 orion-definitions = { version = "=2.0.0-rc.1", path = "crates/orion-definitions" }
 orion-extension-api = { version = "=2.0.0-rc.1", path = "crates/orion-extension-api" }
 orion-http = { version = "=2.0.0-rc.1", path = "crates/orion-http" }
-# Third-party specs shared by every member that names them. Feature sets are
-# the union the workspace already used, so this changes no build.
+# Third-party specs shared by every member that names them. Features stay on
+# the member, because they genuinely differ: `orion-api`'s `chrono` omits
+# `clock` so its DTOs cannot read the wall clock, `orion-common`'s `sqlx` is
+# macro- and driver-free, and `orion-api`'s `utoipa` is optional.
 dataflow-rs = { version = "4.0.3", features = ["datetime", "budget"] }
 toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
+chrono = { version = "0.4", default-features = false }
+sqlx = { version = "0.9", default-features = false }
+utoipa = { version = "6" }
 
 # `cargo release <level|version>` performs a release commit: it rewrites
 # `workspace.package.version` and every `workspace.dependencies` requirement,

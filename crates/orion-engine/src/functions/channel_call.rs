@@ -2,9 +2,9 @@
 //! channel's ingress guards, and write what they left in `data`.
 //!
 //! [`ChannelCallFunction`] passes the run's deadline and cancellation on to
-//! the child it starts (R60) and a stopped child's error on with its code
-//! (I184). It reads the call position, judges the target and words every
-//! refusal through the helpers below, in 1.12's order and words.
+//! the child it starts, and a stopped child's error on with its code. It
+//! reads the call position, judges the target and words every refusal
+//! through the helpers below.
 
 use super::definition::{Definition, FieldOverlay, NoConnector, NullOutput, OrionFunction};
 use std::sync::{Arc, LazyLock};
@@ -25,7 +25,7 @@ use crate::kit;
 use crate::kit::read;
 use crate::{ErrorClass, HandlerError};
 
-/// This function's name: the one place it is written (F48).
+/// This function's name: the one place it is written.
 pub const NAME: &str = "channel_call";
 
 /// The refusal of a task that names no target.
@@ -41,8 +41,8 @@ const META_CALL_CHAIN: &str = "_orion_call_chain";
 fn channel_shape_problem(channel: &Value) -> Option<String> {
     match channel {
         Value::Object(_) | Value::Array(_) | Value::String(_) => None,
-        // No channel at all, as serde read 1.12's `Option<Template>`, which
-        // failed every call with this, and which only dataflow-rs 4 sees.
+        // No channel at all: a `null`, which serde reads as an absent
+        // `Option<Template>`, is refused with this message.
         Value::Null => Some(CHANNEL_REQUIRED.to_string()),
         other => Some(format!(
             "channel_call 'channel' must be a channel name or an expression \
@@ -112,17 +112,15 @@ pub struct ChildAdmission {
 static METADATA: LazyLock<Path> =
     LazyLock::new(|| "metadata".parse().expect("`metadata` is a path"));
 
-/// `channel_call`'s input on dataflow-rs 4, its fields in
-/// `ChannelCallConfig::fields()`' order (I179), each read as 1.12 read it (I183).
+/// `channel_call`'s input, its fields in `ChannelCallConfig::fields()`'
+/// order, each read in the order it is read at execution.
 ///
 /// The keys are the canonical ones. `channel_logic`, `data_logic` and
-/// `response_path`, 1.12's serde aliases, are unknown keys like any other
-/// (I186): the loader reads a definition as stored. `channel` is required,
-/// so a task naming no target is refused at load, where 1.12 failed each
-/// call (I183); a non-string scalar is
-/// refused at load as 1.12's `check_channel_shape` refused it. `data` and
+/// `response_path` are unknown keys like any other: the loader reads a
+/// definition as stored. `channel` is required, so a task naming no target is
+/// refused at load; a non-string scalar is refused at load too. `data` and
 /// `timeout_ms` written as `null` are unset ([`read::present`]), as serde
-/// read 1.12's `Option<Template>`.
+/// reads an `Option<Template>`.
 #[derive(Debug, FunctionConfig)]
 #[config(check = ChannelCallConfig::check)]
 pub struct ChannelCallConfig {
@@ -138,8 +136,8 @@ pub struct ChannelCallConfig {
 }
 
 impl ChannelCallConfig {
-    /// What 1.12 refused when it built its engine: a `channel` that can name
-    /// no channel whatever the message says.
+    /// A `channel` that can name no channel whatever the message says is
+    /// refused at load.
     fn check(cfg: &Self, cx: &mut CompileCx<'_>) {
         if let Some(problem) = channel_shape_problem(cfg.channel.raw()) {
             cx.at("channel", |cx| cx.issue(IssueCode::InputParse, problem));
@@ -147,29 +145,28 @@ impl ChannelCallConfig {
     }
 }
 
-/// `channel_call` as a function: the call 1.12's handler made, refused in
-/// the same order and the same words, with the child run on the
-/// generation's engine.
+/// `channel_call` as a function: the call it makes, its refusals worded once
+/// by the helpers below, with the child run on the generation's engine.
 ///
-/// **The child inherits the run's limits (R60).** Its deadline is the
-/// earliest of the call's own timeout (the task's, else the target's, else
-/// the default) and the run's deadline, and its token is a child of the
-/// run's, so the child ends with its partial `Run` instead of being dropped
-/// with the call. When the call's own timeout came first (strictly: a tie is
-/// the run's), the call fails with 1.12's `TIMEOUT_ERROR`, retryable.
+/// **The child inherits the run's limits.** Its deadline is the earliest of
+/// the call's own timeout (the task's, else the target's, else the default)
+/// and the run's deadline, and its token is a child of the run's, so the child
+/// ends with its partial `Run` instead of being dropped with the call. When
+/// the call's own timeout came first (strictly: a tie is the run's), the call
+/// fails with a retryable `TIMEOUT_ERROR`.
 ///
-/// **A child that stopped passes its error on (I184):** `Error::wrap` keeps
-/// its kind, so its code, and its retryability, under 1.12's "channel_call to
-/// '…' failed" prefix, where 1.12 rewrapped it as `FUNCTION_ERROR`. That
-/// includes a child the run's own deadline or token stopped: a call's `Err`
-/// after its run's own limit has passed ends the run on that limit,
-/// `TimedOut` or `Cancelled`, with the limit's record on the task (dataflow-rs
-/// `daaf8c0`), so the run reports its own limit, not a failure of this task.
+/// **A child that stopped passes its error on:** `Error::wrap` keeps its kind,
+/// so its code, and its retryability, under the "channel_call to '…' failed"
+/// prefix. That includes a child the run's own deadline or token stopped: a
+/// call's `Err` after its run's own limit has passed ends the run on that
+/// limit, `TimedOut` or `Cancelled`, with the limit's record on the task
+/// (dataflow-rs `daaf8c0`), so the run reports its own limit, not a failure of
+/// this task.
 ///
 /// The child's metadata is the caller's with the call position advanced,
 /// `channel` naming the target, and the caller's error records stripped
-/// before the target's guards read it, as 1.12 cleared them; the child's run
-/// resets its own error context anyway (break 20).
+/// before the target's guards read it; the child's run resets its own error
+/// context anyway.
 pub struct ChannelCallFunction {
     /// The node, resolved once per call: the target's guards and the engine
     /// that runs it come from the same build.
@@ -242,13 +239,13 @@ impl Function for ChannelCallFunction {
         // The calling channel, read before `channel` is replaced below: it
         // is this call's caller identity, so a target's rate limit buckets
         // per calling channel rather than lumping every in-process caller
-        // together (N16).
+        // together.
         let caller = metadata
             .get("channel")
             .and_then(OwnedDataValue::as_str)
             .unwrap_or(NAME)
             .to_string();
-        // F4: the child runs as the target channel, so connector metrics and
+        // The child runs as the target channel, so connector metrics and
         // circuit-breaker keys attribute to the channel actually executing.
         chain.push(target.clone());
         put(
@@ -268,13 +265,12 @@ impl Function for ChannelCallFunction {
         strip_error_records(&mut metadata);
 
         // One generation for this call: the target's guards here and the
-        // engine that runs it below come from the same build (inheriting any
-        // pinned generation from the parent run under V2-05.3).
+        // engine that runs it below come from the same build, with any
+        // pinned generation inherited from the parent run.
         let resolved = self.host.resolve(&target)?;
         let engine = resolved.engine();
-        // Where the answer goes, before the guards spend anything on the
-        // call: an output that names no path (`null` included, which 1.12
-        // wrote to a key no response shows) runs nothing.
+        // Where the answer goes, before the guards spend anything on the call:
+        // an output that names no path (`null` included) runs nothing.
         let output = Self::DEFINITION.output_path(ctx, &cfg.output)?;
 
         let admission = resolved
@@ -322,11 +318,11 @@ impl Function for ChannelCallFunction {
         let mut child = Message::from_parts(data, OwnedDataValue::Null, metadata);
         let run = engine.run_with(&mut child, &options).await;
 
-        // Zero matches, read from the run, not inferred from the registry
-        // (07's E13). A target the engine holds no workflow for, so that
-        // none was even considered, is refused as one not found. A target
-        // whose workflows were considered and all declined answers with the
-        // child's untouched `data`, as 1.12 answered it.
+        // Zero matches, read from the run, not inferred from the registry. A
+        // target the engine holds no workflow for, so that none was even
+        // considered, is refused as one not found. A target whose workflows
+        // were considered and all declined answers with the child's untouched
+        // `data`.
         if run.matched() == 0 && run.workflows().next().is_none() {
             return Err(not_found(&target).into());
         }
@@ -384,7 +380,7 @@ impl ChildLimits {
 
 /// `ms` from now on the clock the engine's limits read (Tokio's natively,
 /// so a paused test clock agrees with them), or `None` past the clock's
-/// range: an unbounded call, as `tokio::time::timeout` gave 1.12 one.
+/// range: an unbounded call.
 fn own_deadline(ms: u64) -> Option<Instant> {
     tokio::time::Instant::now()
         .into_std()
@@ -411,7 +407,7 @@ fn strip_error_records(metadata: &mut OwnedDataValue) {
 }
 
 /// `key` set to `value` in `object`, in place when it is there and last
-/// when it is not, as `serde_json`'s `IndexMap` did for 1.12's metadata.
+/// when it is not, so the metadata object keeps its insertion order.
 fn put(object: &mut OwnedDataValue, key: &str, value: OwnedDataValue) {
     if let OwnedDataValue::Object(entries) = object {
         match entries.iter_mut().find(|(k, _)| k == key) {
@@ -421,8 +417,7 @@ fn put(object: &mut OwnedDataValue, key: &str, value: OwnedDataValue) {
     }
 }
 
-/// The `code: message; code: message` summary of a child's error records,
-/// as `execute_admitted` builds it for 1.12's `WorkflowErrors`.
+/// The `code: message; code: message` summary of a child's error records.
 fn summary(errors: &[dataflow_rs::run::ErrorRecord]) -> String {
     errors
         .iter()
@@ -431,10 +426,9 @@ fn summary(errors: &[dataflow_rs::run::ErrorRecord]) -> String {
         .join("; ")
 }
 
-/// 1.12's `guard_refusal` on dataflow-rs 4's error: a `validation_logic`
-/// rejection stays the caller's `VALIDATION_ERROR`, and every other refusal
-/// keeps the status the guard chose, so the caller sees `429`/`503` rather
-/// than a generic `500`.
+/// A `validation_logic` rejection stays the caller's `VALIDATION_ERROR`, and
+/// every other refusal keeps the status the guard chose, so the caller sees
+/// `429`/`503` rather than a generic `500`.
 pub fn guard_refused(target: &str, e: crate::errors::OrionError) -> dataflow_rs::Error {
     let (status, _code, detail) = e.response_parts();
     let message = format!("channel_call to '{target}': {detail}");
@@ -447,10 +441,10 @@ pub fn guard_refused(target: &str, e: crate::errors::OrionError) -> dataflow_rs:
 
 // -- The call position, the target, and the refusals --
 //
-// The call position, the target's judgement and every refusal 1.12 words,
-// once, as `HandlerError`s of the class 1.12's error mapped to:
-// `CallerInput` is 1.12's `Validation`, `Backend` its `function_execution`
-// and `Timeout` its `Timeout`, so each records 1.12's code and text (I184).
+// The call position, the target's judgement and every refusal are worded
+// once, as `HandlerError`s of their class: `CallerInput` is a validation
+// failure, `Backend` a function-execution failure and `Timeout` a timeout,
+// so each records its code and text.
 
 /// Where a message stands in a call chain, as its metadata records it: the
 /// depth (`_orion_call_depth`, a number) and the channels called so far

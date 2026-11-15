@@ -133,11 +133,12 @@ async fn dispatch(host: &Host, delivery: Delivery) -> Dispatched {
     let channel = runtime.channel.name.clone();
 
     // 3. The metadata every ingress builds: platform-owned keys only.
-    let mut trigger = delivery.trigger;
-    trigger.insert("type".to_string(), Value::String(host.protocol.clone()));
-    let mut metadata = json!({ "channel": channel, TRIGGER_KEY: Value::Object(trigger) });
-    crate::engine::clear_error_context(&mut metadata);
-    crate::engine::stamp_vars(&mut metadata, deps.vars.as_deref());
+    let metadata = ingress_metadata(
+        &channel,
+        &host.protocol,
+        delivery.trigger,
+        deps.vars.as_deref(),
+    );
 
     let mut context = GuardContext::new(delivery.data, metadata);
     let headers: HashMap<String, String> = delivery
@@ -183,60 +184,24 @@ async fn dispatch(host: &Host, delivery: Delivery) -> Dispatched {
     let _backpressure_permit = admission.backpressure_permit;
     let claim = admission.dedup_claim;
 
-    // 5. Execute on the generation the guards were read from. The rollout
-    // bucket hashes the physical delivery, so a redelivery runs the version
-    // its first attempt ran; with no owner, a random bucket per delivery.
-    let capture = runtime
-        .trace_storage
-        .task_details
-        .then_some(crate::engine::TraceCapture {
-            max_snapshot_bytes: deps.max_result_size_bytes,
-        });
-    let execution = crate::runtime::execute_admitted_on_generation(
-        &generation,
-        &channel,
-        context.data(),
-        context.metadata(),
-        crate::engine::ExecOpts {
-            cancel: None,
-            accountant: None,
-            timeout_ms: admission.timeout_ms,
-            capture,
-            routing_bucket: Some(crate::engine::utils::rollout_bucket_for_identity(
-                delivery.dedup_owner.as_deref(),
-            )),
-            profile: None,
-        },
-    )
-    .await;
-
-    // 7. The channel's counters, before the generation is released.
-    runtime
-        .metrics
-        .record_message(&channel, execution.outcome.status_label());
-    runtime
-        .metrics
-        .record_message_duration(&channel, execution.duration.as_secs_f64());
-
-    // 6. The trace, every outcome included. The generation is dropped first:
-    // the write can wait on the database, and nothing here needs the engine.
-    let channel_id = runtime.channel.channel_id.clone();
-    let trace_storage = runtime.trace_storage;
-    drop(runtime);
-    drop(generation);
-    crate::queue::trace_record::record_run(
-        crate::queue::trace_record::RunTraceSink {
-            trace_storage,
-            trace_repo: &*deps.trace_repo,
-            persistence_queue: &deps.persistence_queue,
-            max_result_size_bytes: deps.max_result_size_bytes,
-        },
-        &host.protocol,
-        &channel_id,
-        &channel,
-        Some(context.data()),
-        &execution,
-    )
+    // 5-7. Execute on the generation the guards were read from, count the
+    // run, then store its trace. The rollout bucket hashes the physical
+    // delivery, so a redelivery runs the version its first attempt ran; with
+    // no owner, a random bucket per delivery.
+    let execution = run_traced(TracedRun {
+        generation,
+        channel_runtime: runtime,
+        channel: &channel,
+        protocol: &host.protocol,
+        timeout_ms: admission.timeout_ms,
+        routing_bucket: Some(crate::engine::utils::rollout_bucket_for_identity(
+            delivery.dedup_owner.as_deref(),
+        )),
+        context: &context,
+        trace_repo: &*deps.trace_repo,
+        persistence_queue: &deps.persistence_queue,
+        max_result_size_bytes: deps.max_result_size_bytes,
+    })
     .await;
 
     let outcome = outcome_of(execution);
@@ -244,6 +209,101 @@ async fn dispatch(host: &Host, delivery: Delivery) -> Dispatched {
         Some(claim) => Dispatched::new(outcome, Box::new(ClaimSettle(claim))),
         None => Dispatched::unsettled(outcome),
     }
+}
+
+/// The metadata every ingress gives a run: the channel name, the transport's
+/// facts at `trigger` (with `type` naming the protocol), the instance's
+/// `vars`, and no engine-owned error context left over from an earlier task.
+pub(crate) fn ingress_metadata(
+    channel: &str,
+    protocol: &str,
+    mut trigger: serde_json::Map<String, Value>,
+    vars: Option<&Value>,
+) -> Value {
+    trigger.insert("type".to_string(), Value::String(protocol.to_string()));
+    let mut metadata = json!({ "channel": channel, TRIGGER_KEY: Value::Object(trigger) });
+    crate::engine::clear_error_context(&mut metadata);
+    crate::engine::stamp_vars(&mut metadata, vars);
+    metadata
+}
+
+/// One run an ingress makes, from the admitted generation to the stored
+/// trace.
+pub(crate) struct TracedRun<'a> {
+    /// The generation the guards were read from; moved so it can be released
+    /// before the trace write waits on the database.
+    pub generation: Arc<RuntimeGeneration>,
+    /// The channel's config in that generation: its timeout, tracing policy
+    /// and metrics.
+    pub channel_runtime: Arc<crate::channel::registry::ChannelRuntimeConfig>,
+    pub channel: &'a str,
+    /// The trace's `mode`.
+    pub protocol: &'a str,
+    pub timeout_ms: Option<u64>,
+    pub routing_bucket: Option<u8>,
+    pub context: &'a GuardContext,
+    pub trace_repo: &'a dyn TraceSink,
+    pub persistence_queue: &'a TracePersistenceQueue,
+    pub max_result_size_bytes: usize,
+}
+
+/// Execute one admitted run, count it, release the generation, and store its
+/// trace.
+///
+/// Every ingress does these in this order: the counters while the generation
+/// is still held, then the trace after dropping it, because the write can
+/// wait on the database and nothing needs the engine by then.
+pub(crate) async fn run_traced(run: TracedRun<'_>) -> crate::engine::Execution {
+    let capture =
+        run.channel_runtime
+            .trace_storage
+            .task_details
+            .then_some(crate::engine::TraceCapture {
+                max_snapshot_bytes: run.max_result_size_bytes,
+            });
+    let execution = crate::runtime::execute_admitted_on_generation(
+        &run.generation,
+        run.channel,
+        run.context.data(),
+        run.context.metadata(),
+        crate::engine::ExecOpts {
+            cancel: None,
+            accountant: None,
+            timeout_ms: run.timeout_ms,
+            capture,
+            routing_bucket: run.routing_bucket,
+            profile: None,
+        },
+    )
+    .await;
+
+    run.channel_runtime
+        .metrics
+        .record_message(run.channel, execution.outcome.status_label());
+    run.channel_runtime
+        .metrics
+        .record_message_duration(run.channel, execution.duration.as_secs_f64());
+
+    let channel_id = run.channel_runtime.channel.channel_id.clone();
+    let trace_storage = run.channel_runtime.trace_storage;
+    drop(run.channel_runtime);
+    drop(run.generation);
+
+    crate::queue::trace_record::record_run(
+        crate::queue::trace_record::RunTraceSink {
+            trace_storage,
+            trace_repo: run.trace_repo,
+            persistence_queue: run.persistence_queue,
+            max_result_size_bytes: run.max_result_size_bytes,
+        },
+        run.protocol,
+        &channel_id,
+        run.channel,
+        Some(run.context.data()),
+        &execution,
+    )
+    .await;
+    execution
 }
 
 /// What a finished run answers a driver: its output, or why it failed.

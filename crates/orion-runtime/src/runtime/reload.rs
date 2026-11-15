@@ -683,7 +683,7 @@ async fn build_and_publish(
         refuse_engine_issues(&engine_issues)?;
 
         // Channels that fail to load are quarantined — refused at every
-        // ingress — and the build proceeds (F35). The quarantine set is
+        // ingress — and the build proceeds. The quarantine set is
         // recorded on the generation and read back with
         // `ChannelSnapshot::quarantined` (reported via `/health`), so it is
         // deliberately not propagated as an error here.
@@ -743,9 +743,8 @@ async fn build_and_publish(
 
         // One store, both halves. There is no window in which a reader is held
         // off, so this needs neither a timeout nor a carefully-scoped drop
-        // — and no window in which a request is
-        // admitted by one generation and executed by another, which is what
-        // two stores here could not avoid however they were ordered.
+        // — and no window in which a request is admitted by one generation
+        // and executed by another.
         let generation = state
             .runtime
             .publish_parts(super::generation::GenerationParts {
@@ -763,12 +762,12 @@ async fn build_and_publish(
         let published = state.runtime.load();
 
         // Sweep the plugin compile cache down to what this generation serves.
-        // The cache is a compile-time dedup keyed by digest that never shrank
-        // on its own, so drafts, self-test failures, superseded versions,
-        // deleted plugins and one-off `validate`s stayed resident until
-        // restart. A loaded plugin's handler holds its own component, so this
-        // cannot disturb serving; the slack spares recent uploads that are
-        // compiled but not yet activated.
+        // The cache is a compile-time dedup keyed by digest and does not shrink
+        // on its own, so without this sweep drafts, self-test failures,
+        // superseded versions, deleted plugins and one-off `validate`s would
+        // stay resident until restart. A loaded plugin's handler holds its own
+        // component, so this cannot disturb serving; the slack spares recent
+        // uploads that are compiled but not yet activated.
         if let Some(runtime) = state.plugins.as_ref() {
             let keep: std::collections::HashSet<&str> = published
                 .plugins
@@ -795,9 +794,9 @@ async fn build_and_publish(
         // `metadata.channel` — the channel *name*, which is what `RouteTable`
         // and `require_serviceable` key on and what the `"{channel}:{connector}"`
         // breaker key is built from — not the `channel_id` storage PK (a UUID
-        // in general). Pruning against `channel_id` never matched a single
-        // breaker's channel, so every reload wiped the whole map — the exact
-        // fan-out the cluster breaker-reset test pins.
+        // in general), which matches no breaker's channel: pruning against it
+        // would wipe the whole map on every reload, the exact fan-out the
+        // cluster breaker-reset test pins.
         let live_channels: std::collections::HashSet<&str> =
             channels.iter().map(|c| c.name.as_str()).collect();
         state
@@ -931,10 +930,7 @@ async fn compile_engine(
     // compiled first and a workflow the registry cannot run is quarantined
     // per channel rather than failing the reload, both halves are built
     // before anything is published, and a failure here leaves the
-    // previous generation serving whole. Back when the channel estate was
-    // published first, this `?` could leave the node *permanently* mixed:
-    // new guards over old workflows, until some later reload happened to
-    // succeed.
+    // previous generation serving whole.
     let plugins_changed =
         crate::plugin::PluginSet::fingerprint_of(&plugin_rows) != current.plugins.fingerprint();
     let half = if plugins_changed {
@@ -955,9 +951,9 @@ async fn compile_engine(
                 })?,
         );
         let compiler = plugin_compiler(state, &plugins);
-        // P-24: compiling every workflow is CPU work; on a multi-thread
-        // runtime `block_in_place` lets the remaining tasks move to another
-        // worker instead of stalling the data plane behind this one.
+        // Compiling every workflow is CPU work; on a multi-thread runtime
+        // `block_in_place` lets the remaining tasks move to another worker
+        // instead of stalling the data plane behind this one.
         let (issues, engine) = compile_blocking(|| {
             let loaded = crate::engine::build_engine_workflows(
                 channels,
@@ -1079,7 +1075,7 @@ pub async fn check_candidate(
 /// A dataflow-rs 4 compiler over a registry assembled afresh from this
 /// node's live components ([`super::build_registry`]) with `plugins`'
 /// functions registered: what a reload that changes the plugin set compiles
-/// on, as its dataflow-rs 3 half assembles its handlers afresh.
+/// on.
 pub(crate) fn plugin_compiler(
     state: &AppState,
     plugins: &crate::plugin::PluginSet,

@@ -27,18 +27,18 @@ test-support = []
 [dependencies]
 orion-api = { workspace = true, features = ["utoipa"] }
 orion-common.workspace = true
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "sqlite", "postgres", "mysql"] }
+sqlx = { workspace = true, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "sqlite", "postgres", "mysql"] }
 sea-query = { version = "1.0", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
 sea-query-sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "with-chrono", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
 async-trait = "0.1"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+chrono = { workspace = true, features = ["clock", "std", "serde"] }
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
 tracing = "0.1"
-utoipa = { version = "6", features = ["axum_extras", "chrono"] }
+utoipa = { workspace = true, features = ["axum_extras", "chrono"] }
 uuid.workspace = true
 
 [dev-dependencies]

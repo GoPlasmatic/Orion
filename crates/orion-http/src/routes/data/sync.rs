@@ -633,10 +633,17 @@ pub(super) struct AdmittedOn {
 /// resulting [`Admission`].
 ///
 /// Returns a pre-serialized `Response` so the JSON is serialized exactly once.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the raw input joins the payload the request already carried"
+)]
 pub(super) async fn process_sync_for_channel(
     state: &DataPlane,
     channel: &str,
     data: Value,
+    // The request body when it is the payload itself: the trace input is
+    // already this JSON, so it is not serialized again (P-10).
+    raw_input: Option<&str>,
     metadata: Value,
     admitted: AdmittedOn,
     profile_requested: bool,
@@ -780,7 +787,9 @@ pub(super) async fn process_sync_for_channel(
                             mode: "sync",
                             channel,
                             channel_id: Some(channel_config.channel.channel_id.as_str()),
-                            input_json: serde_json::to_string(&data).ok(),
+                            input_json: raw_input
+                                .map(str::to_owned)
+                                .or_else(|| serde_json::to_string(&data).ok()),
                             response_json: std::borrow::Cow::Owned(response_json),
                             duration_ms: start.elapsed().as_secs_f64() * 1000.0,
                             has_errors: true,
@@ -990,7 +999,9 @@ pub(super) async fn process_sync_for_channel(
                 let plan = TracePlan::decide(&channel_config.trace_storage, has_errors);
                 let (input_json, task_trace_json) = if plan.persists() {
                     (
-                        serde_json::to_string(&data).ok(),
+                        raw_input
+                            .map(str::to_owned)
+                            .or_else(|| serde_json::to_string(&data).ok()),
                         crate::engine::utils::serialize_task_trace_capped(
                             task_trace.as_ref(),
                             max_result_size,

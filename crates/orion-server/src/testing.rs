@@ -65,7 +65,7 @@ pub struct TestNode {
 impl TestNode {
     /// Assemble a node serving `composition` under `config`.
     pub async fn start(
-        mut config: AppConfig,
+        config: AppConfig,
         composition: CompositionBuilder,
     ) -> Result<Self, BootstrapError> {
         let storage = if config.storage.url.is_empty()
@@ -83,7 +83,19 @@ impl TestNode {
             }
         };
         let pool = crate::storage::init_pool(&storage).await?;
+        Self::start_on(config, pool, composition).await
+    }
 
+    /// Assemble a node over an existing `pool`.
+    ///
+    /// For a test that needs the database across more than one node — two
+    /// replicas over one store, or a restart — and so cannot let [`Self::start`]
+    /// create a private one.
+    pub async fn start_on(
+        mut config: AppConfig,
+        pool: DbPool,
+        composition: CompositionBuilder,
+    ) -> Result<Self, BootstrapError> {
         config.trace_queue.dlq_retry_enabled = false;
 
         // Installed before `assemble`, as production installs it, so the

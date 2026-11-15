@@ -32,12 +32,12 @@ orion-storage.workspace = true
 dataflow-rs.workspace = true
 axum = { version = "0.8", default-features = false, features = ["json"] }
 base64 = "0.23"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+chrono = { workspace = true, features = ["clock", "std", "serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml.workspace = true
 url = "2"
-utoipa = { version = "6", features = ["axum_extras", "chrono"] }
+utoipa = { workspace = true, features = ["axum_extras", "chrono"] }
 uuid.workspace = true
 
 [dev-dependencies]

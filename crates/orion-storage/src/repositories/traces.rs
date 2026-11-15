@@ -431,7 +431,6 @@ impl TraceSink for SqlTraceRepository {
                 &self.pool,
                 super::helpers::WriteStatement::Insert(&mut insert),
                 &mut trace_select(&id),
-                OrionError::Storage,
                 || trace_not_found(&id),
             )
             .await

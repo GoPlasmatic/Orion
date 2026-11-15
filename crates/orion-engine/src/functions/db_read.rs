@@ -19,7 +19,7 @@ use crate::kit::{self, read};
 use crate::{ErrorClass, HandlerError};
 
 /// This handler's name, for the row-conversion helpers below — a reference to
-/// the one place it is written (F48), not a second spelling of it.
+/// the one place it is written, not a second spelling of it.
 pub(crate) const NAME: &str = "db_read";
 
 /// The statement and its bind values.
@@ -179,10 +179,10 @@ async fn read_rows(
                 // `QueryFailure` could see it.
                 while let Some(row) = stream.try_next().await? {
                     if json_rows.len() >= max_rows {
-                        // F42: classified so `timed_query` reports it as a
-                        // 400 with the text intact rather than a 500 with
-                        // the guidance sanitised away. The guidance *is*
-                        // the message, so losing it loses the point.
+                        // Classified so it is reported as a 400 with the text
+                        // intact rather than a 500 with the guidance sanitised
+                        // away. The guidance *is* the message, so losing it
+                        // loses the point.
                         return Err(
                             crate::functions::connector_helpers::QueryFailure::Limit(
                                 format!(
@@ -222,15 +222,15 @@ async fn read_rows(
     Ok(Value::Array(json))
 }
 
-/// I185's Defect: the rows are an array, which no context root takes (break
-/// 21), so an `output` that is one fails every call.
+/// The Defect for a literal root: the rows are an array, which no context
+/// root takes, so an `output` that is one fails every call.
 const ROOT_OUTPUT: &str = "`db_read` writes an array of rows, and a context root takes \
     only an object (break 21): set `output` to a path below it, such as `data.rows`";
 
-/// `db_read`'s input on dataflow-rs 4, in its field table's order (I179). The
-/// connector and the statement are literals, required at load (I183); the
-/// binds and the two rendering choices are documents of `var` holes, as 1.12
-/// folded them, read by `kit::read`'s twins of 1.12's readers.
+/// `db_read`'s input, in its field table's order. The connector and the
+/// statement are literals, required at load; the binds and the two rendering
+/// choices are documents of `var` holes, folded at execution, read by
+/// `kit::read`'s readers.
 #[derive(Debug, FunctionConfig)]
 pub struct DbReadConfig {
     /// Name of the SQL connector to query.
@@ -255,12 +255,11 @@ pub struct DbReadConfig {
     output: Output,
 }
 
-/// `db_read` as a dataflow-rs 4 function: the statement `DbReadHandler`
-/// runs, read in the same order.
+/// `db_read` as a function: the statement it runs, read in order.
 pub struct DbReadFunction {
     pub pool_cache: Arc<SqlPoolCache>,
     pub registry: Arc<ConnectorRegistry>,
-    /// Hard row cap, from `query.max_limit` (F10).
+    /// Hard row cap, from `query.max_limit`.
     pub max_rows: usize,
     /// Hard decoded byte cap across the result set, from
     /// `query.max_result_bytes` (`0` = unlimited).
@@ -317,7 +316,7 @@ impl Function for DbReadFunction {
         super::definition::spec::<Self>()
     }
 
-    /// I185: an `output` that is a literal context root, the default `data`
+    /// An `output` that is a literal context root, the default `data`
     /// included, is a Defect at `output`.
     fn prepare(&self, cfg: &mut DbReadConfig, _p: &Prepare<'_>) -> Result<(), Vec<Issue>> {
         kit::root_output_defect(&cfg.output, ROOT_OUTPUT)
@@ -336,33 +335,28 @@ impl Function for DbReadFunction {
         };
         require_read_only(&read.query, NAME)?;
         let run_deadline = ctx.deadline();
-        let mut rows = None;
-        kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
-            let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
-            let db = kit::require_connector::<<Self as OrionFunction>::Connector>(
-                &config,
-                &cfg.connector,
-            )?;
-            gate(db, &cfg.connector)?;
-            rows = Some(
-                read_rows(
+        let rows = kit::with_connector::<<Self as OrionFunction>::Connector, _, _, _>(
+            NAME,
+            &self.registry,
+            &cfg.connector,
+            channel,
+            |conn| async move {
+                gate(conn.config(), &cfg.connector)?;
+                Ok(read_rows(
                     &self.pool_cache,
                     &cfg.connector,
-                    db,
+                    conn.config(),
                     self.max_rows,
                     self.max_result_bytes,
                     &read,
                     run_deadline,
                     self.registry.config_generation(),
                 )
-                .await?,
-            );
-            Ok(Outcome::Ok)
-        })
+                .await?)
+            },
+        )
         .await?;
-        if let Some(rows) = rows {
-            ctx.set(&output, dataflow_rs::datavalue::OwnedDataValue::from(rows))?;
-        }
+        ctx.set(&output, dataflow_rs::datavalue::OwnedDataValue::from(rows))?;
         Ok(Outcome::Ok)
     }
 }

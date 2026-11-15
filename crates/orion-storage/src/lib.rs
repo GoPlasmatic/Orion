@@ -752,6 +752,30 @@ pub async fn pending_migrations(pool: &DbPool) -> Result<Vec<(i64, String)>, Ori
 // Backend-specific pool initialization
 // ============================================================
 
+/// The three database backends' pool builders take the same settings through
+/// the same method names. One macro so a new setting cannot land on two of
+/// them and be forgotten on the third (M-10).
+macro_rules! pool_options {
+    ($options:ty, $config:expr) => {{
+        let mut options = <$options>::new()
+            .max_connections($config.max_connections)
+            .min_connections($config.min_connections)
+            .acquire_timeout(Duration::from_secs($config.acquire_timeout_secs));
+        if $config.idle_timeout_secs > 0 {
+            options = options.idle_timeout(Duration::from_secs($config.idle_timeout_secs));
+        }
+        options
+    }};
+}
+
+/// One refusal for every backend's failed dial.
+fn connect_err(e: sqlx::Error) -> OrionError {
+    OrionError::Internal {
+        context: "Failed to connect to database".to_string(),
+        source: Some(Box::new(e)),
+    }
+}
+
 async fn init_sqlite_pool(config: &StorageConfig) -> Result<DbPool, OrionError> {
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use std::str::FromStr;
@@ -788,13 +812,7 @@ async fn init_sqlite_pool(config: &StorageConfig) -> Result<DbPool, OrionError> 
     if config.idle_timeout_secs > 0 {
         pool_opts = pool_opts.idle_timeout(Duration::from_secs(config.idle_timeout_secs));
     }
-    let pool = pool_opts
-        .connect_with(options)
-        .await
-        .map_err(|e| OrionError::Internal {
-            context: "Failed to connect to database".to_string(),
-            source: Some(Box::new(e)),
-        })?;
+    let pool = pool_opts.connect_with(options).await.map_err(connect_err)?;
     Ok(DbPool::Sqlite(pool))
 }
 
@@ -813,46 +831,22 @@ fn postgres_connect_options(url: &str) -> Result<sqlx::postgres::PgConnectOption
 async fn init_postgres_pool(config: &StorageConfig) -> Result<DbPool, OrionError> {
     use sqlx::postgres::PgPoolOptions;
 
-    let mut pool_opts = PgPoolOptions::new()
-        .max_connections(config.max_connections)
-        .min_connections(config.min_connections)
-        .acquire_timeout(Duration::from_secs(config.acquire_timeout_secs));
-    if config.idle_timeout_secs > 0 {
-        pool_opts = pool_opts.idle_timeout(Duration::from_secs(config.idle_timeout_secs));
-    }
+    let pool_opts = pool_options!(PgPoolOptions, config);
     // Every timestamp Orion writes is UTC-naive, and the schema's defaults
     // must be the same clock: pin the session zone rather than inheriting
     // whatever the server's `TimeZone` happens to be. Without this, cron
     // scheduling, DLQ retry and retention windows shift by the server's UTC
     // offset.
     let options = postgres_connect_options(&config.url)?;
-    let pool = pool_opts
-        .connect_with(options)
-        .await
-        .map_err(|e| OrionError::Internal {
-            context: "Failed to connect to database".to_string(),
-            source: Some(Box::new(e)),
-        })?;
+    let pool = pool_opts.connect_with(options).await.map_err(connect_err)?;
     Ok(DbPool::Postgres(pool))
 }
 
 async fn init_mysql_pool(config: &StorageConfig) -> Result<DbPool, OrionError> {
     use sqlx::mysql::MySqlPoolOptions;
 
-    let mut pool_opts = MySqlPoolOptions::new()
-        .max_connections(config.max_connections)
-        .min_connections(config.min_connections)
-        .acquire_timeout(Duration::from_secs(config.acquire_timeout_secs));
-    if config.idle_timeout_secs > 0 {
-        pool_opts = pool_opts.idle_timeout(Duration::from_secs(config.idle_timeout_secs));
-    }
-    let pool = pool_opts
-        .connect(&config.url)
-        .await
-        .map_err(|e| OrionError::Internal {
-            context: "Failed to connect to database".to_string(),
-            source: Some(Box::new(e)),
-        })?;
+    let pool_opts = pool_options!(MySqlPoolOptions, config);
+    let pool = pool_opts.connect(&config.url).await.map_err(connect_err)?;
     Ok(DbPool::Mysql(pool))
 }
 

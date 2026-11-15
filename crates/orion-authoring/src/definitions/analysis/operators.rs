@@ -45,10 +45,9 @@ pub(crate) fn is_nondeterministic(op: &str) -> bool {
 /// fields, every registry field whose `template_at` says dataflow-rs evaluates
 /// it, and every field marked `resolvable` (a `{"var": …}` fold is a read too).
 ///
-/// `template_at` is why an `http_call` path or header value counts. Before
-/// dataflow-rs 3.9 those were static strings, so a `{"var": "payload.x"}` in
-/// one was inert text and reporting it as a read would have been wrong; now it
-/// is evaluated, and a rule that could not see it was under-reporting.
+/// `template_at` is why an `http_call` path or header value counts: a
+/// `{"var": "payload.x"}` in one is evaluated, and a rule that did not see it
+/// would under-report.
 pub fn input_expressions<'a>(
     function: &str,
     input: &'a Value,
@@ -85,9 +84,9 @@ pub fn input_expressions<'a>(
             }
         }
         // `channel_call`'s `channel` and `data` are not listed here: they are
-        // ordinary `template_at` fields now, found by the sweep below along
-        // with every other one, and their pre-1.0 `*_logic` spellings resolve
-        // through the same registry aliases.
+        // ordinary `template_at` fields, found by the sweep below along with
+        // every other one, and their `*_logic` spellings resolve through the
+        // same registry aliases.
         _ => {}
     }
     for (field, value) in map {

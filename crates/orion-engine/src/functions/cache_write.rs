@@ -14,16 +14,16 @@ use crate::connector::{CacheConnectorConfig, ConnectorRegistry};
 use crate::kit::{self, read};
 use crate::{ErrorClass, HandlerError};
 
-/// This function's name, for the free functions below (F48).
+/// This function's name, for the free functions below.
 pub(crate) const NAME: &str = "cache_write";
 
 /// The value as the string the store holds.
 ///
 /// Always JSON-encode, including strings, so `cache_read` is the exact
-/// inverse. Storing strings raw made the round-trip lossy: writing "123"
-/// stored `123`, which read back as the *number* 123, and "true"/"null"
-/// likewise changed type — silently breaking any downstream JSONLogic
-/// comparison (proposal N13).
+/// inverse. Storing strings raw would make the round-trip lossy: writing "123"
+/// would store `123`, which reads back as the *number* 123, and "true"/"null"
+/// likewise change type — silently breaking any downstream JSONLogic
+/// comparison.
 ///
 /// Generic over what is encoded, so the function serializes the rendered
 /// document straight into the string, with no tree of its own.
@@ -46,7 +46,7 @@ async fn store(
     encoded: &str,
     ttl: Option<u64>,
 ) -> Result<(), HandlerError> {
-    // Workflow-purpose namespace (S19): a memory backend here can never
+    // Workflow-purpose namespace: a memory backend here can never
     // alias the dedup store or response cache, so a crafted
     // `dedup:{channel}:…` key is just an ordinary workflow key.
     let backend = pool
@@ -117,12 +117,12 @@ fn ttl_secs(value: Value, name: &str) -> Result<Option<u64>, HandlerError> {
     }
 }
 
-/// `cache_write`'s input on dataflow-rs 4, in its field table's order
-/// (I179). The connector is a literal; the key an expression, read by
+/// `cache_write`'s input on dataflow-rs 4, in its field table's order.
+/// The connector is a literal; the key an expression, read by
 /// `kit::read`'s twin of `resolve_required_str`; the value and `ttl_secs`
-/// documents of `var` holes, `$` keys kept as data, as 1.12 folded them
-/// (I183). The connector, the key and the value are required at load
-/// (I183). It has no `output`: the write is the whole effect.
+/// documents of `var` holes, `$` keys kept as data. The connector, the key
+/// and the value are required at load. It has no `output`: the write is the
+/// whole effect.
 #[derive(Debug, FunctionConfig)]
 pub struct CacheWriteConfig {
     /// Name of the cache connector to write to.
@@ -200,18 +200,27 @@ impl Function for CacheWriteFunction {
         let key = read::required_str(Some(&key), "key", NAME)?;
         let ttl = rendered_ttl_secs(ctx, cfg.ttl_secs.as_ref(), NAME)?;
         let ctx = &*ctx;
-        kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
-            let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
-            let conn = kit::require_connector::<<Self as OrionFunction>::Connector>(
-                &config,
-                &cfg.connector,
-            )?;
-            // F22e: a cache connector can be made read-only in its config.
-            kit::require_op(conn.operations.write, "write", &cfg.connector)?;
-            let encoded = encode(&ctx.render(&cfg.value))?;
-            store(&self.cache_pool, &cfg.connector, conn, &key, &encoded, ttl).await?;
-            Ok(Outcome::Ok)
-        })
+        kit::with_connector::<<Self as OrionFunction>::Connector, _, _, _>(
+            NAME,
+            &self.registry,
+            &cfg.connector,
+            channel,
+            |conn| async move {
+                // A cache connector can be made read-only in its config.
+                kit::require_op(conn.config().operations.write, "write", &cfg.connector)?;
+                let encoded = encode(&ctx.render(&cfg.value))?;
+                store(
+                    &self.cache_pool,
+                    &cfg.connector,
+                    conn.config(),
+                    &key,
+                    &encoded,
+                    ttl,
+                )
+                .await?;
+                Ok(Outcome::Ok)
+            },
+        )
         .await
     }
 }

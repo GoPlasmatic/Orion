@@ -10,7 +10,7 @@
 //! author invalidating "the ladder" should not have to know which. The handler
 //! bumps the namespace in every store an entry could be in. It also cannot
 //! write a response body: the response cache's keyspace stays one only Orion
-//! writes to (S19), and a workflow can move a counter in it, nothing else.
+//! writes to, and a workflow can move a counter in it, nothing else.
 
 use super::definition::{Definition, FieldOverlay, NoConnector, OrionFunction};
 use std::borrow::Cow;
@@ -30,8 +30,8 @@ use crate::kit;
 use crate::kit::read;
 use crate::{ErrorClass, HandlerError};
 
-/// This function's name, written once (F48): the engine registers it under
-/// this, and its errors carry it.
+/// This function's name, written once: the engine registers it under this,
+/// and its errors carry it.
 pub const NAME: &str = "cache_invalidate";
 
 /// Most namespaces one call may bump.
@@ -82,11 +82,11 @@ async fn invalidate(
     Ok(stores)
 }
 
-/// `cache_invalidate`'s input on dataflow-rs 4, in its field table's order
-/// (I179). `namespaces` is an expression, read by `kit::read`'s twin of
-/// `resolve_required_str_list` with 1.12's bound of 64 per call, and
-/// required at load (I183). `output` is optional: unset, nothing is written
-/// (I190's primary output).
+/// `cache_invalidate`'s input on dataflow-rs 4, in its field table's order.
+/// `namespaces` is an expression, read by `kit::read`'s twin of
+/// `resolve_required_str_list` with a bound of 64 per call, and required at
+/// load. `output` is optional and the primary output: unset, nothing is
+/// written.
 #[derive(Debug, FunctionConfig)]
 pub struct CacheInvalidateConfig {
     /// Response-cache namespaces to invalidate (at most 64), as declared in channels'
@@ -99,7 +99,7 @@ pub struct CacheInvalidateConfig {
 
 /// `cache_invalidate` as a dataflow-rs 4 function: the bump
 /// `CacheInvalidateHandler` makes, read in the same order, its errors under
-/// its name as 1.12's were.
+/// its name.
 pub struct CacheInvalidateFunction {
     /// Which stores a namespace's entries could be in: the serving
     /// channels', which only the channel estate knows.
@@ -121,7 +121,7 @@ impl CacheInvalidateFunction {
         check_namespaces(&namespaces)?;
         // Resolved before anything is bumped, so a bad `output` does not leave
         // an invalidation behind a failed task. A computed one that resolves
-        // to `null` is `data`, as 1.12's was.
+        // to `null` is `data`.
         let output = cfg
             .output
             .as_ref()

@@ -1,4 +1,4 @@
-//! The scoped walk behind the `shared.fragments` pass (#333): `use` steps,
+//! The scoped walk behind the `shared.fragments` pass: `use` steps,
 //! `$use` value fragments, `$each` repetition, `$param` and `{{name}}`.
 //!
 //! One walk because each can contain the others — a fragment may use a
@@ -194,9 +194,9 @@ impl<'a, 'o> Expander<'a, 'o> {
         }
     }
 
-    /// A loop: its `setup` a step list, every other member a value. Since
-    /// dataflow-rs 3.14 setup steps are resolved and run like the body's, so
-    /// a `use` there names a fragment exactly as one in `tasks` does (#351).
+    /// A loop: its `setup` a step list, every other member a value. Setup
+    /// steps are resolved and run like the body's, so a `use` there names a
+    /// fragment exactly as one in `tasks` does.
     fn loop_config(&mut self, loop_config: &mut Value, scope: &Scope, at: &Coord) {
         let Value::Object(members) = loop_config else {
             return;

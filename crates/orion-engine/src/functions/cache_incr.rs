@@ -14,7 +14,7 @@ use crate::connector::cache_backend::{CachePool, CachePurpose};
 use crate::connector::{CacheConnectorConfig, ConnectorRegistry};
 use crate::kit::{self, read};
 
-/// This function's name, for the free functions below (F48).
+/// This function's name, for the free functions below.
 pub(crate) const NAME: &str = "cache_incr";
 
 /// The increment, against a resolved and gated cache connector: the new
@@ -36,18 +36,17 @@ async fn bump(
     Ok(value)
 }
 
-/// I185's Defect: the new value is a number, which no context root takes
-/// (break 21), so an `output` that is one fails every call.
+/// The new value is a number, and a context root takes only an object, so an
+/// `output` that is one is a Defect at `output`.
 const ROOT_OUTPUT: &str = "`cache_incr` writes a number, and a context root takes only an \
     object (break 21): set `output` to a path below it, such as `data.count`";
 
-/// `cache_incr`'s input on dataflow-rs 4, in its field table's order
-/// (I179). The connector is a literal; `key` and `by` are expressions, read
-/// by `kit::read`'s twins of `resolve_required_str` and
-/// `resolve_optional_i64` (I183), so a `by` that resolves to `null` is the
-/// default 1; `ttl_secs` is a document of `var` holes, as 1.12 folded it
-/// (I183). The connector and the key are required at load (I183). `output`
-/// is optional: unset, nothing is written (I190's primary output).
+/// `cache_incr`'s input on dataflow-rs 4, in its field table's order. The
+/// connector is a literal; `key` and `by` are expressions, read by
+/// `kit::read`'s twins of `resolve_required_str` and `resolve_optional_i64`,
+/// so a `by` that resolves to `null` is the default 1; `ttl_secs` is a
+/// document of `var` holes. The connector and the key are required at load.
+/// `output` is optional and the primary output: unset, nothing is written.
 #[derive(Debug, FunctionConfig)]
 pub struct CacheIncrConfig {
     /// Name of the cache connector holding the counter.
@@ -118,9 +117,9 @@ impl Function for CacheIncrFunction {
         super::definition::spec::<Self>()
     }
 
-    /// I185: the value is never an object, so an `output` set to a literal
-    /// context root is a Defect at `output`. Unset, nothing is written, so
-    /// there is no default root to judge.
+    /// The value is never an object, so an `output` set to a literal context
+    /// root is a Defect at `output`. Unset, nothing is written, so there is
+    /// no default root to judge.
     fn prepare(&self, cfg: &mut CacheIncrConfig, _p: &Prepare<'_>) -> Result<(), Vec<Issue>> {
         match &cfg.output {
             Some(output) => kit::root_output_defect(output, ROOT_OUTPUT),
@@ -132,7 +131,7 @@ impl Function for CacheIncrFunction {
         let channel = kit::channel(ctx);
         // The prologue's output, when one is set, then `parse`'s order: the
         // key, the step, the expiry. A computed output that resolves to
-        // `null` is `data`, as 1.12's was.
+        // `null` is `data`.
         let output = cfg
             .output
             .as_ref()
@@ -143,19 +142,26 @@ impl Function for CacheIncrFunction {
         let by = cfg.by.as_ref().map(|by| ctx.eval(by)).transpose()?;
         let by = read::optional_i64(by.as_deref(), "by", NAME)?.unwrap_or(1);
         let ttl = rendered_ttl_secs(ctx, cfg.ttl_secs.as_ref(), NAME)?;
-        let mut value = None;
-        kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
-            let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
-            let conn = kit::require_connector::<<Self as OrionFunction>::Connector>(
-                &config,
-                &cfg.connector,
-            )?;
-            kit::require_op(conn.operations.write, "write", &cfg.connector)?;
-            value = Some(bump(&self.cache_pool, &cfg.connector, conn, &key, by, ttl).await?);
-            Ok(Outcome::Ok)
-        })
+        let value = kit::with_connector::<<Self as OrionFunction>::Connector, _, _, _>(
+            NAME,
+            &self.registry,
+            &cfg.connector,
+            channel,
+            |conn| async move {
+                kit::require_op(conn.config().operations.write, "write", &cfg.connector)?;
+                Ok(bump(
+                    &self.cache_pool,
+                    &cfg.connector,
+                    conn.config(),
+                    &key,
+                    by,
+                    ttl,
+                )
+                .await?)
+            },
+        )
         .await?;
-        if let (Some(path), Some(value)) = (output, value) {
+        if let (Some(path), Some(value)) = (output, Some(value)) {
             ctx.set(&path, OwnedDataValue::from(value))?;
         }
         Ok(Outcome::Ok)

@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::Layer as _;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -107,22 +108,17 @@ pub fn init_observability(
     if config.tracing.enabled {
         let (provider, tracer) =
             crate::server::otel::init_otel_pipeline(&config.tracing, &config.cluster.instance_id)?;
-        match config.logging.format {
-            LogFormat::Json => {
-                tracing_subscriber::registry()
-                    .with(env_filter)
-                    .with(tracing_subscriber::fmt::layer().json())
-                    .with(tracing_opentelemetry::layer().with_tracer(tracer))
-                    .init();
-            }
-            LogFormat::Pretty => {
-                tracing_subscriber::registry()
-                    .with(env_filter)
-                    .with(tracing_subscriber::fmt::layer())
-                    .with(tracing_opentelemetry::layer().with_tracer(tracer))
-                    .init();
-            }
-        }
+        // One subscriber: the log layer's format is the only thing the arms
+        // chose between, so box it and compose the same stack once (M-14).
+        let fmt_layer = match config.logging.format {
+            LogFormat::Json => tracing_subscriber::fmt::layer().json().boxed(),
+            LogFormat::Pretty => tracing_subscriber::fmt::layer().boxed(),
+        };
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .with(tracing_opentelemetry::layer().with_tracer(tracer))
+            .init();
         Ok(Some(provider))
     } else {
         init_fmt_subscriber(&config.logging.level, &config.logging.format);

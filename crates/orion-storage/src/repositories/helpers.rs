@@ -426,15 +426,13 @@ impl WriteStatement<'_> {
 /// and not a later writer's — which a separate pool query after the write
 /// (let alone after `tx.commit()`) cannot promise.
 ///
-/// Error mapping stays per-site: driver errors from the write itself go
-/// through `map_write_err`, and a write that yields no row — an UPDATE
-/// whose predicate matched nothing, or a MySQL read-back miss — becomes
-/// `missing()`.
+/// A driver error from the write itself is `Storage`; a write that yields no
+/// row — an UPDATE whose predicate matched nothing, or a MySQL read-back miss —
+/// becomes `missing()`.
 pub async fn write_returning_row<T: DbRow>(
     pool: &DbPool,
     mut write: WriteStatement<'_>,
     read_back: &mut sea_query::SelectStatement,
-    map_write_err: impl FnOnce(sqlx::Error) -> OrionError,
     missing: impl FnOnce() -> OrionError,
 ) -> Result<T, OrionError> {
     let backend = pool.backend();
@@ -442,11 +440,11 @@ pub async fn write_returning_row<T: DbRow>(
         let (sql, values) = write.build_returning_all(backend);
         pool.fetch_optional_as::<T>(&sql, values)
             .await
-            .map_err(map_write_err)?
+            .map_err(OrionError::Storage)?
             .ok_or_else(missing)
     } else {
         let mut tx = pool.begin_tx().await?;
-        let row = write_returning_row_tx(&mut tx, write, read_back, map_write_err, missing).await?;
+        let row = write_returning_row_tx(&mut tx, write, read_back, missing).await?;
         tx.commit().await?;
         Ok(row)
     }
@@ -460,11 +458,10 @@ pub async fn write_returning_row<T: DbRow>(
 /// row. Here the caller already holds a transaction, so the write and its
 /// read-back join whatever else is in it — for the audited mutations (§2.6),
 /// the audit row that has to commit with the change.
-pub async fn write_returning_row_tx<T: DbRow>(
+async fn write_returning_row_tx<T: DbRow>(
     tx: &mut DbTransaction,
     mut write: WriteStatement<'_>,
     read_back: &mut sea_query::SelectStatement,
-    map_write_err: impl FnOnce(sqlx::Error) -> OrionError,
     missing: impl FnOnce() -> OrionError,
 ) -> Result<T, OrionError> {
     let backend = tx.backend();
@@ -472,13 +469,13 @@ pub async fn write_returning_row_tx<T: DbRow>(
         let (sql, values) = write.build_returning_all(backend);
         tx.fetch_optional_as::<T>(&sql, values)
             .await
-            .map_err(map_write_err)?
+            .map_err(OrionError::Storage)?
             .ok_or_else(missing)
     } else {
         let (sql, values) = write.build(backend);
         tx.execute_query(&sql, values)
             .await
-            .map_err(map_write_err)?;
+            .map_err(OrionError::Storage)?;
         let (sql, values) = crate::build_sqlx(backend, read_back);
         fetch_required_tx(tx, &sql, values, missing).await
     }

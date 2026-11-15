@@ -28,7 +28,7 @@ test-support = []
 orion-api = { workspace = true, features = ["utoipa"] }
 dataflow-rs.workspace = true
 axum = { version = "0.8", default-features = false, features = ["json"] }
-sqlx = { version = "0.9", default-features = false }
+sqlx = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_path_to_error = "0.1"
@@ -39,7 +39,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync",
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
 semver = "1"
 uuid.workspace = true
-chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+chrono = { workspace = true, features = ["clock", "std", "serde"] }
 ipnet = "2"
 url = "2"
 sha2 = "0.11"

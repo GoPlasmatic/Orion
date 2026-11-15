@@ -23,7 +23,7 @@ use crate::query::{self, SqlDialect};
 use crate::storage::detect_backend;
 
 /// This handler's name, for the helpers that take it as an argument — a
-/// reference to the one place it is written (F48).
+/// reference to the one place it is written.
 pub(crate) const NAME: &str = "data_write";
 
 /// The mutation as the task states it, with `params` folded against the
@@ -48,7 +48,7 @@ pub struct DataWrite<'a> {
 struct Backends<'a> {
     pool_cache: &'a SqlPoolCache,
     /// Connector-registry generation, so the pool cache can reuse the config
-    /// digest across one reload (P-01).
+    /// digest across one reload.
     generation: u64,
     write_config: &'a crate::config::WriteConfig,
     max_returning: usize,
@@ -65,13 +65,13 @@ async fn run_write(
     connector: &str,
     run_deadline: Option<dataflow_rs::run::Instant>,
 ) -> Result<(Value, Outcome), HandlerError> {
-    // F24: with no schema the registry rejects rather than passing every
-    // name through, and the connector's own guards apply on top.
+    // With no schema the registry rejects rather than passing every name
+    // through, and the connector's own guards apply on top.
     let registry = build_entity_registry(parsed.schema.as_deref(), db, connector)?;
 
     // One backend-neutral resolution: parse envelope, fold params into
     // values/set, resolve physical names, coerce, lower the filter, and
-    // enforce the write-safety guards (W15).
+    // enforce the write-safety guards.
     let resolved = query::write::resolve_write(
         &parsed.envelope,
         &parsed.params,
@@ -106,11 +106,11 @@ async fn run_write(
     .await
 }
 
-/// `data_write`'s input on dataflow-rs 4, in its field table's order (I179).
-/// The connector and the envelope are required at load (I183). The envelope
-/// and the schema are literal documents, `{"param": …}` holes and all, for
-/// Orion's own dialect to fold; `params` and the rendering choices are
-/// documents of `var` holes, as 1.12 folded them.
+/// `data_write`'s input on dataflow-rs 4, in its field table's order. The
+/// connector and the envelope are required at load. The envelope and the
+/// schema are literal documents, `{"param": …}` holes and all, for Orion's
+/// own dialect to fold; `params` and the rendering choices are documents of
+/// `var` holes.
 #[derive(Debug, FunctionConfig)]
 pub struct DataWriteConfig {
     /// Name of the db (SQL) connector to write to.
@@ -122,7 +122,7 @@ pub struct DataWriteConfig {
     params: Option<Interpolated>,
     /// Inline entity schema (renames, allowlist, writable flag). Undeclared entities and
     /// columns are rejected, so a write without one reaches nothing; pass {"unmapped":
-    /// "identity"} for pre-1.0 pass-through.
+    /// "identity"} to pass every name through.
     schema: Option<Value>,
     /// How an arbitrary-precision decimal column is rendered: "number" (default) or "string". A
     /// number is computable in JSONLogic and rounds beyond 2^53 or on most decimal fractions; a
@@ -232,38 +232,40 @@ impl Function for DataWriteFunction {
             envelope: Cow::Borrowed(&cfg.write),
         };
         let run_deadline = ctx.deadline();
-        let mut answer = None;
-        let done = kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
-            let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
-            let conn = kit::require_connector::<<Self as OrionFunction>::Connector>(
-                &config,
-                &cfg.connector,
-            )?;
-            let backends = Backends {
-                pool_cache: &self.pool_cache,
-                generation: self.registry.config_generation(),
-                write_config: &self.write_config,
-                max_returning: self.max_returning,
-            };
-            let (result, done) =
-                run_write(backends, &parsed, conn, &cfg.connector, run_deadline).await?;
-            answer = Some(result);
-            Ok(done)
-        })
+        let (answer, done) = kit::with_connector::<<Self as OrionFunction>::Connector, _, _, _>(
+            NAME,
+            &self.registry,
+            &cfg.connector,
+            channel,
+            |conn| async move {
+                let backends = Backends {
+                    pool_cache: &self.pool_cache,
+                    generation: self.registry.config_generation(),
+                    write_config: &self.write_config,
+                    max_returning: self.max_returning,
+                };
+                Ok(run_write(
+                    backends,
+                    &parsed,
+                    conn.config(),
+                    &cfg.connector,
+                    run_deadline,
+                )
+                .await?)
+            },
+        )
         .await?;
-        if let Some(answer) = answer {
-            ctx.set(
-                &output,
-                dataflow_rs::datavalue::OwnedDataValue::from(answer),
-            )?;
-        }
+        ctx.set(
+            &output,
+            dataflow_rs::datavalue::OwnedDataValue::from(answer),
+        )?;
         Ok(done)
     }
 }
 
 /// Execute a rendered SQL write.
 ///
-/// F28: a **multi-row** write runs inside an explicit transaction. A bulk
+/// A **multi-row** write runs inside an explicit transaction. A bulk
 /// insert renders to a single `INSERT … VALUES (…), (…)`, which every supported
 /// engine already applies atomically under autocommit — so this changes no
 /// observable behaviour today. It makes SQL's all-or-nothing guarantee, which
@@ -285,9 +287,9 @@ impl Function for DataWriteFunction {
 ///
 /// Every round trip shares one [`QueryBudget`]: `Pool::begin` acquires a
 /// connection *and* sends `BEGIN`, and the commit is another round trip, so
-/// leaving either unbounded would reintroduce the hang F11 closed, and giving
-/// each its own `query_timeout_ms` would triple the bound the connector's owner
-/// configured.
+/// leaving either unbounded would let a round trip wait past the budget, and
+/// giving each its own `query_timeout_ms` would triple the bound the
+/// connector's owner configured.
 async fn execute_sql(
     pool: &crate::connector::pool_cache::SqlPool,
     sql: &str,
@@ -300,7 +302,7 @@ async fn execute_sql(
     // The transaction is per driver, so the whole statement runs inside the
     // dispatch rather than behind an `Executor` bound — `sqlx::Any` was the
     // only thing that made one generic body possible, and it is what capped
-    // the type vocabulary (#309).
+    // the type vocabulary.
     let mut out = crate::connector::pool_cache::dispatch_sql_pool!(
         pool, p, rows_to_json, _bind, typed_args, write_result => {
             let scalars = crate::connector::sql_encode::scalars_from_sea(&values.0);

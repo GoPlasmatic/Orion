@@ -10,21 +10,20 @@ use crate::{ErrorClass, HandlerError};
 
 /// Build the dialect's `EntityRegistry` for one `data_query` / `data_write`
 /// call: parse the task's optional inline `schema`, then apply the connector's
-/// operator-owned guards to it (F24).
+/// operator-owned guards to it.
 ///
-/// Both handlers took the same two lines before this — `from_json`, else
-/// `default()` — and neither consulted the connector at all. The order matters:
-/// `require_schema` judges what the task actually declared, and the allowlist is
-/// installed afterwards so it cannot be part of what is being judged.
+/// The order matters: `require_schema` judges what the task actually
+/// declared, and the allowlist is installed afterwards so it cannot be part
+/// of what is being judged.
 pub(crate) fn build_entity_registry(
     schema: Option<&Value>,
     connector_config: &crate::connector::DbConnectorConfig,
     connector_name: &str,
 ) -> Result<Arc<EntityRegistry>, HandlerError> {
-    // P-08: the registry is a pure function of the inline schema and the
+    // The registry is a pure function of the inline schema and the
     // connector's dialect guards, which are fixed for a generation. Parsing it
-    // per execution was the cost; a small bounded cache makes the request path
-    // a hash and a lookup.
+    // per execution would be a cost per call; a small bounded cache makes the
+    // request path a hash and a lookup.
     let cache_key = {
         use sha2::Digest as _;
         let serialized = serde_json::to_vec(&(schema, &connector_config.dialect))
@@ -101,7 +100,7 @@ pub(crate) fn require_op_allowed(
 /// [`require_op_allowed`] for the gates that are not the db set: the cache
 /// (`read` / `write`) and storage (`presign_get` / `presign_put` / `head`)
 /// gates each have their own struct,
-/// because a `raw_write` flag on a cache would be a field nothing reads (F22e).
+/// because a `raw_write` flag on a cache would be a field nothing reads.
 /// The refusal is worded identically whatever the connector type.
 pub fn require_op(allowed: bool, op: &str, connector_name: &str) -> Result<(), HandlerError> {
     if !allowed {
@@ -113,8 +112,8 @@ pub fn require_op(allowed: bool, op: &str, connector_name: &str) -> Result<(), H
 }
 
 /// Reject the call when an HTTP connector's method allow-list excludes
-/// `method` (F22e). An empty list allows everything, which is what a connector
-/// authored before the gate existed keeps meaning.
+/// `method`. An empty list allows everything, so a connector that sets no
+/// allow-list keeps every method available.
 pub fn require_method_allowed(
     gates: &HttpOperationGates,
     method: &str,
@@ -144,7 +143,7 @@ pub(crate) fn to_exec_error(e: impl std::fmt::Display) -> HandlerError {
 /// [`ErrorClass::Connector`] rather than [`ErrorClass::Backend`] because the
 /// first is retryable and the second is not. A dead Postgres or MySQL is the
 /// *identical* outage to an unreachable HTTP host, and DLQ retry policy has no
-/// principled reason to diverge by backend (F42).
+/// principled reason to diverge by backend.
 ///
 /// Use for "could not connect"; keep [`to_exec_error`] for "connected, and the
 /// query failed", which is genuinely not worth retrying.
@@ -158,7 +157,7 @@ pub(crate) fn to_connect_error(e: impl std::fmt::Display) -> HandlerError {
 /// A 400 with the message preserved. Through [`to_exec_error`] it would be a
 /// 500 with the text replaced, so deliberately helpful guidance — *"add a
 /// LIMIT to the query or raise the cap"* — would be sanitised away exactly
-/// when the caller needs it (F42).
+/// when the caller needs it.
 pub(crate) fn to_limit_error(message: impl std::fmt::Display) -> HandlerError {
     HandlerError::new(ErrorClass::Limit, message)
 }
@@ -168,7 +167,7 @@ pub(crate) fn to_limit_error(message: impl std::fmt::Display) -> HandlerError {
 /// The distinction matters: a limit the caller can fix is a 400 with its text
 /// intact, a backend failure is a 500 with the text sanitised. Only the
 /// operation itself can tell them apart, so it says so in the value under the
-/// `Err` (F42), not in the text: with a marker prefixed to the error string, a
+/// `Err`, not in the text: with a marker prefixed to the error string, a
 /// message that happened to start with the marker would be misread as a
 /// limit, and a limit whose text was reformatted anywhere in between would
 /// silently become a 500.
@@ -300,6 +299,53 @@ pub fn require_connector<'a, K: ConnectorTarget>(
         .ok_or_else(|| connector_detail(format!("Connector '{name}' is not {}", K::noun())))
 }
 
+/// A resolved connector that has already been checked against a handler's
+/// target type.
+///
+/// `with_connector` hands one to the work, so a handler reads its typed config
+/// without writing the resolve-and-check prologue itself. [`Self::config`]
+/// re-extracts the variant, which the constructor proved is there.
+pub struct Typed<K: ConnectorTarget> {
+    config: Arc<ConnectorConfig>,
+    _kind: std::marker::PhantomData<K>,
+}
+
+impl<K: ConnectorTarget> Typed<K> {
+    pub fn config(&self) -> &K::Config {
+        K::extract(&self.config).expect("with_connector checked the variant")
+    }
+}
+
+/// [`crate::kit::guarded`] plus the prologue every connector function writes:
+/// resolve the named connector, require it to be this handler's type, then run
+/// `work` on it.
+///
+/// The resolve and the type check stay inside the guarded future, so their
+/// failures are counted and can trip the breaker exactly as the work's do.
+pub async fn with_connector<K, T, F, Fut>(
+    name: &'static str,
+    registry: &ConnectorRegistry,
+    connector: &str,
+    channel: &str,
+    work: F,
+) -> dataflow_rs::Result<T>
+where
+    K: ConnectorTarget,
+    F: FnOnce(Typed<K>) -> Fut,
+    Fut: std::future::Future<Output = dataflow_rs::Result<T>>,
+{
+    crate::kit::guarded(name, registry, connector, channel, async move {
+        let config = resolve_connector(registry, connector).await?;
+        require_connector::<K>(&config, connector)?;
+        work(Typed {
+            config,
+            _kind: std::marker::PhantomData,
+        })
+        .await
+    })
+    .await
+}
+
 /// `"900"`-less duration spelling: `<n>` followed by one of `s m h d`.
 pub fn parse_duration_secs(s: &str) -> Result<u64, String> {
     let s = s.trim();
@@ -346,13 +392,11 @@ pub(crate) fn encode_failure(
     HandlerError::new(ErrorClass::CallerInput, e.message(function))
 }
 
-/// Turn a decode failure into a task error the author can act on (#309).
+/// Turn a decode failure into a task error the author can act on.
 ///
 /// Classified as a *client* error, because it is one: the query asked for a
 /// column whose type has no JSON form here, and no amount of retrying changes
-/// that. Before native decoding this surfaced as an internal `500` plus an
-/// `unhandled DataflowError variant` log line, which told the caller nothing
-/// and the author less.
+/// that. An internal `500` would tell the caller nothing and the author less.
 pub(crate) fn decode_failure(
     function: &str,
     e: crate::connector::sql_decode::DecodeError,
@@ -364,7 +408,7 @@ pub(crate) fn decode_failure(
 const DEFAULT_QUERY_TIMEOUT_MS: u64 = 30_000;
 
 /// One wall-clock budget shared by every round trip of a single logical
-/// operation (F11, F28).
+/// operation.
 ///
 /// `timed_query` bounds *one* future. That is the whole story for a handler
 /// that issues one statement, but a `data_write` that opens a transaction
@@ -388,14 +432,14 @@ impl QueryBudget {
     }
 
     /// [`Self::start`], inside the deadline of the run the call belongs to
-    /// (`Ctx::deadline`): the earlier of the two bounds the legs (E10).
+    /// (`Ctx::deadline`): the earlier of the two bounds the legs.
     ///
     /// When the connector's `query_timeout_ms` ends first, a leg it cuts
     /// short fails as it always has, `"{handler} query timed out after
     /// {ms}ms"`. When the run's deadline ends first, the budget arms no timer
     /// of its own: dataflow-rs 4 races every host call against the run's
-    /// deadline and drops the call when it passes, ending the run `TimedOut`,
-    /// as 1.12's channel timeout dropped the run. A timer of the budget's own
+    /// deadline and drops the call when it passes, ending the run `TimedOut`.
+    /// A timer of the budget's own
     /// at the same instant would win that race (the engine polls the call
     /// first) and turn the run's timeout into the task's error.
     pub fn within(timeout_ms: Option<u64>, run: Option<dataflow_rs::run::Instant>) -> Self {
@@ -427,7 +471,7 @@ impl QueryBudget {
                 )
             })?
             .map_err(|e| {
-                // F42: a limit the caller can fix is a 400 with its text
+                // A limit the caller can fix is a 400 with its text
                 // intact, not a 500 with the guidance replaced. Both arms name
                 // a class; which engine error that becomes is decided once.
                 match e.into() {

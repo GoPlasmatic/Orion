@@ -19,58 +19,89 @@ use crate::connector::cache_backend::CacheBackend;
 use crate::engine::Channel;
 use crate::errors::OrionError;
 
-/// Dedup-store stub with a fixed `claim_dedup_key` outcome.
-enum StubOutcome {
+/// What `claim_dedup_key` answers.
+#[derive(Clone, Copy, Default)]
+enum ClaimAnswer {
+    /// Like a real store: the first claim wins, later ones name its holder.
+    #[default]
+    Real,
+    /// Always a new claim, whatever the store holds.
     New,
-    /// Held by an earlier, *settled* delivery — a real duplicate.
-    Duplicate,
-    BackendError,
+    /// Always a key already held and settled.
+    Settled,
 }
 
-struct StubDedupBackend {
-    outcome: StubOutcome,
+/// One fake for every cache backend the guard tests need: an optional `get`
+/// value, a `claim_dedup_key` answer, a failure switch, and the keys it saw.
+///
+/// The four single-purpose stubs this replaces differed only in those knobs,
+/// so a test now states the behaviour it needs instead of choosing a type
+/// (M-18).
+struct FakeCache {
+    get: Option<String>,
+    answer: ClaimAnswer,
+    fail: bool,
+    held: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    seen: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
-#[async_trait]
-impl CacheBackend for StubDedupBackend {
-    async fn get(&self, _key: &str) -> Result<Option<String>, OrionError> {
-        Ok(None)
-    }
-    async fn set(&self, _key: &str, _value: &str) -> Result<(), OrionError> {
-        Ok(())
-    }
-    async fn set_ex(&self, _key: &str, _value: &str, _ttl: u64) -> Result<(), OrionError> {
-        Ok(())
-    }
-    async fn remove(&self, _key: &str) -> Result<(), OrionError> {
-        Ok(())
-    }
-    async fn claim_dedup_key(
-        &self,
-        _key: &str,
-        _owner: &str,
-        _window: u64,
-    ) -> Result<Option<String>, OrionError> {
-        match self.outcome {
-            StubOutcome::New => Ok(None),
-            StubOutcome::Duplicate => Ok(Some(super::dedup::DEDUP_SETTLED.to_string())),
-            StubOutcome::BackendError => {
-                Err(OrionError::internal("dedup backend down".to_string()))
-            }
+impl Default for FakeCache {
+    fn default() -> Self {
+        Self {
+            get: None,
+            answer: ClaimAnswer::Real,
+            fail: false,
+            held: std::sync::Mutex::new(std::collections::HashMap::new()),
+            seen: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 }
 
-/// A real, per-test dedup store: claims are held in a map, so a claim, a
-/// release and a re-claim behave as they do against a real store.
-#[derive(Default)]
-struct InMemoryDedupBackend {
-    held: std::sync::Mutex<std::collections::HashMap<String, String>>,
+impl FakeCache {
+    /// A backend that always hits with `body`.
+    fn hit(body: &str) -> Self {
+        Self {
+            get: Some(body.to_string()),
+            ..Self::default()
+        }
+    }
+
+    /// A backend that answers `claim_dedup_key` with `answer`.
+    fn claim(answer: ClaimAnswer) -> Self {
+        Self {
+            answer,
+            ..Self::default()
+        }
+    }
+
+    /// A backend whose every operation fails, as an outage does.
+    fn failing() -> Self {
+        Self {
+            fail: true,
+            ..Self::default()
+        }
+    }
+
+    /// A real claim store whose claimed keys the test can read.
+    fn capturing() -> Self {
+        Self::default()
+    }
+
+    /// The keys `claim_dedup_key` saw.
+    fn seen(&self) -> Arc<std::sync::Mutex<Vec<String>>> {
+        Arc::clone(&self.seen)
+    }
 }
 
 #[async_trait]
-impl CacheBackend for InMemoryDedupBackend {
+impl CacheBackend for FakeCache {
     async fn get(&self, key: &str) -> Result<Option<String>, OrionError> {
+        if self.fail {
+            return Err(OrionError::internal("cache backend down".to_string()));
+        }
+        if let Some(hit) = &self.get {
+            return Ok(Some(hit.clone()));
+        }
         Ok(self
             .held
             .lock()
@@ -79,6 +110,9 @@ impl CacheBackend for InMemoryDedupBackend {
             .cloned())
     }
     async fn set(&self, key: &str, value: &str) -> Result<(), OrionError> {
+        if self.fail {
+            return Err(OrionError::internal("cache backend down".to_string()));
+        }
         self.held
             .lock()
             .expect("test lock poisoned")
@@ -89,6 +123,9 @@ impl CacheBackend for InMemoryDedupBackend {
         self.set(key, value).await
     }
     async fn remove(&self, key: &str) -> Result<(), OrionError> {
+        if self.fail {
+            return Err(OrionError::internal("cache backend down".to_string()));
+        }
         self.held.lock().expect("test lock poisoned").remove(key);
         Ok(())
     }
@@ -98,6 +135,19 @@ impl CacheBackend for InMemoryDedupBackend {
         owner: &str,
         _window: u64,
     ) -> Result<Option<String>, OrionError> {
+        if self.fail {
+            return Err(OrionError::internal("dedup backend down".to_string()));
+        }
+        self.seen
+            .lock()
+            .expect("test lock poisoned")
+            .push(key.to_string());
+        if matches!(self.answer, ClaimAnswer::New) {
+            return Ok(None);
+        }
+        if matches!(self.answer, ClaimAnswer::Settled) {
+            return Ok(Some(super::dedup::DEDUP_SETTLED.to_string()));
+        }
         let mut held = self.held.lock().expect("test lock poisoned");
         match held.get(key) {
             Some(holder) => Ok(Some(holder.clone())),
@@ -106,66 +156,6 @@ impl CacheBackend for InMemoryDedupBackend {
                 Ok(None)
             }
         }
-    }
-}
-
-/// Dedup-store stub that records every key passed to `claim_dedup_key`.
-struct CapturingDedupBackend {
-    seen: Arc<std::sync::Mutex<Vec<String>>>,
-}
-
-#[async_trait]
-impl CacheBackend for CapturingDedupBackend {
-    async fn get(&self, _key: &str) -> Result<Option<String>, OrionError> {
-        Ok(None)
-    }
-    async fn set(&self, _key: &str, _value: &str) -> Result<(), OrionError> {
-        Ok(())
-    }
-    async fn set_ex(&self, _key: &str, _value: &str, _ttl: u64) -> Result<(), OrionError> {
-        Ok(())
-    }
-    async fn remove(&self, _key: &str) -> Result<(), OrionError> {
-        Ok(())
-    }
-    async fn claim_dedup_key(
-        &self,
-        key: &str,
-        _owner: &str,
-        _window: u64,
-    ) -> Result<Option<String>, OrionError> {
-        self.seen
-            .lock()
-            .expect("test lock poisoned")
-            .push(key.to_string());
-        Ok(None)
-    }
-}
-
-/// Response-cache stub that always hits with a fixed body.
-struct AlwaysHitCache;
-
-#[async_trait]
-impl CacheBackend for AlwaysHitCache {
-    async fn get(&self, _key: &str) -> Result<Option<String>, OrionError> {
-        Ok(Some(r#"{"cached":true}"#.to_string()))
-    }
-    async fn set(&self, _key: &str, _value: &str) -> Result<(), OrionError> {
-        Ok(())
-    }
-    async fn set_ex(&self, _key: &str, _value: &str, _ttl: u64) -> Result<(), OrionError> {
-        Ok(())
-    }
-    async fn remove(&self, _key: &str) -> Result<(), OrionError> {
-        Ok(())
-    }
-    async fn claim_dedup_key(
-        &self,
-        _key: &str,
-        _owner: &str,
-        _window: u64,
-    ) -> Result<Option<String>, OrionError> {
-        Ok(None)
     }
 }
 
@@ -402,17 +392,15 @@ impl Runtime {
     }
 }
 
-fn dedup_runtime(outcome: StubOutcome) -> Arc<ChannelRuntimeConfig> {
-    dedup_runtime_with_policy(outcome, BackendErrorPolicy::Allow)
+fn dedup_runtime(store: FakeCache) -> Arc<ChannelRuntimeConfig> {
+    dedup_runtime_with_policy(store, BackendErrorPolicy::Allow)
 }
 
 fn dedup_runtime_with_policy(
-    outcome: StubOutcome,
+    store: FakeCache,
     policy: BackendErrorPolicy,
 ) -> Arc<ChannelRuntimeConfig> {
-    Runtime::new()
-        .dedup(Arc::new(StubDedupBackend { outcome }), policy)
-        .build()
+    Runtime::new().dedup(Arc::new(store), policy).build()
 }
 
 /// Header-lookup view matching what the HTTP path passes: the
@@ -834,12 +822,7 @@ async fn a_refused_caller_never_reaches_dedup_or_cache() {
     let runtime = Runtime::new()
         .api_key("s3cret")
         .await
-        .dedup(
-            Arc::new(StubDedupBackend {
-                outcome: StubOutcome::BackendError,
-            }),
-            BackendErrorPolicy::Deny,
-        )
+        .dedup(Arc::new(FakeCache::failing()), BackendErrorPolicy::Deny)
         .build();
 
     let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &metadata);
@@ -1593,7 +1576,7 @@ async fn validation_logic_applies_on_every_transport() {
 
 #[tokio::test]
 async fn test_dedup_new_key_passes() {
-    let cfg = dedup_runtime(StubOutcome::New);
+    let cfg = dedup_runtime(FakeCache::claim(ClaimAnswer::New));
     let result = super::check_deduplication(
         "test-channel",
         &cfg,
@@ -1608,7 +1591,7 @@ async fn test_dedup_new_key_passes() {
 
 #[tokio::test]
 async fn test_dedup_duplicate_rejected() {
-    let cfg = dedup_runtime(StubOutcome::Duplicate);
+    let cfg = dedup_runtime(FakeCache::claim(ClaimAnswer::Settled));
     let result = super::check_deduplication(
         "test-channel",
         &cfg,
@@ -1629,7 +1612,7 @@ async fn test_dedup_duplicate_rejected() {
 
 #[tokio::test]
 async fn test_dedup_fails_open_on_backend_error_by_default() {
-    let cfg = dedup_runtime(StubOutcome::BackendError);
+    let cfg = dedup_runtime(FakeCache::failing());
     let result = super::check_deduplication(
         "test-channel",
         &cfg,
@@ -1646,7 +1629,7 @@ async fn test_dedup_fails_open_on_backend_error_by_default() {
 /// because the request is unverifiable rather than a known duplicate.
 #[tokio::test]
 async fn test_dedup_fails_closed_when_policy_is_deny() {
-    let cfg = dedup_runtime_with_policy(StubOutcome::BackendError, BackendErrorPolicy::Deny);
+    let cfg = dedup_runtime_with_policy(FakeCache::failing(), BackendErrorPolicy::Deny);
     let result = super::check_deduplication(
         "test-channel",
         &cfg,
@@ -1666,7 +1649,8 @@ async fn test_dedup_fails_closed_when_policy_is_deny() {
 /// answers normally under either policy.
 #[tokio::test]
 async fn test_deny_policy_does_not_affect_healthy_backend() {
-    let cfg = dedup_runtime_with_policy(StubOutcome::New, BackendErrorPolicy::Deny);
+    let cfg =
+        dedup_runtime_with_policy(FakeCache::claim(ClaimAnswer::New), BackendErrorPolicy::Deny);
     let result = super::check_deduplication(
         "test-channel",
         &cfg,
@@ -1677,7 +1661,10 @@ async fn test_deny_policy_does_not_affect_healthy_backend() {
     )
     .await;
     assert!(result.is_ok());
-    let cfg = dedup_runtime_with_policy(StubOutcome::Duplicate, BackendErrorPolicy::Deny);
+    let cfg = dedup_runtime_with_policy(
+        FakeCache::claim(ClaimAnswer::Settled),
+        BackendErrorPolicy::Deny,
+    );
     let result = super::check_deduplication(
         "test-channel",
         &cfg,
@@ -1698,12 +1685,10 @@ async fn test_deny_policy_does_not_affect_healthy_backend() {
 
 #[tokio::test]
 async fn test_dedup_key_is_channel_scoped() {
-    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let store = FakeCache::capturing();
+    let seen = store.seen();
     let cfg = Runtime::new()
-        .dedup(
-            Arc::new(CapturingDedupBackend { seen: seen.clone() }),
-            BackendErrorPolicy::Allow,
-        )
+        .dedup(Arc::new(store), BackendErrorPolicy::Allow)
         .build();
     super::check_deduplication(
         "orders",
@@ -1725,12 +1710,10 @@ async fn test_dedup_key_is_channel_scoped() {
 /// twice.
 #[tokio::test]
 async fn an_out_of_band_key_is_the_fallback_idempotency_key() {
-    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let store = FakeCache::capturing();
+    let seen = store.seen();
     let cfg = Runtime::new()
-        .dedup(
-            Arc::new(CapturingDedupBackend { seen: seen.clone() }),
-            BackendErrorPolicy::Allow,
-        )
+        .dedup(Arc::new(store), BackendErrorPolicy::Allow)
         .build();
     super::check_deduplication(
         "orders",
@@ -1748,12 +1731,10 @@ async fn an_out_of_band_key_is_the_fallback_idempotency_key() {
     );
 
     // An explicit header still wins over the out-of-band key.
-    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let store = FakeCache::capturing();
+    let seen = store.seen();
     let cfg = Runtime::new()
-        .dedup(
-            Arc::new(CapturingDedupBackend { seen: seen.clone() }),
-            BackendErrorPolicy::Allow,
-        )
+        .dedup(Arc::new(store), BackendErrorPolicy::Allow)
         .build();
     super::check_deduplication(
         "orders",
@@ -1780,9 +1761,7 @@ async fn channel_call_is_not_deduplicated() {
     let dl = engine();
     let runtime = Runtime::new()
         .dedup(
-            Arc::new(StubDedupBackend {
-                outcome: StubOutcome::Duplicate,
-            }),
+            Arc::new(FakeCache::claim(ClaimAnswer::Settled)),
             BackendErrorPolicy::Allow,
         )
         .build();
@@ -1823,7 +1802,7 @@ async fn channel_call_is_not_deduplicated() {
 #[tokio::test]
 async fn a_redelivery_recognises_its_own_unsettled_claim() {
     let dl = engine();
-    let store = Arc::new(InMemoryDedupBackend::default());
+    let store = Arc::new(FakeCache::default());
     let runtime = Runtime::new()
         .dedup(store.clone(), BackendErrorPolicy::Allow)
         .build();
@@ -1859,7 +1838,7 @@ async fn a_redelivery_recognises_its_own_unsettled_claim() {
 #[tokio::test]
 async fn a_claim_left_behind_by_a_dead_attempt_does_not_suppress_the_message() {
     let dl = engine();
-    let store = Arc::new(InMemoryDedupBackend::default());
+    let store = Arc::new(FakeCache::default());
     let runtime = Runtime::new()
         .dedup(store.clone(), BackendErrorPolicy::Allow)
         .build();
@@ -1884,7 +1863,7 @@ async fn a_claim_left_behind_by_a_dead_attempt_does_not_suppress_the_message() {
 #[tokio::test]
 async fn a_confirmed_claim_suppresses_every_later_delivery() {
     let dl = engine();
-    let store = Arc::new(InMemoryDedupBackend::default());
+    let store = Arc::new(FakeCache::default());
     let runtime = Runtime::new()
         .dedup(store.clone(), BackendErrorPolicy::Allow)
         .build();
@@ -1940,7 +1919,7 @@ async fn a_confirmed_claim_suppresses_every_later_delivery() {
 #[tokio::test]
 async fn two_http_requests_with_one_key_are_still_a_duplicate() {
     let dl = engine();
-    let store = Arc::new(InMemoryDedupBackend::default());
+    let store = Arc::new(FakeCache::default());
     let runtime = Runtime::new()
         .dedup(store.clone(), BackendErrorPolicy::Allow)
         .build();
@@ -1970,7 +1949,7 @@ async fn two_http_requests_with_one_key_are_still_a_duplicate() {
 #[tokio::test]
 async fn a_shed_request_releases_the_key_it_claimed() {
     let dl = engine();
-    let store = Arc::new(InMemoryDedupBackend::default());
+    let store = Arc::new(FakeCache::default());
     let runtime = Runtime::new()
         .dedup(store.clone(), BackendErrorPolicy::Allow)
         .backpressure(1)
@@ -2018,7 +1997,9 @@ async fn a_shed_request_releases_the_key_it_claimed() {
 #[tokio::test]
 async fn only_sync_http_reads_the_response_cache() {
     let dl = engine();
-    let runtime = Runtime::new().cache(Arc::new(AlwaysHitCache)).build();
+    let runtime = Runtime::new()
+        .cache(Arc::new(FakeCache::hit(r#"{"cached":true}"#)))
+        .build();
     let (data, meta) = (json!({}), json!({}));
 
     let verdict = apply_guards(request(Transport::HttpSync, &runtime, &dl, &data, &meta))
@@ -2207,12 +2188,10 @@ async fn dedup_precedes_the_cache_lookup() {
     let dl = engine();
     let runtime = Runtime::new()
         .dedup(
-            Arc::new(StubDedupBackend {
-                outcome: StubOutcome::Duplicate,
-            }),
+            Arc::new(FakeCache::claim(ClaimAnswer::Settled)),
             BackendErrorPolicy::Allow,
         )
-        .cache(Arc::new(AlwaysHitCache))
+        .cache(Arc::new(FakeCache::hit(r#"{"cached":true}"#)))
         .build();
     let (data, meta) = (json!({}), json!({}));
 
@@ -2233,7 +2212,7 @@ async fn dedup_precedes_the_cache_lookup() {
 async fn a_cache_hit_takes_no_backpressure_permit() {
     let dl = engine();
     let runtime = Runtime::new()
-        .cache(Arc::new(AlwaysHitCache))
+        .cache(Arc::new(FakeCache::hit(r#"{"cached":true}"#)))
         .backpressure(1)
         .build();
     let (data, meta) = (json!({}), json!({}));

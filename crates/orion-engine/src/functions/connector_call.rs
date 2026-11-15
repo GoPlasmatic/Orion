@@ -216,24 +216,20 @@ impl Function for ConnectorCallFunction {
         // for this (channel, connection) pair, and the connector metrics.
         let channel = kit::channel(ctx);
         let workflow_id = ctx.info().workflow_id;
-        let mut data = None;
-        kit::guarded(NAME, &self.registry, &cfg.connection, channel, async {
-            data = Some(
-                self.host
-                    .invoke(ConnectorInvocation {
-                        deadline: ctx.deadline(),
-                        cancel: ctx.cancel().cloned(),
-                        workflow_id,
-                        config: cfg,
-                        input: input_val,
-                        idempotency_key,
-                    })
-                    .await?,
-            );
-            Ok(Outcome::Ok)
+        let data = kit::guarded(NAME, &self.registry, &cfg.connection, channel, async {
+            Ok(self
+                .host
+                .invoke(ConnectorInvocation {
+                    deadline: ctx.deadline(),
+                    cancel: ctx.cancel().cloned(),
+                    workflow_id,
+                    config: cfg,
+                    input: input_val,
+                    idempotency_key,
+                })
+                .await?)
         })
         .await?;
-        let data = data.unwrap_or(Value::Null);
 
         ctx.set(&output, OwnedDataValue::from(data))?;
         Ok(Outcome::Ok)

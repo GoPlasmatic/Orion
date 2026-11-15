@@ -20,22 +20,21 @@ use sha2::{Digest, Sha256};
 ///
 /// Three spellings resolve, tried in this order:
 ///
-/// 1. The **literal key** — `data.get(f)`. This was the only spelling the
-///    original implementation supported, so trying it first keeps every stored
-///    channel keying exactly as it did, including a payload whose top-level key
-///    genuinely contains a dot.
+/// 1. The **literal key** — `data.get(f)`. It is tried first so that a
+///    payload whose top-level key genuinely contains a dot resolves by that
+///    literal key.
 /// 2. A **dotted path** from the payload root — `user.id` walks
 ///    `{"user": {"id": …}}`.
 /// 3. The same path with a leading `data.` stripped — the spelling the docs
-///    have always shown (`data.user_id`), which resolved to nothing under (1)
-///    because the payload *is* `data` and has no member of that name.
+///    show (`data.user_id`); under (1) it resolves to nothing because the
+///    payload *is* `data` and has no member of that name.
 ///
-/// (3) is what made this worth fixing: a channel configured from the
-/// documented example matched no field at all, and a field that matches
-/// nothing contributed nothing to the hash, so every request on the channel
-/// collapsed onto one cache entry and the first caller's body was served to
-/// everyone for the TTL. [`compute_cache_key`] now refuses to build a key at
-/// all in that case rather than building a meaningless one.
+/// (3) matters because a channel configured from the documented example would
+/// otherwise match no field at all, and a field that matches nothing
+/// contributes nothing to the hash: every request on the channel would
+/// collapse onto one cache entry and the first caller's body would be served
+/// to everyone for the TTL. [`compute_cache_key`] therefore refuses to build a
+/// key at all in that case rather than building a meaningless one.
 pub(super) fn resolve_key_field<'a>(data: &'a Value, field: &str) -> Option<&'a Value> {
     fn walk<'a>(mut cur: &'a Value, path: &str) -> Option<&'a Value> {
         for segment in path.split('.') {
@@ -71,10 +70,9 @@ pub(super) fn resolve_key_field<'a>(data: &'a Value, field: &str) -> Option<&'a 
 /// The key must be **stable across processes** — replicas sharing a cache
 /// store have to agree on the key for the same request — which rules out
 /// `DefaultHasher` (SipHash under a per-process random seed) and `ahash`
-/// (randomises its seed on construction). FNV-1a satisfied that and was used
-/// here first.
+/// (randomises its seed on construction).
 ///
-/// It is not sufficient on its own. Two requests that hash alike are served
+/// Stability alone is not sufficient. Two requests that hash alike are served
 /// each other's response bodies, and FNV-1a is a multiply-xor over a 64-bit
 /// state with no collision resistance whatsoever: it inverts in closed form,
 /// so a colliding payload is *constructed*, not searched for. The data plane
@@ -90,8 +88,8 @@ pub(super) fn resolve_key_field<'a>(data: &'a Value, field: &str) -> Option<&'a 
 ///
 /// Every chunk is length-prefixed (below), so its length has to be known
 /// before its bytes reach the digest, and a chunk cannot simply be streamed
-/// into the hasher without changing every key ever stored. What can go is the
-/// allocation per chunk: each value is serialized into one scratch buffer,
+/// into the hasher without changing every key already stored. The allocation
+/// per chunk is avoidable: each value is serialized into one scratch buffer,
 /// cleared and reused for the next, so a key costs one allocation however many
 /// fields, parameters and query keys feed it.
 pub(super) fn compute_cache_key(
@@ -141,8 +139,8 @@ pub(super) fn compute_cache_key(
         // No usable key means bypass, exactly as an unresolvable
         // `cache_key_fields` does: a key that cannot be computed must not
         // collapse onto one shared entry and serve one caller's body to the
-        // next. The key is hashed as the JSON 1.12 hashed (`result_json`), so
-        // every entry stored before this build is still found by its key.
+        // next. The key is hashed through the JSON form of the value
+        // (`result_json`), so every stored entry is still found by its key.
         let key = exprs.eval(compiled, context.root()).ok()?;
         let key = crate::engine::operators::result_json(&key.value);
         if key.is_null() {
@@ -182,7 +180,7 @@ pub(super) fn compute_cache_key(
 
 /// `value` as compact JSON in `scratch`, which is cleared first: the bytes
 /// `serde_json::to_vec` produced, without a buffer of their own. A failure
-/// leaves it empty, as `to_vec(…).unwrap_or_default()` did.
+/// leaves it empty rather than panicking.
 fn serialize_into<'b>(scratch: &'b mut Vec<u8>, value: &Value) -> &'b [u8] {
     scratch.clear();
     if serde_json::to_writer(&mut *scratch, value).is_err() {
@@ -298,8 +296,8 @@ pub(super) async fn check_response_cache(
         // payload, or a `key_logic` that produced nothing. Any key built anyway
         // would be shared with every other request on the channel. Run the
         // workflow and store nothing.
-        // P-14: a caller controls whether its body carries the key fields, so
-        // this is floodable at will. Count it, and keep the line at debug.
+        // A caller controls whether its body carries the key fields, so this
+        // is floodable at will. Count it, and keep the line at debug.
         crate::metrics::record_error("response_cache_no_key");
         tracing::debug!(
             channel = %channel,

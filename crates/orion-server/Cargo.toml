@@ -86,7 +86,7 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "que
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
 serde_json = "1"
 uuid.workspace = true
-chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+chrono = { workspace = true, features = ["clock", "std", "serde"] }
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 # TLS serving (`server.tls`).
 axum-server = { version = "0.8", features = ["tls-rustls"] }
@@ -97,7 +97,7 @@ tracing-opentelemetry = { version = "0.34", default-features = false }
 [dev-dependencies]
 # What the integration suites drive directly; the server itself names none of it.
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path", "multipart"] }
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "sqlite", "postgres", "mysql"] }
+sqlx = { workspace = true, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "sqlite", "postgres", "mysql"] }
 sea-query = { version = "1.0", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
 sea-query-sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "with-chrono", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
 serde = { version = "1", features = ["derive"] }

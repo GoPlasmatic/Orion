@@ -81,8 +81,8 @@ impl axum::extract::FromRef<AppState> for DataPlane {
 pub struct AppStateInner {
     /// The live serving generation — engine and channel estate, published as
     /// one value. Every ingress loads it once per unit of work; the reload
-    /// republishes it. Was two fields, `engine` and `channel_registry`, each
-    /// swapped separately (see [`crate::runtime::generation`]).
+    /// republishes it in one store, so the two halves cannot be published out
+    /// of step (see [`crate::runtime::generation`]).
     pub runtime: Arc<crate::runtime::RuntimeHandle>,
     /// Builds the channel half of a generation. A reload's tool, not a
     /// request's: a request reads the estate off `runtime`.
@@ -124,10 +124,10 @@ pub struct AppStateInner {
     /// instance that declares nothing.
     pub vars: Option<Arc<serde_json::Value>>,
     /// The six storage repositories. `repos.trace_dlq` backs the
-    /// `/admin/trace-dlq` operator routes (O4) — the same repository
+    /// `/admin/trace-dlq` operator routes — the same repository
     /// instance the worker pool and the retry loop write to.
     pub repos: Repositories,
-    /// Bounded producer for admin audit rows (O7). Admin handlers submit
+    /// Bounded producer for admin audit rows. Admin handlers submit
     /// here; one background writer persists in order and is drained at
     /// shutdown, so a mutation accepted moments before SIGTERM still lands.
     pub audit_queue: crate::queue::audit_queue::AuditQueue,
@@ -146,7 +146,7 @@ pub struct AppStateInner {
     pub start_time: chrono::DateTime<chrono::Utc>,
     pub metrics_handle: PrometheusHandle,
     pub(crate) http_client: reqwest::Client,
-    /// The process's one expression engine (I188): Orion's ten operators,
+    /// The process's one expression engine: Orion's ten operators,
     /// `[secrets]` and `engine.ops_budget`, built at boot and kept across
     /// every reload. The channel guards, channel auth, cron and `/validate` compile and evaluate on it. Cheap to clone: a clone
     /// shares the engine.
@@ -178,9 +178,9 @@ pub struct AppStateInner {
     /// stream of a hooked channel ends then (see [`crate::http_hook`]).
     pub stream_drain: crate::http_hook::StreamDrain,
     /// The node's long-lived background tasks. Held here so `/health` and
-    /// `/readyz` can report their liveness — before this, a dead persistence
-    /// worker or DLQ retry consumer was invisible to every probe while the
-    /// data plane kept answering 200s.
+    /// `/readyz` can report their liveness: without a registry, a dead
+    /// persistence worker or DLQ retry consumer would be invisible to every
+    /// probe while the data plane kept answering 200s.
     pub tasks: Arc<crate::runtime::TaskRegistry>,
 
     /// What the cron scheduler is actually achieving, as distinct from whether
@@ -203,18 +203,18 @@ pub struct AppStateInner {
     ///
     /// Held here rather than read off `rate_limit_state` because client
     /// identification is not only the rate limiter's concern: the audit trail
-    /// (O7) and the failed-auth backoff (S12) resolve the caller's address
-    /// with the same policy. Sourcing it from the limiter tied it to
+    /// and the failed-auth backoff resolve the caller's address with the same
+    /// policy. Sourcing it from the limiter would tie it to
     /// `rate_limit.enabled`, which is `false` by default — so on any
-    /// deployment behind an ingress or load balancer, every audit row
-    /// recorded the proxy's address and there was no way to change that short
-    /// of turning on rate limiting.
+    /// deployment behind an ingress or load balancer, every audit row would
+    /// record the proxy's address, with no way to change that short of
+    /// turning on rate limiting.
     ///
     /// The per-channel `rate_limit` keys on it too: the ingress guards enforce
     /// that limit with `[rate_limit] enabled = false`, so hanging the trust
-    /// list off the limiter meant that in exactly the configuration the
-    /// per-channel limit exists for, every client behind a proxy collapsed
-    /// into one bucket (S15).
+    /// list off the limiter would mean that in exactly the configuration the
+    /// per-channel limit exists for, every client behind a proxy collapses
+    /// into one bucket.
     pub trusted_proxies: Arc<Vec<ipnet::IpNet>>,
     /// The data plane's narrow view of this state, built from the same
     /// handles; see [`DataPlane`].

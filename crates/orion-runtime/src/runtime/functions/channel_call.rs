@@ -23,13 +23,13 @@ pub struct GenerationChannels {
     /// The node's serving generation, loaded once per call.
     pub runtime: Arc<RuntimeHandle>,
     /// The process's expression engine, which compiled the target channel's
-    /// guards and evaluates them (I188).
+    /// guards and evaluates them.
     pub exprs: dataflow_rs::expr::ExprEngine,
 }
 
 impl ChannelCallHost for GenerationChannels {
     fn resolve(&self, target: &str) -> Result<Box<dyn ChannelCallTarget>, HandlerError> {
-        // Inherits any generation pinned by the parent run (V2-05.3).
+        // Inherits any generation pinned by the parent run.
         let generation = self.runtime.load_pinned_or_current();
         let channel = serviceable_target(&generation, target)?;
         Ok(Box::new(ResolvedTarget {
@@ -108,7 +108,7 @@ impl ChannelCallTarget for ResolvedTarget {
 }
 
 /// The target's runtime config in `generation`, when it may be called: not
-/// quarantined (F35), active, and not a cron channel (D6).
+/// quarantined, active, and not a cron channel.
 ///
 /// A target absent from the registry is not an active channel, and is
 /// refused loudly: a run on an unknown channel matches zero workflows and
@@ -137,8 +137,8 @@ fn serviceable_target(
         })?
         .ok_or_else(|| not_found(target))?;
     if runtime.cron.is_some() {
-        // 1.12's text, the two runs of spaces included (a line continuation
-        // that lost its backslash): a client reads it, so it holds.
+        // The two runs of spaces are deliberate (a line continuation that
+        // lost its backslash): a client reads this text, so it holds.
         return Err(HandlerError::new(
             ErrorClass::Backend,
             format!(

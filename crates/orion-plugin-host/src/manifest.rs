@@ -152,8 +152,9 @@ impl OutputRoot {
 /// not exist here: a plugin never sees key material.
 ///
 /// The template form needs the engine to compile against *this* function's
-/// table, and one handler type serves every function a manifest declares; it
-/// became possible when dataflow-rs 3.12 gave the compile hook a receiver.
+/// table, and one handler type serves every function a manifest declares: the
+/// compile hook takes a receiver, so each instance compiles against its own
+/// table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FieldDecl {
@@ -351,16 +352,16 @@ impl FunctionDecl {
     /// and then the implicit `output`, the order [`Manifest::entries`] gives
     /// the catalogue.
     ///
-    /// Each field keeps the position 1.12 executed it in (I183), by
+    /// Each field keeps the position it executes in, by
     /// [`FieldDecl::runtime_field`]. `output` is a write destination whose
     /// default is the declared `output_default_root`, and which is required
-    /// when there is none: 1.12 refused every call of a task that named no
-    /// `output` there.
+    /// when there is none: a call of a task that names no `output` there is
+    /// refused.
     ///
     /// A declared field named `output`, which [`Manifest::parse`] refuses and
     /// only a stored row that skipped that check can hold, is left out. The
-    /// implicit field is the destination, as 1.12's handler read it, and a
-    /// config holds one field of a name.
+    /// implicit field is the destination, and a config holds one field of a
+    /// name.
     pub fn runtime_fields(&self) -> Vec<RuntimeField> {
         self.input_fields
             .iter()
@@ -387,27 +388,25 @@ impl FunctionDecl {
 }
 
 impl FieldDecl {
-    /// This field as a dataflow-rs 4 runtime field, in the position 1.12
-    /// executed it in (I183):
+    /// This field as a dataflow-rs 4 runtime field, in the position it
+    /// executes in:
     ///
     /// - `template_at`: an expression whose result is of the field's kind,
-    ///   which the engine compiles once and evaluates per message, as 1.12's
-    ///   `Template` was;
+    ///   which the engine compiles once and evaluates per message;
     /// - `resolvable`: an interpolated document, its `{"var": …}` holes
-    ///   folded against the message and every other node data, as 1.12's
-    ///   `resolve_value` folded it;
+    ///   folded against the message and every other node data;
     /// - anything else: a literal of the field's kind, passed on as written.
     ///
-    /// `template_at` is read first, as 1.12's handler read it, for a stored
-    /// row declaring both, which [`Manifest::parse`] refuses.
+    /// `template_at` is read first for a stored row declaring both, which
+    /// [`Manifest::parse`] refuses.
     ///
     /// A template field is recorded (`records`), so the engine refuses a
     /// `{"secret": …}` read in it at load (`SECRET_IN_MESSAGE_WRITE`). A
     /// guest may hand its input back as its result, which the engine writes
-    /// into the message, and a plugin never sees key material: 1.12 refused
-    /// the node at authoring, and at load evaluated it into the guest's
-    /// input. An interpolated field refuses the node as data
-    /// (`SECRET_IN_DOCUMENT`), and a literal one holds it as the object it is.
+    /// into the message, and a plugin never sees key material: without the
+    /// refusal, the node would be evaluated into the guest's input. An
+    /// interpolated field refuses the node as data (`SECRET_IN_DOCUMENT`),
+    /// and a literal one holds it as the object it is.
     pub fn runtime_field(&self) -> RuntimeField {
         let kind = value_kind(self.kind);
         let position = if self.template_at {
