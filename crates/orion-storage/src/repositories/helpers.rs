@@ -1,7 +1,7 @@
 use sea_query::{Asterisk, Condition, DynIden, ExprTrait, Order, Query};
 use serde::Serialize;
 
-use crate::{DbPool, DbRow, DbTransaction};
+use crate::{DbBackend, DbPool, DbRow, DbTransaction};
 use orion_common::errors::OrionError;
 
 /// One page of repository results plus the paging bookkeeping every admin
@@ -175,6 +175,85 @@ pub fn sql_now_minus_secs(backend: crate::DbBackend, secs: u64) -> String {
 /// `OrionError` returned by `err`. Replaces the
 /// `.fetch_optional_as(...).await?.ok_or_else(...)` pattern repeated across
 /// repository read paths.
+/// A row a lease claim can hand back: the primary key the MySQL lease's
+/// second statement names, and what the caller can correct once the write is
+/// known to have happened.
+pub trait ClaimRow: DbRow {
+    /// The row's primary key.
+    fn claim_id(&self) -> &str;
+
+    /// Rewrite a row selected *before* the lease `UPDATE` to what that
+    /// `UPDATE` wrote. Only a backend without `UPDATE … RETURNING` needs it,
+    /// and only when the caller reads the leased fields off the row.
+    fn settle_claim(&mut self, _claimant: &str) {}
+}
+
+/// What one claim may lease.
+#[derive(Clone, Copy)]
+pub struct ClaimBatch<'a> {
+    pub claimant: &'a str,
+    pub limit: i64,
+    /// The database's clock, from [`sql_now`].
+    pub now: &'static str,
+    pub lease_until: &'a str,
+}
+
+/// Lease the due rows of one table: the algorithm the trace DLQ and the cron
+/// scheduler both run (M-10).
+///
+/// The two backends offer different statements for it. Postgres and SQLite
+/// have `UPDATE … RETURNING`, so `returning` leases and answers in one
+/// statement; `skip_locked` is true on Postgres alone, where two nodes could
+/// otherwise claim the same rows mid-transaction (SQLite is single-host and
+/// serializes writes itself). MySQL 8 has `SKIP LOCKED` but no
+/// `UPDATE … RETURNING`, so the rows `selecting` locked are the caller's
+/// answer, and `leasing` writes the lease beside them in the same
+/// transaction.
+///
+/// Which rows are due, how they are ordered, and which fields the lease
+/// stamps stay with the caller: the DLQ and the scheduler read different
+/// columns of different tables, and the point of this function is the shape
+/// around them, not their SQL.
+pub(crate) async fn claim_batch<T, R, S, L>(
+    pool: &DbPool,
+    batch: ClaimBatch<'_>,
+    returning: R,
+    selecting: S,
+    leasing: L,
+) -> Result<Vec<T>, OrionError>
+where
+    T: ClaimRow,
+    R: FnOnce(bool) -> sea_query::UpdateStatement,
+    S: FnOnce() -> sea_query::SelectStatement,
+    L: FnOnce(&[T]) -> sea_query::UpdateStatement,
+{
+    let backend = pool.backend();
+    match backend {
+        DbBackend::Postgres | DbBackend::Sqlite => {
+            let (sql, values) =
+                crate::build_sqlx(backend, &mut returning(backend == DbBackend::Postgres));
+            Ok(pool.fetch_all_as::<T>(&sql, values).await?)
+        }
+        DbBackend::Mysql => {
+            let mut tx = pool.begin_tx().await?;
+            let (sql, values) = crate::build_sqlx(backend, &mut selecting());
+            let mut rows: Vec<T> = tx.fetch_all_as(&sql, values).await?;
+            if rows.is_empty() {
+                tx.commit().await?;
+                return Ok(rows);
+            }
+            let (sql, values) = crate::build_sqlx(backend, &mut leasing(&rows));
+            tx.execute_query(&sql, values).await?;
+            tx.commit().await?;
+            // The pre-UPDATE rows, corrected to what the lease wrote.
+            for row in &mut rows {
+                row.settle_claim(batch.claimant);
+            }
+            Ok(rows)
+        }
+    }
+}
+
 pub async fn fetch_required<T: DbRow>(
     pool: &DbPool,
     sql: &str,

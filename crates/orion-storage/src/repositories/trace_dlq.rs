@@ -7,9 +7,18 @@ use orion_common::errors::OrionError;
 // other row struct. Only the request-side filter is defined here.
 use crate::models::{TraceDlqEntry, TraceDlqSummary};
 use crate::schema::TraceDlq;
-use crate::{DbBackend, DbPool, build_sqlx};
+use crate::{DbPool, build_sqlx};
 
 use super::helpers::{Page, PaginatedResult, Projection};
+
+/// The claim a lease takes names rows by id (M-10). The DLQ's MySQL lease
+/// writes the same columns the selected row already carried — the caller
+/// reads none of them back — so nothing is settled here.
+impl super::helpers::ClaimRow for TraceDlqEntry {
+    fn claim_id(&self) -> &str {
+        &self.id
+    }
+}
 
 // -- Request DTOs --
 
@@ -398,47 +407,34 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
     ) -> Result<Vec<TraceDlqEntry>, OrionError> {
         orion_common::metrics::timed_db_op("trace_dlq.claim_pending", async {
             let backend = self.pool.backend();
-            let now = super::helpers::sql_now(backend);
-            let lease_until = super::helpers::sql_now_plus_secs(backend, lease_secs);
-            match backend {
-                DbBackend::Postgres | DbBackend::Sqlite => {
-                    let (sql, values) = build_sqlx(
-                        self.pool.backend(),
-                        &mut claim_update_query(
-                            claimant,
-                            limit,
-                            now,
-                            &lease_until,
-                            backend == DbBackend::Postgres,
-                        ),
-                    );
-                    Ok(self
-                        .pool
-                        .fetch_all_as::<TraceDlqEntry>(&sql, values)
-                        .await?)
-                }
-                DbBackend::Mysql => {
-                    let mut tx = self.pool.begin_tx().await?;
-                    let (sql, values) =
-                        build_sqlx(self.pool.backend(), &mut claim_select_query(limit, now));
-                    let rows: Vec<TraceDlqEntry> = tx.fetch_all_as(&sql, values).await?;
-                    if rows.is_empty() {
-                        tx.commit().await?;
-                        return Ok(rows);
-                    }
-                    let (sql, values) = build_sqlx(
-                        self.pool.backend(),
-                        &mut lease_claimed_query(
-                            claimant,
-                            &lease_until,
-                            rows.iter().map(|r| r.id.as_str()),
-                        ),
-                    );
-                    tx.execute_query(&sql, values).await?;
-                    tx.commit().await?;
-                    Ok(rows)
-                }
-            }
+            let batch = super::helpers::ClaimBatch {
+                claimant,
+                limit,
+                now: super::helpers::sql_now(backend),
+                lease_until: &super::helpers::sql_now_plus_secs(backend, lease_secs),
+            };
+            super::helpers::claim_batch(
+                &self.pool,
+                batch,
+                |skip_locked| {
+                    claim_update_query(
+                        batch.claimant,
+                        batch.limit,
+                        batch.now,
+                        batch.lease_until,
+                        skip_locked,
+                    )
+                },
+                || claim_select_query(batch.limit, batch.now),
+                |rows: &[TraceDlqEntry]| {
+                    lease_claimed_query(
+                        batch.claimant,
+                        batch.lease_until,
+                        rows.iter().map(|r| r.id.as_str()),
+                    )
+                },
+            )
+            .await
         })
         .await
     }

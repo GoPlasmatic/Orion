@@ -28,12 +28,12 @@ use chrono::NaiveDateTime;
 use sea_query::{Asterisk, Condition, Expr, ExprTrait, IntoIden, Query, SimpleExpr};
 
 use super::helpers::{self, Page, PaginatedResult, Projection};
+use crate::DbPool;
 use crate::build_sqlx;
 use crate::models::{CronOccurrence, CronScheduleState};
 use crate::schema::{
     CronOccurrences, CronScheduleState as ScheduleState, CronSingletonSlots, CronSingletons,
 };
-use crate::{DbBackend, DbPool};
 use orion_common::errors::OrionError;
 
 // ============================================================
@@ -466,6 +466,21 @@ fn lease_claimed_query<'a>(
         .to_owned()
 }
 
+/// The claim a lease takes names rows by id, and the MySQL path — which has
+/// no `UPDATE … RETURNING` — reports the pre-UPDATE rows, so the fields the
+/// lease wrote are settled here (M-10).
+impl helpers::ClaimRow for CronOccurrence {
+    fn claim_id(&self) -> &str {
+        &self.id
+    }
+
+    fn settle_claim(&mut self, claimant: &str) {
+        self.status = status::CLAIMED.to_string();
+        self.claimed_by = Some(claimant.to_string());
+        self.attempt += 1;
+    }
+}
+
 fn occurrence_select(id: &str) -> sea_query::SelectStatement {
     Query::select()
         .column(Asterisk)
@@ -663,59 +678,35 @@ impl CronRepository for SqlCronRepository {
     async fn claim_due(&self, req: ClaimRequest<'_>) -> Result<Vec<CronOccurrence>, OrionError> {
         orion_common::metrics::timed_db_op("cron.claim_due", async {
             let backend = self.pool.backend();
-            let now = helpers::sql_now(backend);
             let lease_until = self.lease_until(req.lease_secs);
-            match backend {
-                DbBackend::Postgres | DbBackend::Sqlite => {
-                    let (sql, values) = build_sqlx(
-                        backend,
-                        &mut claim_update_query(
-                            req.claimant,
-                            req.limit,
-                            now,
-                            &lease_until,
-                            backend == DbBackend::Postgres,
-                        ),
-                    );
-                    Ok(self
-                        .pool
-                        .fetch_all_as::<CronOccurrence>(&sql, values)
-                        .await?)
-                }
-                DbBackend::Mysql => {
-                    let mut tx = self.pool.begin_tx().await?;
-                    let (sql, values) =
-                        build_sqlx(backend, &mut claim_select_query(req.limit, now));
-                    let rows: Vec<CronOccurrence> = tx.fetch_all_as(&sql, values).await?;
-                    if rows.is_empty() {
-                        tx.commit().await?;
-                        return Ok(rows);
-                    }
-                    let (sql, values) = build_sqlx(
-                        backend,
-                        &mut lease_claimed_query(
-                            req.claimant,
-                            &lease_until,
-                            rows.iter().map(|r| r.id.as_str()),
-                        ),
-                    );
-                    tx.execute_query(&sql, values).await?;
-                    tx.commit().await?;
-                    // The pre-UPDATE rows, with the fields the caller needs
-                    // corrected to what the UPDATE wrote — the same read-back
-                    // avoidance the DLQ takes, except that `attempt` is
-                    // incremented here and the caller reports it.
-                    Ok(rows
-                        .into_iter()
-                        .map(|mut row| {
-                            row.status = status::CLAIMED.to_string();
-                            row.claimed_by = Some(req.claimant.to_string());
-                            row.attempt += 1;
-                            row
-                        })
-                        .collect())
-                }
-            }
+            let batch = helpers::ClaimBatch {
+                claimant: req.claimant,
+                limit: req.limit,
+                now: helpers::sql_now(backend),
+                lease_until: &lease_until,
+            };
+            helpers::claim_batch(
+                &self.pool,
+                batch,
+                |skip_locked| {
+                    claim_update_query(
+                        batch.claimant,
+                        batch.limit,
+                        batch.now,
+                        batch.lease_until,
+                        skip_locked,
+                    )
+                },
+                || claim_select_query(batch.limit, batch.now),
+                |rows: &[CronOccurrence]| {
+                    lease_claimed_query(
+                        batch.claimant,
+                        batch.lease_until,
+                        rows.iter().map(|r| r.id.as_str()),
+                    )
+                },
+            )
+            .await
         })
         .await
     }
