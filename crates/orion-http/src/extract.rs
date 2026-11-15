@@ -120,10 +120,33 @@ where
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         match axum::body::Bytes::from_request(req, state).await {
             Ok(bytes) => Ok(OrionBody(bytes)),
-            Err(_) => Err(OrionError::payload_too_large(
-                "Request body exceeded `ingest.max_payload_size`".to_string(),
-            )),
+            Err(rej) => Err(body_rejection(rej)),
         }
+    }
+}
+
+/// A body that could not be buffered: `413` only when it was the length limit,
+/// `400` when the client went away or the stream reset mid-body (Q-13).
+///
+/// The old answer was `413` for everything and a message pointing at
+/// `ingest.max_payload_size` — wrong for a disconnect, and misleading about
+/// which setting to look at.
+fn body_rejection(rej: axum::extract::rejection::BytesRejection) -> OrionError {
+    use axum::extract::rejection::{BytesRejection, FailedToBufferBody};
+
+    match rej {
+        BytesRejection::FailedToBufferBody(FailedToBufferBody::LengthLimitError(_)) => {
+            OrionError::payload_too_large(
+                "Request body exceeded `ingest.max_payload_size` (data plane) or \
+                 `server.max_admin_body_size` (admin plane)"
+                    .to_string(),
+            )
+        }
+        other => OrionError::invalid_field(
+            "body",
+            orion_api::error::field_codes::INVALID,
+            format!("Request body could not be read: {other}"),
+        ),
     }
 }
 
@@ -137,7 +160,7 @@ fn map_rejection(rej: JsonRejection) -> OrionError {
             //   "unknown variant `grpc`, expected one of `http`, `rest`, ..."
             // or "missing field `name`". Extract a coarse path when we can.
             let path = extract_path_from_serde_message(&msg).unwrap_or_else(|| "body".to_string());
-            OrionError::invalid_field(path, "INVALID", msg)
+            OrionError::invalid_field(path, orion_api::error::field_codes::INVALID, msg)
         }
         JsonRejection::JsonSyntaxError(e) => {
             OrionError::validation(format!("Invalid JSON: {}", e.body_text()))
@@ -145,15 +168,9 @@ fn map_rejection(rej: JsonRejection) -> OrionError {
         JsonRejection::MissingJsonContentType(_) => OrionError::unsupported_media_type(
             "Expected `content-type: application/json`".to_string(),
         ),
-        // The body exceeded the plane's limit. Matched explicitly because the
-        // catch-all below turns it into a 400 `VALIDATION_ERROR`, which tells
-        // the caller to fix their JSON when the JSON was never read.
-        JsonRejection::BytesRejection(_) => OrionError::payload_too_large(
-            "Request body exceeded the configured limit — see \
-             `ingest.max_payload_size` (data plane) or `server.max_admin_body_size` \
-             (admin plane)"
-                .to_string(),
-        ),
+        // The body could not be read: split by cause, so a disconnect is not
+        // reported as an oversize body.
+        JsonRejection::BytesRejection(rej) => body_rejection(rej),
         // Catch-all: surface body_text but use the rejection's status as a hint.
         other => OrionError::validation(other.body_text()),
     }

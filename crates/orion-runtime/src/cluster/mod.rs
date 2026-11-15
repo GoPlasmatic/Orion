@@ -45,9 +45,6 @@ pub struct ClusterRuntime {
     /// windows live in: the edition's. `None` when disabled: a single node
     /// keeps all three in process.
     pub shared: Option<Arc<dyn SharedStateStore>>,
-    /// Whether `shared` is set: the store is then a readiness component of
-    /// its own (`/readyz`), beside the database.
-    pub external_store: bool,
     /// Default shared cache backend (dedup/response-cache) on that store.
     pub default_cache: Option<Arc<dyn CacheBackend>>,
     /// Breaker-reset/lease coordination repository (always present; harmless
@@ -84,15 +81,15 @@ pub async fn init_cluster_runtime(
     // the runtime; test harnesses may leave it empty (fresh UUID).
     let instance_id = config.cluster.effective_instance_id();
 
-    let (shared, external_store) = match (config.cluster.enabled, store) {
-        (false, _) => (None, false),
+    let shared = match (config.cluster.enabled, store) {
+        (false, _) => None,
         (true, Some(store)) => {
             ping_at_boot(
                 store.as_ref(),
                 Duration::from_secs(config.engine.health_check_timeout_secs),
             )
             .await?;
-            (Some(store), true)
+            Some(store)
         }
         // Community ships no cluster store: fleet-wide dedup, rate limits
         // and the response cache need one an edition composes.
@@ -112,7 +109,6 @@ pub async fn init_cluster_runtime(
         enabled: config.cluster.enabled,
         instance_id,
         shared,
-        external_store,
         default_cache,
         repo,
         last_seen_breaker_epoch: AtomicI64::new(breaker_epoch),
@@ -239,7 +235,6 @@ mod tests {
             .expect("disabled runtime never fails");
         assert!(!runtime.enabled);
         assert!(runtime.shared.is_none());
-        assert!(!runtime.external_store);
         assert!(runtime.default_cache.is_none());
         assert_eq!(runtime.instance_id.len(), 36); // generated UUID
     }
@@ -270,7 +265,6 @@ mod tests {
             .expect("runtime");
         let shared = runtime.shared.as_ref().expect("a shared store");
         assert_eq!(shared.name(), "fake");
-        assert!(runtime.external_store);
         assert!(runtime.default_cache.is_some());
     }
 
@@ -317,7 +311,6 @@ mod tests {
         .await
         .expect("a disabled cluster ignores the store");
         assert!(runtime.shared.is_none());
-        assert!(!runtime.external_store);
         assert!(runtime.default_cache.is_none());
     }
 }

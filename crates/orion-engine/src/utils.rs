@@ -295,7 +295,6 @@ pub fn prepare_offline_metadata(metadata: Value) -> Result<Value, String> {
     Ok(metadata)
 }
 
-/// JSON type name for a validation message.
 /// A JSON value's type, named with its article, for "expected X, got Y"
 /// messages.
 ///

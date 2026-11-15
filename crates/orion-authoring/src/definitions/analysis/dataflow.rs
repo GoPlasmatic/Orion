@@ -134,18 +134,6 @@ fn read_val(arg: &Value, scoped: bool, out: &mut Reads) {
     }
 }
 
-/// Every `data.*` path a JSON subtree reads through a literal `var`/`val` —
-/// the shape the admin route's unwritten-read advisory consumes. Reads it
-/// cannot name are simply absent, which is the right answer for an advisory
-/// that only ever *warns* about a read.
-pub fn data_reads(value: &Value) -> Vec<String> {
-    reads(value)
-        .paths
-        .into_iter()
-        .filter(|p| p == "data" || p.starts_with("data."))
-        .collect()
-}
-
 /// Context paths a task writes, for every function that writes one.
 ///
 /// The *shape* comes from the function registry

@@ -18,23 +18,22 @@ use crate::{ErrorClass, HandlerError};
 /// installed afterwards so it cannot be part of what is being judged.
 pub fn build_entity_registry(
     schema: Option<&Value>,
-    connector_config: &ConnectorConfig,
+    connector_config: &crate::connector::DbConnectorConfig,
     connector_name: &str,
 ) -> Result<EntityRegistry, HandlerError> {
     let mut registry = match schema {
         Some(s) => EntityRegistry::from_json(s)?,
         None => EntityRegistry::default(),
     };
-    if let Some(guards) = connector_config.dialect_guards() {
-        if !guards.schema_is_sufficient(!registry.is_empty(), registry.is_identity_mode()) {
-            return Err(connector_detail(format!(
-                "connector '{connector_name}' requires a declared schema \
-                 (dialect.require_schema): supply \"schema\" with an \"entities\" map \
-                 and without \"unmapped\": \"identity\""
-            )));
-        }
-        registry.restrict_to(&guards.allowed_entities);
+    let guards = &connector_config.dialect;
+    if !guards.schema_is_sufficient(!registry.is_empty(), registry.is_identity_mode()) {
+        return Err(connector_detail(format!(
+            "connector '{connector_name}' requires a declared schema \
+             (dialect.require_schema): supply \"schema\" with an \"entities\" map \
+             and without \"unmapped\": \"identity\""
+        )));
     }
+    registry.restrict_to(&guards.allowed_entities);
     Ok(registry)
 }
 
@@ -291,13 +290,6 @@ pub fn json_type_name(v: &Value) -> &'static str {
     }
 }
 
-/// Turn a decode failure into a task error the author can act on (#309).
-///
-/// Classified as a *client* error, because it is one: the query asked for a
-/// column whose type has no JSON form here, and no amount of retrying changes
-/// that. Before native decoding this surfaced as an internal `500` plus an
-/// `unhandled DataflowError variant` log line, which told the caller nothing
-/// and the author less.
 /// The bind-side twin of [`decode_failure`].
 ///
 /// `Validation` for the same reason: a parameter whose value will not convert
@@ -310,6 +302,13 @@ pub fn encode_failure(
     HandlerError::new(ErrorClass::CallerInput, e.message(function))
 }
 
+/// Turn a decode failure into a task error the author can act on (#309).
+///
+/// Classified as a *client* error, because it is one: the query asked for a
+/// column whose type has no JSON form here, and no amount of retrying changes
+/// that. Before native decoding this surfaced as an internal `500` plus an
+/// `unhandled DataflowError variant` log line, which told the caller nothing
+/// and the author less.
 pub fn decode_failure(
     function: &str,
     e: crate::connector::sql_decode::DecodeError,

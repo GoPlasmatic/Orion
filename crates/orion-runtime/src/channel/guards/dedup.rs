@@ -70,6 +70,17 @@ impl DedupClaim {
     }
 }
 
+/// What a key another delivery holds, unsettled, answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OnInFlight {
+    /// `409`, as for a settled key: an HTTP caller whose key is in use.
+    Conflict,
+    /// A transient refusal ([`crate::errors::Unavailable::DedupInFlight`]):
+    /// an edition driver's delivery, which retries without acknowledging
+    /// rather than dropping a message whose original has not completed.
+    Defer,
+}
+
 /// Check per-channel request deduplication, and claim the key for this
 /// delivery when it is free.
 ///
@@ -97,17 +108,6 @@ impl DedupClaim {
 /// [`DedupClaim::confirm`] then overwrites the token with a settled marker
 /// once the delivery is accounted for, which is what suppresses a replay of a
 /// message that *did* run but whose offset commit was lost.
-/// What a key another delivery holds, unsettled, answers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OnInFlight {
-    /// `409`, as for a settled key: an HTTP caller whose key is in use.
-    Conflict,
-    /// A transient refusal ([`crate::errors::Unavailable::DedupInFlight`]):
-    /// an edition driver's delivery, which retries without acknowledging
-    /// rather than dropping a message whose original has not completed.
-    Defer,
-}
-
 pub(super) async fn check_deduplication(
     channel: &str,
     channel_config: &Option<Arc<ChannelRuntimeConfig>>,

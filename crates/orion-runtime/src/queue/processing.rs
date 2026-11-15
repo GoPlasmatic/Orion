@@ -304,27 +304,16 @@ async fn settle_panicked_trace(
         })
         .for_async_submission();
 
-    if matches!(effective_trace.mode, TraceStorageMode::Sync) {
-        if let Err(e) = ctx
-            .trace_repo
-            .update_status(trace_id, models::TRACE_STATUS_FAILED, Some(PANIC_ERROR_MSG))
-            .await
-        {
-            tracing::error!(
-                trace_id = %trace_id,
-                error = %e,
-                "Failed to settle panicked trace status to failed"
-            );
-        }
-    } else {
-        ctx.set_trace_status(
-            effective_trace.mode,
-            trace_id,
-            models::TRACE_STATUS_FAILED,
-            Some(PANIC_ERROR_MSG),
-        )
-        .await;
-    }
+    // One status path for every mode: `set_trace_status` writes inline in
+    // Sync and queues in Async/Batch, so a panic cannot bypass the mode's own
+    // write policy (Q-16).
+    ctx.set_trace_status(
+        effective_trace.mode,
+        trace_id,
+        models::TRACE_STATUS_FAILED,
+        Some(PANIC_ERROR_MSG),
+    )
+    .await;
 
     // Avoid automatic replay when external side effects are uncertain: if this
     // trace was a leased DLQ retry, mark the DLQ entry exhausted (`TD-06`).

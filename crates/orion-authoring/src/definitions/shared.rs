@@ -737,24 +737,6 @@ fn absolute_sql_paths(value: &Value) -> Vec<String> {
     out
 }
 
-/// The first shared reference in a document, described for an error message,
-/// or `None` if it has none.
-///
-/// Exists so a command asked to handle a document it cannot resolve can name
-/// the cause rather than letting validation report the symptom — an
-/// unexpanded `use` task looks to the validator like a task missing its
-/// `name` and `function`, which sends the reader to the wrong place.
-///
-/// Reads the pipeline's own residue rather than walking again, so "what the
-/// single-file commands refuse" and "what `compile` would have consumed" stay
-/// one statement, and a pass added later is named here without being taught
-/// about.
-pub fn first_reference(doc: &Value) -> Option<String> {
-    super::compile::residue(doc, "")
-        .first()
-        .map(super::compile::Residue::describe)
-}
-
 /// Keep the shared documents from the set walk, and report what would not
 /// parse.
 ///

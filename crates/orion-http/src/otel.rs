@@ -20,7 +20,10 @@ use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider};
 pub fn init_otel_pipeline(
     config: &TracingConfig,
     instance_id: &str,
-) -> Result<(SdkTracerProvider, opentelemetry_sdk::trace::Tracer), Box<dyn std::error::Error>> {
+) -> Result<
+    (SdkTracerProvider, opentelemetry_sdk::trace::Tracer),
+    Box<dyn std::error::Error + Send + Sync>,
+> {
     // Set the global text map propagator to W3C Trace Context (traceparent / tracestate)
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
 

@@ -93,16 +93,6 @@ impl SqlPool {
         }
     }
 
-    /// Whether the driver reports an auto-increment id after an insert.
-    ///
-    /// MySQL and SQLite do; PostgreSQL does not, and never did — `AnyQueryResult`
-    /// simply reported `0` there, so `last_insert_id` was a field that looked
-    /// answered and was not. Postgres uses `RETURNING`, which the dialect
-    /// already supports.
-    pub fn reports_last_insert_id(&self) -> bool {
-        !matches!(self, SqlPool::Postgres(_))
-    }
-
     /// `SELECT 1` through the pool — the connectivity probe, and the one
     /// statement every backend spells identically.
     pub async fn ping(&self) -> Result<(), sqlx::Error> {

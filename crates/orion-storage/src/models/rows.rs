@@ -66,32 +66,6 @@ impl Workflow {
 }
 
 // ============================================================
-// Plugin
-// ============================================================
-
-/// One version of a plugin: the manifest it was uploaded with and the
-/// digest of the component it names. The bytes live in the deployment
-/// store's content-addressed artifacts, keyed by that digest, so a version is
-/// small and a component is stored once however many versions name it.
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct Plugin {
-    pub plugin_id: String,
-    pub version: i64,
-    pub status: String,
-    /// `sha256:<hex>` of the component bytes, computed by the server.
-    pub digest: String,
-    /// The manifest as JSON — the parsed, validated form, not the TOML text.
-    pub manifest_json: String,
-    pub tags_json: String,
-    /// A detached signature over `digest`, base64, when the upload carried
-    /// one. Verified against `[plugins.trust]` at upload and again at every
-    /// load; `None` on a row uploaded to a node with no trust keys.
-    pub signature: Option<String>,
-    pub created_at: NaiveDateTime,
-    pub updated_at: NaiveDateTime,
-}
-
-// ============================================================
 // Channel
 // ============================================================
 

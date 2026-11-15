@@ -8,10 +8,10 @@
 //! in canonical key order, so two uploads of the same definition, however
 //! they were spelled, are one artifact.
 //!
-//! The generation builder still consumes `Channel`, `Workflow` and `Plugin`
-//! rows; a definition becomes one here, with the identity the member gives
-//! it. Nothing about a row comes from anywhere but the definition and the
-//! member.
+//! The generation builder still consumes `Channel` and `Workflow` rows, and a
+//! [`DeployedPlugin`] for a plugin; a definition becomes one here, with the
+//! identity the member gives it. Nothing about what the builder reads comes
+//! from anywhere but the definition and the member.
 
 use base64::Engine as _;
 use orion_api::v2::{
@@ -19,7 +19,8 @@ use orion_api::v2::{
 };
 
 use crate::errors::OrionError;
-use crate::storage::models::{Channel, EntityStatus, Plugin, Workflow};
+use crate::plugin::DeployedPlugin;
+use crate::storage::models::{Channel, EntityStatus, Workflow};
 
 /// The bytes the artifact store holds for `definition`: keys sorted at every
 /// depth, compact. Not the package-manifest encoder, which refuses booleans,
@@ -106,20 +107,17 @@ pub fn plugin_row(
     definition: &PluginDefinition,
     plugin_id: &str,
     revision: u64,
-) -> Result<(Plugin, Vec<u8>), OrionError> {
+) -> Result<(DeployedPlugin, Vec<u8>), OrionError> {
     let bytes = component_bytes(definition)?;
-    let now = chrono::Utc::now().naive_utc();
     Ok((
-        Plugin {
+        DeployedPlugin {
             plugin_id: plugin_id.to_string(),
             version: version(revision),
-            status: EntityStatus::Active.as_str().to_string(),
             digest: crate::crypto::sha256_digest(&bytes).into_string(),
-            manifest_json: serde_json::to_string(&definition.manifest)?,
-            tags_json: serde_json::to_string(&definition.tags)?,
+            manifest: serde_json::from_value(definition.manifest.clone()).map_err(|e| {
+                OrionError::validation(format!("plugin manifest does not parse as a manifest: {e}"))
+            })?,
             signature: definition.signature.clone(),
-            created_at: now,
-            updated_at: now,
         },
         bytes,
     ))

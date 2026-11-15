@@ -767,7 +767,7 @@ impl ChannelMetrics {
         self.handles(channel).duration.record(duration_secs);
     }
 
-    /// [`record_cache_hit`] for this channel.
+    /// The per-channel cache-hit outcome.
     pub fn record_cache_hit(&self, channel: &str) {
         if !is_enabled() {
             return;
@@ -775,7 +775,7 @@ impl ChannelMetrics {
         self.handles(channel).cache_hits.increment(1);
     }
 
-    /// [`record_cache_miss`] for this channel.
+    /// The per-channel cache-miss outcome.
     pub fn record_cache_miss(&self, channel: &str) {
         if !is_enabled() {
             return;
@@ -785,6 +785,11 @@ impl ChannelMetrics {
 }
 
 /// Record a response cache hit.
+///
+/// Test-only: production records through [`ChannelMetrics`], which caches the
+/// per-channel handles. This free form exists as the oracle a test compares
+/// that path against.
+#[cfg(test)]
 pub fn record_cache_hit(channel: &str) {
     if !is_enabled() {
         return;
@@ -825,7 +830,8 @@ pub fn record_cache_coalesced(channel: &str) {
     counter!("orion_response_cache_coalesced_total", "channel" => channel.to_owned()).increment(1);
 }
 
-/// Record a response cache miss.
+/// Record a response cache miss. Test-only; see [`record_cache_hit`].
+#[cfg(test)]
 pub fn record_cache_miss(channel: &str) {
     if !is_enabled() {
         return;

@@ -112,17 +112,21 @@ kinds! {
 
 /// The portable data dialect's target: a `db` connector.
 ///
-/// Its `Config` is the whole [`ConnectorConfig`] because the dialect reads the
-/// connector through the variant-neutral accessors —
-/// [`ConnectorConfig::operation_gates`] and [`ConnectorConfig::dialect_guards`].
+/// Its `Config` is the `db` variant alone, so a handler resolves and
+/// type-checks in one step and never re-matches the enum — the two
+/// `unreachable!` arms `data_query` and `data_write` used to carry for a
+/// variant the target had already refused are gone (Q-11).
 pub struct DataBackend;
 
 impl ConnectorTarget for DataBackend {
-    type Config = ConnectorConfig;
+    type Config = DbConnectorConfig;
     const TYPES: &'static [ConnectorType] = &[ConnectorType::Db];
 
     fn extract(config: &ConnectorConfig) -> Option<&Self::Config> {
-        matches!(config, ConnectorConfig::Db(_)).then_some(config)
+        match config {
+            ConnectorConfig::Db(db) => Some(db),
+            _ => None,
+        }
     }
 
     fn noun() -> &'static str {

@@ -2996,7 +2996,6 @@ dependencies = [
  "dataflow-rs",
  "orion-common",
  "orion-engine",
- "orion-storage",
  "serde",
  "serde_json",
  "tokio",

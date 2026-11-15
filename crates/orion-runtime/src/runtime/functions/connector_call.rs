@@ -10,8 +10,8 @@ use serde_json::{Value, json};
 use crate::engine::ErrorClass;
 use crate::engine::HandlerError;
 use crate::engine::functions::connector_call::{
-    ConnectorCallConfig, ConnectorCallFunction, ConnectorCallHost, ConnectorInvocation, NAME,
-    connector_error, forbidden, implementation_kind, not_registered, unknown_kind,
+    ConnectorCallConfig, ConnectorCallHost, ConnectorInvocation, connector_error, forbidden,
+    implementation_kind, not_registered, unknown_kind,
 };
 use crate::extensions::{ImplementationKind, ProviderRef, ProviderRegistry, RunContext};
 
@@ -307,21 +307,6 @@ async fn execute_connector_call(
     Ok(output.data)
 }
 
-/// Register `connector_call` on a `dataflow-rs` 4 [`dataflow_rs::Registry`].
-pub fn register_connector_call(
-    registry: &mut dataflow_rs::Registry,
-    providers: ProviderRegistry,
-    connectors: std::sync::Arc<crate::connector::ConnectorRegistry>,
-) {
-    registry.register(
-        NAME,
-        ConnectorCallFunction {
-            host: std::sync::Arc::new(ProviderCalls { providers }),
-            registry: connectors,
-        },
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,6 +320,7 @@ mod tests {
             .build_in_memory()
             .expect("community composes")
     }
+    use crate::engine::functions::connector_call::{ConnectorCallFunction, NAME};
     use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
     use dataflow_rs::function::testing;
     use serde_json::Value;

@@ -48,12 +48,13 @@ struct FailureRecord {
     last_seen: Instant,
 }
 
-/// Per-client failed-admin-auth tracker with exponential backoff.
+/// Per-client failed-credential tracker with exponential backoff.
 ///
-/// Without this, `admin_auth.api_keys` faced unlimited guessing attempts: the
-/// middleware returns 401 without calling `next.run`, so before the S16 layer
-/// reorder the rate limiter never even saw the request — and the limiter is
-/// off by default regardless (proposal S12).
+/// Backs the admin API's `admin_auth.api_keys` and a channel's own
+/// `auth.keys` / HMAC secrets: without it both faced unlimited guessing. The
+/// admin middleware returns 401 without calling `next.run`, so before the S16
+/// layer reorder the rate limiter never even saw the request — and the limiter
+/// is off by default regardless (proposal S12).
 #[derive(Debug, Default)]
 pub struct FailedAuthTracker {
     clients: DashMap<String, FailureRecord>,

@@ -108,11 +108,11 @@ pub trait NamedFunction: dataflow_rs::Function {
     fn name(&self) -> &str;
 }
 
-/// Whether `Registry::register` refuses `name` with a panic (I43, amended
-/// by I57): a built-in's ([`dataflow_rs::def::BUILTIN_FUNCTIONS`]) or
-/// `validate`, 1.12's alias for `validation`, which the compat
-/// reader rewrites before any name is looked up. A host registering names
-/// from data checks them first, as `register`'s documentation asks.
+/// Whether `Registry::register` refuses `name` with a panic (I43, amended by
+/// I57): a name the engine reserves, either a built-in
+/// ([`dataflow_rs::def::BUILTIN_FUNCTIONS`]) or one of its own aliases. A host
+/// registering names from data checks them first, as `register`'s
+/// documentation asks.
 pub fn is_reserved_function_name(name: &str) -> bool {
     dataflow_rs::def::is_reserved_function(name)
 }

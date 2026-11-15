@@ -1,3 +1,4 @@
+use orion_common::sync::LockExt;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -58,7 +59,7 @@ impl PartitionedMemoryCache {
     }
 
     pub fn get(&self, identity: &EffectiveConnectionIdentity, key: &str) -> Option<Value> {
-        let mut guard = self.partitions.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.partitions.lock_unpoisoned();
         let partition = guard.get_mut(identity)?;
         let Some(entry) = partition.get(key) else {
             if partition.is_empty() {
@@ -87,7 +88,7 @@ impl PartitionedMemoryCache {
         value: Value,
         ttl: Option<Duration>,
     ) {
-        let mut guard = self.partitions.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.partitions.lock_unpoisoned();
         let now = Instant::now();
 
         if !guard.contains_key(identity) && guard.len() >= self.max_partitions {
@@ -141,7 +142,7 @@ impl PartitionedMemoryCache {
     }
 
     pub fn delete(&self, identity: &EffectiveConnectionIdentity, key: &str) -> bool {
-        let mut guard = self.partitions.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.partitions.lock_unpoisoned();
         let Some(partition) = guard.get_mut(identity) else {
             return false;
         };
@@ -154,7 +155,7 @@ impl PartitionedMemoryCache {
     }
 
     pub fn remove_partition(&self, identity: &EffectiveConnectionIdentity) {
-        let mut guard = self.partitions.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.partitions.lock_unpoisoned();
         guard.remove(identity);
         orion_common::metrics::set_memory_cache_partitions(guard.len());
     }
@@ -172,7 +173,7 @@ impl PartitionedMemoryCache {
         identity: &EffectiveConnectionIdentity,
         key: &str,
     ) -> Option<Option<Instant>> {
-        let guard = self.partitions.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self.partitions.lock_unpoisoned();
         guard.get(identity)?.get(key).map(|e| e.expires_at)
     }
 }
@@ -184,7 +185,7 @@ impl ConnectionPoolCache for PartitionedMemoryCache {
     }
 
     async fn evict(&self, connector_name: &str) {
-        let mut guard = self.partitions.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.partitions.lock_unpoisoned();
         guard.retain(|k, _| k.connection_id != connector_name);
         orion_common::metrics::set_memory_cache_partitions(guard.len());
     }

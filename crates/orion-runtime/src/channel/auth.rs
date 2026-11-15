@@ -13,13 +13,11 @@
 //! happens in `guards::apply_guards`, through the transport matrix, so every
 //! HTTP ingress inherits it from one place.
 //!
-//! Two modes ship here. `api_key` covers the common "our other service calls
+//! Three modes ship here. `api_key` covers the common "our other service calls
 //! this" case; `hmac` covers inbound webhooks, whose signature is computed over
-//! the **raw body** and so must be checked before the JSON is parsed.
+//! the **raw body** and so must be checked before the JSON is parsed; `jwt`
+//! verifies a bearer token and exposes its claims to the workflow.
 
-// KeyInit is what carries `new_from_slice` from hmac 0.13 on: the constructor
-// moved off the concrete Hmac type onto the crypto-common trait, so it has to
-// be in scope to be called.
 use hmac::Hmac;
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha512};
@@ -319,14 +317,6 @@ impl CompiledAuth {
         }
     }
 
-    /// Authenticate one request, returning what admission carries onward —
-    /// for `jwt`, the verified claims.
-    ///
-    /// `raw_body` is the bytes exactly as received. HMAC is defined over them,
-    /// so it must be checked before any parse: re-serializing parsed JSON
-    /// reorders keys and normalises whitespace, and the signature would never
-    /// match again. `exprs` evaluates `authorization_logic`; it is the
-    /// same engine that compiled it.
     /// Whether a failure of this mode is evidence of *guessing*, and so worth
     /// counting against a client's backoff budget.
     ///
@@ -340,6 +330,14 @@ impl CompiledAuth {
         matches!(self, Self::ApiKey { .. } | Self::Hmac(_))
     }
 
+    /// Authenticate one request, returning what admission carries onward —
+    /// for `jwt`, the verified claims.
+    ///
+    /// `raw_body` is the bytes exactly as received. HMAC is defined over them,
+    /// so it must be checked before any parse: re-serializing parsed JSON
+    /// reorders keys and normalises whitespace, and the signature would never
+    /// match again. `exprs` evaluates `authorization_logic`; it is the
+    /// same engine that compiled it.
     pub async fn authenticate(
         &self,
         header: HeaderLookup<'_, '_>,
@@ -450,8 +448,13 @@ impl CompiledJwt {
                 ));
             }
             match context {
-                serde_json::Value::Object(mut map) => map.remove("claims").expect("inserted above"),
-                _ => unreachable!("built as an object above"),
+                serde_json::Value::Object(mut map) => {
+                    map.remove("claims").unwrap_or(serde_json::Value::Null)
+                }
+                // The context was built as an object; `Null` is the only
+                // harmless answer if that ever changes, never a panic on the
+                // request path.
+                _ => serde_json::Value::Null,
             }
         } else {
             claims
@@ -1033,15 +1036,11 @@ fn jwt_plan(cfg: &ChannelAuthConfig) -> Result<JwtPlan, String> {
         keys,
         jwks_url,
         algorithms,
-        issuer: cfg
-            .issuer
-            .as_ref()
-            .map(|v| v.into_vec())
-            .unwrap_or_default(),
+        issuer: cfg.issuer.as_ref().map(|v| v.to_vec()).unwrap_or_default(),
         audience: cfg
             .audience
             .as_ref()
-            .map(|v| v.into_vec())
+            .map(|v| v.to_vec())
             .unwrap_or_default(),
         leeway_secs,
         require_exp: cfg.require_exp.unwrap_or(true),

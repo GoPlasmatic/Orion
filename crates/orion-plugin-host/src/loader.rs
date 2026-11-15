@@ -15,12 +15,31 @@ use dataflow_rs::program::{IssueCode, PathSeg};
 
 use crate::config::PluginsConfig;
 use crate::engine::{FunctionEntry, PluginBinding};
-use crate::storage::models::Plugin;
 
 use super::handler::{PluginFunction, PluginFunctionHandler};
 use super::limits::Limits;
 use super::manifest::Manifest;
 use super::runtime::WasmRuntime;
+
+/// One deployed plugin version, as the host loads it.
+///
+/// The host's own type rather than a storage row: plugins live in the
+/// deployment store's definitions now, there is no `plugins` table to decode,
+/// and the runtime already holds the manifest parsed. Serializing it to
+/// `manifest_json` only for this crate to parse it back was a round trip whose
+/// only reader was this loader (Q-05).
+#[derive(Debug, Clone)]
+pub struct DeployedPlugin {
+    pub plugin_id: String,
+    pub version: i64,
+    /// `sha256:<hex>` of the component bytes.
+    pub digest: String,
+    /// The parsed, validated manifest.
+    pub manifest: Manifest,
+    /// A detached signature over `digest`, base64, when the definition carried
+    /// one.
+    pub signature: Option<String>,
+}
 
 /// Why a plugin version is not serving on this node.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -69,7 +88,7 @@ impl PluginSet {
     /// The identity of a set of active rows: sorted `id@version:digest`, so
     /// two reloads over the same rows build nothing twice and any change —
     /// a new version, a digest, an activation — is a different set.
-    pub fn fingerprint_of(rows: &[Plugin]) -> String {
+    pub fn fingerprint_of(rows: &[DeployedPlugin]) -> String {
         let mut parts: Vec<String> = rows
             .iter()
             .map(|r| format!("{}@{}:{}", r.plugin_id, r.version, r.digest))
@@ -157,7 +176,7 @@ impl PluginSet {
 /// row an issue rather than an abort: the estate stays observable and the
 /// workflows naming those functions are quarantined with the reason.
 pub async fn load_active(
-    rows: Vec<Plugin>,
+    rows: Vec<DeployedPlugin>,
     components: &std::collections::HashMap<String, Vec<u8>>,
     runtime: Option<&Arc<WasmRuntime>>,
     config: &PluginsConfig,
@@ -198,13 +217,11 @@ pub async fn load_active(
                 // The functions are known from the manifest even when the
                 // component is not, which is what lets the quarantine name
                 // the plugin.
-                if let Ok(manifest) = serde_json::from_str::<Manifest>(&row.manifest_json) {
-                    for f in manifest.function_names() {
-                        set.unavailable.push((
-                            f.to_string(),
-                            format!("{} v{} {stage}: {reason}", row.plugin_id, row.version),
-                        ));
-                    }
+                for f in row.manifest.function_names() {
+                    set.unavailable.push((
+                        f.to_string(),
+                        format!("{} v{} {stage}: {reason}", row.plugin_id, row.version),
+                    ));
                 }
                 set.issues.push(PluginLoadIssue {
                     plugin: row.plugin_id.clone(),
@@ -220,13 +237,12 @@ pub async fn load_active(
 }
 
 async fn load_one(
-    row: &Plugin,
+    row: &DeployedPlugin,
     components: &std::collections::HashMap<String, Vec<u8>>,
     runtime: Option<&Arc<WasmRuntime>>,
     config: &PluginsConfig,
 ) -> Result<LoadedPlugin, (&'static str, String)> {
-    let manifest: Manifest = serde_json::from_str(&row.manifest_json)
-        .map_err(|e| ("manifest", format!("stored manifest does not parse: {e}")))?;
+    let manifest = &row.manifest;
     let Some(runtime) = runtime else {
         return Err((
             "disabled",

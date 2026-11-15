@@ -178,8 +178,7 @@ fn algorithm<'i>(
     algorithm_named(literal_str(input, "algorithm")?, allowed, default)
 }
 
-/// [`algorithm`] over the name the task gave, if any: shared by both
-/// engines' paths.
+/// [`algorithm`] over the name the task gave, if any.
 fn algorithm_named<'i>(
     name: Option<&'i str>,
     allowed: &[&str],
@@ -255,14 +254,17 @@ fn bytes_of(data: Value, codec: Option<Codec>) -> Result<Vec<u8>, HandlerError> 
     }
 }
 
-fn digest_bytes(algorithm: &str, data: &[u8]) -> Vec<u8> {
+fn digest_bytes(algorithm: &str, data: &[u8]) -> Result<Vec<u8>, HandlerError> {
     match algorithm {
-        "sha256" => Sha256::digest(data).to_vec(),
-        "sha512" => Sha512::digest(data).to_vec(),
-        "sha1" => Sha1::digest(data).to_vec(),
-        "md5" => Md5::digest(data).to_vec(),
-        // The capability table gates every caller.
-        other => unreachable!("hash algorithm '{other}' passed validation"),
+        "sha256" => Ok(Sha256::digest(data).to_vec()),
+        "sha512" => Ok(Sha512::digest(data).to_vec()),
+        "sha1" => Ok(Sha1::digest(data).to_vec()),
+        "md5" => Ok(Md5::digest(data).to_vec()),
+        // The capability table gates every caller, so this is a bug rather
+        // than an authoring error — answered, never a panic on the path.
+        other => Err(HandlerError::caller_input(format!(
+            "hash algorithm '{other}' passed validation"
+        ))),
     }
 }
 
@@ -272,8 +274,7 @@ enum HmacMode {
 }
 
 /// The resolved key's bytes, by its `key_encoding`'s codec: an empty key is
-/// refused before the codec is judged, as it always was. Shared by both
-/// engines' paths.
+/// refused before the codec is judged, as it always was.
 fn key_bytes(
     resolved: String,
     codec: Result<Option<Codec>, HandlerError>,
@@ -292,23 +293,32 @@ fn key_bytes(
 }
 
 /// The MAC of `data` under `key`, by a table algorithm.
-fn mac(algorithm: &str, key: &[u8], data: &[u8]) -> Vec<u8> {
+fn mac(algorithm: &str, key: &[u8], data: &[u8]) -> Result<Vec<u8>, HandlerError> {
     match algorithm {
-        "sha256" => mac_compute::<Hmac<Sha256>>(key, data),
-        "sha512" => mac_compute::<Hmac<Sha512>>(key, data),
-        "sha1" => mac_compute::<Hmac<Sha1>>(key, data),
-        other => unreachable!("hmac algorithm '{other}' passed validation"),
+        "sha256" => Ok(mac_compute::<Hmac<Sha256>>(key, data)),
+        "sha512" => Ok(mac_compute::<Hmac<Sha512>>(key, data)),
+        "sha1" => Ok(mac_compute::<Hmac<Sha1>>(key, data)),
+        other => Err(HandlerError::caller_input(format!(
+            "hmac algorithm '{other}' passed validation"
+        ))),
     }
 }
 
 /// Whether `signature` is the MAC of `data` under `key`, compared in
 /// constant time.
-fn mac_matches(algorithm: &str, key: &[u8], data: &[u8], signature: &[u8]) -> bool {
+fn mac_matches(
+    algorithm: &str,
+    key: &[u8],
+    data: &[u8],
+    signature: &[u8],
+) -> Result<bool, HandlerError> {
     match algorithm {
-        "sha256" => mac_verify::<Hmac<Sha256>>(key, data, signature),
-        "sha512" => mac_verify::<Hmac<Sha512>>(key, data, signature),
-        "sha1" => mac_verify::<Hmac<Sha1>>(key, data, signature),
-        other => unreachable!("hmac algorithm '{other}' passed validation"),
+        "sha256" => Ok(mac_verify::<Hmac<Sha256>>(key, data, signature)),
+        "sha512" => Ok(mac_verify::<Hmac<Sha512>>(key, data, signature)),
+        "sha1" => Ok(mac_verify::<Hmac<Sha1>>(key, data, signature)),
+        other => Err(HandlerError::caller_input(format!(
+            "hmac algorithm '{other}' passed validation"
+        ))),
     }
 }
 
@@ -415,7 +425,9 @@ fn password_params(
                 cost: cost_param(params, "cost", BCRYPT_DEFAULT_COST, &BCRYPT_COST_RANGE)?,
             })
         }
-        other => unreachable!("password algorithm '{other}' passed validation"),
+        other => Err(HandlerError::caller_input(format!(
+            "password algorithm '{other}' passed validation"
+        ))),
     }
 }
 
@@ -770,11 +782,11 @@ impl Function for CryptoFunction {
 /// The op's result.
 async fn compute(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Value, HandlerError> {
     match cfg.op.as_str() {
-        "hash" => hash_v4(ctx, cfg),
-        "hmac" => hmac_v4(ctx, cfg, HmacMode::Compute).await,
-        "hmac_verify" => hmac_v4(ctx, cfg, HmacMode::Verify).await,
-        "password_hash" => password_hash_v4(ctx, cfg).await,
-        "password_verify" => password_verify_v4(ctx, cfg).await,
+        "hash" => hash(ctx, cfg),
+        "hmac" => hmac(ctx, cfg, HmacMode::Compute).await,
+        "hmac_verify" => hmac(ctx, cfg, HmacMode::Verify).await,
+        "password_hash" => password_hash(ctx, cfg).await,
+        "password_verify" => password_verify(ctx, cfg).await,
         // Refused at load by the check; kept for the call's own guard.
         other => Err(HandlerError::caller_input(format!(
             "unknown op '{other}' — expected one of {}",
@@ -785,7 +797,7 @@ async fn compute(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Value, HandlerErro
 
 /// A required string field for this call, by `resolve_required_str`'s
 /// reading.
-fn required_v4(
+fn required(
     ctx: &Ctx<'_>,
     field: &Option<Expr<OwnedDataValue>>,
     name: &str,
@@ -796,7 +808,7 @@ fn required_v4(
 
 /// `data`'s bytes for this call: `data` evaluated, then the codec judged,
 /// then the evaluation's error, in that order, as 1.12 judged them.
-fn data_bytes_v4(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Vec<u8>, HandlerError> {
+fn data_bytes(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Vec<u8>, HandlerError> {
     let Some(expr) = &cfg.data else {
         return Err(HandlerError::caller_input("this op requires 'data'"));
     };
@@ -806,53 +818,53 @@ fn data_bytes_v4(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Vec<u8>, HandlerEr
 }
 
 /// [`hash_op`] for this call.
-fn hash_v4(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Value, HandlerError> {
+fn hash(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Value, HandlerError> {
     let algorithm = algorithm_named(cfg.algorithm.as_deref(), HASH_ALGORITHMS, "sha256")?;
     let codec = codec_named(cfg.encoding.as_deref())?;
-    let data = data_bytes_v4(ctx, cfg)?;
+    let data = data_bytes(ctx, cfg)?;
     Ok(Value::String(encode_bytes(
         codec,
-        &digest_bytes(algorithm, &data),
+        &digest_bytes(algorithm, &data)?,
     )))
 }
 
 /// [`hmac_op`] for this call, in its order: the algorithm, the key, the
 /// data, then the encoding or the signature.
-async fn hmac_v4(ctx: &Ctx<'_>, cfg: &CryptoConfig, mode: HmacMode) -> Result<Value, HandlerError> {
+async fn hmac(ctx: &Ctx<'_>, cfg: &CryptoConfig, mode: HmacMode) -> Result<Value, HandlerError> {
     let algorithm = algorithm_named(cfg.algorithm.as_deref(), HMAC_ALGORITHMS, "sha256")?;
     let resolved = kit::key_material(cfg.key.as_ref(), ctx, "key", NAME).await?;
     let key = key_bytes(
         resolved,
         byte_codec_named(cfg.key_encoding.as_deref(), "key_encoding"),
     )?;
-    let data = data_bytes_v4(ctx, cfg)?;
+    let data = data_bytes(ctx, cfg)?;
     match mode {
         HmacMode::Compute => {
             let codec = codec_named(cfg.encoding.as_deref())?;
             Ok(Value::String(encode_bytes(
                 codec,
-                &mac(algorithm, &key, &data),
+                &mac(algorithm, &key, &data)?,
             )))
         }
         HmacMode::Verify => {
-            let signature = required_v4(ctx, &cfg.signature, "signature")?;
+            let signature = required(ctx, &cfg.signature, "signature")?;
             let signature = decode_presented_signature(&signature)?;
-            Ok(Value::Bool(mac_matches(algorithm, &key, &data, &signature)))
+            mac_matches(algorithm, &key, &data, &signature).map(Value::Bool)
         }
     }
 }
 
 /// [`password_hash_op`] for this call.
-async fn password_hash_v4(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Value, HandlerError> {
+async fn password_hash(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Value, HandlerError> {
     let algorithm = algorithm_named(cfg.algorithm.as_deref(), PASSWORD_ALGORITHMS, "argon2id")?;
-    let password = required_v4(ctx, &cfg.password, "password")?;
+    let password = required(ctx, &cfg.password, "password")?;
     hash_password(password_params(algorithm, cfg.params.as_ref())?, password).await
 }
 
 /// [`password_verify_op`] for this call.
-async fn password_verify_v4(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Value, HandlerError> {
-    let password = required_v4(ctx, &cfg.password, "password")?;
-    let hash = required_v4(ctx, &cfg.hash, "hash")?;
+async fn password_verify(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Value, HandlerError> {
+    let password = required(ctx, &cfg.password, "password")?;
+    let hash = required(ctx, &cfg.hash, "hash")?;
     verify_password(password, hash).await
 }
 

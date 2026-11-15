@@ -11,8 +11,10 @@
 //! `tokio::time::Instant`, so a paused test clock stays coherent with the
 //! sleeps.
 //!
-//! Two changes from the original: the loop is generic over [`Retryable`], and
-//! its debug lines go through `tracing`, Orion's logger, rather than `log`.
+//! Two changes from the original: the loop takes the engine's
+//! [`dataflow_rs::Error`] (its `is_retryable` is the one classification
+//! Orion has), and its debug lines go through `tracing`, Orion's logger,
+//! rather than `log`.
 //!
 //! It is deliberately **not** engine-level automatic retry: the engine cannot
 //! know which handlers are idempotent — an SMTP send that times out after
@@ -20,7 +22,6 @@
 //! duplicates the mail. Whether to retry stays a per-function, per-call-site
 //! decision; this supplies the correct loop for those that opt in.
 
-use std::fmt::Display;
 use std::future::Future;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -29,20 +30,6 @@ use tokio::time::Instant;
 /// failed. Without a ceiling, doubling reaches minutes and a caller waiting on
 /// the result has no idea why.
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
-
-/// An error that says whether trying again may succeed.
-pub trait Retryable {
-    /// May a retry succeed?
-    fn is_retryable(&self) -> bool;
-}
-
-/// The engine's classification, `Error::is_retryable`: a timeout, or what a
-/// service error declares.
-impl Retryable for dataflow_rs::Error {
-    fn is_retryable(&self) -> bool {
-        dataflow_rs::Error::is_retryable(self)
-    }
-}
 
 /// How hard to retry, and for how long overall.
 ///
@@ -84,16 +71,6 @@ impl Default for RetryPolicy {
 }
 
 impl RetryPolicy {
-    /// A policy that never retries. Useful as an explicit opt-out at a call
-    /// site that takes a policy.
-    pub fn none() -> Self {
-        Self {
-            max_retries: 0,
-            retry_delay_ms: 0,
-            deadline: None,
-        }
-    }
-
     /// The backoff before retry number `retry` (1-based), capped.
     fn backoff(&self, retry: u32) -> Duration {
         let doubled = self
@@ -106,9 +83,9 @@ impl RetryPolicy {
 
 /// Run `operation`, retrying while it fails retryably and budget remains.
 ///
-/// Retries only when [`Retryable::is_retryable`] says so — a validation
-/// error fails once and returns immediately, because trying it again cannot
-/// help.
+/// Retries only when the engine error's `is_retryable` says so — a
+/// validation error fails once and returns immediately, because trying it
+/// again cannot help.
 ///
 /// # Deadline
 ///
@@ -123,34 +100,18 @@ impl RetryPolicy {
 /// # Errors
 ///
 /// The last attempt's error, once retrying stops.
-pub async fn retry_with_policy<T, E, F, Fut>(
-    policy: RetryPolicy,
-    label: &str,
-    operation: F,
-) -> Result<T, E>
-where
-    E: Retryable + Display,
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Result<T, E>>,
-{
-    retry_with_attempts(policy, label, operation).await.0
-}
-
-/// As [`retry_with_policy`], also reporting how many attempts were made: the
-/// only way a caller can say "this succeeded, but not first time".
-pub async fn retry_with_attempts<T, E, F, Fut>(
+pub async fn retry_with_attempts<T, F, Fut>(
     policy: RetryPolicy,
     label: &str,
     mut operation: F,
-) -> (Result<T, E>, u32)
+) -> (Result<T, dataflow_rs::Error>, u32)
 where
-    E: Retryable + Display,
     F: FnMut() -> Fut,
-    Fut: Future<Output = Result<T, E>>,
+    Fut: Future<Output = Result<T, dataflow_rs::Error>>,
 {
     let started = Instant::now();
     let mut attempts = 0u32;
-    let mut last: E;
+    let mut last: dataflow_rs::Error;
 
     loop {
         attempts += 1;
@@ -205,6 +166,19 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     type Result<T> = std::result::Result<T, DataflowError>;
+
+    /// The loop without the attempt count, which most tests do not read.
+    async fn retry_with_policy<T, F, Fut>(
+        policy: RetryPolicy,
+        label: &str,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        retry_with_attempts(policy, label, operation).await.0
+    }
 
     /// Counts calls and fails the first `fail_times` of them.
     fn flaky(
@@ -406,7 +380,16 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn max_retries_zero_tries_once() {
         let (calls, op) = flaky(u32::MAX, transient);
-        let (out, attempts) = retry_with_attempts(RetryPolicy::none(), "svc", op).await;
+        let (out, attempts) = retry_with_attempts(
+            RetryPolicy {
+                max_retries: 0,
+                retry_delay_ms: 0,
+                deadline: None,
+            },
+            "svc",
+            op,
+        )
+        .await;
 
         assert!(out.is_err());
         assert_eq!(attempts, 1);

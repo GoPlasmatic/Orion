@@ -16,11 +16,6 @@ fn test_unauthorized_status() {
 }
 
 #[test]
-fn test_unauthorized_not_retryable() {
-    assert!(!OrionError::unauthorized("bad".to_string()).is_retryable());
-}
-
-#[test]
 fn test_conflict_status() {
     let err = OrionError::conflict("duplicate".to_string());
     let response = err.into_response();
@@ -55,17 +50,13 @@ fn test_config_error_status() {
 }
 
 /// G11: a closed trace queue is a **503**, like a full one — the OpenAPI
-/// document describes queue-full and queue-closed together as `503` — and is
-/// not retryable, which is where the two differ: full is backpressure and
-/// clears, closed means the dispatcher is gone and does not. `Unavailable` is
-/// what lets one variant say both.
+/// document describes queue-full and queue-closed together as `503` — and
+/// carries no `Retry-After`, which is where the two differ: full is
+/// backpressure and clears, closed means the dispatcher is gone and does not.
+/// `Unavailable` is what lets one variant say both.
 #[test]
 fn a_closed_queue_is_service_unavailable_but_not_retryable() {
     let err = OrionError::unavailable(Unavailable::QueueClosed, "queue is closed");
-    assert!(
-        !err.is_retryable(),
-        "a closed queue has no consumer — retrying cannot help"
-    );
     let response = err.into_response();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert!(
@@ -80,7 +71,6 @@ fn a_closed_queue_is_service_unavailable_but_not_retryable() {
 #[test]
 fn an_at_capacity_refusal_carries_retry_after() {
     let err = OrionError::unavailable(Unavailable::AtCapacity, "channel is at capacity");
-    assert!(err.is_retryable());
     let response = err.into_response();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(
@@ -101,7 +91,6 @@ fn a_quarantined_channel_does_not_invite_a_retry() {
         Unavailable::ChannelQuarantined,
         "Channel 'orders' failed to load and is not being served",
     );
-    assert!(!err.is_retryable());
     let response = err.into_response();
     assert!(
         !response
@@ -133,48 +122,10 @@ fn test_internal_source_preserves_chain() {
 }
 
 #[test]
-fn test_retryable_storage() {
-    let err = OrionError::Storage(sqlx::Error::PoolTimedOut);
-    assert!(err.is_retryable());
-}
-
-#[test]
-fn test_retryable_queue() {
-    assert!(OrionError::unavailable(Unavailable::AtCapacity, "queue is full").is_retryable());
-}
-
-#[test]
-fn test_not_retryable_config() {
-    let err = OrionError::Config {
-        message: "invalid".to_string(),
-    };
-    assert!(!err.is_retryable());
-}
-
-#[test]
-fn test_timeout_retryable() {
-    let err = OrionError::Timeout {
-        channel: "orders".to_string(),
-        timeout_ms: 5000,
-    };
-    assert!(err.is_retryable());
-}
-
-#[test]
-fn test_service_unavailable_retryable() {
-    assert!(OrionError::unavailable(Unavailable::AtCapacity, "queue full").is_retryable());
-}
-
-#[test]
 fn test_rate_limited_status() {
     let err = OrionError::RateLimited("too many".to_string());
     let response = err.into_response();
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-}
-
-#[test]
-fn test_rate_limited_retryable() {
-    assert!(OrionError::RateLimited("too many".to_string()).is_retryable());
 }
 
 /// G11: was 502 `BAD_GATEWAY`; no upstream is involved in an oversized
@@ -187,11 +138,6 @@ fn test_response_too_large_status() {
 }
 
 #[test]
-fn test_response_too_large_not_retryable() {
-    assert!(!OrionError::ResponseTooLarge("too big".to_string()).is_retryable());
-}
-
-#[test]
 fn test_serialization_error_status() {
     let serde_err: serde_json::Error =
         serde_json::from_str::<serde_json::Value>("invalid").expect_err("test");
@@ -200,37 +146,6 @@ fn test_serialization_error_status() {
     // G14: server-side only (row decode, response serialize) — a 500,
     // so it lands in 5xx SLOs instead of masquerading as a client error.
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-}
-
-#[test]
-fn test_serialization_not_retryable() {
-    let serde_err: serde_json::Error =
-        serde_json::from_str::<serde_json::Value>("invalid").expect_err("test");
-    assert!(!OrionError::Serialization(serde_err).is_retryable());
-}
-
-#[test]
-fn test_not_found_not_retryable() {
-    assert!(!OrionError::not_found("x".to_string()).is_retryable());
-}
-
-#[test]
-fn test_conflict_not_retryable() {
-    assert!(!OrionError::conflict("dup".to_string()).is_retryable());
-}
-
-#[test]
-fn test_internal_not_retryable() {
-    assert!(!OrionError::internal("err").is_retryable());
-}
-
-#[test]
-fn test_internal_source_not_retryable() {
-    let err = OrionError::Internal {
-        context: "ctx".to_string(),
-        source: Some(Box::new(std::io::Error::other("err"))),
-    };
-    assert!(!err.is_retryable());
 }
 
 #[test]
@@ -595,12 +510,6 @@ async fn test_v01_envelope_unchanged_for_non_validation_errors() {
     assert_eq!(error["code"], "NOT_FOUND");
     assert_eq!(error["message"], "classic v0.1 message");
     assert!(error.get("details").is_none());
-}
-
-#[test]
-fn test_validation_not_retryable() {
-    let err = OrionError::invalid_field("y", "REQUIRED", "z");
-    assert!(!err.is_retryable());
 }
 
 #[tokio::test]

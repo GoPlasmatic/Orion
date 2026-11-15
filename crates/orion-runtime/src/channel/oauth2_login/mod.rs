@@ -497,11 +497,14 @@ impl CompiledOAuth2Login {
                     OrionError::not_found("no such identity provider on this channel".to_string())
                 })
         } else {
-            let (k, p) = self
-                .providers
-                .iter()
-                .next()
-                .expect("a compiled block always has at least one provider");
+            let (k, p) = self.providers.iter().next().ok_or_else(|| {
+                // Composition refuses a block with no providers, so this is a
+                // corrupt in-memory state rather than an operator error — but
+                // a request path answers it, it does not panic (Q-11).
+                OrionError::internal(
+                    "this channel's oauth2_login block has no identity provider".to_string(),
+                )
+            })?;
             Ok((k.as_str(), p))
         }
     }
@@ -770,7 +773,17 @@ impl CompiledOAuth2Login {
         self.stamp_provenance(&mut oauth, canonical_slug, provider.kind);
 
         if let Some(verifier) = provider.id_token_verifier.as_ref() {
-            let id = provider.id_token.as_ref().expect("verifier implies config");
+            let Some(id) = provider.id_token.as_ref() else {
+                // Built together at compile time; if that invariant ever
+                // breaks, fail the sign-in rather than the process (Q-11).
+                tracing::error!(
+                    channel = %self.channel,
+                    "OAuth2 id_token verifier has no id_token config"
+                );
+                return Err(OrionError::internal(
+                    "this provider has an id_token verifier but no id_token config".to_string(),
+                ));
+            };
             match tokens.id_token.as_deref() {
                 Some(token) => {
                     let verified = verifier.verify(token).await.map_err(|reason| {

@@ -247,14 +247,22 @@ pub(crate) async fn dynamic_handler(
         .await;
     }
 
-    // Content-Type enforcement: non-empty bodies must declare a JSON media type
+    // Content-Type enforcement: non-empty bodies must declare a JSON media
+    // type. Media types are case-insensitive and parameters (``; charset=…``)
+    // are not part of the essence, so compare the essence lowercased — and
+    // match `+json` only as a suffix, never inside a parameter (Q-14).
     if !body.is_empty() {
         let content_type = headers
             .get(axum::http::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        let is_json =
-            content_type.starts_with("application/json") || content_type.contains("+json");
+        let essence = content_type
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        let is_json = essence == "application/json" || essence.ends_with("+json");
         if !is_json {
             return Err(OrionError::unsupported_media_type(
                 "Content-Type must be application/json for requests with a body".to_string(),
@@ -387,10 +395,10 @@ pub(crate) async fn dynamic_handler(
         // The HTTP transports are the two that present a credential (S12).
         auth_backoff: Some(&state.channel_auth_failures),
         header: &header_lookup,
-        // The bytes as received, not the parsed payload. A webhook signature is
-        // computed over the wire body, and `ProcessRequest::from_body` has
-        // already parsed and possibly unwrapped the `data` envelope — signing
-        // over that would never match.
+        // The bytes as received, not the parsed payload. A webhook signature
+        // is computed over the wire body, and the body extractor has already
+        // parsed and possibly unwrapped the `data` envelope — signing over
+        // that would never match.
         raw_body: Some(&body),
         dedup_key_fallback: None,
         // One HTTP request is one delivery: nothing redelivers it, so the

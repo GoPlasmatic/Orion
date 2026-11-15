@@ -33,7 +33,7 @@ fn not_one_key_choice(name: &str, both: bool) -> HandlerError {
     )
 }
 
-/// One lookup, borrowed from the keys either engine read.
+/// One lookup, borrowed from the keys the call read.
 enum Lookup<'k> {
     One(Cow<'k, str>),
     Many(Cow<'k, [String]>),
@@ -222,13 +222,6 @@ impl Function for CacheReadFunction {
 
 /// Most keys one `cache_read` or `cache_delete` may name.
 pub(super) const MAX_KEYS: usize = 1000;
-
-/// What a `cache_read` looks up: one `key`, answered as a value, or `keys`,
-/// answered as an array in the same order.
-pub enum CacheReadKeys {
-    One(String),
-    Many(Vec<String>),
-}
 
 /// A stored string back to the value it was written as.
 ///

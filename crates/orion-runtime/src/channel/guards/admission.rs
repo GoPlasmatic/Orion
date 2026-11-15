@@ -15,9 +15,6 @@ use super::*;
 use crate::errors::OrionError;
 use crate::metrics;
 
-/// Reject the request when an `Origin` header is present and the channel's
-/// allow-list does not name it.
-///
 /// Authenticate the caller against the channel's compiled `auth` policy.
 ///
 /// A channel with no `auth` config is unauthenticated, which is what every
@@ -122,6 +119,9 @@ pub(super) async fn check_auth(
 /// The key is `origin_allow_list`, not `cors.allowed_origins`, because it
 /// performs no CORS handshake; the pre-1.0 spelling is refused (see
 /// [`crate::channel::ChannelConfig::allowed_origins`]).
+///
+/// Reject the request when an `Origin` header is present and the channel's
+/// allow-list does not name it.
 pub(super) fn check_allowed_origin(
     channel: &str,
     channel_config: &Option<Arc<ChannelRuntimeConfig>>,

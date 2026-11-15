@@ -35,6 +35,7 @@
 //! `reload_lock`: a driver that takes seconds to rebuild a consumer never
 //! holds up a deployment apply.
 
+use orion_common::sync::LockExt;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -412,13 +413,7 @@ fn fingerprint(
             hasher.update([0u8]);
         }
     }
-    let digest = hasher.finalize();
-    let mut out = String::with_capacity(7 + digest.len() * 2);
-    out.push_str("sha256:");
-    for byte in digest {
-        out.push_str(&format!("{byte:02x}"));
-    }
-    out
+    format!("sha256:{}", hex::encode(hasher.finalize()))
 }
 
 /// One composed driver that serves ingress, as the node tracks it.
@@ -432,18 +427,14 @@ struct DriverSlot {
 
 impl DriverSlot {
     fn health(&self) -> DriverHealth {
-        if let Some(running) = lock(&self.running).as_ref() {
+        if let Some(running) = self.running.lock_unpoisoned().as_ref() {
             return running.health();
         }
-        match lock(&self.start_error).as_ref() {
+        match self.start_error.lock_unpoisoned().as_ref() {
             Some(why) => DriverHealth::Degraded(format!("driver did not start: {why}")),
             None => DriverHealth::Degraded("driver is starting".to_string()),
         }
     }
-}
-
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The node's ingress drivers: what `/health` and `/readyz` read.
@@ -610,7 +601,7 @@ impl DriverTask {
     }
 
     async fn ensure_started(&self) -> Option<Arc<dyn RunningDriver>> {
-        if let Some(running) = lock(&self.slot.running).clone() {
+        if let Some(running) = self.slot.running.lock_unpoisoned().clone() {
             return Some(running);
         }
         let protocol = self.slot.protocol.as_str();
@@ -620,7 +611,7 @@ impl DriverTask {
             {
                 Ok(answer) => answer,
                 Err(_) => {
-                    *lock(&self.slot.start_error) = Some(format!(
+                    *self.slot.start_error.lock_unpoisoned() = Some(format!(
                         "start exceeded {}s",
                         DRIVER_START_TIMEOUT.as_secs()
                     ));
@@ -635,13 +626,13 @@ impl DriverTask {
         match started {
             Ok(Some(running)) => {
                 let running: Arc<dyn RunningDriver> = Arc::from(running);
-                *lock(&self.slot.start_error) = None;
-                *lock(&self.slot.running) = Some(running.clone());
+                *self.slot.start_error.lock_unpoisoned() = None;
+                *self.slot.running.lock_unpoisoned() = Some(running.clone());
                 tracing::info!(protocol, "Channel driver started");
                 Some(running)
             }
             Ok(None) => {
-                *lock(&self.slot.start_error) =
+                *self.slot.start_error.lock_unpoisoned() =
                     Some("declares ingress but start returned no running driver".to_string());
                 tracing::error!(
                     protocol,
@@ -650,7 +641,7 @@ impl DriverTask {
                 None
             }
             Err(e) => {
-                *lock(&self.slot.start_error) = Some(e.to_string());
+                *self.slot.start_error.lock_unpoisoned() = Some(e.to_string());
                 tracing::error!(protocol, error = %e, "Channel driver failed to start");
                 None
             }

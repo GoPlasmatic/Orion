@@ -140,7 +140,11 @@ pub(crate) async fn test_definition(
         OrionError::Validation {
             code: orion_api::error::codes::VALIDATION_ERROR,
             message: e.clone(),
-            details: vec![FieldError::new("metadata", "INVALID", e)],
+            details: vec![FieldError::new(
+                "metadata",
+                orion_api::error::field_codes::INVALID,
+                e,
+            )],
         }
     })?;
 
@@ -371,7 +375,11 @@ fn refusal_details(error: &OrionError, root: &str) -> Vec<FieldError> {
         })
         .collect();
     if details.is_empty() {
-        vec![FieldError::new("", "INVALID", error.client_message())]
+        vec![FieldError::new(
+            "",
+            orion_api::error::field_codes::INVALID,
+            error.client_message(),
+        )]
     } else {
         details
     }

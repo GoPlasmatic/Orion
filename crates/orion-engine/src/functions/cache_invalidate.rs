@@ -30,8 +30,8 @@ use crate::kit;
 use crate::kit::read;
 use crate::{ErrorClass, HandlerError};
 
-/// This function's name, written once (F48): both engines register it
-/// under this, and its errors carry it.
+/// This function's name, written once (F48): the engine registers it under
+/// this, and its errors carry it.
 pub const NAME: &str = "cache_invalidate";
 
 /// Most namespaces one call may bump.

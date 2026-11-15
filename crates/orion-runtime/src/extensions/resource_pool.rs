@@ -61,11 +61,6 @@ impl ResourcePoolRegistry {
         self.entries.get(cache_id)?.downcast::<C>()
     }
 
-    /// The registered cache ids, sorted.
-    pub fn cache_ids(&self) -> BTreeSet<String> {
-        self.entries.keys().cloned().collect()
-    }
-
     /// Number of registered pool caches.
     pub fn len(&self) -> usize {
         self.entries.len()

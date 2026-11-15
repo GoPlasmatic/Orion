@@ -49,7 +49,22 @@ pub async fn reconcile_deployment_revision(
                             m.entity.kind == EntityKind::Channel && m.entity.id == q.channel_id
                         })
                         .map(|m| m.entity.revision)
-                        .unwrap_or(crate::extensions::Revision::FIRST);
+                        .unwrap_or_else(|| {
+                            // The quarantine names a channel the manifest
+                            // built, so its member must be present. An
+                            // impossible state gets a revision rather than a
+                            // panic, and says so.
+                            debug_assert!(
+                                false,
+                                "quarantined channel '{}' has no manifest member",
+                                q.channel_id
+                            );
+                            tracing::warn!(
+                                channel = %q.channel_id,
+                                "Quarantined channel has no manifest member; reporting revision 1"
+                            );
+                            crate::extensions::Revision::FIRST
+                        });
                     build_issues.push(CandidateBuildIssue::PerEntityExternal {
                         entity: EntityRef {
                             kind: EntityKind::Channel,
@@ -73,10 +88,16 @@ pub async fn reconcile_deployment_revision(
         .reconciler
         .build_and_publish_candidate(target_revision, build_issues);
     drop(reload_guard);
-    let _ = state
+    if let Err(e) = state
         .reconciler
         .persist_local_status(state.repos.runtime_nodes.as_ref())
-        .await;
+        .await
+    {
+        // A dropped heartbeat is how a node quietly disappears from peer
+        // convergence: log it and count it, as the cluster reconciler does.
+        crate::metrics::record_error("reconciler_status_persist_failed");
+        tracing::warn!(error = %e, "Failed to persist this node's reconciler status");
+    }
     status_res
 }
 
@@ -85,7 +106,7 @@ pub async fn reconcile_deployment_revision(
 struct ManifestDefinitions {
     channels: Vec<crate::storage::models::Channel>,
     workflows: Vec<crate::storage::models::Workflow>,
-    plugins: Vec<crate::storage::models::Plugin>,
+    plugins: Vec<crate::plugin::DeployedPlugin>,
     plugin_components: std::collections::HashMap<String, Vec<u8>>,
     /// The connection revisions each channel member requires, by channel id.
     channel_connections: std::collections::BTreeMap<String, Vec<(String, u64)>>,
@@ -883,7 +904,7 @@ async fn compile_engine(
     current: &super::RuntimeGeneration,
     channels: &[crate::storage::models::Channel],
     workflows: &[crate::storage::models::Workflow],
-    plugin_rows: Vec<crate::storage::models::Plugin>,
+    plugin_rows: Vec<crate::plugin::DeployedPlugin>,
     plugin_components: &std::collections::HashMap<String, Vec<u8>>,
 ) -> Result<EngineHalf, crate::errors::OrionError> {
     // The plugin half decides how the engine is built. An unchanged

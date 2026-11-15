@@ -175,7 +175,7 @@ pub(crate) async fn list_deployments(
     if limit == 0 {
         return Err(crate::errors::OrionError::invalid_field(
             "limit",
-            "INVALID",
+            orion_api::error::field_codes::INVALID,
             "limit must be at least 1",
         )
         .into());
@@ -188,7 +188,7 @@ pub(crate) async fn list_deployments(
         Some(cursor) => Some(cursor.parse::<u64>().map_err(|_| {
             crate::errors::OrionError::invalid_field(
                 "cursor",
-                "INVALID",
+                orion_api::error::field_codes::INVALID,
                 format!("'{cursor}' is not a cursor this endpoint issued"),
             )
         })?),

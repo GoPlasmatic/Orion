@@ -200,7 +200,6 @@ mod error;
 pub mod execute;
 pub mod functions;
 pub mod handlers;
-pub mod intake;
 pub mod kit;
 pub mod loader;
 pub mod observer;

@@ -398,12 +398,12 @@ mod tests {
     /// is `engine::retry`, vendored from dataflow-rs 3.15.
     #[tokio::test]
     async fn test_retry_policy_honours_deadline() {
-        use crate::retry::{RetryPolicy, retry_with_policy};
+        use crate::retry::{RetryPolicy, retry_with_attempts};
         use std::sync::atomic::{AtomicUsize, Ordering};
         let attempts = Arc::new(AtomicUsize::new(0));
         let seen = attempts.clone();
         let start = std::time::Instant::now();
-        let result = retry_with_policy(
+        let (result, _) = retry_with_attempts(
             RetryPolicy {
                 max_retries: 10,
                 retry_delay_ms: 200,

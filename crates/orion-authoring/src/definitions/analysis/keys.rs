@@ -15,7 +15,8 @@ pub fn step_key(step: &Value) -> String {
 
 /// A step with only `id` removed, for matching against a fragment whose
 /// task names are part of what it says.
-pub fn step_key_keeping_names(step: &Value) -> String {
+#[cfg(test)]
+fn step_key_keeping_names(step: &Value) -> String {
     let mut stripped = step.clone();
     strip_ids(&mut stripped);
     crate::canonical::canonical_json(&stripped)
@@ -31,6 +32,7 @@ fn strip_labels(step: &mut Value) {
     }
 }
 
+#[cfg(test)]
 fn strip_ids(step: &mut Value) {
     if let Some(obj) = step.as_object_mut() {
         obj.remove("id");

@@ -71,7 +71,7 @@ async fn a_registered_store_with_the_cluster_disabled_still_boots() {
     )
     .await;
     assert!(state.cluster.shared.is_none());
-    assert!(!state.cluster.external_store);
+    assert!(state.cluster.shared.is_none());
     assert!(state.ready.load(std::sync::atomic::Ordering::Acquire));
 }
 

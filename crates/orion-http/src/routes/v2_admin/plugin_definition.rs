@@ -24,10 +24,14 @@ fn refused(message: &str, details: Vec<FieldError>) -> OrionError {
 /// The manifest module emits a closed set, all of which the registry names.
 fn leak_code(code: &str) -> &'static str {
     match code {
-        "REQUIRED" => "REQUIRED",
-        "DUPLICATE_FIELD" => "DUPLICATE_FIELD",
-        "TYPE_MISMATCH" => "TYPE_MISMATCH",
-        _ => "INVALID",
+        orion_api::error::field_codes::REQUIRED => orion_api::error::field_codes::REQUIRED,
+        orion_api::error::field_codes::DUPLICATE_FIELD => {
+            orion_api::error::field_codes::DUPLICATE_FIELD
+        }
+        orion_api::error::field_codes::TYPE_MISMATCH => {
+            orion_api::error::field_codes::TYPE_MISMATCH
+        }
+        _ => orion_api::error::field_codes::INVALID,
     }
 }
 
@@ -45,11 +49,15 @@ pub(crate) async fn check(
         Value::String(text) => Manifest::parse(text),
         Value::Object(_) => match serde_json::from_value::<Manifest>(manifest.clone()) {
             Ok(m) => m.validated(),
-            Err(e) => Err(vec![FieldError::new("manifest", "INVALID", e.to_string())]),
+            Err(e) => Err(vec![FieldError::new(
+                "manifest",
+                orion_api::error::field_codes::INVALID,
+                e.to_string(),
+            )]),
         },
         _ => Err(vec![FieldError::new(
             "manifest",
-            "TYPE_MISMATCH",
+            orion_api::error::field_codes::TYPE_MISMATCH,
             "manifest must be the TOML text (a string) or the manifest as a JSON object",
         )]),
     };
@@ -75,7 +83,11 @@ pub(crate) async fn check(
         .map_err(|e| {
             refused(
                 "component is not valid base64",
-                vec![FieldError::new("component", "INVALID", e.to_string())],
+                vec![FieldError::new(
+                    "component",
+                    orion_api::error::field_codes::INVALID,
+                    e.to_string(),
+                )],
             )
         })?;
     if bytes.len() > config.max_component_bytes {
@@ -104,9 +116,9 @@ pub(crate) async fn check(
             vec![FieldError::new(
                 "signature",
                 if signature.is_none() {
-                    "REQUIRED"
+                    orion_api::error::field_codes::REQUIRED
                 } else {
-                    "INVALID"
+                    orion_api::error::field_codes::INVALID
                 },
                 reason,
             )],
@@ -129,7 +141,11 @@ pub(crate) async fn check(
             },
             _ => refused(
                 "component failed to load",
-                vec![FieldError::new("component", "INVALID", e.to_string())],
+                vec![FieldError::new(
+                    "component",
+                    orion_api::error::field_codes::INVALID,
+                    e.to_string(),
+                )],
             ),
         })?,
     };
@@ -141,7 +157,11 @@ pub(crate) async fn check(
         .map_err(|e| {
             refused(
                 "component failed its self-test",
-                vec![FieldError::new("component", "INVALID", e.to_string())],
+                vec![FieldError::new(
+                    "component",
+                    orion_api::error::field_codes::INVALID,
+                    e.to_string(),
+                )],
             )
         })?;
     Ok(manifest_json)

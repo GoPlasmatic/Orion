@@ -13,7 +13,6 @@
 // they did inside `orion-server`.
 pub(crate) use orion_common::{config, crypto, errors, metrics};
 pub(crate) use orion_engine as engine;
-pub(crate) use orion_storage as storage;
 
 pub mod error;
 pub mod handler;
@@ -27,6 +26,6 @@ pub mod trust;
 pub use error::{Category, Failure};
 pub use handler::{PluginFunction, PluginFunctionHandler};
 pub use limits::{HostState, Limits};
-pub use loader::{LoadedPlugin, PluginLoadIssue, PluginSet, load_active};
+pub use loader::{DeployedPlugin, LoadedPlugin, PluginLoadIssue, PluginSet, load_active};
 pub use manifest::{ABI, Manifest};
 pub use runtime::{EPOCH_TICK, LoadError, LoadedComponent, WasmRuntime};

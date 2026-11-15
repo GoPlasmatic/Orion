@@ -202,7 +202,7 @@ impl HandlerError {
     /// class's code and retryability (a connection failure and a timeout are
     /// retried), and `msg` under its label. The connector failure, or else
     /// `detail`, rides as the source, which the error's JSON never carries.
-    fn into_v4_from_class(self) -> dataflow_rs::Error {
+    fn into_engine_error(self) -> dataflow_rs::Error {
         let (code, label) = self.class.face();
         let error = dataflow_rs::Error::service(code, format!("{label}{}", self.msg))
             .with_retryable(self.class.is_retryable());
@@ -301,7 +301,7 @@ impl From<HandlerError> for dataflow_rs::Error {
         // `LOGIC_ERROR`, a budget refusal `BUDGET_EXCEEDED`.
         match e.original.take() {
             Some(original) => *original,
-            None => e.into_v4_from_class(),
+            None => e.into_engine_error(),
         }
     }
 }

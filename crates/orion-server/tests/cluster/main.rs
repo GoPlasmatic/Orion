@@ -395,7 +395,7 @@ async fn dedup_is_shared_across_nodes() {
     let h = two_nodes_composed(|_| {}, community).await;
     let store = h.state_a.cluster.shared.as_ref().expect("a shared store");
     assert_eq!(store.name(), "fleet");
-    assert!(h.state_a.cluster.external_store);
+    assert!(h.state_a.cluster.shared.is_some());
     dedup_is_shared_across_nodes_over(h).await;
 }
 

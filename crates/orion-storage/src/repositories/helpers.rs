@@ -302,21 +302,6 @@ pub(crate) fn page_select(page: &Page) -> sea_query::SelectStatement {
         .to_owned()
 }
 
-/// Ensure no row matches the given query; returns the `OrionError` from `err`
-/// if a row is found. The inverse of [`fetch_required`] — used by
-/// `create_new_version` paths to reject duplicate drafts.
-pub async fn ensure_absent<T: DbRow>(
-    pool: &DbPool,
-    sql: &str,
-    values: sea_query_sqlx::SqlxValues,
-    err: impl FnOnce() -> OrionError,
-) -> Result<(), OrionError> {
-    if pool.fetch_optional_as::<T>(sql, values).await?.is_some() {
-        return Err(err());
-    }
-    Ok(())
-}
-
 /// Transaction-scoped variant of [`fetch_required`].
 pub async fn fetch_required_tx<T: DbRow>(
     tx: &mut DbTransaction,
@@ -337,24 +322,6 @@ pub fn clamp_limit(limit: Option<i64>) -> i64 {
 /// Decode an optional `cursor` query value.
 pub fn parse_cursor(raw: Option<&str>) -> Result<Option<KeysetCursor>, OrionError> {
     raw.map(KeysetCursor::decode).transpose()
-}
-
-/// The `LIKE` pattern for "this JSON array of strings contains `tag`".
-///
-/// One implementation for the three tagged entities (workflows, channels,
-/// connectors): the stored form is `serde_json::to_string(&Vec<String>)`, so
-/// a member is always `"tag"` with the quotes, and matching `%"tag"%` cannot
-/// hit a substring of a longer tag. LIKE wildcards in the tag itself are
-/// escaped — and the escape character rides along as an explicit `ESCAPE`
-/// clause, because SQLite (the default backend) has no default LIKE escape:
-/// without it the backslashes are matched literally and a tag containing
-/// `_`, `%` or `\` never matches its own stored value.
-pub fn tag_like_pattern(tag: &str) -> sea_query::LikeExpr {
-    let escaped = tag
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    sea_query::LikeExpr::new(format!("%\"{escaped}\"%")).escape('\\')
 }
 
 /// Retention/purge cutoff `now - hours`, saturating on any out-of-range

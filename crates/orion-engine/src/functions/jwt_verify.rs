@@ -188,7 +188,7 @@ impl JwtVerifyFunction {
         ctx: &Ctx<'_>,
         cfg: &'c JwtVerifyConfig,
     ) -> Result<(std::borrow::Cow<'c, dataflow_rs::Path>, Value), HandlerError> {
-        let algorithms = algorithms_v4(&cfg.algorithms)?;
+        let algorithms = algorithms(&cfg.algorithms)?;
         let output = Self::DEFINITION.output_path(ctx, &cfg.output)?;
         let token = ctx.eval(&cfg.token)?;
         let token = read::required_str(Some(&token), "token", NAME)?.into_owned();
@@ -263,7 +263,7 @@ impl JwtVerifyFunction {
 
 /// The allowlist, as `algorithms` reads it: non-empty, every name
 /// supported. A non-array or a non-string entry is refused at load.
-fn algorithms_v4(names: &[String]) -> Result<Vec<jsonwebtoken::Algorithm>, HandlerError> {
+fn algorithms(names: &[String]) -> Result<Vec<jsonwebtoken::Algorithm>, HandlerError> {
     if names.is_empty() {
         return Err(invalid("requires a non-empty 'algorithms' allowlist"));
     }

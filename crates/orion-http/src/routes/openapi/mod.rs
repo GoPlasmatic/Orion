@@ -32,8 +32,9 @@ const SCHEME_API_KEY: &str = "admin_api_key";
 /// operations the admin-auth middleware guards.
 ///
 /// Applying this programmatically rather than per-`#[utoipa::path]` is
-/// deliberate. The middleware authorizes by **path prefix**
-/// ([`is_guarded_path`]), not per handler, so a per-handler annotation would
+/// deliberate. The middleware authorizes by **matched path**
+/// ([`is_guarded_path`], prefix plus its documented carve-outs), not per
+/// handler, so a per-handler annotation would
 /// be a second, hand-maintained copy of that rule — and a new admin route
 /// added without it would silently publish as an open endpoint, which is the
 /// exact regression C8 exists to close.

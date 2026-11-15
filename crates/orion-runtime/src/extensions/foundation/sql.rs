@@ -360,10 +360,6 @@ impl<D: RemoteSqlDialect> RemoteSqlProviderBackend<D> {
         self
     }
 
-    pub fn session_pool(&self) -> Arc<VersionedSessionPool<String>> {
-        self.sessions.clone()
-    }
-
     async fn resolve_connection_target(
         &self,
         ctx: &AttemptContext,
@@ -672,10 +668,6 @@ impl SqliteProviderBackend {
                 .await?
                 .unwrap_or_else(|| "sqlite::memory:".to_string()),
         )
-    }
-
-    pub fn session_pool(&self) -> Arc<VersionedSessionPool<String>> {
-        self.sessions.clone()
     }
 
     /// Resolve a confined filename without serializing and parsing another URL.

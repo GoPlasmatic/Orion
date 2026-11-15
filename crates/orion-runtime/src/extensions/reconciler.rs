@@ -317,12 +317,6 @@ impl NodeReconciler {
             .is_some_and(|deadline| Instant::now() <= deadline)
     }
 
-    pub fn is_security_lease_valid(&self, now_ms: u64) -> bool {
-        let g = self.nodes.lock_unpoisoned();
-        g.get(&self.local_identity.node_id)
-            .is_some_and(|node| now_ms <= node.security_lease_expires_at_ms)
-    }
-
     /// Persist this node's [`RuntimeNodeStatus`] to `runtime_nodes`.
     pub async fn persist_local_status(
         &self,
@@ -532,8 +526,7 @@ mod tests {
 
         // Security lease check
         reconciler.renew_security_lease(1_000, 5_000);
-        assert!(reconciler.is_security_lease_valid(5_500));
-        assert!(!reconciler.is_security_lease_valid(6_500));
+
         assert!(reconciler.is_security_lease_current());
     }
 
@@ -542,7 +535,7 @@ mod tests {
         let reconciler =
             NodeReconciler::new(ImmutableDeploymentStore::new("node-a"), "node-a", "boot-1");
         assert!(!reconciler.is_security_lease_current());
-        assert!(!reconciler.is_security_lease_valid(1));
+
         assert_eq!(reconciler.local_status().security_lease_expires_at_ms, 0);
     }
 

@@ -253,20 +253,6 @@ impl Diagnostic {
             "fixable": self.fix.is_some(),
         })
     }
-
-    /// The three-line form `preflight` reports in.
-    ///
-    /// Severity is not printed: `run_preflight` groups its findings by it and
-    /// heads each group, so a per-line level would be the same word for every
-    /// line under a heading that already said it. The remedy is printed,
-    /// because the whole point of the scan is that each break has one.
-    pub fn render_preflight(&self) -> String {
-        let mut out = format!("[{}] {}\n      {}", self.check, self.entity, self.message);
-        if let Some(remedy) = &self.remedy {
-            out.push_str(&format!("\n      fix: {remedy}"));
-        }
-        out
-    }
 }
 
 impl std::fmt::Display for Diagnostic {
@@ -338,17 +324,6 @@ mod tests {
         assert_eq!(json["line"], 7);
         assert_eq!(json["column"], 3);
         assert!(json.get("check").is_none(), "the wire name is `rule`");
-    }
-
-    #[test]
-    fn preflight_renders_its_three_line_form() {
-        let d = Diagnostic::error("14", "workflow 'w'", "its stored tasks are not valid JSON")
-            .with_remedy("repair the tasks_json column");
-        assert_eq!(
-            d.render_preflight(),
-            "[14] workflow 'w'\n      its stored tasks are not valid JSON\n      fix: repair the \
-             tasks_json column"
-        );
     }
 
     /// The defect the merge exists to fix: a `FieldError`'s path and code used

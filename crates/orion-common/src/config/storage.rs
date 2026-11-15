@@ -150,12 +150,12 @@ impl StorageConfig {
             u64::from(self.deployment_retain_revisions),
             "storage.deployment_retain_revisions",
         )?;
-        // 0 would delete the backup just written; "keep none" is not a
-        // retention policy — leave the field unset to disable pruning.
         // H3: fail at startup, not at the first connector read/write.
         if !self.connector_encryption_key.is_empty() {
             crate::config_encryption::ConfigCipher::from_hex(&self.connector_encryption_key)?;
         }
+        // 0 would delete the backup just written; "keep none" is not a
+        // retention policy — leave the field unset to disable pruning.
         if self.backup_retention_count == Some(0) {
             return Err(OrionError::Config {
                 message: "storage.backup_retention_count must be >= 1 when set \

@@ -1,12 +1,14 @@
 //! Transport-neutral per-channel ingress guards.
 //!
-//! Four ingresses dispatch a message to a channel — synchronous HTTP, HTTP
-//! `/async` submission, in-process `channel_call`, and a cron channel's
-//! claimed occurrence — and a channel's declared contract must hold whichever
-//! one the message arrived on. [`apply_guards`] is the one function that
-//! enforces it, and the per-transport [`GuardSet`] returned by
-//! [`Transport::guards`] decides which guards run, so the deliberate
-//! exclusions are **data** rather than a comment repeated at four call sites.
+//! Core has four ingresses — synchronous HTTP, HTTP `/async` submission,
+//! in-process `channel_call`, and a cron channel's claimed occurrence — and an
+//! edition's driver adds three more rows ([`Transport::Extension`], plus a
+//! hooked channel's per-request and per-run rows). A channel's declared
+//! contract must hold whichever one the message arrived on. [`apply_guards`]
+//! is the one function that enforces it, and the per-transport [`GuardSet`]
+//! returned by [`Transport::guards`] decides which guards run, so the
+//! deliberate exclusions are **data** rather than a comment repeated at every
+//! call site.
 //!
 //! | Guard | HTTP sync | HTTP `/async` | `channel_call` | cron |
 //! |---|---|---|---|---|
@@ -76,10 +78,9 @@
 //! The split is by concept and not by size: each guard has exactly one caller
 //! — [`apply_guards`] — so the seam was already there, and someone changing
 //! the dedup policy should not have to scroll past rate limiting to find it.
-//! The tests stay here because they test *this*: 52 of them drive
-//! `apply_guards` across the transport matrix, and six of the seven guards
-//! have no direct test at all, because a guard's contract is what the matrix
-//! does with it.
+//! The tests stay here because they test *this*: they drive `apply_guards`
+//! across the transport matrix, and most guards have no direct test at all,
+//! because a guard's contract is what the matrix does with it.
 
 use std::sync::Arc;
 
@@ -484,13 +485,14 @@ pub struct GuardRequest<'a> {
     /// the two that supply it.
     pub raw_body: Option<&'a [u8]>,
     /// Idempotency key the transport carries out of band, used when the
-    /// configured dedup header is absent. No built-in transport carries one;
-    /// every call site passes `None`.
+    /// configured dedup header is absent. No built-in transport carries one,
+    /// so the HTTP call sites pass `None`; an edition driver may supply one.
     pub dedup_key_fallback: Option<&'a str>,
     /// Stable identity of *this physical delivery*, for transports that can
-    /// redeliver the same message. No built-in transport redelivers, so every
-    /// call site passes `None` and gets a one-shot token minted per call. See
-    /// `check_deduplication` for why the distinction matters.
+    /// redeliver the same message. A built-in HTTP transport passes `None`
+    /// and gets a one-shot token minted per call; an edition driver's ingress
+    /// passes the delivery's stable token. See `check_deduplication` for why
+    /// the distinction matters.
     pub dedup_owner: Option<&'a str>,
     /// Timeout applied when the channel declares no `timeout_ms` of its own.
     ///

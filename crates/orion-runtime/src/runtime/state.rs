@@ -379,15 +379,14 @@ impl AppStateInner {
         (self.db_pool.size(), self.db_pool.num_idle())
     }
 
-    /// Database connectivity check for the health probes (D22 — this was
-    /// `WorkflowRepository::ping`, which only existed because the probes
-    /// needed a pool).
     /// Ping the state database, bounded by `engine.health_check_timeout_secs`
-    /// so a hung database fails a probe instead of hanging it. In cluster
-    /// mode with no edition store this also answers for the shared dedup
-    /// store, response cache and rate limits, which then live in the same
-    /// database; an edition's store answers for itself
-    /// ([`Self::ping_cluster_store`]).
+    /// so a hung database fails a probe instead of hanging it.
+    ///
+    /// In cluster mode the shared dedup store, response cache and rate-limit
+    /// windows live in an edition's store, and that store answers for itself
+    /// ([`Self::ping_cluster_store`]). Since `cluster.enabled = true` with no
+    /// store refuses to boot, "cluster mode with no store" is not a state this
+    /// runs in.
     pub async fn ping_db(&self) -> Result<(), sqlx::Error> {
         let timeout = std::time::Duration::from_secs(self.config.engine.health_check_timeout_secs);
         tokio::time::timeout(timeout, self.db_pool.ping())
@@ -400,9 +399,6 @@ impl AppStateInner {
     /// (the cluster is disabled, or its store is the state database, which
     /// [`Self::ping_db`] covers), else whether it answered.
     pub async fn ping_cluster_store(&self) -> Option<bool> {
-        if !self.cluster.external_store {
-            return None;
-        }
         let store = self.cluster.shared.as_ref()?;
         let timeout = std::time::Duration::from_secs(self.config.engine.health_check_timeout_secs);
         Some(matches!(

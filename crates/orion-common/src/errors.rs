@@ -269,18 +269,6 @@ impl OrionError {
 }
 
 impl OrionError {
-    /// Whether this error is likely transient and the operation could succeed on retry.
-    pub fn is_retryable(&self) -> bool {
-        match self {
-            OrionError::Storage(_) => true,
-            OrionError::Engine(e) => e.is_retryable(),
-            OrionError::RateLimited(_) => true,
-            OrionError::ServiceUnavailable { reason, .. } => reason.is_transient(),
-            OrionError::Timeout { .. } => true,
-            _ => false,
-        }
-    }
-
     /// A `503` whose cause the caller can act on.
     pub fn unavailable(reason: Unavailable, message: impl Into<String>) -> Self {
         OrionError::ServiceUnavailable {
@@ -392,8 +380,9 @@ impl OrionError {
             // refusing to send what it built: a 500, under a code distinct
             // enough to diagnose. The message stays verbatim; it names two
             // byte counts and nothing sensitive.
-            // The caller's own doing and fixable by them: a 4xx, with the
-            // message naming the limit rather than the raw buffering error.
+            // Not the caller's doing: the result exceeded the operator's own
+            // cap, so there is no 4xx for it. The message names the limit
+            // rather than the raw buffering error.
             OrionError::ResponseTooLarge(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 codes::RESPONSE_TOO_LARGE,

@@ -78,10 +78,6 @@ fn targets_state_db(target: &Path, state_db: &Path) -> std::io::Result<bool> {
 
 /// Parse a URL once, then replace its filename with the confined absolute path.
 /// Passing these options directly to SQLx avoids decoding a filename twice.
-pub fn confined_options(root: &Path, url: &str) -> Result<SqliteConnectOptions, SqliteTargetError> {
-    confined_options_with_state_db(root, url, None)
-}
-
 /// Like [`confined_options`], additionally rejecting targets that resolve to
 /// Orion's configured `state_db` path, its `-wal`/`-shm`/`-journal` sidecars,
 /// or (on Unix) an existing file sharing the same `(dev, ino)` as `state_db`.
@@ -175,6 +171,12 @@ fn resolve_existing_prefix(path: &Path) -> std::io::Result<PathBuf> {
 #[expect(clippy::panic)]
 mod tests {
     use super::*;
+
+    /// The no-state-db spelling the tests exercise; production always passes
+    /// the state database a target must also be kept away from.
+    fn confined_options(root: &Path, url: &str) -> Result<SqliteConnectOptions, SqliteTargetError> {
+        confined_options_with_state_db(root, url, None)
+    }
 
     struct SqliteSecret(String);
 

@@ -34,6 +34,7 @@
 //! node drains ([`StreamDrain`]), whatever the driver does, so a rolling
 //! deploy never waits for the force timeout to cut a stream off.
 
+use orion_common::sync::LockExt;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -136,17 +137,8 @@ impl RequestHost {
     /// Stop executing on the request's generation: called once `serve_http`
     /// has returned. A later run (from a streamed body) loads the current one.
     pub fn release_generation(&self) {
-        lock(&self.generation).take();
+        self.generation.lock_unpoisoned().take();
     }
-
-    /// The runtime config the request was admitted under.
-    pub fn admitted(&self) -> &Arc<ChannelRuntimeConfig> {
-        &self.admitted
-    }
-}
-
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[async_trait]
@@ -173,7 +165,7 @@ impl HttpHost for RequestHost {
 fn generation_for_run(
     host: &RequestHost,
 ) -> Option<(Arc<RuntimeGeneration>, Arc<ChannelRuntimeConfig>)> {
-    if let Some(generation) = lock(&host.generation).clone() {
+    if let Some(generation) = host.generation.lock_unpoisoned().clone() {
         return Some((generation, host.admitted.clone()));
     }
     let generation = host.deps.runtime.load();

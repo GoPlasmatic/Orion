@@ -18,7 +18,7 @@
 //!
 //! The refused set is exactly the `false` column of
 //! [`Transport::Cron`](crate::channel::guards::Transport)'s guard row, and
-//! `cron_guards_and_validation_agree` in `channel/guards/mod.rs` keeps the two
+//! `cron_guards_and_validation_agree` in `channel/guards/tests.rs` keeps the two
 //! from drifting: a guard switched on here without being switched on there
 //! would be a config Orion accepts and ignores.
 

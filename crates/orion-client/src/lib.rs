@@ -28,9 +28,9 @@
 //! - [`OrionClient::new`] sets a 30-second per-request timeout and a 64 MiB
 //!   streaming response-body ceiling ([`OrionClient::with_timeout`] and
 //!   [`OrionClient::with_max_response_bytes`] override either).
-//! - Requests are executed at most once by the transport: automatic retries
-//!   are deliberately omitted so callers control backoff and so mutating
-//!   operations are never re-sent implicitly. Deployment mutations
+//! - Requests are executed at most once by default: automatic retries are
+//!   opt-in and `GET`-only ([`OrionClient::with_get_retries`]), so a mutating
+//!   operation is never re-sent implicitly. Deployment mutations
 //!   (`POST /api/v2/admin/deployments`) carry an explicit `idempotency_key` in
 //!   their request payload ([`orion_api::v2::CreateDeploymentRequest`]),
 //!   allowing callers to safely retry an interrupted apply or rollback with

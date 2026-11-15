@@ -14,9 +14,9 @@ use super::connector_helpers::{
 use super::db_read::rendered_row_format;
 use super::schema::{FieldKind, FieldSchema, RetrySafety};
 use crate::HandlerError;
+use crate::connector::ConnectorRegistry;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::sql_decode::RowFormat;
-use crate::connector::{ConnectorConfig, ConnectorRegistry};
 use crate::kit::{self, read};
 use crate::query::write::{ResolvedWrite, WriteOp};
 use crate::query::{self, SqlDialect};
@@ -58,13 +58,13 @@ struct Backends<'a> {
 async fn run_write(
     backends: Backends<'_>,
     parsed: &DataWrite<'_>,
-    conn: &ConnectorConfig,
+    db: &crate::connector::DbConnectorConfig,
     connector: &str,
     run_deadline: Option<dataflow_rs::run::Instant>,
 ) -> Result<(Value, Outcome), HandlerError> {
     // F24: with no schema the registry rejects rather than passing every
     // name through, and the connector's own guards apply on top.
-    let registry = build_entity_registry(parsed.schema.as_deref(), conn, connector)?;
+    let registry = build_entity_registry(parsed.schema.as_deref(), db, connector)?;
 
     // One backend-neutral resolution: parse envelope, fold params into
     // values/set, resolve physical names, coerce, lower the filter, and
@@ -79,40 +79,28 @@ async fn run_write(
 
     // The gate, before anything is dialled: a connector config can disable
     // individual ops (e.g. delete) regardless of what workflows ask for.
-    if let Some(gates) = conn.operation_gates() {
-        require_op_allowed(gates, resolved.op().as_str(), connector)?;
-    }
+    require_op_allowed(&db.operations, resolved.op().as_str(), connector)?;
 
-    Ok(match conn {
-        ConnectorConfig::Db(db) => {
-            let dialect: SqlDialect = detect_backend(&db.connection_string)
-                .map_err(to_exec_error)?
-                .into();
-            let (sql, values) = query::backend::sql::render_write(&resolved, dialect)
-                .map_err(HandlerError::from)?;
-            let pool = backends
-                .pool_cache
-                .get_pool(connector, db)
-                .await
-                .map_err(to_connect_error)?;
-            execute_sql(
-                &pool,
-                &sql,
-                values,
-                &resolved,
-                QueryBudget::within(db.query_timeout_ms, run_deadline),
-                parsed.format,
-                backends.max_returning,
-            )
-            .await?
-        }
-        // `DataBackend` admits `db` and nothing else; the wrong-type
-        // refusal is the wrapper's.
-        other => unreachable!(
-            "DataBackend admitted a '{}' connector",
-            other.connector_type()
-        ),
-    })
+    let dialect: SqlDialect = detect_backend(&db.connection_string)
+        .map_err(to_exec_error)?
+        .into();
+    let (sql, values) =
+        query::backend::sql::render_write(&resolved, dialect).map_err(HandlerError::from)?;
+    let pool = backends
+        .pool_cache
+        .get_pool(connector, db)
+        .await
+        .map_err(to_connect_error)?;
+    execute_sql(
+        &pool,
+        &sql,
+        values,
+        &resolved,
+        QueryBudget::within(db.query_timeout_ms, run_deadline),
+        parsed.format,
+        backends.max_returning,
+    )
+    .await
 }
 
 /// `data_write`'s input on dataflow-rs 4, in its field table's order (I179).

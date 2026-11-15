@@ -88,8 +88,8 @@ impl ResolvedSecrets {
             .map(|(name, _)| name.as_str())
     }
 
-    /// The one accessor that yields values, for the two hand-offs: v4's
-    /// `Secrets::new` and v3's `EngineBuilder::with_secrets_json`.
+    /// The one accessor that yields values, for the loader's hand-off to the
+    /// engine's `Secrets::new`.
     pub(crate) fn as_json(&self) -> &Value {
         &self.root
     }

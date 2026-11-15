@@ -144,7 +144,8 @@ impl StepFacts {
         out
     }
 
-    pub fn is_unconditional(&self) -> bool {
+    #[cfg(test)]
+    fn is_unconditional(&self) -> bool {
         self.condition.as_ref().is_none_or(Expr::is_constant_true)
     }
 }

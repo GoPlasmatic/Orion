@@ -81,12 +81,6 @@ impl From<crate::extensions::CompositionError> for BootstrapError {
     }
 }
 
-impl From<Box<dyn std::error::Error>> for BootstrapError {
-    fn from(e: Box<dyn std::error::Error>) -> Self {
-        Self::Other(e.to_string().into())
-    }
-}
-
 impl From<String> for BootstrapError {
     fn from(message: String) -> Self {
         Self::Other(message.into())
@@ -317,8 +311,9 @@ pub async fn build_engine_components(
 
     // Create the runtime handle early so the `channel_call` function can
     // reference it. Generation 0 has no engine and an empty channel estate;
-    // `load_channels_and_build_engine` publishes the first real generation
-    // over it before anything is served.
+    // `publish_first_generation` (phase 3) replaces it, and
+    // `reconcile_deployment_revision` publishes the committed head over that
+    // before anything is served.
     let runtime: Arc<crate::runtime::RuntimeHandle> = Arc::new(crate::runtime::RuntimeHandle::new(
         Arc::new(crate::channel::ChannelSnapshot::empty()),
         crate::engine::FunctionRegistry::builtin().clone(),

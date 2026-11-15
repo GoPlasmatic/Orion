@@ -185,7 +185,8 @@ impl WasmRuntime {
     ) -> Result<Arc<Self>, String> {
         let mut c = Config::new();
         c.wasm_component_model(true);
-        // Async is always on in Wasmtime 48; the `async` feature is what enables it.
+        // Async is always available in this Wasmtime; the `async` feature is what
+        // enables it in this build.
         c.consume_fuel(true);
         c.epoch_interruption(true);
 
@@ -343,10 +344,10 @@ impl WasmRuntime {
             .map_err(|e| LoadError::Capacity(e.to_string()))?
     }
 
-    /// Prove every declared function answers: instantiate once and call each
-    /// with an empty object. Any return — a value or a guest error — passes;
-    /// a trap, a limit or a missing export fails, which is what a draft that
-    /// "is already known to load" means.
+    /// Prove every declared function answers: one fresh instantiation per
+    /// function, called with an empty object. Any return — a value or a guest
+    /// error — passes; a trap, a limit or a missing export fails, which is what
+    /// a draft that "is already known to load" means.
     pub async fn self_test(
         &self,
         loaded: &LoadedComponent,

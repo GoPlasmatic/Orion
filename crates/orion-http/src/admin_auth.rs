@@ -1,10 +1,11 @@
 //! Admin API authentication middleware.
 //!
-//! When enabled, requires a valid API key for all `/api/v2/admin/*` endpoints
-//! — including the trace read endpoints under `/api/v2/admin/traces`, which
-//! expose full request/response payloads — and for `/metrics` when this
-//! listener is the one serving it (O12). Supports `Authorization: Bearer
-//! <token>` or a custom header (e.g. `X-API-Key: <token>`).
+//! When enabled, requires a valid API key for the admin plane — every
+//! `/api/v2/admin/*` path except the single-trace read, which authenticates
+//! itself so a submitter can poll with its trace token — and for `/metrics`
+//! when this listener is the one serving it (O12). Supports
+//! `Authorization: Bearer <token>` or a custom header (e.g.
+//! `X-API-Key: <token>`).
 
 use axum::extract::{Request, State};
 use axum::http::Method;

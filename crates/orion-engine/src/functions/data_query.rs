@@ -22,9 +22,9 @@ use super::connector_helpers::{
 };
 use super::db_read::rendered_row_format;
 use super::schema::{FieldKind, RetrySafety};
+use crate::connector::ConnectorRegistry;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::sql_decode::RowFormat;
-use crate::connector::{ConnectorConfig, ConnectorRegistry};
 use crate::kit::{self, read};
 use crate::query::{self, GroupKey, SqlDialect};
 use crate::storage::detect_backend;
@@ -66,10 +66,8 @@ struct Backends<'a> {
 
 /// The connector's gate for a read. Per-connector operation gates: reads
 /// can be disabled too (e.g. a write-only audit sink).
-fn gate(conn: &ConnectorConfig, connector: &str) -> Result<(), HandlerError> {
-    if let Some(gates) = conn.operation_gates() {
-        require_op_allowed(gates, "read", connector)?;
-    }
+fn gate(conn: &crate::connector::DbConnectorConfig, connector: &str) -> Result<(), HandlerError> {
+    require_op_allowed(&conn.operations, "read", connector)?;
     Ok(())
 }
 
@@ -80,52 +78,42 @@ fn gate(conn: &ConnectorConfig, connector: &str) -> Result<(), HandlerError> {
 async fn run_query(
     backends: Backends<'_>,
     parsed: &DataQuery<'_>,
-    conn: &ConnectorConfig,
+    db: &crate::connector::DbConnectorConfig,
     connector: &str,
     run_deadline: Option<dataflow_rs::run::Instant>,
 ) -> Result<Value, HandlerError> {
     // F24: with no schema the registry rejects rather than passing every
     // name through, and the connector's own guards apply on top.
-    let registry = build_entity_registry(parsed.schema.as_deref(), conn, connector)?;
+    let registry = build_entity_registry(parsed.schema.as_deref(), db, connector)?;
     let query = &*parsed.query;
     let params = &parsed.params;
     let limits = backends.limits;
 
-    let result = match conn {
-        ConnectorConfig::Db(db) => {
-            // SQL: dialect from the connection-string scheme, the same
-            // source the pool is built from, so the rendered SQL always
-            // matches the driver that runs it.
-            let dialect: SqlDialect = detect_backend(&db.connection_string)
-                .map_err(to_exec_error)?
-                .into();
-            let plan = query::plan_sql(query, params, &registry, dialect, limits)
-                .map_err(HandlerError::from)?;
-            let pool = backends
-                .pool_cache
-                .get_pool(connector, db)
-                .await
-                .map_err(to_connect_error)?;
-            if plan.count {
-                return run_sql_count(&pool, &plan, dialect, db.query_timeout_ms, run_deadline)
-                    .await;
-            }
-            run_sql_with_includes(
-                &pool,
-                &plan,
-                dialect,
-                QueryBudget::within(db.query_timeout_ms, run_deadline),
-                parsed.format,
-                limits.max_result_bytes,
-            )
-            .await?
-        }
-        // `DataBackend` admits `db` and nothing else, and it produced the
-        // wrong-type refusal, so this handler writes none of its own.
-        other => unreachable!(
-            "DataBackend admitted a '{}' connector",
-            other.connector_type()
-        ),
+    // SQL: dialect from the connection-string scheme, the same source the
+    // pool is built from, so the rendered SQL always matches the driver that
+    // runs it.
+    let dialect: SqlDialect = detect_backend(&db.connection_string)
+        .map_err(to_exec_error)?
+        .into();
+    let plan =
+        query::plan_sql(query, params, &registry, dialect, limits).map_err(HandlerError::from)?;
+    let pool = backends
+        .pool_cache
+        .get_pool(connector, db)
+        .await
+        .map_err(to_connect_error)?;
+    let result = if plan.count {
+        return run_sql_count(&pool, &plan, dialect, db.query_timeout_ms, run_deadline).await;
+    } else {
+        run_sql_with_includes(
+            &pool,
+            &plan,
+            dialect,
+            QueryBudget::within(db.query_timeout_ms, run_deadline),
+            parsed.format,
+            limits.max_result_bytes,
+        )
+        .await?
     };
 
     Ok(result)

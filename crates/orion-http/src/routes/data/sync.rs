@@ -195,17 +195,6 @@ struct CachedShapedInnerRef<'a> {
     body: &'a str,
 }
 
-/// Read `data._orion.response` out of the workflow output, if the workflow set
-/// one, and turn it into a response.
-///
-/// Removing the key is part of the job: it is control, not content, and a
-/// caller receiving `_orion` back in their own body would be receiving the
-/// mechanism rather than the result.
-///
-/// Every failure here is deliberately *soft* — an absent, malformed, or
-/// disallowed field falls back to the platform's own answer rather than 500ing.
-/// A shaped channel whose workflow forgot to set a status should serve the
-/// workflow's data with a `200`, not fail the request; the alternative turns a
 /// Append the platform's own `Set-Cookie` values to a finished response.
 ///
 /// `append`, never `insert`: the workflow may already have set cookies of its
@@ -285,6 +274,17 @@ fn push_header(
     headers.push((name.to_string(), value.to_string()));
 }
 
+/// Read `data._orion.response` out of the workflow output, if the workflow set
+/// one, and turn it into a response.
+///
+/// Removing the key is part of the job: it is control, not content, and a
+/// caller receiving `_orion` back in their own body would be receiving the
+/// mechanism rather than the result.
+///
+/// Every failure here is deliberately *soft* — an absent, malformed, or
+/// disallowed field falls back to the platform's own answer rather than 500ing.
+/// A shaped channel whose workflow forgot to set a status should serve the
+/// workflow's data with a `200`, not fail the request; the alternative turns a
 /// cosmetic authoring slip into an outage.
 ///
 /// **Soft is not the same as silent** (#312). Every drop below appends an entry

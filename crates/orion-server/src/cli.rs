@@ -218,11 +218,14 @@ async fn run<F>(cli: Cli, compose: F) -> Result<(), Box<dyn std::error::Error>>
 where
     F: FnOnce(&AppConfig) -> Result<CompositionBuilder, Box<dyn std::error::Error>>,
 {
-    let mut config = config::load_config(cli.config.as_deref())?;
-    // Resolve the instance identity once, up front, so the tracing resource
-    // and the cluster runtime agree on it.
-    config.cluster.instance_id = config.cluster.effective_instance_id();
-    let config = config;
+    // Q-15: the spec dump needs no config at all. Dispatching it first keeps a
+    // bad `ORION_*` override or an unresolvable `env://` secret from failing a
+    // CI documentation step that reads no configuration.
+    if matches!(cli.command, Some(Command::DumpOpenapi)) {
+        return run_dump_openapi();
+    }
+
+    let config = config::load_config(cli.config.as_deref())?;
 
     if cli.config.is_none() {
         eprintln!(
@@ -240,7 +243,8 @@ where
         Some(Command::TestConnectivity { wait }) => {
             return run_test_connectivity(&config, wait).await;
         }
-        Some(Command::DumpOpenapi) => return run_dump_openapi(),
+        // Handled before the config load, which it does not need.
+        Some(Command::DumpOpenapi) => unreachable!("dispatched before load_config"),
         None => {}
     }
 

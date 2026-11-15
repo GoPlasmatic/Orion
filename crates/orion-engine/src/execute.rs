@@ -140,7 +140,7 @@ impl Execution {
     }
 }
 
-fn v4_trace_options(max_snapshot_bytes: usize) -> dataflow_rs::observe::TraceOptions {
+fn trace_options(max_snapshot_bytes: usize) -> dataflow_rs::observe::TraceOptions {
     let redact = ["metadata.headers", "metadata.cookies", "metadata.oauth"]
         .into_iter()
         .filter_map(|p| p.parse().ok())
@@ -191,11 +191,11 @@ pub async fn execute_on(
 ) -> Execution {
     use dataflow_rs::run::{AuditMode, RunOptions, RunStatus};
 
-    let mut v4_msg = serving_message(data, metadata);
+    let mut engine_msg = serving_message(data, metadata);
 
     if opts.timeout_ms == Some(0) {
         return Execution {
-            message: v4_msg,
+            message: engine_msg,
             task_trace: None,
             outcome: RunOutcome::Timeout(0),
             duration: Duration::ZERO,
@@ -224,7 +224,7 @@ pub async fn execute_on(
         run_opts = run_opts.cancel(token);
     }
     if let Some(capture) = opts.capture {
-        run_opts = run_opts.trace(v4_trace_options(capture.max_snapshot_bytes));
+        run_opts = run_opts.trace(trace_options(capture.max_snapshot_bytes));
     }
     if let Some(bucket) = opts.routing_bucket {
         run_opts = run_opts.routing_bucket(bucket);
@@ -238,7 +238,7 @@ pub async fn execute_on(
     }
 
     let started = Instant::now();
-    let run_fut = engine.run_with(&mut v4_msg, &run_opts);
+    let run_fut = engine.run_with(&mut engine_msg, &run_opts);
     let mut run = if let Some(p) = opts.profile {
         super::profile::ORION_PROFILE
             .scope(p.clone(), run_fut)
@@ -249,7 +249,7 @@ pub async fn execute_on(
     let duration = started.elapsed();
 
     let task_trace = run.take_trace();
-    let message = v4_msg;
+    let message = engine_msg;
     let outcome = match run.status() {
         RunStatus::Completed => {
             if !message.errors().is_empty() {

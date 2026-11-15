@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn test_engine_circuit_open_is_retryable() {
-        let err = OrionError::Engine(circuit_open("api", "orders"));
+        let err = circuit_open("api", "orders");
         assert!(
             err.is_retryable(),
             "DLQ retry must classify a shed dependency as retryable"

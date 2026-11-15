@@ -296,7 +296,7 @@ pub enum StringOrVec {
 }
 
 impl StringOrVec {
-    pub fn into_vec(&self) -> Vec<String> {
+    pub fn to_vec(&self) -> Vec<String> {
         match self {
             Self::One(s) => vec![s.clone()],
             Self::Many(v) => v.clone(),

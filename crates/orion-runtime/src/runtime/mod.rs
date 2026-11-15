@@ -1,11 +1,12 @@
 //! Process-level runtime concerns: the things that own a *node* rather than a
 //! request.
 //!
-//! [`tasks`] supervises the long-lived background tasks. It lives here rather
-//! than in `queue/` because it is not about traces: the trace dispatcher, the
-//! persistence workers, the audit writer, the retention jobs and the cluster
-//! reconciler are owned by four different modules, and "is every one of
-//! them still alive?" is a question about the node.
+//! [`tasks`] supervises the long-lived background tasks. It is defined in
+//! `orion-common` and re-exported here, where a node's code looks for it: the
+//! trace dispatcher, the persistence workers, the audit writer, the retention
+//! jobs and the cluster reconciler are owned by four different modules, and
+//! "is every one of them still alive?" is a question about the node, not about
+//! traces.
 //!
 //! [`generation`] is that serving generation — the engine and the channel
 //! estate built from the same rows — and the handle that publishes it. It
@@ -36,6 +37,14 @@ pub use generation::{RuntimeGeneration, RuntimeHandle};
 pub use reload::{check_candidate, reconcile_deployment_revision};
 pub use tasks::{Criticality, Shutdown, TaskGuard, TaskRegistry, TaskReport, TaskState};
 
+/// The `Registry` a generation compiles on before its plugins, from this
+/// node's live components ([`crate::engine::serving_registry`]). What a reload that
+/// changes the plugin set starts from; a reload that keeps it compiles on the
+/// running engine's registry instead.
+pub fn build_registry(state: &crate::runtime::state::AppState) -> dataflow_rs::Registry {
+    crate::engine::serving_registry(handler_deps(state))
+}
+
 /// Borrow the handler dependencies straight off a live `AppState`.
 ///
 /// The dry-run engine in `POST /definitions/test` must be built from the
@@ -46,14 +55,6 @@ pub use tasks::{Criticality, Shutdown, TaskGuard, TaskRegistry, TaskReport, Task
 /// engine — a module every request path sits below — named `AppState`. The
 /// mapping is a runtime concern: it says which of the node's live components
 /// a handler gets, and `engine` only has to accept them.
-/// The `Registry` a generation compiles on before its plugins, from this
-/// node's live components ([`crate::engine::serving_registry`]). What a reload that
-/// changes the plugin set starts from; a reload that keeps it compiles on the
-/// running engine's registry instead.
-pub fn build_registry(state: &crate::runtime::state::AppState) -> dataflow_rs::Registry {
-    crate::engine::serving_registry(handler_deps(state))
-}
-
 pub fn handler_deps(state: &crate::runtime::state::AppState) -> crate::engine::HandlerDeps<'_> {
     let hosts = functions::NodeHosts::new(
         state.runtime.clone(),
