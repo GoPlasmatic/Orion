@@ -76,13 +76,13 @@ impl SourceMap {
 
     /// Record that the subtree at `compiled_path` was authored in `file`, at
     /// `path` inside it.
-    pub fn record(&mut self, compiled_path: &str, file: &str, path: Option<&str>, via: Vec<Via>) {
+    pub fn record(&mut self, compiled_path: &str, file: &str, path: Option<&str>, via: &[Via]) {
         self.entries.insert(
             compiled_path.to_string(),
             Entry {
                 file: file.to_string(),
                 path: path.map(str::to_string),
-                via,
+                via: via.to_vec(),
             },
         );
     }
@@ -171,16 +171,11 @@ mod tests {
             "tasks[2].function.input.query",
             "sql/settle.sql",
             None,
-            vec![Via::Sql {
+            &[Via::Sql {
                 file: "sql/settle.sql".to_string(),
             }],
         );
-        map.record(
-            "tasks[1]",
-            "shared.json",
-            Some("fragments.f.tasks[0]"),
-            Vec::new(),
-        );
+        map.record("tasks[1]", "shared.json", Some("fragments.f.tasks[0]"), &[]);
         let sql = map.resolve("wf.json", "tasks[2].function.input.query");
         assert_eq!(sql.file, "sql/settle.sql");
         assert_eq!(sql.path, None);

@@ -91,7 +91,7 @@ struct Src {
     /// `String` per key and index was the expander's largest allocation (P-27).
     file: std::rc::Rc<str>,
     path: Option<String>,
-    via: Vec<Via>,
+    via: std::rc::Rc<[Via]>,
 }
 
 impl Src {
@@ -176,7 +176,7 @@ impl<'a, 'o> Expander<'a, 'o> {
             src: Src {
                 file: self.cx.origin.into(),
                 path: Some(String::new()),
-                via: Vec::new(),
+                via: Default::default(),
             },
         };
         let scope = Scope::default();
@@ -224,7 +224,7 @@ impl<'a, 'o> Expander<'a, 'o> {
             src: Src {
                 file: self.cx.origin.into(),
                 path: Some(path.to_string()),
-                via: Vec::new(),
+                via: Default::default(),
             },
         };
         self.muted += 1;
@@ -405,7 +405,7 @@ impl<'a, 'o> Expander<'a, 'o> {
             let at = Src {
                 file: fragment.origin.as_str().into(),
                 path: Some(format!("fragments.{name}.tasks[{k}]")),
-                via: inner.trail.clone(),
+                via: inner.trail.clone().into(),
             };
             self.element(member, Mode::Steps, &inner, list, at, out);
         }
@@ -467,7 +467,7 @@ impl<'a, 'o> Expander<'a, 'o> {
         let at = Src {
             file: fragment.origin.as_str().into(),
             path: Some(format!("fragments.{name}.value")),
-            via: inner.trail.clone(),
+            via: inner.trail.clone().into(),
         };
         self.element(body, Mode::Steps, &inner, list, at, out);
         if map.is_empty() {
@@ -547,7 +547,7 @@ impl<'a, 'o> Expander<'a, 'o> {
             src: Src {
                 file: fragment.origin.as_str().into(),
                 path: Some(format!("fragments.{name}.value")),
-                via: inner.trail.clone(),
+                via: inner.trail.clone().into(),
             },
         };
         self.value(&mut body, &inner, &body_at);
@@ -629,7 +629,7 @@ impl<'a, 'o> Expander<'a, 'o> {
             src: Src {
                 file: "".into(),
                 path: None,
-                via: Vec::new(),
+                via: Default::default(),
             },
         };
         let mut supplied = match with {
@@ -766,7 +766,7 @@ impl<'a, 'o> Expander<'a, 'o> {
             src: Src {
                 file: "".into(),
                 path: None,
-                via: Vec::new(),
+                via: Default::default(),
             },
         };
         self.muted += 1;
@@ -816,7 +816,13 @@ impl<'a, 'o> Expander<'a, 'o> {
             inner.open = true;
             inner.trail.push(via.clone());
             let mut at = src.key("do");
-            at.via.push(via);
+            at.via = at
+                .via
+                .iter()
+                .cloned()
+                .chain(std::iter::once(via))
+                .collect::<Vec<_>>()
+                .into();
             self.element(body.clone(), mode, &inner, list, at, out);
         }
     }
@@ -900,7 +906,7 @@ impl<'a, 'o> Expander<'a, 'o> {
             &at.compiled,
             &at.src.file,
             at.src.path.as_deref(),
-            at.src.via.clone(),
+            &at.src.via,
         );
     }
 }

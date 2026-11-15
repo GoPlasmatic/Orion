@@ -527,7 +527,7 @@ fn inline_sql(
                 let sibling = object.keys().find(|k| *k != "$sql").cloned();
                 let text = match resolve_sql(&target, sibling.as_deref(), path, cx, findings) {
                     Some((file, text)) => {
-                        map.record(path, &file, None, vec![Via::Sql { file: file.clone() }]);
+                        map.record(path, &file, None, &[Via::Sql { file: file.clone() }]);
                         text
                     }
                     None => String::new(),
