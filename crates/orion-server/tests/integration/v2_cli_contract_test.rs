@@ -129,28 +129,12 @@ impl orion_client::V2Admin for RouterClient {
 async fn cli_and_server_contract_end_to_end_against_running_server() {
     use orion_api::v2::*;
     use orion_client::V2Admin as _;
-    use std::str::FromStr;
 
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect_with(sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:").unwrap())
-        .await
-        .unwrap();
-    orion::storage::migrator_for(orion::storage::DbBackend::Sqlite)
-        .run(&pool)
-        .await
-        .unwrap();
-    let db_pool = orion::storage::DbPool::Sqlite(pool);
-
-    let metrics_handle = orion::metrics::init_metrics_with_instance(None);
     let mut config = orion::config::AppConfig::default();
     config.cluster.instance_id = "node-cli-test".to_string();
-    let assembled = orion::bootstrap::assemble(
-        orion::bootstrap::AssembleParams {
-            config: std::sync::Arc::new(config),
-            pool: db_pool,
-            metrics_handle,
-        },
+    let node = orion::testing::TestNode::start_on(
+        config,
+        crate::common::memory_pool().await,
         orion::extensions::CompositionRoot::community(),
     )
     .await
@@ -164,7 +148,7 @@ async fn cli_and_server_contract_end_to_end_against_running_server() {
                     10 * 1024 * 1024,
                 ),
             )
-            .with_state(assembled.state),
+            .with_state(node.state().clone()),
     );
 
     // 1. Capabilities

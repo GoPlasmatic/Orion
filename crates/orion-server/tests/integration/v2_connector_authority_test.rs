@@ -60,31 +60,14 @@ fn entity(kind: EntityKind, id: &str) -> EntityRef {
 
 #[tokio::test]
 async fn a_workflow_calls_only_the_connections_its_member_requires() {
-    let state = orion::bootstrap::assemble(
-        orion::bootstrap::AssembleParams {
-            config: std::sync::Arc::new(orion::config::AppConfig::default()),
-            pool: {
-                use std::str::FromStr;
-                let pool = sqlx::sqlite::SqlitePoolOptions::new()
-                    .max_connections(4)
-                    .connect_with(
-                        sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:").unwrap(),
-                    )
-                    .await
-                    .unwrap();
-                orion::storage::migrator_for(orion::storage::DbBackend::Sqlite)
-                    .run(&pool)
-                    .await
-                    .unwrap();
-                orion::storage::DbPool::Sqlite(pool)
-            },
-            metrics_handle: orion::metrics::init_metrics_with_instance(None),
-        },
+    let node = orion::testing::TestNode::start_on(
+        orion::config::AppConfig::default(),
+        crate::common::memory_pool().await,
         orion::extensions::CompositionRoot::community(),
     )
     .await
-    .expect("boots")
-    .state;
+    .expect("boots");
+    let state = node.state().clone();
 
     let mut digests = std::collections::HashMap::new();
     for wf in ["allowed-wf", "rogue-wf"] {

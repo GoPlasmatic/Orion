@@ -25,7 +25,6 @@
 //! pins it by counting stores.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use arc_swap::ArcSwap;
 
@@ -55,38 +54,26 @@ pub struct RuntimeGeneration {
     /// with an id of its own choosing, so the number always means "how many
     /// times this node has republished".
     pub id: u64,
-    /// The engine built from the same rows: every row compiled on its
-    /// `Registry`, whose verdict decides which channels load.
-    /// `channel_call` runs its child on it, and a reload that keeps the
-    /// plugins compiles on its compiler. Empty on the boot generation, which
-    /// no request sees: generation 1 is published before the node serves.
-    pub engine: dataflow_rs::Engine,
-    pub channels: Arc<ChannelSnapshot>,
-    /// Every function the engine above dispatches, and what each declares —
-    /// what create-time validation and `GET /admin/functions` read, so a
-    /// workflow is accepted against exactly the set this generation runs.
-    pub functions: Arc<FunctionRegistry>,
-    /// The plugins this generation loaded, and the reasons any did not —
-    /// `/health` and `GET /plugins/{id}` read it, and a reload compares its
-    /// fingerprint to decide whether the engine must be rebuilt.
-    pub plugins: Arc<PluginSet>,
-    /// Immutable snapshot of resolved connector configurations published with
-    /// this generation. When `Some`, connector tasks executing under
-    /// [`PINNED_GENERATION`] resolve against this snapshot rather than reading
-    /// a concurrently reloaded [`crate::connector::ConnectorRegistry`].
-    pub connectors:
-        Option<Arc<std::collections::HashMap<String, Arc<crate::connector::ConnectorConfig>>>>,
-    /// Run-wide resource budget ceilings configured for this generation.
-    pub run_budget_limits: crate::engine::budget::RunBudgetLimits,
-    pub connector_budget_limits: crate::config::ConnectorBudgetLimits,
-    /// Which connections each workflow may call through `connector_call`.
-    /// Empty unless the generation was built from a deployment manifest.
-    pub connector_authority: Arc<super::authority::ConnectorAuthority>,
+    /// Everything else, as one value. The fields are reached through
+    /// `Deref`, so a reader still says `generation.engine`.
+    parts: GenerationParts,
+}
+
+impl std::ops::Deref for RuntimeGeneration {
+    type Target = GenerationParts;
+
+    fn deref(&self) -> &GenerationParts {
+        &self.parts
+    }
 }
 
 /// Everything one generation is built from, published together by
 /// [`RuntimeHandle::publish_parts`]. The first four are what every
 /// generation needs; the rest default.
+///
+/// Kept separate from [`RuntimeGeneration`] so a generation is its id beside
+/// one payload, and a new part is one field here rather than a field copied
+/// into two structs (M-13).
 pub struct GenerationParts {
     pub engine: dataflow_rs::Engine,
     pub channels: Arc<ChannelSnapshot>,
@@ -145,10 +132,6 @@ impl RuntimeGeneration {
 /// atomically.
 pub struct RuntimeHandle {
     current: ArcSwap<RuntimeGeneration>,
-    /// How many generations have been published. The id of the live one, but
-    /// readable without loading it — which is what lets a test assert that one
-    /// reload performs exactly one publish.
-    published: AtomicU64,
     /// The id of the latest publish, for a consumer that must follow every
     /// generation without polling — the channel drivers' reconcile loops.
     /// A watch keeps only the latest value, so a slow consumer skips
@@ -176,16 +159,13 @@ impl RuntimeHandle {
         Self {
             current: ArcSwap::from_pointee(RuntimeGeneration {
                 id: 0,
-                engine: empty_engine(),
-                channels,
-                functions,
-                plugins: Arc::new(PluginSet::empty()),
-                connectors: None,
-                run_budget_limits: Default::default(),
-                connector_budget_limits: Default::default(),
-                connector_authority: Default::default(),
+                parts: GenerationParts::new(
+                    empty_engine(),
+                    channels,
+                    functions,
+                    Arc::new(PluginSet::empty()),
+                ),
             }),
-            published: AtomicU64::new(0),
             published_tx: tokio::sync::watch::Sender::new(0),
         }
     }
@@ -227,28 +207,9 @@ impl RuntimeHandle {
 
     /// [`Self::publish`], with every part of the generation stated.
     pub fn publish_parts(&self, parts: GenerationParts) -> u64 {
-        let GenerationParts {
-            engine,
-            channels,
-            functions,
-            plugins,
-            connectors,
-            run_budget_limits,
-            connector_budget_limits,
-            connector_authority,
-        } = parts;
-        let id = self.published.fetch_add(1, Ordering::Relaxed) + 1;
-        self.current.store(Arc::new(RuntimeGeneration {
-            id,
-            engine,
-            channels,
-            functions,
-            plugins,
-            connectors,
-            run_budget_limits,
-            connector_budget_limits,
-            connector_authority,
-        }));
+        let id = *self.published_tx.borrow() + 1;
+        self.current
+            .store(Arc::new(RuntimeGeneration { id, parts }));
         self.published_tx.send_replace(id);
         id
     }
@@ -263,7 +224,7 @@ impl RuntimeHandle {
     /// How many generations this node has published. `0` means it is still on
     /// the empty boot generation.
     pub fn published_count(&self) -> u64 {
-        self.published.load(Ordering::Relaxed)
+        *self.published_tx.borrow()
     }
 }
 

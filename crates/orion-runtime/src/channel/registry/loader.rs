@@ -41,29 +41,23 @@ pub struct ReloadDeps<'a> {
     pub channel_drivers: &'a crate::extensions::ChannelDriverRegistry,
 }
 
-/// Everything [`ChannelLoader::build_runtime`] needs beyond the channel row.
+/// Everything [`ChannelLoader::build_runtime`] needs beyond the channel row:
+/// the reload's shared dependencies, plus the two things only a runtime build
+/// needs.
+///
+/// The field accesses still spell `deps.vars`, through `Deref`, so a new
+/// `ReloadDeps` field is not copied here too (M-13).
 pub(super) struct RuntimeDeps<'a> {
-    pub(super) vars: Option<&'a std::sync::Arc<serde_json::Value>>,
-    pub(super) connector_registry: &'a ConnectorRegistry,
-    pub(super) cache_pool: &'a CachePool,
-    pub(super) exprs: &'a ExprEngine,
-    /// The instance's JWKS cache, for `auth.mode = "jwt"` channels. Like
-    /// `exprs` and `cache_pool` it is a process singleton, so a carried-over
-    /// `ChannelRuntimeConfig` holding a compiled verifier built from it stays
-    /// valid — see [`DepsFingerprint`].
-    pub(super) jwks: &'a std::sync::Arc<crate::jwt::jwks::JwksCache>,
-    /// The shared outbound client (#307). A `reqwest::Client` is an `Arc`
-    /// internally, so a compiled sign-in block holding a clone holds a handle
-    /// to the one pool, not a second one.
-    pub(super) http_client: &'a reqwest::Client,
-    pub(super) allow_private_token_urls: bool,
-    instance_oauth_providers:
-        &'a std::collections::BTreeMap<String, crate::config::InstanceProviderConfig>,
-    pub(super) oidc_discovery: &'a std::sync::Arc<crate::channel::oidc_discovery::DiscoveryCache>,
-    pub(super) global_trace_storage: &'a TraceStorageConfig,
+    shared: &'a ReloadDeps<'a>,
     pub(super) cluster_shared: Option<std::sync::Arc<dyn orion_extension_api::SharedStateStore>>,
-    pub(super) cron_enabled: bool,
-    pub(super) channel_drivers: &'a crate::extensions::ChannelDriverRegistry,
+}
+
+impl<'a> std::ops::Deref for RuntimeDeps<'a> {
+    type Target = ReloadDeps<'a>;
+
+    fn deref(&self) -> &ReloadDeps<'a> {
+        self.shared
+    }
 }
 
 /// Whether a channel-config key holds a JSONLogic expression.
@@ -766,39 +760,15 @@ impl ChannelLoader {
         deps: ReloadDeps<'_>,
         engine_issues: Vec<ChannelLoadIssue>,
     ) -> ChannelSnapshot {
-        let ReloadDeps {
-            vars,
-            connector_registry,
-            cache_pool,
-            exprs,
-            jwks,
-            http_client,
-            allow_private_token_urls,
-            instance_oauth_providers,
-            oidc_discovery,
-            global_trace_storage,
-            cron_enabled,
-            channel_drivers,
-        } = deps;
         let deps = RuntimeDeps {
-            vars,
-            connector_registry,
-            cache_pool,
-            exprs,
-            jwks,
-            http_client,
-            allow_private_token_urls,
-            instance_oauth_providers,
-            oidc_discovery,
-            global_trace_storage,
+            shared: &deps,
             cluster_shared: self.cluster.as_ref().and_then(|c| c.shared.clone()),
-            cron_enabled,
-            channel_drivers,
         };
+        let channel_drivers = deps.channel_drivers;
         let fingerprint = DepsFingerprint {
-            connectors: connector_registry.config_generation(),
-            trace_storage: global_trace_storage.clone(),
-            cron_enabled,
+            connectors: deps.connector_registry.config_generation(),
+            trace_storage: deps.global_trace_storage.clone(),
+            cron_enabled: deps.cron_enabled,
         };
 
         // N6/N17: the outgoing generation is both the cache (an unchanged
