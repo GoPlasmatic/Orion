@@ -87,6 +87,15 @@ impl RateLimitBackend for LocalRateLimitBackend {
 /// per-channel `requests_per_second`/`burst` config onto a one-second
 /// window. The second is the **store's** clock, not the node's: skewed
 /// nodes would otherwise land in different windows and the shared limit
+/// The burst a limiter gets when its config leaves it unset: half a second's
+/// worth of requests, plus one so a rate of 1/s still admits a pair.
+///
+/// One function for the per-channel burst and the platform route-group
+/// limiter, which had the expression copied (M-14).
+pub fn default_burst(requests_per_second: u32) -> u32 {
+    requests_per_second / 2 + 1
+}
+
 /// would silently multiply by the number of skew groups.
 pub struct SharedRateLimitBackend {
     store: Arc<dyn SharedStateStore>,

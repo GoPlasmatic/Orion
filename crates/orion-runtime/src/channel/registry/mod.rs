@@ -410,6 +410,10 @@ struct DepsFingerprint {
 /// `200` with the caller's own input.
 pub struct ChannelSnapshot {
     by_name: HashMap<String, Arc<ChannelRuntimeConfig>>,
+    /// The same serviceable channels by stable id. Ingresses that name a
+    /// channel by id — a driver delivery, a cron occurrence — used to scan
+    /// every channel per message (P-06).
+    by_id: HashMap<String, Arc<ChannelRuntimeConfig>>,
     /// `Arc` so an unchanged route set survives a reload without being
     /// rebuilt — `RouteTable::build` parses every pattern and its conflict
     /// scan is quadratic in route-bearing channels.
@@ -422,6 +426,8 @@ pub struct ChannelSnapshot {
     /// radius to the broken channel: the other channels still load, and the
     /// admin mutations that trigger a reload still work.
     quarantined: HashMap<String, QuarantineEntry>,
+    /// Quarantine reasons by stable channel id.
+    quarantine_by_id: HashMap<String, String>,
     /// The serviceable rows `route_table` was built from, in supplied order —
     /// the key that decides whether it can be carried over.
     route_key: Vec<ChannelRow>,
@@ -490,8 +496,10 @@ impl ChannelSnapshot {
     pub fn empty() -> Self {
         Self {
             by_name: HashMap::new(),
+            by_id: HashMap::new(),
             route_table: Arc::new(RouteTable::default()),
             quarantined: HashMap::new(),
+            quarantine_by_id: HashMap::new(),
             route_key: Vec::new(),
             deps: DepsFingerprint {
                 connectors: u64::MAX,
@@ -565,9 +573,9 @@ impl ChannelSnapshot {
     /// and execution is the same channel, and a name lookup would fail as though
     /// it had been deleted.
     pub fn cron_by_channel_id(&self, channel_id: &str) -> Option<Arc<ChannelRuntimeConfig>> {
-        self.by_name
-            .values()
-            .find(|runtime| runtime.cron.is_some() && runtime.channel.channel_id == channel_id)
+        self.by_id
+            .get(channel_id)
+            .filter(|runtime| runtime.cron.is_some())
             .cloned()
     }
 
@@ -622,19 +630,13 @@ impl ChannelSnapshot {
     /// deliveries name the channel by id: a driver's listener outlives a
     /// rename, as a cron occurrence does.
     pub fn serviceable_by_id(&self, channel_id: &str) -> Option<Arc<ChannelRuntimeConfig>> {
-        self.by_name
-            .values()
-            .find(|runtime| runtime.channel.channel_id == channel_id)
-            .cloned()
+        self.by_id.get(channel_id).cloned()
     }
 
     /// Why the channel with stable id `channel_id` is quarantined, or `None`
     /// when no quarantined channel carries that id.
     pub fn quarantine_reason_by_id(&self, channel_id: &str) -> Option<String> {
-        self.quarantined
-            .values()
-            .find(|entry| entry.channel_id == channel_id)
-            .map(|entry| entry.reason.clone())
+        self.quarantine_by_id.get(channel_id).cloned()
     }
 
     /// Look up an active channel by name.

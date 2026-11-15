@@ -174,7 +174,7 @@ impl Function for JwtVerifyFunction {
 
     async fn call(&self, ctx: &mut Ctx<'_>, cfg: &JwtVerifyConfig) -> dataflow_rs::Result<Outcome> {
         let (output, claims) = self.claims(ctx, cfg).await?;
-        ctx.set(&output, OwnedDataValue::from(&claims))?;
+        ctx.set(&output, OwnedDataValue::from(claims))?;
         Ok(Outcome::Ok)
     }
 }

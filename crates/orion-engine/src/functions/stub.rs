@@ -347,7 +347,7 @@ impl StubLayer {
             },
         };
         if let Some(path) = output {
-            ctx.set(&path, OwnedDataValue::from(&response))?;
+            ctx.set(&path, OwnedDataValue::from(response))?;
         }
         Ok(Outcome::Ok)
     }

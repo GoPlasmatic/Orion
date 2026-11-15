@@ -98,12 +98,12 @@ pub fn gate_directory(
     opts: GateOpts,
     plugin_dirs: &[String],
 ) -> Result<GateReport, String> {
-    let raw = if opts.want_raw {
-        Some(DefinitionSet::from_directory_raw(dir)?.0)
-    } else {
-        None
-    };
-    let (mut set, report) = DefinitionSet::from_directory(dir)?;
+    // P-27: one walk. The raw form is a snapshot of the walked set; the
+    // compiled form is that same set expanded, so a gate that wants both does
+    // not read and parse every file twice.
+    let (raw_set, raw_report) = DefinitionSet::from_directory_raw(dir)?;
+    let raw = opts.want_raw.then_some(raw_set.clone());
+    let (mut set, report) = DefinitionSet::compile_loaded(raw_set, raw_report, dir)?;
     // The binary checks itself first: a set declaring a range this build
     // is outside of stops here with one line, before any finding about a
     // feature this build predates.

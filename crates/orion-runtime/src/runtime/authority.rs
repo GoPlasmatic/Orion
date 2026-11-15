@@ -31,6 +31,10 @@ pub struct ConnectorAuthority {
     /// operations the package declares for the alias. A package invocation
     /// derives its dependency calls from these; no workflow is granted them.
     dependencies: BTreeMap<String, (ConnectionReference, BTreeSet<String>)>,
+    /// Everything any workflow may call and every dependency, computed once.
+    /// A run's ceiling is constant for a generation, so rebuilding it on every
+    /// HTTP request, cron attempt and queued trace was pure work (P-05).
+    union: AuthorityGrant,
 }
 
 impl ConnectorAuthority {
@@ -74,11 +78,14 @@ impl ConnectorAuthority {
                 .extend(&grant);
             by_workflow.insert(format!("{}:v{}", wf.workflow_id, wf.version), grant);
         }
-        Self {
+        let mut authority = Self {
             by_workflow,
             connections,
             dependencies: BTreeMap::new(),
-        }
+            union: AuthorityGrant::default(),
+        };
+        authority.union = authority.compute_union();
+        authority
     }
 
     /// This authority, with the dependencies the manifest's connections over
@@ -89,6 +96,7 @@ impl ConnectorAuthority {
         dependencies: BTreeMap<String, (ConnectionReference, BTreeSet<String>)>,
     ) -> Self {
         self.dependencies = dependencies;
+        self.union = self.compute_union();
         self
     }
 
@@ -102,8 +110,9 @@ impl ConnectorAuthority {
                 .keys()
                 .map(|c| (c.clone(), Revision::FIRST))
                 .collect(),
-            by_workflow: BTreeMap::from([(engine_id.to_string(), grant)]),
+            by_workflow: BTreeMap::from([(engine_id.to_string(), grant.clone())]),
             dependencies: BTreeMap::new(),
+            union: grant,
         }
     }
 
@@ -118,8 +127,12 @@ impl ConnectorAuthority {
     }
 
     /// Everything any workflow may call, and every package dependency: a
-    /// run's ceiling.
+    /// run's ceiling. Cached from construction.
     pub fn union(&self) -> AuthorityGrant {
+        self.union.clone()
+    }
+
+    fn compute_union(&self) -> AuthorityGrant {
         let mut all = AuthorityGrant::default();
         for grant in self.by_workflow.values() {
             all.extend(grant);

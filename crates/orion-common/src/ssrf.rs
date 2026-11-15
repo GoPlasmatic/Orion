@@ -216,6 +216,13 @@ async fn check_host_not_private(
         url::Host::Ipv4(ip) => check_ip(IpAddr::V4(ip)),
         url::Host::Ipv6(ip) => check_ip(IpAddr::V6(ip)),
         url::Host::Domain(domain) => {
+            // P-13: a fresh pin already holds addresses this function
+            // checked, so re-running getaddrinfo on the blocking pool for
+            // every outbound call bought nothing. Serve the pinned set while
+            // its TTL holds; an expired pin falls through to a new lookup.
+            if pin && let Some(addrs) = pinned_addrs(domain) {
+                return Ok(addrs);
+            }
             let addrs: Vec<SocketAddr> = tokio::net::lookup_host((domain, port))
                 .await
                 .map_err(|e| format!("Failed to resolve host '{domain}' for {target}: {e}"))?

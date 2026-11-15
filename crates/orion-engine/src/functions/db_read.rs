@@ -355,7 +355,7 @@ impl Function for DbReadFunction {
         })
         .await?;
         if let Some(rows) = rows {
-            ctx.set(&output, dataflow_rs::datavalue::OwnedDataValue::from(&rows))?;
+            ctx.set(&output, dataflow_rs::datavalue::OwnedDataValue::from(rows))?;
         }
         Ok(Outcome::Ok)
     }

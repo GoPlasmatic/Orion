@@ -15,6 +15,11 @@ use crate::errors::OrionError;
 /// `field` names the referencing field in error messages; the resolved value
 /// itself never appears in one.
 pub async fn resolve_secret_string(value: &str, field: &str) -> Result<String, String> {
+    // A literal — the overwhelmingly common case — needs no scan, no copy and
+    // no `format!` label. Only a `scheme://` string can be a reference.
+    if !value.contains("://") {
+        return Ok(value.to_string());
+    }
     let mut json = Value::String(value.to_string());
     resolve_in_place(&mut json, default_resolvers(), field)
         .await

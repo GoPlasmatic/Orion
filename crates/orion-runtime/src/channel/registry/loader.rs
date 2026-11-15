@@ -334,7 +334,11 @@ impl ChannelLoader {
             {
                 return prev.clone();
             }
-            let burst = rl.burst.unwrap_or(rl.requests_per_second / 2 + 1);
+            let burst = rl
+                .burst
+                .unwrap_or(crate::channel::rate_limit_backend::default_burst(
+                    rl.requests_per_second,
+                ));
             match deps.cluster_shared.clone() {
                 Some(store) => Arc::new(SharedRateLimitBackend::new(
                     store,
@@ -877,10 +881,20 @@ impl ChannelLoader {
         let loaded = by_name.len();
         let refused = quarantined.len();
 
+        let by_id: HashMap<String, Arc<ChannelRuntimeConfig>> = by_name
+            .values()
+            .map(|runtime| (runtime.channel.channel_id.clone(), runtime.clone()))
+            .collect();
+        let quarantine_by_id: HashMap<String, String> = quarantined
+            .values()
+            .map(|entry| (entry.channel_id.clone(), entry.reason.clone()))
+            .collect();
         let snapshot = ChannelSnapshot {
             by_name,
+            by_id,
             route_table,
             quarantined,
+            quarantine_by_id,
             route_key,
             deps: fingerprint,
             required_connections: std::sync::Arc::default(),

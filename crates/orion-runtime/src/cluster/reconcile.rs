@@ -133,21 +133,29 @@ pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
     // One row says whether anything committed has changed: every apply,
     // rollback and revocation moves the head or the epoch. The whole store
     // is re-read only when it did.
-    if let Err(e) = state.deployments.catch_up(&state.db_pool).await {
-        if !state.reconciler.is_security_lease_current() {
-            state
-                .composition
-                .admission()
-                .ledger()
-                .set_lease_valid(false);
+    let reloaded = match state.deployments.catch_up(&state.db_pool).await {
+        Ok(reloaded) => reloaded,
+        Err(e) => {
+            if !state.reconciler.is_security_lease_current() {
+                state
+                    .composition
+                    .admission()
+                    .ledger()
+                    .set_lease_valid(false);
+            }
+            crate::metrics::record_error("v2_reconciler_catch_up");
+            tracing::warn!(error = %e, "V2 reconciler: failed to hydrate deployment store from DB");
+            return false;
         }
-        crate::metrics::record_error("v2_reconciler_catch_up");
-        tracing::warn!(error = %e, "V2 reconciler: failed to hydrate deployment store from DB");
-        return false;
-    }
+    };
 
-    sync_v2_revocations(state);
-    crate::runtime::workflow_providers::sync(state).await;
+    // P-21: both sweeps are O(admissions x packages) / a package re-compile.
+    // Nothing they read moves except with the head or the epoch, so an
+    // unchanged catalog needs neither on this tick.
+    if reloaded {
+        sync_v2_revocations(state);
+        crate::runtime::workflow_providers::sync(state).await;
+    }
 
     state.reconciler.renew_security_lease(
         now_ms,
@@ -189,30 +197,34 @@ pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
         tick_ok = false;
     }
 
-    // Reap departed node heartbeats older than 5 minutes (or 10 poll intervals)
-    // before refreshing the observed peer set so dead nodes stop pinning
-    // retained revisions forever.
-    let stale_ttl_secs = Ord::max(
-        300,
-        (state.config.cluster.epoch_poll_interval_ms / 1_000) * 10,
-    );
-    if let Err(e) = state
-        .repos
-        .runtime_nodes
-        .reap_stale_nodes(stale_ttl_secs)
-        .await
-    {
-        tracing::warn!(error = %e, "V2 reconciler: failed to reap stale runtime_nodes rows");
-    }
+    // Single-node mode has no peers to reap or observe: these are SQLite
+    // writes competing with trace inserts for nothing (P-21).
+    if state.cluster.enabled {
+        // Reap departed node heartbeats older than 5 minutes (or 10 poll
+        // intervals) before refreshing the observed peer set so dead nodes stop
+        // pinning retained revisions forever.
+        let stale_ttl_secs = Ord::max(
+            300,
+            (state.config.cluster.epoch_poll_interval_ms / 1_000) * 10,
+        );
+        if let Err(e) = state
+            .repos
+            .runtime_nodes
+            .reap_stale_nodes(stale_ttl_secs)
+            .await
+        {
+            tracing::warn!(error = %e, "V2 reconciler: failed to reap stale runtime_nodes rows");
+        }
 
-    if let Err(e) = state
-        .reconciler
-        .refresh_observed_nodes(state.repos.runtime_nodes.as_ref())
-        .await
-    {
-        crate::metrics::record_error("v2_reconciler_heartbeat");
-        tracing::warn!(error = %e, "V2 reconciler: failed to refresh observed cluster nodes");
-        tick_ok = false;
+        if let Err(e) = state
+            .reconciler
+            .refresh_observed_nodes(state.repos.runtime_nodes.as_ref())
+            .await
+        {
+            crate::metrics::record_error("v2_reconciler_heartbeat");
+            tracing::warn!(error = %e, "V2 reconciler: failed to refresh observed cluster nodes");
+            tick_ok = false;
+        }
     }
 
     tick_ok

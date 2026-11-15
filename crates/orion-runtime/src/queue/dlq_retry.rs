@@ -162,6 +162,40 @@ async fn run_dlq_retry(
                     );
                 }
 
+                // P-25: refuse before minting a pending trace. Checking
+                // after the insert cost three writes and left a dead trace row
+                // on every full-queue tick.
+                if let Err(refusal) = trace_queue.check_admissible(&payload, &metadata) {
+                    tracing::warn!(
+                        dlq_id = %entry.id,
+                        error = %refusal,
+                        "DLQ retry: trace queue cannot take this entry; rescheduling"
+                    );
+                    match super::settle_leased_dlq(
+                        dlq_repo.as_ref(),
+                        &entry.id,
+                        entry.retry_count,
+                        entry.max_retries,
+                        &refusal.to_string(),
+                    )
+                    .await
+                    {
+                        Ok(super::DlqSettlement::Exhausted) => {
+                            metrics::record_error("dlq_exhausted");
+                            metrics::record_trace_dlq_retry("exhausted");
+                        }
+                        Ok(super::DlqSettlement::Deferred { .. }) => {
+                            metrics::record_trace_dlq_retry("failed");
+                        }
+                        Err(e) => tracing::error!(
+                            dlq_id = %entry.id,
+                            error = %e,
+                            "DLQ retry: failed to settle the refused entry"
+                        ),
+                    }
+                    continue;
+                }
+
                 // Create a new pending trace for the retry. DLQ rows only
                 // carry the channel *name*; resolve the ID from the live
                 // generation (NULL when the channel is no longer active —
@@ -855,10 +889,13 @@ mod tests {
         let (id, _next_retry_at) = &state.retried[0];
         assert_eq!(id, "e4");
 
-        // The pending trace minted for the shed attempt must be settled —
-        // unsettled it would sit `pending` forever as phantom backlog.
+        // P-25: admission is refused before a pending trace is minted, so a
+        // full/closed queue leaves no trace row at all — neither one to settle
+        // nor a phantom `pending` row.
         let settled = mock_traces.settled.lock().expect("test");
-        assert_eq!(settled.len(), 1, "shed attempt must settle its trace");
-        assert_eq!(settled[0].1, crate::storage::models::TRACE_STATUS_FAILED);
+        assert!(
+            settled.is_empty(),
+            "a refused entry must not mint a trace, settled: {settled:?}"
+        );
     }
 }

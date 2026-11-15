@@ -241,11 +241,16 @@ fn blob_to_json(bytes: Vec<u8>, mode: BinaryAs, column: &str, sql_type: &str) ->
 /// type the server declared, rather than probing Rust types until one sticks,
 /// is what makes an unhandled type a named error instead of a silent null.
 pub fn pg_rows_to_json(rows: &[sqlx::postgres::PgRow], format: RowFormat) -> Decoded<Vec<Value>> {
+    let Some(first) = rows.first() else {
+        return Ok(Vec::new());
+    };
+    // F-02: the result set's column names, built once rather than per row.
+    let names = column_names(first);
     rows.iter()
         .map(|row| {
-            let mut obj = Map::new();
-            for (i, name) in column_names(row).into_iter().enumerate() {
-                obj.insert(name.clone(), pg_column(row, i, &name, format)?);
+            let mut obj = Map::with_capacity(names.len());
+            for (i, name) in names.iter().enumerate() {
+                obj.insert(name.clone(), pg_column(row, i, name, format)?);
             }
             Ok(Value::Object(obj))
         })
@@ -269,11 +274,13 @@ fn pg_column(
         return Ok(Value::Null);
     }
     let info: PgTypeInfo = raw.type_info().into_owned();
-    let sql_type = info.name().to_string();
+    // Borrowed: the String is built only inside `fail`, which means an error
+    // happened. `sql_type` is used as `&str` everywhere else.
+    let sql_type = info.name();
 
     let fail = |detail: String| DecodeError {
         column: name.to_string(),
-        sql_type: sql_type.clone(),
+        sql_type: sql_type.to_string(),
         detail,
     };
     // A domain is a constrained alias — `CREATE DOMAIN email AS text` — and
@@ -305,7 +312,7 @@ fn pg_column(
         return pg_array(row, i, name, elem.name(), format, &fail);
     }
 
-    pg_by_name(row, i, name, &sql_type, format, &fail)
+    pg_by_name(row, i, name, sql_type, format, &fail)
 }
 
 /// The scalar table. Names are `PgTypeInfo::name()` — sqlx's display names,
@@ -460,11 +467,17 @@ pub fn mysql_rows_to_json(
     rows: &[sqlx::mysql::MySqlRow],
     format: RowFormat,
 ) -> Decoded<Vec<Value>> {
+    let Some(first) = rows.first() else {
+        return Ok(Vec::new());
+    };
+    // F-02: the result set's column names, built once rather than per row.
+    // At 10k rows a per-row rebuild was 10k allocations of the same names.
+    let names = column_names(first);
     rows.iter()
         .map(|row| {
-            let mut obj = Map::new();
-            for (i, name) in column_names(row).into_iter().enumerate() {
-                obj.insert(name.clone(), mysql_column(row, i, &name, format)?);
+            let mut obj = Map::with_capacity(names.len());
+            for (i, name) in names.iter().enumerate() {
+                obj.insert(name.clone(), mysql_column(row, i, name, format)?);
             }
             Ok(Value::Object(obj))
         })
@@ -485,10 +498,11 @@ fn mysql_column(
     if raw.is_null() {
         return Ok(Value::Null);
     }
-    let sql_type = raw.type_info().name().to_string();
+    let info = raw.type_info();
+    let sql_type = info.name();
     let fail = |detail: String| DecodeError {
         column: name.to_string(),
-        sql_type: sql_type.clone(),
+        sql_type: sql_type.to_string(),
         detail,
     };
     macro_rules! get {
@@ -497,7 +511,7 @@ fn mysql_column(
         };
     }
 
-    let value = match sql_type.as_str() {
+    let value = match sql_type {
         // MySQL has no boolean type: `BOOLEAN` and `BOOL` are aliases for
         // `TINYINT(1)`. sqlx does not report the storage type for one — it
         // names any `Tiny` column whose display width is 1 `BOOLEAN`, and that
@@ -526,13 +540,13 @@ fn mysql_column(
         "SMALLINT UNSIGNED" => Value::Number(u64::from(get!(u16)).into()),
         "INT UNSIGNED" | "MEDIUMINT UNSIGNED" => Value::Number(u64::from(get!(u32)).into()),
         "BIGINT UNSIGNED" => Value::Number(get!(u64).into()),
-        "FLOAT" => float_to_json(f64::from(get!(f32)), name, &sql_type)?,
-        "DOUBLE" => float_to_json(get!(f64), name, &sql_type)?,
+        "FLOAT" => float_to_json(f64::from(get!(f32)), name, sql_type)?,
+        "DOUBLE" => float_to_json(get!(f64), name, sql_type)?,
         "DECIMAL" => decimal_to_json(
             get!(bigdecimal::BigDecimal).to_string(),
             format.numeric,
             name,
-            &sql_type,
+            sql_type,
         )?,
         // `ENUM` and `SET` are string types on the wire. There is no `SET` arm
         // because there is no `SET` name to match: MySQL sends a `SET` column
@@ -543,7 +557,7 @@ fn mysql_column(
         }
         "JSON" => get!(Value),
         "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" => {
-            blob_to_json(get!(Vec<u8>), format.binary, name, &sql_type)?
+            blob_to_json(get!(Vec<u8>), format.binary, name, sql_type)?
         }
         "TIMESTAMP" => Value::String(
             get!(chrono::DateTime<chrono::Utc>)
@@ -577,11 +591,17 @@ pub fn sqlite_rows_to_json(
     rows: &[sqlx::sqlite::SqliteRow],
     format: RowFormat,
 ) -> Decoded<Vec<Value>> {
+    let Some(first) = rows.first() else {
+        return Ok(Vec::new());
+    };
+    // F-02: the result set's column names, built once rather than per row.
+    // At 10k rows a per-row rebuild was 10k allocations of the same names.
+    let names = column_names(first);
     rows.iter()
         .map(|row| {
-            let mut obj = Map::new();
-            for (i, name) in column_names(row).into_iter().enumerate() {
-                obj.insert(name.clone(), sqlite_column(row, i, &name, format)?);
+            let mut obj = Map::with_capacity(names.len());
+            for (i, name) in names.iter().enumerate() {
+                obj.insert(name.clone(), sqlite_column(row, i, name, format)?);
             }
             Ok(Value::Object(obj))
         })
@@ -602,10 +622,11 @@ fn sqlite_column(
     if raw.is_null() {
         return Ok(Value::Null);
     }
-    let sql_type = raw.type_info().name().to_string();
+    let info = raw.type_info();
+    let sql_type = info.name();
     let fail = |detail: String| DecodeError {
         column: name.to_string(),
-        sql_type: sql_type.clone(),
+        sql_type: sql_type.to_string(),
         detail,
     };
     macro_rules! get {
@@ -621,11 +642,11 @@ fn sqlite_column(
     // fallback for a NULL). So a column declared `BOOLEAN` or `DATETIME`
     // arrives here as `INTEGER` or `TEXT`, an arm spelled for a declared type
     // would be unreachable, and the catch-all below cannot fire at all.
-    let value = match sql_type.as_str() {
+    let value = match sql_type {
         "INTEGER" => Value::Number(get!(i64).into()),
-        "REAL" => float_to_json(get!(f64), name, &sql_type)?,
+        "REAL" => float_to_json(get!(f64), name, sql_type)?,
         "TEXT" => Value::String(get!(String)),
-        "BLOB" => blob_to_json(get!(Vec<u8>), format.binary, name, &sql_type)?,
+        "BLOB" => blob_to_json(get!(Vec<u8>), format.binary, name, sql_type)?,
         other => {
             return Err(fail(format!(
                 "no JSON representation for {other} is defined"

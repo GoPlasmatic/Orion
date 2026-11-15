@@ -1259,44 +1259,50 @@ impl CronRepository for SqlCronRepository {
         orion_common::metrics::timed_db_op("cron.delete_terminal_older_than", async {
             let now = self.db_now().await?;
             let cutoff = helpers::cutoff_hours_ago(now, hours);
-            let (sql, values) = build_sqlx(
-                self.pool.backend(),
-                Query::delete()
-                    .from_table(CronOccurrences::Table)
-                    // Terminal only. A `pending` occurrence older than the
-                    // retention window is a backlog, not history, and deleting
-                    // it would silently drop work.
-                    .and_where(Expr::col(CronOccurrences::Status).is_in([
+            // P-19: a per-second schedule makes ~86k occurrences a day, and
+            // one unbounded DELETE holds SQLite's single write lock past
+            // `busy_timeout`. Delete in bounded chunks like the trace, DLQ and
+            // audit jobs.
+            helpers::delete_chunked(
+                &self.pool,
+                CronOccurrences::Table,
+                CronOccurrences::Id,
+                // Terminal only. A `pending` occurrence older than the
+                // retention window is a backlog, not history, and deleting it
+                // would silently drop work.
+                sea_query::Condition::all()
+                    .add(Expr::col(CronOccurrences::Status).is_in([
                         status::COMPLETED,
                         status::FAILED,
                         status::SKIPPED_MISFIRE,
                         status::SKIPPED_SINGLETON,
                     ]))
-                    .and_where(Expr::col(CronOccurrences::CreatedAt).lt(cutoff)),
-            );
-            self.pool
-                .execute_query(&sql, values)
-                .await
-                .map_err(OrionError::Storage)
+                    .add(Expr::col(CronOccurrences::CreatedAt).lt(cutoff)),
+            )
+            .await
         })
         .await
     }
 
     async fn purge_channel(&self, channel_id: &str) -> Result<(), OrionError> {
         orion_common::metrics::timed_db_op("cron.purge_channel", async {
+            // One transaction: a crash between the two deletes must not leave
+            // occurrences with no cursor (or the reverse).
+            let mut tx = self.pool.begin_tx().await?;
             let mut occurrences = Query::delete()
                 .from_table(CronOccurrences::Table)
                 .and_where(Expr::col(CronOccurrences::ChannelId).eq(channel_id))
                 .to_owned();
-            let (sql, values) = build_sqlx(self.pool.backend(), &mut occurrences);
-            self.pool.execute_query(&sql, values).await?;
+            let (sql, values) = build_sqlx(tx.backend(), &mut occurrences);
+            tx.execute_query(&sql, values).await?;
 
             let mut cursor = Query::delete()
                 .from_table(ScheduleState::Table)
                 .and_where(Expr::col(ScheduleState::ChannelId).eq(channel_id))
                 .to_owned();
-            let (sql, values) = build_sqlx(self.pool.backend(), &mut cursor);
-            self.pool.execute_query(&sql, values).await?;
+            let (sql, values) = build_sqlx(tx.backend(), &mut cursor);
+            tx.execute_query(&sql, values).await?;
+            tx.commit().await?;
             Ok(())
         })
         .await

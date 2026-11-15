@@ -103,6 +103,24 @@ pub async fn validate(state: &AppState) -> Result<(), crate::errors::OrionError>
     Ok(())
 }
 
+/// When a package that failed to build may be tried again.
+///
+/// P-22: an unrecoverable package used to be re-read, re-compiled and logged
+/// as an error on every two-second tick on every node. The compile is the
+/// expensive part and the digest does not change, so retry on a slow backoff
+/// (an upload of the same digest can only mean new files in a store that keys
+/// by digest, which is not a thing that happens).
+fn failed_package_retries()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>> {
+    static RETRIES: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    > = std::sync::OnceLock::new();
+    RETRIES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// How long a failed package is left alone before one more attempt.
+const FAILED_PACKAGE_BACKOFF: std::time::Duration = std::time::Duration::from_secs(300);
+
 pub async fn sync(state: &AppState) {
     let providers = state.composition.providers();
     let serving = serving_digests(state);
@@ -113,8 +131,22 @@ pub async fn sync(state: &AppState) {
         tracing::info!(package = %digest, "workflow provider package unregistered");
     }
     for digest in serving.difference(&registered) {
+        {
+            let retries = failed_package_retries()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(at) = retries.get(digest)
+                && at.elapsed() < FAILED_PACKAGE_BACKOFF
+            {
+                continue;
+            }
+        }
         match backend(state, digest).await {
             Ok(backend) => {
+                failed_package_retries()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(digest);
                 let provider = backend.package().provider.provider_id.clone();
                 match providers.admit(backend as Arc<dyn ProviderBackend>) {
                     Ok(()) => tracing::info!(
@@ -130,11 +162,18 @@ pub async fn sync(state: &AppState) {
                     ),
                 }
             }
-            Err(reason) => tracing::error!(
-                package = %digest,
-                %reason,
-                "workflow provider package not registered"
-            ),
+            Err(reason) => {
+                failed_package_retries()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(digest.to_string(), std::time::Instant::now());
+                tracing::warn!(
+                    package = %digest,
+                    %reason,
+                    "workflow provider package not registered; retrying in {}s",
+                    FAILED_PACKAGE_BACKOFF.as_secs()
+                );
+            }
         }
     }
 }

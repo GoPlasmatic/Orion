@@ -301,7 +301,10 @@ pub(super) async fn check_response_cache(
         // payload, or a `key_logic` that produced nothing. Any key built anyway
         // would be shared with every other request on the channel. Run the
         // workflow and store nothing.
-        tracing::warn!(
+        // P-14: a caller controls whether its body carries the key fields, so
+        // this is floodable at will. Count it, and keep the line at debug.
+        crate::metrics::record_error("response_cache_no_key");
+        tracing::debug!(
             channel = %channel,
             fields = ?cache_cfg.cache_key_fields,
             has_key_logic = cfg.cache_key_logic.is_some(),

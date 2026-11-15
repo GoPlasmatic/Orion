@@ -774,7 +774,7 @@ impl Function for CryptoFunction {
     async fn call(&self, ctx: &mut Ctx<'_>, cfg: &CryptoConfig) -> dataflow_rs::Result<Outcome> {
         let output = Self::DEFINITION.output_path(ctx, &cfg.output)?;
         let result = compute(ctx, cfg).await.map_err(|e| e.prefixed(NAME))?;
-        ctx.set(&output, OwnedDataValue::from(&result))?;
+        ctx.set(&output, OwnedDataValue::from(result))?;
         Ok(Outcome::Ok)
     }
 }

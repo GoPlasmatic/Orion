@@ -132,6 +132,15 @@ where
         }
 
         let backoff = policy.backoff(retry);
+        // P-15: full jitter. A pure doubling makes every in-flight call retry
+        // at the same instants, so a recovering upstream is hit by a
+        // synchronized wave. Uniform in [0, backoff] keeps the expectation and
+        // spreads the arrivals.
+        let backoff = if backoff.is_zero() {
+            backoff
+        } else {
+            Duration::from_millis(rand::random_range(0..=backoff.as_millis() as u64))
+        };
 
         // The deadline covers the sleep too. Sleeping and *then* failing spends
         // latency the caller is already waiting on, so a backoff that would

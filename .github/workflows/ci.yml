@@ -233,7 +233,9 @@ jobs:
         uses: ./.github/actions/apt-build-deps
 
       - name: Install wasm-tools
-        run: cargo install wasm-tools --locked
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2 (tool from `with`)
+        with:
+          tool: wasm-tools
 
       - name: Rebuild the test fixture from source on the SDK
         run: crates/orion-server/tests/fixtures/plugins/build.sh

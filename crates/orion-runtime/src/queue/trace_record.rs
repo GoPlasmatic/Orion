@@ -136,6 +136,9 @@ impl TracePlan {
 /// Where [`record_run`] writes: the trace repository, the persistence queue,
 /// and the cap on a stored result.
 pub struct RunTraceSink<'a> {
+    /// The channel's trace policy, taken from the runtime config by the
+    /// caller before it drops the generation.
+    pub trace_storage: crate::channel::registry::EffectiveTraceConfig,
     pub trace_repo: &'a dyn crate::storage::repositories::traces::TraceSink,
     pub persistence_queue: &'a TracePersistenceQueue,
     /// `trace_queue.max_result_size_bytes`; `0` is no cap.
@@ -150,16 +153,20 @@ pub struct RunTraceSink<'a> {
 pub async fn record_run(
     sink: RunTraceSink<'_>,
     mode: &str,
-    runtime: &crate::channel::ChannelRuntimeConfig,
+    channel_id: &str,
     channel: &str,
-    input_json: Option<String>,
+    input: Option<&serde_json::Value>,
     execution: &crate::engine::Execution,
 ) {
     let has_errors = !execution.outcome.is_ok();
-    let cfg = runtime.trace_storage;
+    let cfg = sink.trace_storage;
     if !TracePlan::decide(&cfg, has_errors).persists() {
         return;
     }
+    // P-10: the input is serialized only now that a trace will persist. With
+    // tracing off, or the run sampled out, the old eager `to_string` was
+    // thrown away.
+    let input_json = input.and_then(|v| serde_json::to_string(v).ok());
     // The data, and the task errors beside it when the run recorded any, as
     // the sync path stores them: a failed run's row says why it failed.
     let errors = execution.message.errors();
@@ -194,7 +201,7 @@ pub async fn record_run(
         CompletedTrace {
             mode,
             channel,
-            channel_id: Some(&runtime.channel.channel_id),
+            channel_id: Some(channel_id),
             input_json,
             response_json: std::borrow::Cow::Owned(result_json),
             duration_ms: execution.duration.as_secs_f64() * 1000.0,

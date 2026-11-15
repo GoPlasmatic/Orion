@@ -18,6 +18,7 @@ mod fmt_style_drift_test;
 mod function_records_test;
 mod functions_docs_drift_test;
 mod metrics_docs_drift_test;
+mod publish_riders_test;
 mod release_stamps_drift_test;
 mod v2_error_codes_drift_test;
 

@@ -139,7 +139,6 @@ async fn dispatch(host: &Host, delivery: Delivery) -> Dispatched {
     crate::engine::clear_error_context(&mut metadata);
     crate::engine::stamp_vars(&mut metadata, deps.vars.as_deref());
 
-    let input_json = serde_json::to_string(&delivery.data).ok();
     let mut context = GuardContext::new(delivery.data, metadata);
     let headers: HashMap<String, String> = delivery
         .headers
@@ -211,28 +210,34 @@ async fn dispatch(host: &Host, delivery: Delivery) -> Dispatched {
     )
     .await;
 
-    // 6. The trace, every outcome included.
-    crate::queue::trace_record::record_run(
-        crate::queue::trace_record::RunTraceSink {
-            trace_repo: &*deps.trace_repo,
-            persistence_queue: &deps.persistence_queue,
-            max_result_size_bytes: deps.max_result_size_bytes,
-        },
-        &host.protocol,
-        &runtime,
-        &channel,
-        input_json,
-        &execution,
-    )
-    .await;
-
-    // 7. The channel's counters.
+    // 7. The channel's counters, before the generation is released.
     runtime
         .metrics
         .record_message(&channel, execution.outcome.status_label());
     runtime
         .metrics
         .record_message_duration(&channel, execution.duration.as_secs_f64());
+
+    // 6. The trace, every outcome included. The generation is dropped first:
+    // the write can wait on the database, and nothing here needs the engine.
+    let channel_id = runtime.channel.channel_id.clone();
+    let trace_storage = runtime.trace_storage;
+    drop(runtime);
+    drop(generation);
+    crate::queue::trace_record::record_run(
+        crate::queue::trace_record::RunTraceSink {
+            trace_storage,
+            trace_repo: &*deps.trace_repo,
+            persistence_queue: &deps.persistence_queue,
+            max_result_size_bytes: deps.max_result_size_bytes,
+        },
+        &host.protocol,
+        &channel_id,
+        &channel,
+        Some(context.data()),
+        &execution,
+    )
+    .await;
 
     let outcome = outcome_of(execution);
     match claim {

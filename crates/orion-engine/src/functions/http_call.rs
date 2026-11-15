@@ -356,7 +356,7 @@ impl Function for HttpCallFunction {
 
         // `output` is optional: leaving it unset discards the body.
         if let (Some(path), Some(body)) = (&output, response) {
-            ctx.set(path, OwnedDataValue::from(&body))?;
+            ctx.set(path, OwnedDataValue::from(body))?;
         }
         Ok(Outcome::Ok)
     }

@@ -30,15 +30,19 @@ impl RateLimitState {
             config.default_burst,
         ));
 
-        let admin_limiter = config
-            .endpoints
-            .admin_rps
-            .map(|rps| Arc::new(build_keyed_limiter(rps, rps / 2 + 1)));
+        let admin_limiter = config.endpoints.admin_rps.map(|rps| {
+            Arc::new(build_keyed_limiter(
+                rps,
+                crate::channel::rate_limit_backend::default_burst(rps),
+            ))
+        });
 
-        let data_limiter = config
-            .endpoints
-            .data_rps
-            .map(|rps| Arc::new(build_keyed_limiter(rps, rps / 2 + 1)));
+        let data_limiter = config.endpoints.data_rps.map(|rps| {
+            Arc::new(build_keyed_limiter(
+                rps,
+                crate::channel::rate_limit_backend::default_burst(rps),
+            ))
+        });
 
         Self {
             default_limiter,

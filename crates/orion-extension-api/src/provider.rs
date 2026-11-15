@@ -302,7 +302,7 @@ pub trait ProviderBackend: Send + Sync {
     /// `Ok`; composition and admission validate before ever calling this.
     /// A `workflow`/`wasm` backend registers under a `sha256:` digest, and an
     /// edition handing one an arbitrary string is a composition error, not a
-    /// panic on the boot path (B-10).
+    /// panic on the boot path.
     fn key(&self) -> BackendKey {
         self.key_checked()
             .expect("ProviderBackend::driver_id was not validated before key()")

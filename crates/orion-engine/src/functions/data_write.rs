@@ -250,7 +250,7 @@ impl Function for DataWriteFunction {
         if let Some(answer) = answer {
             ctx.set(
                 &output,
-                dataflow_rs::datavalue::OwnedDataValue::from(&answer),
+                dataflow_rs::datavalue::OwnedDataValue::from(answer),
             )?;
         }
         Ok(done)

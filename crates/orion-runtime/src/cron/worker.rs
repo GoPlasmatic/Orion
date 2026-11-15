@@ -68,54 +68,70 @@ pub async fn run_worker(deps: Arc<WorkerDeps>, mut shutdown: Shutdown) {
         if !shutdown.sleep(poll).await {
             break;
         }
-        // Claim only what this node can actually start. Claiming more would
-        // lease rows this node cannot run, and a peer with free capacity would
-        // have to wait out the lease to get them.
-        let free = permits.available_permits();
-        if free == 0 {
+        // P-23: a generation with no cron channels has nothing to claim, and
+        // `claim_due` is an `UPDATE … RETURNING` — a write lock every second
+        // for an empty answer.
+        if !deps.runtime.load().channels.has_cron_channels() {
             continue;
         }
-        let limit = Ord::min(deps.config.claim_batch_size, free as i64);
-        let claimed = match deps
-            .repo
-            .claim_due(ClaimRequest {
-                claimant: &deps.instance_id,
-                limit,
-                lease_secs: deps.config.claim_lease_secs,
-            })
-            .await
-        {
-            Ok(claimed) => claimed,
-            Err(e) => {
-                // Fail closed: claim nothing, and say so. Guessing here is how
-                // two nodes end up running one occurrence.
-                deps.status.record_db_unavailable();
-                crate::metrics::record_error("cron_claim");
-                tracing::warn!(error = %e, "Cron claim failed; nothing claimed this tick");
-                continue;
-            }
-        };
-        deps.status.record_claim_ok();
-
-        for occurrence in claimed {
-            let Ok(permit) = permits.clone().try_acquire_owned() else {
-                // Cannot happen — the batch was sized to the free permits — but
-                // dropping the claim is better than blocking the loop, and the
-                // lease expiry recovers it.
-                tracing::warn!(
-                    occurrence_id = %occurrence.id,
-                    "No worker permit for a claimed occurrence; leaving its claim to expire"
-                );
+        // A full batch means there may be more due now; drain it without
+        // waiting a whole poll, which capped throughput at
+        // `claim_batch_size` per second. A short batch ends the tick.
+        loop {
+            // Claim only what this node can actually start. Claiming more would
+            // lease rows this node cannot run, and a peer with free capacity
+            // would have to wait out the lease to get them.
+            let free = permits.available_permits();
+            if free == 0 {
                 break;
+            }
+            let limit = Ord::min(deps.config.claim_batch_size, free as i64);
+            let claimed = match deps
+                .repo
+                .claim_due(ClaimRequest {
+                    claimant: &deps.instance_id,
+                    limit,
+                    lease_secs: deps.config.claim_lease_secs,
+                })
+                .await
+            {
+                Ok(claimed) => claimed,
+                Err(e) => {
+                    // Fail closed: claim nothing, and say so. Guessing here is
+                    // how two nodes end up running one occurrence.
+                    deps.status.record_db_unavailable();
+                    crate::metrics::record_error("cron_claim");
+                    tracing::warn!(error = %e, "Cron claim failed; nothing claimed this tick");
+                    break;
+                }
             };
-            let deps = deps.clone();
-            // Detached rather than held in a JoinSet: a supervisor restart of
-            // this loop must not abort attempts that are mid-flight. The
-            // semaphore is what shutdown drains against.
-            tokio::spawn(async move {
-                let _permit = permit;
-                run_attempt(&deps, occurrence).await;
-            });
+            deps.status.record_claim_ok();
+            let batch_full = i64::try_from(claimed.len()).unwrap_or(i64::MAX) >= limit;
+
+            for occurrence in claimed {
+                let Ok(permit) = permits.clone().try_acquire_owned() else {
+                    // Cannot happen — the batch was sized to the free permits —
+                    // but dropping the claim is better than blocking the loop,
+                    // and the lease expiry recovers it.
+                    tracing::warn!(
+                        occurrence_id = %occurrence.id,
+                        "No worker permit for a claimed occurrence; leaving its claim to expire"
+                    );
+                    break;
+                };
+                let deps = deps.clone();
+                // Detached rather than held in a JoinSet: a supervisor restart
+                // of this loop must not abort attempts that are mid-flight. The
+                // semaphore is what shutdown drains against.
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    run_attempt(&deps, occurrence).await;
+                });
+            }
+            if !batch_full || permits.available_permits() == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
         }
     }
 

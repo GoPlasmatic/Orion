@@ -686,7 +686,7 @@ fn http_hook_run_row_runs_only_declared_validation() {
         .backpressure();
     assert_eq!(
         Transport::HttpHookRun(all).guards(),
-        super::GuardSet {
+        super::GuardRow {
             auth: false,
             origin_allow_list: false,
             rate_limit: false,

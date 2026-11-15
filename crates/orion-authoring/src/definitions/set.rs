@@ -449,13 +449,6 @@ impl DefinitionSet {
         let mut shared_docs: Vec<(String, Value)> = Vec::new();
         walk(dir, &mut set, &mut report, &mut shared_docs)?;
 
-        // Stable order regardless of directory iteration, so two runs on two
-        // machines produce the same report and a diff of the output is signal.
-        set.definitions.sort_by(|a, b| a.origin.cmp(&b.origin));
-        report.skipped.sort();
-        report.unparseable.sort();
-        shared_docs.sort_by(|a, b| a.0.cmp(&b.0));
-
         // Shared definitions are collected across the whole tree before any
         // entity is expanded: a workflow may reference a fragment declared in
         // a file the walk reaches later, and load order is not something an
@@ -464,8 +457,29 @@ impl DefinitionSet {
         for (origin, doc) in &shared_docs {
             shared.merge(doc, origin, &mut report.findings);
         }
+        report.shared = shared;
+        Self::compile_loaded(set, report, dir)
+    }
+
+    /// [`Self::from_directory_with`]'s second half: expand and compile a set
+    /// the walk already produced, whose `report.shared` is merged.
+    ///
+    /// Split out so a caller that needs both the raw and the compiled form
+    /// walks the directory once and compiles a clone (P-27).
+    pub fn compile_loaded(
+        mut set: Self,
+        mut report: LoadReport,
+        dir: &Path,
+    ) -> Result<(Self, LoadReport), String> {
+        // Stable order regardless of directory iteration, so two runs on two
+        // machines produce the same report and a diff of the output is signal.
+        set.definitions.sort_by(|a, b| a.origin.cmp(&b.origin));
+        report.skipped.sort();
+        report.unparseable.sort();
+
         // Every document goes through the pipeline, catalog or not: a `$sql`
         // file reference needs no shared document to resolve against.
+        let shared = report.shared.clone();
         for def in &mut set.definitions {
             let origin = def.origin.clone();
             let base_dir = Path::new(&origin).parent().map(Path::to_path_buf);

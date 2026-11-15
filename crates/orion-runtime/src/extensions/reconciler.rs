@@ -176,9 +176,13 @@ impl NodeReconciler {
         head_rev
     }
 
-    /// Build a candidate outside write locks and publish only
-    /// if not superseded by a newer desired or applied revision.
-    pub fn build_and_publish_candidate(
+    /// Record the outcome of a build that already happened, unless a newer
+    /// desired or applied revision supersedes it.
+    ///
+    /// The generation itself is published by `runtime::reload` before this is
+    /// called; this updates the node's applied/desired state and retained
+    /// revision. The supersede check is the same one the reload runs.
+    pub fn record_build_outcome(
         &self,
         candidate_revision: u64,
         issues: Vec<CandidateBuildIssue>,
@@ -477,15 +481,13 @@ mod tests {
         assert_eq!(reconciler.observe_desired_head(), 2);
 
         // Superseded candidate (revision 1 when desired is 2) is discarded
-        let sup_err = reconciler
-            .build_and_publish_candidate(1, Vec::new())
-            .unwrap_err();
+        let sup_err = reconciler.record_build_outcome(1, Vec::new()).unwrap_err();
         assert_eq!(sup_err.code(), "CANDIDATE_SUPERSEDED");
         assert_eq!(reconciler.local_status().applied_revision, 0);
 
         // Whole-build integrity failure retains applied_revision = 0 and sets backoff
         let int_err = reconciler
-            .build_and_publish_candidate(
+            .record_build_outcome(
                 2,
                 vec![CandidateBuildIssue::WholeBuildIntegrity {
                     code: "WORKFLOW_COMPILE_ERROR".to_string(),
@@ -502,7 +504,7 @@ mod tests {
 
         // Per-entity external failure quarantines only that entity and publishes revision 2 as degraded
         let status = reconciler
-            .build_and_publish_candidate(
+            .record_build_outcome(
                 2,
                 vec![CandidateBuildIssue::PerEntityExternal {
                     entity: EntityRef {
@@ -590,7 +592,7 @@ mod tests {
         assert_eq!(receipt.receiving_node_id, "node-alpha");
 
         rec_a.observe_desired_head();
-        rec_a.build_and_publish_candidate(1, Vec::new()).unwrap();
+        rec_a.record_build_outcome(1, Vec::new()).unwrap();
         rec_a.persist_local_status(&nodes).await.unwrap();
 
         // Second node ("node-beta") has not yet applied revision 1

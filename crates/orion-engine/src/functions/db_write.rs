@@ -189,7 +189,7 @@ impl Function for DbWriteFunction {
         if let Some(answer) = answer {
             ctx.set(
                 &output,
-                dataflow_rs::datavalue::OwnedDataValue::from(&answer),
+                dataflow_rs::datavalue::OwnedDataValue::from(answer),
             )?;
         }
         Ok(Outcome::Ok)

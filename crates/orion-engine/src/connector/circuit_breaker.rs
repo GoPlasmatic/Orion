@@ -122,15 +122,24 @@ impl CircuitBreaker {
 
     /// Record a successful request.
     pub fn record_success(&self) {
-        self.failure_count.store(0, Ordering::Release);
-        self.probe_permits.store(0, Ordering::Release);
-        // HalfOpen -> Closed
-        let _ = self.state.compare_exchange(
-            STATE_HALF_OPEN,
-            STATE_CLOSED,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
+        // P-11: the closed path is the overwhelming majority, and it used to
+        // write both fields on every call — a shared cache line per request.
+        // Store only what is not already the closed state, and CAS state only
+        // when it is half-open.
+        if self.failure_count.load(Ordering::Relaxed) != 0 {
+            self.failure_count.store(0, Ordering::Release);
+        }
+        if self.probe_permits.load(Ordering::Relaxed) != 0 {
+            self.probe_permits.store(0, Ordering::Release);
+        }
+        if self.state.load(Ordering::Acquire) == STATE_HALF_OPEN {
+            let _ = self.state.compare_exchange(
+                STATE_HALF_OPEN,
+                STATE_CLOSED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
     }
 
     /// Record a failed request. Returns `true` if the circuit just tripped open.

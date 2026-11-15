@@ -20,7 +20,16 @@ use crate::errors::OrionError;
 pub struct VaultSecretResolver {
     endpoint: VaultEndpoint,
     client: reqwest::Client,
+    /// Short-TTL answers by reference. A `vault://` key in a `jwt_sign` or
+    /// `crypto` field otherwise makes an HTTP round trip on every task run,
+    /// with a 5 s timeout, on the request path (P-04). The TTL keeps a rotated
+    /// secret visible within half a minute without putting a lookup on every
+    /// call.
+    cache: std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, String)>>,
 }
+
+/// How long one Vault answer is reused.
+const VAULT_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The most a Vault response body may be before it is refused. A KV secret is
 /// small JSON — a value or two plus KV v2's metadata envelope — so 256 KiB is
@@ -85,6 +94,7 @@ impl VaultSecretResolver {
         Self {
             endpoint: VaultEndpoint::Environment,
             client: vault_http_client(),
+            cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -97,6 +107,7 @@ impl VaultSecretResolver {
                 token: token.into(),
             },
             client: vault_http_client(),
+            cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 }
@@ -134,6 +145,34 @@ impl SecretResolver for VaultSecretResolver {
         "vault"
     }
     async fn resolve(&self, reference: &str) -> Result<String, OrionError> {
+        {
+            let mut cache = self
+                .cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((at, value)) = cache.get(reference) {
+                if at.elapsed() < VAULT_CACHE_TTL {
+                    return Ok(value.clone());
+                }
+                cache.remove(reference);
+            }
+        }
+
+        let value = self.fetch(reference).await?;
+        self.cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                reference.to_string(),
+                (std::time::Instant::now(), value.clone()),
+            );
+        Ok(value)
+    }
+}
+
+impl VaultSecretResolver {
+    /// The uncached lookup.
+    async fn fetch(&self, reference: &str) -> Result<String, OrionError> {
         let (path, field) = reference
             .split_once('#')
             .ok_or_else(|| OrionError::Config {

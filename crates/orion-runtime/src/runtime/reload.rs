@@ -86,7 +86,7 @@ pub async fn reconcile_deployment_revision(
 
     let status_res = state
         .reconciler
-        .build_and_publish_candidate(target_revision, build_issues);
+        .record_build_outcome(target_revision, build_issues);
     drop(reload_guard);
     if let Err(e) = state
         .reconciler

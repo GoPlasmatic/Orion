@@ -5,7 +5,7 @@
 //! edition's driver adds three more rows ([`Transport::Extension`], plus a
 //! hooked channel's per-request and per-run rows). A channel's declared
 //! contract must hold whichever one the message arrived on. [`apply_guards`]
-//! is the one function that enforces it, and the per-transport [`GuardSet`]
+//! is the one function that enforces it, and the per-transport [`GuardRow`]
 //! returned by [`Transport::guards`] decides which guards run, so the
 //! deliberate exclusions are **data** rather than a comment repeated at every
 //! call site.
@@ -157,7 +157,7 @@ use dedup::{OnInFlight, check_deduplication};
 use rate_limit::{check_principal_rate_limit, check_rate_limit};
 use response_cache::{CacheLookup, check_response_cache};
 
-/// Which ingress carried a message to a channel. Selects the [`GuardSet`].
+/// Which ingress carried a message to a channel. Selects the [`GuardRow`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
     /// `POST /api/v2/data/{channel}` — the synchronous HTTP data plane.
@@ -187,7 +187,7 @@ pub enum Transport {
 /// matrix is a single `const` value, which is what makes the omissions
 /// reviewable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GuardSet {
+pub struct GuardRow {
     /// Authenticate the caller against the channel's `auth` config.
     pub auth: bool,
     /// Reject an `Origin` header the channel does not list (N24: a
@@ -270,11 +270,11 @@ impl Transport {
     /// `HttpAsync`: the data route refuses it (405) before any guard runs, as
     /// it refuses cron, because its messages arrive over its own transport and
     /// behind that transport's authentication. Its driver's deliveries take
-    /// the driver's declared `GuardSet` instead. `ChannelCall` may still reach
+    /// the driver's declared `GuardRow` instead. `ChannelCall` may still reach
     /// it — the caller is an authored workflow, not an anonymous client.
-    pub const fn guards(self) -> GuardSet {
+    pub const fn guards(self) -> GuardRow {
         match self {
-            Transport::HttpSync => GuardSet {
+            Transport::HttpSync => GuardRow {
                 auth: true,
                 origin_allow_list: true,
                 rate_limit: true,
@@ -284,7 +284,7 @@ impl Transport {
                 backpressure: true,
                 oauth2_login: true,
             },
-            Transport::HttpAsync => GuardSet {
+            Transport::HttpAsync => GuardRow {
                 auth: true,
                 origin_allow_list: true,
                 rate_limit: true,
@@ -294,7 +294,7 @@ impl Transport {
                 backpressure: true,
                 oauth2_login: false,
             },
-            Transport::ChannelCall => GuardSet {
+            Transport::ChannelCall => GuardRow {
                 auth: false,
                 origin_allow_list: false,
                 rate_limit: true,
@@ -304,7 +304,7 @@ impl Transport {
                 backpressure: true,
                 oauth2_login: false,
             },
-            Transport::Cron => GuardSet {
+            Transport::Cron => GuardRow {
                 auth: false,
                 origin_allow_list: false,
                 rate_limit: false,
@@ -322,7 +322,7 @@ impl Transport {
             // `validation::channels` refuses those blocks on such a channel,
             // and the guards the driver leaves off, so none is accepted and
             // then silently not applied.
-            Transport::Extension(declared) => GuardSet {
+            Transport::Extension(declared) => GuardRow {
                 auth: false,
                 origin_allow_list: false,
                 rate_limit: declared.rate_limit,
@@ -342,7 +342,7 @@ impl Transport {
             // Validation is off because the body is the driver's to read and
             // need not be JSON; it judges each run instead. The cache and the
             // sign-in flow are off because the driver owns the answer.
-            Transport::HttpHook(declared) => GuardSet {
+            Transport::HttpHook(declared) => GuardRow {
                 auth: true,
                 origin_allow_list: true,
                 rate_limit: true,
@@ -354,7 +354,7 @@ impl Transport {
             },
             // A run inside an admitted request: only what judges the run's
             // own `data`. Everything keyed on the caller ran on the request.
-            Transport::HttpHookRun(declared) => GuardSet {
+            Transport::HttpHookRun(declared) => GuardRow {
                 auth: false,
                 origin_allow_list: false,
                 rate_limit: false,
@@ -448,7 +448,7 @@ impl GuardContext {
 
 /// Everything [`apply_guards`] needs, lowered to transport-neutral values.
 pub struct GuardRequest<'a> {
-    /// Which ingress this is — selects the [`GuardSet`].
+    /// Which ingress this is — selects the [`GuardRow`].
     pub transport: Transport,
     /// Resolved channel name (registry-confirmed, so it is safe as a label).
     pub channel: &'a str,
@@ -799,7 +799,7 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
 /// admission it returns carries no claim; the caller attaches it.
 async fn after_dedup(
     req: &GuardRequest<'_>,
-    set: GuardSet,
+    set: GuardRow,
     auth_claims: Option<Value>,
 ) -> Result<GuardVerdict, OrionError> {
     let cache_store = if set.response_cache {

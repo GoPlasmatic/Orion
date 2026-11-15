@@ -202,7 +202,6 @@ async fn run(host: &RequestHost, data: Value, mut trigger: Map<String, Value>) -
         metadata = crate::channel::guards::merge_auth_claims(metadata, claims);
     }
 
-    let input_json = serde_json::to_string(&data).ok();
     let mut context = GuardContext::new(data, metadata);
     let no_headers = |_: &str| -> Option<&str> { None };
     let channel_runtime = Some(runtime.clone());
@@ -255,29 +254,34 @@ async fn run(host: &RequestHost, data: Value, mut trigger: Map<String, Value>) -
         },
     )
     .await;
-    // The generation is not needed past execution; drop it before the trace
-    // write, which may wait on the database.
-    drop(generation);
-
-    crate::queue::trace_record::record_run(
-        crate::queue::trace_record::RunTraceSink {
-            trace_repo: &*deps.traces,
-            persistence_queue: &deps.persistence_queue,
-            max_result_size_bytes: deps.max_result_size_bytes,
-        },
-        &protocol,
-        &runtime,
-        &channel,
-        input_json,
-        &execution,
-    )
-    .await;
     runtime
         .metrics
         .record_message(&channel, execution.outcome.status_label());
     runtime
         .metrics
         .record_message_duration(&channel, execution.duration.as_secs_f64());
+
+    // The generation is not needed past execution; drop it before the trace
+    // write, which may wait on the database.
+    let channel_id = runtime.channel.channel_id.clone();
+    let trace_storage = runtime.trace_storage;
+    drop(runtime);
+    drop(generation);
+
+    crate::queue::trace_record::record_run(
+        crate::queue::trace_record::RunTraceSink {
+            trace_storage,
+            trace_repo: &*deps.traces,
+            persistence_queue: &deps.persistence_queue,
+            max_result_size_bytes: deps.max_result_size_bytes,
+        },
+        &protocol,
+        &channel_id,
+        &channel,
+        Some(context.data()),
+        &execution,
+    )
+    .await;
     crate::ingress::outcome_of(execution)
 }
 

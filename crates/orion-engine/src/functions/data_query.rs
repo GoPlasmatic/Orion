@@ -287,7 +287,7 @@ impl Function for DataQueryFunction {
         if let Some(answer) = answer {
             ctx.set(
                 &output,
-                dataflow_rs::datavalue::OwnedDataValue::from(&answer),
+                dataflow_rs::datavalue::OwnedDataValue::from(answer),
             )?;
         }
         Ok(Outcome::Ok)

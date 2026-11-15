@@ -235,7 +235,7 @@ impl Function for ConnectorCallFunction {
         .await?;
         let data = data.unwrap_or(Value::Null);
 
-        ctx.set(&output, OwnedDataValue::from(&data))?;
+        ctx.set(&output, OwnedDataValue::from(data))?;
         Ok(Outcome::Ok)
     }
 }
