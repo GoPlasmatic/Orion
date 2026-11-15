@@ -265,279 +265,18 @@ impl ChannelLoader {
             )));
         };
 
-        // Deployment references resolve *before* the config is typed, because
-        // what they stand in for is often not a string: a `var://` TTL has to
-        // arrive as a number or `ttl_secs: Option<u64>` refuses it. Resolving
-        // into the JSON and parsing afterwards means every field is
-        // parameterisable, not just the string ones.
-        let mut raw: serde_json::Value =
-            serde_json::from_str(&channel.config_json).map_err(|e| {
-                tracing::error!(
-                    channel = %channel.name,
-                    error = %e,
-                    "Refusing to load channel: config_json does not parse"
-                );
-                issue(format!("config_json does not parse: {e}"))
-            })?;
-        crate::config::vars::resolve_var_references(
-            &mut raw,
-            deps.vars.map(|v| v.as_ref()),
-            &is_expression_field,
-        )
-        .map_err(|e| {
-            tracing::error!(
-                channel = %channel.name,
-                error = %e,
-                "Refusing to load channel: unresolved var reference"
-            );
-            issue(e)
-        })?;
+        let mut parsed_config = load_channel_config(channel, deps)?;
 
-        // N3: `unwrap_or_default()` here would turn one typo in the
-        // stored config into a channel with no rate limit, validation,
-        // dedup, backpressure, timeout, or cache — and no log line.
-        let mut parsed_config: ChannelConfig = serde_json::from_value(raw).map_err(|e| {
-            tracing::error!(
-                channel = %channel.name,
-                error = %e,
-                "Refusing to load channel: config_json does not parse"
-            );
-            issue(format!("config_json does not parse: {e}"))
-        })?;
-
-        // Both limiters are built the same way and reuse the same way; the
-        // only difference is which config block they read and which previous
-        // backend they may carry forward.
-        // B-07: the two limiters get distinct shared-store scopes. They used
-        // the channel *name* for both, so a request whose address key and
-        // principal key rendered to the same string was counted twice and
-        // halved the effective limit. The id keeps the windows across a
-        // rename, too.
-        let channel_id = channel.channel_id.as_str();
-        let build_limiter = |rl: &ChannelRateLimitConfig,
-                             scope: &str,
-                             prev_cfg: Option<&ChannelRateLimitConfig>,
-                             prev_limiter: Option<&Arc<dyn RateLimitBackend>>|
-         -> Arc<dyn RateLimitBackend> {
-            if let (Some(prev_rl), Some(prev)) = (prev_cfg, prev_limiter)
-                && prev_rl.requests_per_second == rl.requests_per_second
-                && prev_rl.burst == rl.burst
-                && prev_rl.key_logic == rl.key_logic
-                && prev_rl.key_headers == rl.key_headers
-            {
-                return prev.clone();
-            }
-            let burst = rl
-                .burst
-                .unwrap_or(crate::channel::rate_limit_backend::default_burst(
-                    rl.requests_per_second,
-                ));
-            match deps.cluster_shared.clone() {
-                Some(store) => Arc::new(SharedRateLimitBackend::new(
-                    store,
-                    format!("{channel_id}:{scope}"),
-                    rl.requests_per_second,
-                    burst,
-                )) as Arc<dyn RateLimitBackend>,
-                None => Arc::new(LocalRateLimitBackend::new(rl.requests_per_second, burst)),
-            }
-        };
-
-        let rate_limiter: Option<Arc<dyn RateLimitBackend>> =
-            parsed_config.rate_limit.as_ref().map(|rl| {
-                // N6: reuse the previous limiter when its identity —
-                // (rps, burst, key_logic, key_headers) — is unchanged, so
-                // consumed burst and per-key state carry across the reload.
-                // `on_backend_error` is deliberately not part of the
-                // identity: the policy is applied at the call site, not
-                // baked into the limiter.
-                //
-                // `key_headers` is part of it because it changes which values
-                // a key can be computed from: editing the list re-dimensions
-                // the buckets, so carrying the old per-key state forward would
-                // credit new keys with old consumption.
-                build_limiter(
-                    rl,
-                    "addr",
-                    prior.and_then(|p| p.parsed_config.rate_limit.as_ref()),
-                    prior.and_then(|p| p.rate_limiter.as_ref()),
-                )
-            });
-
-        // The quota half, keyed on the authenticated principal. Its own
-        // backend, so a caller's address budget and its principal budget are
-        // never counted against one bucket.
-        let principal_rate_limiter: Option<Arc<dyn RateLimitBackend>> =
-            parsed_config.principal_rate_limit.as_ref().map(|rl| {
-                build_limiter(
-                    rl,
-                    "principal",
-                    prior.and_then(|p| p.parsed_config.principal_rate_limit.as_ref()),
-                    prior.and_then(|p| p.principal_rate_limiter.as_ref()),
-                )
-            });
-
-        // N5: an uncompilable `key_logic` quarantines the channel, like
-        // N3/N4 do for the other guard-bearing config. Falling back to
-        // `client_ip` would silently re-dimension the limit — a per-API-key
-        // or per-tenant limit would become per-IP, so every tenant behind one
-        // NAT shares a bucket and one tenant gets N× its quota by rotating
-        // IPs.
-        let rate_limit_key_logic = parsed_config
-            .rate_limit
-            .as_ref()
-            .and_then(|rl| rl.key_logic.as_ref())
-            .map(|logic| {
-                crate::channel::guards::compile_guard_expr(
-                    deps.exprs,
-                    logic,
-                    "rate_limit.key_logic",
-                )
-                .map_err(|e| {
-                    tracing::error!(
-                        channel = %channel.name,
-                        error = %e,
-                        "Refusing to load channel: rate_limit.key_logic does not compile"
-                    );
-                    issue(e)
-                })
-            })
-            .transpose()?;
-
-        // Required, not optional, and validated as such at create: the outer
-        // limiter can fall back to the caller's address, and there is no
-        // equivalent default for a principal — Orion cannot pick the claim
-        // that identifies one on the author's behalf.
-        let principal_rate_limit_key_logic = parsed_config
-            .principal_rate_limit
-            .as_ref()
-            .and_then(|rl| rl.key_logic.as_ref())
-            .map(|logic| {
-                crate::channel::guards::compile_guard_expr(
-                    deps.exprs,
-                    logic,
-                    "principal_rate_limit.key_logic",
-                )
-                .map_err(|e| {
-                    tracing::error!(
-                        channel = %channel.name,
-                        error = %e,
-                        "Refusing to load channel: principal_rate_limit.key_logic does not compile"
-                    );
-                    issue(e)
-                })
-            })
-            .transpose()?;
-        if parsed_config.principal_rate_limit.is_some() && principal_rate_limit_key_logic.is_none()
-        {
-            return Err(issue(
-                "principal_rate_limit requires a 'key_logic' naming the claim that identifies \
-                 the principal — there is no address to fall back to"
-                    .to_string(),
-            ));
-        }
-
-        // Same call as N5 above: a response-cache key that silently fell back
-        // to the whole-payload hash would serve one caller's body to another
-        // whenever the key was meant to narrow on something else.
-        let cache_key_logic = parsed_config
-            .cache
-            .as_ref()
-            .and_then(|c| c.key_logic.as_ref())
-            .map(|logic| {
-                crate::channel::guards::compile_guard_expr(deps.exprs, logic, "cache.key_logic")
-                    .map_err(|e| {
-                        tracing::error!(
-                            channel = %channel.name,
-                            error = %e,
-                            "Refusing to load channel: cache.key_logic does not compile"
-                        );
-                        issue(e)
-                    })
-            })
-            .transpose()?;
-
-        // Lowercase once, here, so the request path compares against
-        // already-normalized names. HTTP header names are case-insensitive and
-        // every transport's lookup is byte-lowercase.
-        let rate_limit_key_headers: Option<Arc<[String]>> = parsed_config
-            .rate_limit
-            .as_ref()
-            .and_then(|rl| rl.key_headers.as_ref())
-            .map(|names| {
-                names
-                    .iter()
-                    .map(|n| n.trim().to_ascii_lowercase())
-                    .collect::<Vec<_>>()
-                    .into()
-            });
-
-        // A `key_logic` reading a header no context will ever carry resolves to
-        // `null` on every request. The guard now refuses such a request rather
-        // than collapsing every caller into one bucket, but a 429 at traffic
-        // time is a poor way to learn about a typo — so say it once, at load,
-        // while the operator is still watching the deploy. A warning and not a
-        // refusal: the path may be composed dynamically in ways this cannot
-        // see, and quarantining a channel over a static guess would be worse
-        // than the defect.
-        if let Some(logic) = parsed_config
-            .rate_limit
-            .as_ref()
-            .and_then(|rl| rl.key_logic.as_ref())
-        {
-            let declared = rate_limit_key_headers.as_deref().unwrap_or(&[]);
-            let unreachable: Vec<String> = crate::channel::guards::key_logic_header_paths(logic)
-                .into_iter()
-                .filter(|name| {
-                    !crate::channel::guards::COMMON_KEY_HEADERS.contains(&name.as_str())
-                        && !declared.iter().any(|d| d == name)
-                })
-                .collect();
-            if !unreachable.is_empty() {
-                tracing::warn!(
-                    channel = %channel.name,
-                    headers = %unreachable.join(", "),
-                    "rate_limit.key_logic reads headers that are not in the key context; \
-                     every request will be refused 429 until they are added to \
-                     rate_limit.key_headers"
-                );
-            }
-        }
-
-        // N4: dropping an uncompilable expression to `None` made
-        // `validate_input` a no-op, so the channel's declared input
-        // contract disappeared at reload time. Refuse instead — the
-        // expression compiled at create/update time, so this is a
-        // corrupt row or a datalogic upgrade that changed semantics.
-        let validation_logic = parsed_config
-            .validation_logic
-            .as_ref()
-            .map(|logic| {
-                crate::channel::guards::compile_guard_expr(deps.exprs, logic, "validation_logic")
-                    .map_err(|e| {
-                        tracing::error!(
-                            channel = %channel.name,
-                            error = %e,
-                            "Refusing to load channel: validation_logic does not compile"
-                        );
-                        issue(e)
-                    })
-            })
-            .transpose()?;
-
-        // N6: reuse the semaphore while `max_concurrent_per_node` is
-        // unchanged — a fresh one would forget every in-flight permit,
-        // letting a reload admit up to 2× the configured concurrency.
-        let backpressure_semaphore = parsed_config.backpressure.as_ref().map(|bp| {
-            if let Some(prev) = prior
-                && let Some(prev_bp) = prev.parsed_config.backpressure.as_ref()
-                && let Some(prev_sem) = prev.backpressure_semaphore.as_ref()
-                && prev_bp.max_concurrent_per_node == bp.max_concurrent_per_node
-            {
-                return prev_sem.clone();
-            }
-            Arc::new(Semaphore::new(bp.max_concurrent_per_node))
-        });
+        let ChannelGuards {
+            rate_limiter,
+            rate_limit_key_logic,
+            principal_rate_limiter,
+            principal_rate_limit_key_logic,
+            rate_limit_key_headers,
+            cache_key_logic,
+            validation_logic,
+            backpressure_semaphore,
+        } = channel_guards(channel, &parsed_config, prior, deps)?;
 
         // Dedup / response-cache backends via the shared fallback matrix
         // (see resolve_backend). A strict-mode refusal skips the channel.
@@ -574,103 +313,9 @@ impl ChannelLoader {
             parsed_config.tracing.as_ref(),
         );
 
-        // Same posture as N3/N4/N5: a guard that cannot be built quarantines
-        // the channel rather than loading it without the guard. Serving an
-        // `auth`-bearing channel with its authentication silently absent —
-        // because an `env://` secret was not set on this host, say — is the
-        // worst possible reading of the operator's intent.
-        let auth = match parsed_config.auth.as_ref() {
-            Some(cfg) => Some(
-                crate::channel::auth::CompiledAuth::compile(cfg, Some(deps.exprs), Some(deps.jwks))
-                    .await
-                    .map_err(|e| {
-                        tracing::error!(
-                            channel = %channel.name,
-                            error = %e,
-                            "Refusing to load channel: auth config cannot be compiled"
-                        );
-                        issue(format!("auth: {e}"))
-                    })?,
-            ),
-            None => None,
-        };
+        let (auth, oauth2_login) = compile_auth_and_login(channel, &parsed_config, deps).await?;
 
-        // Same posture as `auth` above, and for a sharper reason: a channel
-        // whose sign-in flow did not compile and was served anyway would
-        // complete callbacks with the CSRF binding absent, which is the exact
-        // failure the block exists to prevent.
-        let oauth2_login = match parsed_config.oauth2_login.as_ref() {
-            Some(cfg) => Some(Arc::new(
-                crate::channel::CompiledOAuth2Login::compile(
-                    cfg,
-                    &channel.name,
-                    &crate::channel::oauth2_login::LoginDeps {
-                        http_client: deps.http_client,
-                        jwks: deps.jwks,
-                        allow_private_token_urls: deps.allow_private_token_urls,
-                        instance_providers: deps.instance_oauth_providers,
-                        discovery: deps.oidc_discovery,
-                    },
-                )
-                .await
-                .map_err(|e| {
-                    tracing::error!(
-                        channel = %channel.name,
-                        error = %e,
-                        "Refusing to load channel: oauth2_login cannot be compiled"
-                    );
-                    issue(format!("oauth2_login: {e}"))
-                })?,
-            )),
-            None => None,
-        };
-
-        // Same posture again, with one addition: a cron channel on a node whose
-        // scheduler is off is quarantined too. `cron.enabled = false` with an
-        // active schedule is the one configuration whose failure an operator
-        // cannot see — the channel would sit in every listing looking healthy
-        // and simply never run — so it is refused loudly here and named on
-        // `/health`, exactly as an active plugin row is on a node with the
-        // sandbox off.
-        let cron = match channel.protocol.as_str() {
-            crate::extensions::channel_driver::PROTOCOL_CRON => {
-                if !deps.cron_enabled {
-                    tracing::error!(
-                        channel = %channel.name,
-                        "Refusing to load channel: cron.enabled is false on this node"
-                    );
-                    return Err(issue(
-                        "cron scheduler disabled on this node (cron.enabled = false): \
-                         the schedule would never fire"
-                            .to_string(),
-                    ));
-                }
-                Some(Arc::new(
-                    crate::channel::cron::compile_from_json(
-                        &channel.transport_config_json,
-                        crate::channel::CronIdentity {
-                            channel_id: channel.channel_id.clone(),
-                            channel_name: channel.name.clone(),
-                            version: channel.version,
-                            workflow_id: channel.workflow_id.clone(),
-                        },
-                    )
-                    .map_err(|errors| {
-                        let reasons: Vec<String> = errors
-                            .iter()
-                            .map(|e| format!("{}: {}", e.path, e.message))
-                            .collect();
-                        tracing::error!(
-                            channel = %channel.name,
-                            errors = %reasons.join("; "),
-                            "Refusing to load channel: cron transport_config does not compile"
-                        );
-                        issue(format!("cron schedule: {}", reasons.join("; ")))
-                    })?,
-                ))
-            }
-            _ => None,
-        };
+        let cron = compile_cron(channel, deps)?;
 
         // A driver that runs its own listener (`ingress`) receives its
         // channel's messages over its transport; the HTTP data plane must not
@@ -899,6 +544,455 @@ impl ChannelLoader {
         );
         snapshot
     }
+}
+
+/// The channel's typed config, with its deployment references resolved.
+///
+/// Resolution comes *before* the parse: what a `var://` reference stands in
+/// for is often not a string (a TTL has to arrive as a number or
+/// `ttl_secs: Option<u64>` refuses it), so resolving into the JSON first makes
+/// every field parameterisable, not just the string ones.
+///
+/// N3: `unwrap_or_default()` is not an option here. One typo in a stored
+/// config would otherwise turn into a channel with no rate limit, validation,
+/// dedup, backpressure, timeout or cache — and no log line.
+fn load_channel_config(
+    channel: &Channel,
+    deps: &RuntimeDeps<'_>,
+) -> Result<ChannelConfig, ChannelLoadIssue> {
+    let issue = |reason: String| ChannelLoadIssue {
+        channel: channel.name.clone(),
+        reason,
+    };
+    // Deployment references resolve *before* the config is typed, because
+    // what they stand in for is often not a string: a `var://` TTL has to
+    // arrive as a number or `ttl_secs: Option<u64>` refuses it. Resolving
+    // into the JSON and parsing afterwards means every field is
+    // parameterisable, not just the string ones.
+    let mut raw: serde_json::Value = serde_json::from_str(&channel.config_json).map_err(|e| {
+        tracing::error!(
+            channel = %channel.name,
+            error = %e,
+            "Refusing to load channel: config_json does not parse"
+        );
+        issue(format!("config_json does not parse: {e}"))
+    })?;
+    crate::config::vars::resolve_var_references(
+        &mut raw,
+        deps.vars.map(|v| v.as_ref()),
+        &is_expression_field,
+    )
+    .map_err(|e| {
+        tracing::error!(
+            channel = %channel.name,
+            error = %e,
+            "Refusing to load channel: unresolved var reference"
+        );
+        issue(e)
+    })?;
+
+    // N3: `unwrap_or_default()` here would turn one typo in the
+    // stored config into a channel with no rate limit, validation,
+    // dedup, backpressure, timeout, or cache — and no log line.
+    let parsed_config: ChannelConfig = serde_json::from_value(raw).map_err(|e| {
+        tracing::error!(
+            channel = %channel.name,
+            error = %e,
+            "Refusing to load channel: config_json does not parse"
+        );
+        issue(format!("config_json does not parse: {e}"))
+    })?;
+
+    Ok(parsed_config)
+}
+
+/// A channel's authentication and its inbound sign-in flow, compiled.
+///
+/// Same posture as the guards: a policy that cannot be built quarantines the
+/// channel rather than loading it without the policy. Serving an `auth`-bearing
+/// channel with its authentication silently absent — because an `env://` secret
+/// was not set on this host, say — is the worst reading of the operator's
+/// intent; and a channel whose sign-in flow did not compile would complete
+/// callbacks with the CSRF binding absent, which is the exact failure the block
+/// exists to prevent.
+async fn compile_auth_and_login(
+    channel: &Channel,
+    parsed_config: &ChannelConfig,
+    deps: &RuntimeDeps<'_>,
+) -> Result<
+    (
+        Option<crate::channel::auth::CompiledAuth>,
+        Option<Arc<crate::channel::CompiledOAuth2Login>>,
+    ),
+    ChannelLoadIssue,
+> {
+    let issue = |reason: String| ChannelLoadIssue {
+        channel: channel.name.clone(),
+        reason,
+    };
+    // Same posture as N3/N4/N5: a guard that cannot be built quarantines
+    // the channel rather than loading it without the guard. Serving an
+    // `auth`-bearing channel with its authentication silently absent —
+    // because an `env://` secret was not set on this host, say — is the
+    // worst possible reading of the operator's intent.
+    let auth = match parsed_config.auth.as_ref() {
+        Some(cfg) => Some(
+            crate::channel::auth::CompiledAuth::compile(cfg, Some(deps.exprs), Some(deps.jwks))
+                .await
+                .map_err(|e| {
+                    tracing::error!(
+                        channel = %channel.name,
+                        error = %e,
+                        "Refusing to load channel: auth config cannot be compiled"
+                    );
+                    issue(format!("auth: {e}"))
+                })?,
+        ),
+        None => None,
+    };
+
+    // Same posture as `auth` above, and for a sharper reason: a channel
+    // whose sign-in flow did not compile and was served anyway would
+    // complete callbacks with the CSRF binding absent, which is the exact
+    // failure the block exists to prevent.
+    let oauth2_login = match parsed_config.oauth2_login.as_ref() {
+        Some(cfg) => Some(Arc::new(
+            crate::channel::CompiledOAuth2Login::compile(
+                cfg,
+                &channel.name,
+                &crate::channel::oauth2_login::LoginDeps {
+                    http_client: deps.http_client,
+                    jwks: deps.jwks,
+                    allow_private_token_urls: deps.allow_private_token_urls,
+                    instance_providers: deps.instance_oauth_providers,
+                    discovery: deps.oidc_discovery,
+                },
+            )
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    channel = %channel.name,
+                    error = %e,
+                    "Refusing to load channel: oauth2_login cannot be compiled"
+                );
+                issue(format!("oauth2_login: {e}"))
+            })?,
+        )),
+        None => None,
+    };
+
+    Ok((auth, oauth2_login))
+}
+
+/// A cron channel's compiled schedule, or the issue that keeps it out of the
+/// registry.
+///
+/// A cron channel on a node whose scheduler is off is quarantined too:
+/// `cron.enabled = false` with an active schedule is the one configuration
+/// whose failure an operator cannot see — the channel would sit in every
+/// listing looking healthy and simply never run — so it is refused loudly here
+/// and named on `/health`, exactly as an active plugin row is on a node with
+/// the sandbox off.
+fn compile_cron(
+    channel: &Channel,
+    deps: &RuntimeDeps<'_>,
+) -> Result<Option<Arc<crate::channel::CronDescriptor>>, ChannelLoadIssue> {
+    let issue = |reason: String| ChannelLoadIssue {
+        channel: channel.name.clone(),
+        reason,
+    };
+    let cron = match channel.protocol.as_str() {
+        crate::extensions::channel_driver::PROTOCOL_CRON => {
+            if !deps.cron_enabled {
+                tracing::error!(
+                    channel = %channel.name,
+                    "Refusing to load channel: cron.enabled is false on this node"
+                );
+                return Err(issue(
+                    "cron scheduler disabled on this node (cron.enabled = false): \
+                     the schedule would never fire"
+                        .to_string(),
+                ));
+            }
+            Some(Arc::new(
+                crate::channel::cron::compile_from_json(
+                    &channel.transport_config_json,
+                    crate::channel::CronIdentity {
+                        channel_id: channel.channel_id.clone(),
+                        channel_name: channel.name.clone(),
+                        version: channel.version,
+                        workflow_id: channel.workflow_id.clone(),
+                    },
+                )
+                .map_err(|errors| {
+                    let reasons: Vec<String> = errors
+                        .iter()
+                        .map(|e| format!("{}: {}", e.path, e.message))
+                        .collect();
+                    tracing::error!(
+                        channel = %channel.name,
+                        errors = %reasons.join("; "),
+                        "Refusing to load channel: cron transport_config does not compile"
+                    );
+                    issue(format!("cron schedule: {}", reasons.join("; ")))
+                })?,
+            ))
+        }
+        _ => None,
+    };
+    Ok(cron)
+}
+
+/// Compile one guard expression, naming the field in both the log line and the
+/// refusal. Every expression a channel carries goes through here, so a field
+/// cannot end up with a different (or a missing) refusal (M-07).
+fn compile_guard(
+    channel: &Channel,
+    exprs: &ExprEngine,
+    logic: &serde_json::Value,
+    field: &str,
+) -> Result<Arc<Expr>, ChannelLoadIssue> {
+    crate::channel::guards::compile_guard_expr(exprs, logic, field).map_err(|e| {
+        tracing::error!(
+            channel = %channel.name,
+            error = %e,
+            "Refusing to load channel: {field} does not compile"
+        );
+        ChannelLoadIssue {
+            channel: channel.name.clone(),
+            reason: e,
+        }
+    })
+}
+
+/// Every guard a channel carries, compiled: the two limiters and their keys,
+/// the extra header names the address limiter may read, the cache key, the
+/// input contract, and the concurrency semaphore. The pieces of *state* here
+/// are the ones that have to survive a reload when their configuration is
+/// unchanged (N6).
+struct ChannelGuards {
+    rate_limiter: Option<Arc<dyn RateLimitBackend>>,
+    rate_limit_key_logic: Option<Arc<Expr>>,
+    principal_rate_limiter: Option<Arc<dyn RateLimitBackend>>,
+    principal_rate_limit_key_logic: Option<Arc<Expr>>,
+    rate_limit_key_headers: Option<Arc<[String]>>,
+    cache_key_logic: Option<Arc<Expr>>,
+    validation_logic: Option<Arc<Expr>>,
+    backpressure_semaphore: Option<Arc<Semaphore>>,
+}
+
+/// Compile (or carry forward) every guard a channel applies, or the issue that
+/// keeps it out of the registry.
+///
+/// Carrying forward is the point of `prior`: a limiter rebuilt from identical
+/// configuration forgets consumed burst and per-key state, so a reload would
+/// briefly double the effective rate, and a fresh semaphore would forget every
+/// in-flight permit.
+fn channel_guards(
+    channel: &Channel,
+    parsed_config: &ChannelConfig,
+    prior: Option<&ChannelRuntimeConfig>,
+    deps: &RuntimeDeps<'_>,
+) -> Result<ChannelGuards, ChannelLoadIssue> {
+    let issue = |reason: String| ChannelLoadIssue {
+        channel: channel.name.clone(),
+        reason,
+    };
+    // Both limiters are built the same way and reuse the same way; the
+    // only difference is which config block they read and which previous
+    // backend they may carry forward.
+    // B-07: the two limiters get distinct shared-store scopes. They used
+    // the channel *name* for both, so a request whose address key and
+    // principal key rendered to the same string was counted twice and
+    // halved the effective limit. The id keeps the windows across a
+    // rename, too.
+    let channel_id = channel.channel_id.as_str();
+    let build_limiter = |rl: &ChannelRateLimitConfig,
+                         scope: &str,
+                         prev_cfg: Option<&ChannelRateLimitConfig>,
+                         prev_limiter: Option<&Arc<dyn RateLimitBackend>>|
+     -> Arc<dyn RateLimitBackend> {
+        if let (Some(prev_rl), Some(prev)) = (prev_cfg, prev_limiter)
+            && prev_rl.requests_per_second == rl.requests_per_second
+            && prev_rl.burst == rl.burst
+            && prev_rl.key_logic == rl.key_logic
+            && prev_rl.key_headers == rl.key_headers
+        {
+            return prev.clone();
+        }
+        let burst = rl
+            .burst
+            .unwrap_or(crate::channel::rate_limit_backend::default_burst(
+                rl.requests_per_second,
+            ));
+        match deps.cluster_shared.clone() {
+            Some(store) => Arc::new(SharedRateLimitBackend::new(
+                store,
+                format!("{channel_id}:{scope}"),
+                rl.requests_per_second,
+                burst,
+            )) as Arc<dyn RateLimitBackend>,
+            None => Arc::new(LocalRateLimitBackend::new(rl.requests_per_second, burst)),
+        }
+    };
+
+    let rate_limiter: Option<Arc<dyn RateLimitBackend>> =
+        parsed_config.rate_limit.as_ref().map(|rl| {
+            // N6: reuse the previous limiter when its identity —
+            // (rps, burst, key_logic, key_headers) — is unchanged, so
+            // consumed burst and per-key state carry across the reload.
+            // `on_backend_error` is deliberately not part of the
+            // identity: the policy is applied at the call site, not
+            // baked into the limiter.
+            //
+            // `key_headers` is part of it because it changes which values
+            // a key can be computed from: editing the list re-dimensions
+            // the buckets, so carrying the old per-key state forward would
+            // credit new keys with old consumption.
+            build_limiter(
+                rl,
+                "addr",
+                prior.and_then(|p| p.parsed_config.rate_limit.as_ref()),
+                prior.and_then(|p| p.rate_limiter.as_ref()),
+            )
+        });
+
+    // The quota half, keyed on the authenticated principal. Its own
+    // backend, so a caller's address budget and its principal budget are
+    // never counted against one bucket.
+    let principal_rate_limiter: Option<Arc<dyn RateLimitBackend>> =
+        parsed_config.principal_rate_limit.as_ref().map(|rl| {
+            build_limiter(
+                rl,
+                "principal",
+                prior.and_then(|p| p.parsed_config.principal_rate_limit.as_ref()),
+                prior.and_then(|p| p.principal_rate_limiter.as_ref()),
+            )
+        });
+
+    // N5: an uncompilable `key_logic` quarantines the channel, like
+    // N3/N4 do for the other guard-bearing config. Falling back to
+    // `client_ip` would silently re-dimension the limit — a per-API-key
+    // or per-tenant limit would become per-IP, so every tenant behind one
+    // NAT shares a bucket and one tenant gets N× its quota by rotating
+    // IPs.
+    let rate_limit_key_logic = parsed_config
+        .rate_limit
+        .as_ref()
+        .and_then(|rl| rl.key_logic.as_ref())
+        .map(|logic| compile_guard(channel, deps.exprs, logic, "rate_limit.key_logic"))
+        .transpose()?;
+
+    // Required, not optional, and validated as such at create: the outer
+    // limiter can fall back to the caller's address, and there is no
+    // equivalent default for a principal — Orion cannot pick the claim
+    // that identifies one on the author's behalf.
+    let principal_rate_limit_key_logic = parsed_config
+        .principal_rate_limit
+        .as_ref()
+        .and_then(|rl| rl.key_logic.as_ref())
+        .map(|logic| compile_guard(channel, deps.exprs, logic, "principal_rate_limit.key_logic"))
+        .transpose()?;
+    if parsed_config.principal_rate_limit.is_some() && principal_rate_limit_key_logic.is_none() {
+        return Err(issue(
+            "principal_rate_limit requires a 'key_logic' naming the claim that identifies \
+             the principal — there is no address to fall back to"
+                .to_string(),
+        ));
+    }
+
+    // Same call as N5 above: a response-cache key that silently fell back
+    // to the whole-payload hash would serve one caller's body to another
+    // whenever the key was meant to narrow on something else.
+    let cache_key_logic = parsed_config
+        .cache
+        .as_ref()
+        .and_then(|c| c.key_logic.as_ref())
+        .map(|logic| compile_guard(channel, deps.exprs, logic, "cache.key_logic"))
+        .transpose()?;
+
+    // Lowercase once, here, so the request path compares against
+    // already-normalized names. HTTP header names are case-insensitive and
+    // every transport's lookup is byte-lowercase.
+    let rate_limit_key_headers: Option<Arc<[String]>> = parsed_config
+        .rate_limit
+        .as_ref()
+        .and_then(|rl| rl.key_headers.as_ref())
+        .map(|names| {
+            names
+                .iter()
+                .map(|n| n.trim().to_ascii_lowercase())
+                .collect::<Vec<_>>()
+                .into()
+        });
+
+    // A `key_logic` reading a header no context will ever carry resolves to
+    // `null` on every request. The guard now refuses such a request rather
+    // than collapsing every caller into one bucket, but a 429 at traffic
+    // time is a poor way to learn about a typo — so say it once, at load,
+    // while the operator is still watching the deploy. A warning and not a
+    // refusal: the path may be composed dynamically in ways this cannot
+    // see, and quarantining a channel over a static guess would be worse
+    // than the defect.
+    if let Some(logic) = parsed_config
+        .rate_limit
+        .as_ref()
+        .and_then(|rl| rl.key_logic.as_ref())
+    {
+        let declared = rate_limit_key_headers.as_deref().unwrap_or(&[]);
+        let unreachable: Vec<String> = crate::channel::guards::key_logic_header_paths(logic)
+            .into_iter()
+            .filter(|name| {
+                !crate::channel::guards::COMMON_KEY_HEADERS.contains(&name.as_str())
+                    && !declared.iter().any(|d| d == name)
+            })
+            .collect();
+        if !unreachable.is_empty() {
+            tracing::warn!(
+                channel = %channel.name,
+                headers = %unreachable.join(", "),
+                "rate_limit.key_logic reads headers that are not in the key context; \
+                 every request will be refused 429 until they are added to \
+                 rate_limit.key_headers"
+            );
+        }
+    }
+
+    // N4: dropping an uncompilable expression to `None` made
+    // `validate_input` a no-op, so the channel's declared input
+    // contract disappeared at reload time. Refuse instead — the
+    // expression compiled at create/update time, so this is a
+    // corrupt row or a datalogic upgrade that changed semantics.
+    let validation_logic = parsed_config
+        .validation_logic
+        .as_ref()
+        .map(|logic| compile_guard(channel, deps.exprs, logic, "validation_logic"))
+        .transpose()?;
+
+    // N6: reuse the semaphore while `max_concurrent_per_node` is
+    // unchanged — a fresh one would forget every in-flight permit,
+    // letting a reload admit up to 2× the configured concurrency.
+    let backpressure_semaphore = parsed_config.backpressure.as_ref().map(|bp| {
+        if let Some(prev) = prior
+            && let Some(prev_bp) = prev.parsed_config.backpressure.as_ref()
+            && let Some(prev_sem) = prev.backpressure_semaphore.as_ref()
+            && prev_bp.max_concurrent_per_node == bp.max_concurrent_per_node
+        {
+            return prev_sem.clone();
+        }
+        Arc::new(Semaphore::new(bp.max_concurrent_per_node))
+    });
+
+    Ok(ChannelGuards {
+        rate_limiter,
+        rate_limit_key_logic,
+        principal_rate_limiter,
+        principal_rate_limit_key_logic,
+        rate_limit_key_headers,
+        cache_key_logic,
+        validation_logic,
+        backpressure_semaphore,
+    })
 }
 
 #[async_trait::async_trait]

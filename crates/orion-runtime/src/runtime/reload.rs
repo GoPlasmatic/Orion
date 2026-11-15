@@ -6,8 +6,13 @@
 //! publishes the result as one generation. A node with no committed
 //! deployment serves the empty generation bootstrap published.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use orion_api::v2::Definition;
+
+use crate::errors::OrionError;
+use crate::extensions::deployment_store::{EntityKind, ManifestMember};
 use crate::runtime::state::AppState;
 
 /// Build and publish the exact entity revisions declared in `target_revision`'s
@@ -184,12 +189,7 @@ async fn manifest_definitions(
     state: &AppState,
     manifest: &crate::extensions::deployment_store::CanonicalManifest,
 ) -> Result<ManifestDefinitions, crate::errors::OrionError> {
-    use std::collections::HashMap;
-
-    use orion_api::v2::Definition;
-
-    use crate::errors::OrionError;
-    use crate::extensions::deployment_store::{ArtifactState, EntityKind, ManifestMember};
+    use crate::extensions::deployment_store::ArtifactState;
 
     // A canary committed under another edition (an Orion Ext database this
     // Community node now runs on) is not served as one revision silently.
@@ -296,86 +296,19 @@ async fn manifest_definitions(
 
     for m in &manifest.members {
         match m.entity.kind {
-            EntityKind::Channel => {
-                let Definition::Channel(def) = definition(m)? else {
-                    unreachable!("kind checked above")
-                };
-                let workflow_id = m
-                    .requires
-                    .iter()
-                    .find(|r| r.kind == EntityKind::Workflow)
-                    .map(|r| r.id.clone());
-                for interval in &m.rollouts {
-                    if let Some(ref wf_id) = workflow_id {
-                        let pct =
-                            i64::from(interval.end_bucket.saturating_sub(interval.start_bucket));
-                        rollout_overrides.insert((wf_id.clone(), interval.workflow_revision), pct);
-                    }
-                }
-                // The connections the channel's driver connects with. Each
-                // edge names an exact revision the manifest carries (plan and
-                // apply checked that); a node that does not hold it cannot
-                // hand the driver anything to connect with, so the build
-                // refuses rather than serving a channel that never consumes.
-                let mut required = Vec::new();
-                for edge in m
-                    .requires
-                    .iter()
-                    .filter(|r| r.kind == EntityKind::Connection)
-                {
-                    if state
-                        .deployments
-                        .get_connection(&edge.id, edge.revision)
-                        .is_none()
-                    {
-                        return Err(OrionError::validation(format!(
-                            "channel '{}' requires connection '{}' revision {}, which this \
-                             node does not hold",
-                            m.entity.id,
-                            edge.id,
-                            edge.revision.get()
-                        )));
-                    }
-                    required.push((edge.id.clone(), edge.revision.get()));
-                }
-                if !required.is_empty() {
-                    channel_connections.insert(m.entity.id.clone(), required);
-                }
-                active_channels.push(super::definitions::channel_row(
-                    &def,
-                    &m.entity.id,
-                    m.entity.revision.get(),
-                    workflow_id,
-                )?);
-            }
+            EntityKind::Channel => channel_member(
+                state,
+                m,
+                &definition,
+                &mut active_channels,
+                &mut channel_connections,
+                &mut rollout_overrides,
+            )?,
             EntityKind::Workflow => {}
             EntityKind::Plugin => {
-                let Definition::Plugin(def) = definition(m)? else {
-                    unreachable!("kind checked above")
-                };
-                let (row, bytes) =
-                    super::definitions::plugin_row(&def, &m.entity.id, m.entity.revision.get())?;
-                plugin_components.insert(row.digest.clone(), bytes);
-                active_plugins.push(row);
+                plugin_member(m, &definition, &mut active_plugins, &mut plugin_components)?
             }
-            EntityKind::Connection => {
-                let conn = state
-                    .deployments
-                    .get_connection(&m.entity.id, m.entity.revision)
-                    .ok_or_else(|| {
-                        OrionError::validation(format!(
-                            "Manifest connection '{}' revision {} not found",
-                            m.entity.id, m.entity.revision
-                        ))
-                    })?;
-                if conn.configuration_digest != m.definition_digest {
-                    return Err(OrionError::validation(format!(
-                        "Manifest connection '{}' revision {} digest mismatch",
-                        m.entity.id, m.entity.revision
-                    )));
-                }
-                workflow_package_serves(state, &conn).await?;
-            }
+            EntityKind::Connection => connection_member(state, m).await?,
         }
     }
 
@@ -422,6 +355,107 @@ async fn manifest_definitions(
         plugin_components,
         dependencies,
     })
+}
+
+/// One `Channel` member: the row it publishes, the workflow it routes to
+/// (with that workflow's rollout overrides) and the connection revisions its
+/// driver connects with.
+fn channel_member(
+    state: &AppState,
+    member: &ManifestMember,
+    definition: &dyn Fn(&ManifestMember) -> Result<Definition, OrionError>,
+    channels: &mut Vec<crate::engine::Channel>,
+    connections: &mut std::collections::BTreeMap<String, Vec<(String, u64)>>,
+    rollouts: &mut HashMap<(String, u64), i64>,
+) -> Result<(), OrionError> {
+    let Definition::Channel(def) = definition(member)? else {
+        unreachable!("kind checked by the caller")
+    };
+    let workflow_id = member
+        .requires
+        .iter()
+        .find(|r| r.kind == EntityKind::Workflow)
+        .map(|r| r.id.clone());
+    for interval in &member.rollouts {
+        if let Some(wf_id) = &workflow_id {
+            let pct = i64::from(interval.end_bucket.saturating_sub(interval.start_bucket));
+            rollouts.insert((wf_id.clone(), interval.workflow_revision), pct);
+        }
+    }
+    // The connections the channel's driver connects with. Each edge names an
+    // exact revision the manifest carries (plan and apply checked that); a node
+    // that does not hold it cannot hand the driver anything to connect with,
+    // so the build refuses rather than serving a channel that never consumes.
+    let mut required = Vec::new();
+    for edge in member
+        .requires
+        .iter()
+        .filter(|r| r.kind == EntityKind::Connection)
+    {
+        if state
+            .deployments
+            .get_connection(&edge.id, edge.revision)
+            .is_none()
+        {
+            return Err(OrionError::validation(format!(
+                "channel '{}' requires connection '{}' revision {}, which this node does not \
+                 hold",
+                member.entity.id,
+                edge.id,
+                edge.revision.get()
+            )));
+        }
+        required.push((edge.id.clone(), edge.revision.get()));
+    }
+    if !required.is_empty() {
+        connections.insert(member.entity.id.clone(), required);
+    }
+    channels.push(super::definitions::channel_row(
+        &def,
+        &member.entity.id,
+        member.entity.revision.get(),
+        workflow_id,
+    )?);
+    Ok(())
+}
+
+/// One `Plugin` member: the deployed row and the component bytes its digest
+/// names.
+fn plugin_member(
+    member: &ManifestMember,
+    definition: &dyn Fn(&ManifestMember) -> Result<Definition, OrionError>,
+    plugins: &mut Vec<crate::plugin::DeployedPlugin>,
+    components: &mut HashMap<String, Vec<u8>>,
+) -> Result<(), OrionError> {
+    let Definition::Plugin(def) = definition(member)? else {
+        unreachable!("kind checked by the caller")
+    };
+    let (row, bytes) =
+        super::definitions::plugin_row(&def, &member.entity.id, member.entity.revision.get())?;
+    components.insert(row.digest.clone(), bytes);
+    plugins.push(row);
+    Ok(())
+}
+
+/// One `Connection` member: the revision the node holds must be the one the
+/// manifest names, and any workflow package it runs on must still serve.
+async fn connection_member(state: &AppState, member: &ManifestMember) -> Result<(), OrionError> {
+    let conn = state
+        .deployments
+        .get_connection(&member.entity.id, member.entity.revision)
+        .ok_or_else(|| {
+            OrionError::validation(format!(
+                "Manifest connection '{}' revision {} not found",
+                member.entity.id, member.entity.revision
+            ))
+        })?;
+    if conn.configuration_digest != member.definition_digest {
+        return Err(OrionError::validation(format!(
+            "Manifest connection '{}' revision {} digest mismatch",
+            member.entity.id, member.entity.revision
+        )));
+    }
+    workflow_package_serves(state, &conn).await
 }
 
 /// A connection over a workflow provider package is deployed only while the
