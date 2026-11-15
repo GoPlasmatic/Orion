@@ -560,12 +560,12 @@ async fn write_returning_row_tx<T: DbRow>(
     }
 }
 
-/// Attach the "lose to an existing row" conflict action to `insert`.
+/// Attach the "lose to an existing row" conflict action to `insert` — every
+/// backend but MySQL, whose answer is the duplicate-key error instead (see
+/// [`insert_outcome`]).
 ///
-/// One renderer for all three helpers: Postgres/SQLite take the targeted
-/// `ON CONFLICT (cols) DO NOTHING`, and MySQL's `do_nothing_on` polyfill
-/// renders `ON DUPLICATE KEY UPDATE col = col` — never `INSERT IGNORE`, which
-/// downgrades unrelated errors to warnings (B-11).
+/// Postgres/SQLite take the targeted `ON CONFLICT (cols) DO NOTHING`, whose
+/// affected-rows count is already 0 for the row that lost.
 fn apply_do_nothing(insert: &mut sea_query::InsertStatement, cols: Vec<sea_query::DynIden>) {
     match cols.first().cloned() {
         Some(pk) => {
@@ -581,15 +581,42 @@ fn apply_do_nothing(insert: &mut sea_query::InsertStatement, cols: Vec<sea_query
     }
 }
 
-/// INSERT that silently loses to an existing row: `ON CONFLICT DO NOTHING` on
-/// Postgres/SQLite, `ON DUPLICATE KEY UPDATE pk = pk` on MySQL. Returns rows
-/// affected (0 = an existing row won).
+/// INSERT that silently loses to an existing row. Returns rows affected
+/// (0 = an existing row won).
 ///
 /// B-11: MySQL is not `INSERT IGNORE`. `IGNORE` downgrades data-too-long,
 /// NOT NULL and out-of-range errors to warnings and truncates data even in
 /// strict mode, which silently corrupted what cron occurrence identity and the
-/// deployment store wrote. `do_nothing_on` renders the duplicate-key form, so
-/// a conflict is still handled and every other error still fails.
+/// deployment store wrote.
+///
+/// Nor is MySQL `ON DUPLICATE KEY UPDATE pk = pk`, which was the replacement
+/// and is wrong for the same reason in a quieter way: sqlx sets
+/// `CLIENT_FOUND_ROWS` on every MySQL connection, so that a duplicate which
+/// changed nothing answers **1** — indistinguishable from an insert, and every
+/// materialisation reported "created". MySQL therefore issues a plain INSERT
+/// and reads the duplicate-key error (1062) as "an existing row won"; every
+/// other error still fails, which is what B-11 was about.
+pub fn is_duplicate_key(error: &sqlx::Error) -> bool {
+    match error {
+        sqlx::Error::Database(db) => db
+            .try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>()
+            .is_some_and(|e| e.number() == DUPLICATE_KEY),
+        _ => false,
+    }
+}
+
+/// MySQL's `ER_DUP_ENTRY`.
+const DUPLICATE_KEY: u16 = 1062;
+
+/// An insert's answer, with MySQL's duplicate-key error read as "0 rows": the
+/// row that lost the race, not a failure.
+fn insert_outcome(backend: DbBackend, result: Result<u64, sqlx::Error>) -> Result<u64, OrionError> {
+    match result {
+        Ok(rows) => Ok(rows),
+        Err(e) if backend == DbBackend::Mysql && is_duplicate_key(&e) => Ok(0),
+        Err(e) => Err(e.into()),
+    }
+}
 pub async fn insert_if_absent<C>(
     pool: &DbPool,
     mut insert: sea_query::InsertStatement,
@@ -600,10 +627,13 @@ where
 {
     use crate::build_sqlx;
 
-    let col = sea_query::IntoIden::into_iden(conflict_col);
-    apply_do_nothing(&mut insert, vec![col]);
-    let (sql, values) = build_sqlx(pool.backend(), &mut insert);
-    Ok(pool.execute_query(&sql, values).await?)
+    let backend = pool.backend();
+    if backend != DbBackend::Mysql {
+        let col = sea_query::IntoIden::into_iden(conflict_col);
+        apply_do_nothing(&mut insert, vec![col]);
+    }
+    let (sql, values) = build_sqlx(backend, &mut insert);
+    insert_outcome(backend, pool.execute_query(&sql, values).await)
 }
 
 /// [`insert_if_absent`] over a **composite** conflict target.
@@ -623,13 +653,16 @@ where
 {
     use crate::build_sqlx;
 
-    let cols: Vec<sea_query::DynIden> = conflict_cols
-        .into_iter()
-        .map(sea_query::IntoIden::into_iden)
-        .collect();
-    apply_do_nothing(&mut insert, cols);
-    let (sql, values) = build_sqlx(pool.backend(), &mut insert);
-    Ok(pool.execute_query(&sql, values).await?)
+    let backend = pool.backend();
+    if backend != DbBackend::Mysql {
+        let cols: Vec<sea_query::DynIden> = conflict_cols
+            .into_iter()
+            .map(sea_query::IntoIden::into_iden)
+            .collect();
+        apply_do_nothing(&mut insert, cols);
+    }
+    let (sql, values) = build_sqlx(backend, &mut insert);
+    insert_outcome(backend, pool.execute_query(&sql, values).await)
 }
 
 /// [`insert_if_absent_on`] inside a transaction.
@@ -648,13 +681,16 @@ where
 {
     use crate::build_sqlx;
 
-    let cols: Vec<sea_query::DynIden> = conflict_cols
-        .into_iter()
-        .map(sea_query::IntoIden::into_iden)
-        .collect();
-    apply_do_nothing(&mut insert, cols);
-    let (sql, values) = build_sqlx(tx.backend(), &mut insert);
-    Ok(tx.execute_query(&sql, values).await?)
+    let backend = tx.backend();
+    if backend != DbBackend::Mysql {
+        let cols: Vec<sea_query::DynIden> = conflict_cols
+            .into_iter()
+            .map(sea_query::IntoIden::into_iden)
+            .collect();
+        apply_do_nothing(&mut insert, cols);
+    }
+    let (sql, values) = build_sqlx(backend, &mut insert);
+    insert_outcome(backend, tx.execute_query(&sql, values).await)
 }
 
 /// Rows deleted per statement by [`delete_chunked`].
