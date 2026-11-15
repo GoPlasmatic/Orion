@@ -773,9 +773,17 @@ async fn init_sqlite_pool(config: &StorageConfig) -> Result<DbPool, OrionError> 
         .pragma("synchronous", "NORMAL")
         .pragma("cache_size", "-20000");
 
+    // P-20: SQLite has one writer, and every connection carries its own page
+    // cache. The shared `max_connections` default (50) was sized for a server
+    // database, so an embedded node could reserve ~1 GB of page cache for
+    // connections that can only queue behind the writer anyway. The ceiling is
+    // 16 here; a deployment that needs more SQLite readers is sized by the
+    // storage, not by pool width.
+    const SQLITE_MAX_CONNECTIONS: u32 = 16;
+    let max_connections = config.max_connections.min(SQLITE_MAX_CONNECTIONS);
     let mut pool_opts = SqlitePoolOptions::new()
-        .max_connections(config.max_connections)
-        .min_connections(config.min_connections)
+        .max_connections(max_connections)
+        .min_connections(config.min_connections.min(max_connections))
         .acquire_timeout(Duration::from_secs(config.acquire_timeout_secs));
     if config.idle_timeout_secs > 0 {
         pool_opts = pool_opts.idle_timeout(Duration::from_secs(config.idle_timeout_secs));

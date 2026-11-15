@@ -424,7 +424,10 @@ async fn persistence_workers_run_in_parallel() {
     let (queue, handle) =
         orion::queue::trace_persistence::start(&orion::runtime::TaskRegistry::new(), &config, repo);
 
-    for i in 0..2 {
+    // A trace's writes are now pinned to one shard, so two arbitrary trace
+    // ids can collide; submit enough independent ids that both workers have
+    // work whatever the hash does (B-02/Q7).
+    for i in 0..16 {
         assert!(
             queue
                 .submit(orion::queue::TracePersistenceTask::UpdateStatus {

@@ -131,16 +131,7 @@ where
             return (Err(last), attempts);
         }
 
-        let backoff = policy.backoff(retry);
-        // P-15: full jitter. A pure doubling makes every in-flight call retry
-        // at the same instants, so a recovering upstream is hit by a
-        // synchronized wave. Uniform in [0, backoff] keeps the expectation and
-        // spreads the arrivals.
-        let backoff = if backoff.is_zero() {
-            backoff
-        } else {
-            Duration::from_millis(rand::random_range(0..=backoff.as_millis() as u64))
-        };
+        let backoff = jittered(policy.backoff(retry));
 
         // The deadline covers the sleep too. Sleeping and *then* failing spends
         // latency the caller is already waiting on, so a backoff that would
@@ -159,6 +150,19 @@ where
         tracing::debug!("{label}: retry {retry} in {backoff:?} after: {last}");
         tokio::time::sleep(backoff).await;
     }
+}
+
+/// Full jitter: a uniform point in `[0, backoff]`.
+///
+/// P-15: a pure doubling makes every in-flight call retry at the same
+/// instants, so a recovering upstream is hit by a synchronized wave. Full
+/// jitter keeps the expectation and spreads the arrivals. A zero backoff stays
+/// zero.
+fn jittered(backoff: Duration) -> Duration {
+    if backoff.is_zero() {
+        return backoff;
+    }
+    Duration::from_millis(rand::random_range(0..=backoff.as_millis() as u64))
 }
 
 /// dataflow-rs 3.15.0's own tests of the loop (`tests/retry.rs`), over the
@@ -294,11 +298,14 @@ mod tests {
         )
         .await;
 
-        assert_eq!(
-            start.elapsed(),
-            Duration::from_millis(100 + 200 + 400),
-            "three backoffs, doubling"
+        // Jitter makes the sum a range: never longer than the three capped
+        // backoffs, and never zero for three sleeps with a non-zero base.
+        assert!(
+            start.elapsed() <= Duration::from_millis(700),
+            "{:?}",
+            start.elapsed()
         );
+        assert!(start.elapsed() > Duration::ZERO, "{:?}", start.elapsed());
     }
 
     #[tokio::test(start_paused = true)]
@@ -317,11 +324,24 @@ mod tests {
         )
         .await;
 
-        assert_eq!(
-            start.elapsed(),
-            Duration::from_secs(40 + 60),
-            "the second backoff is clamped rather than doubling to 80s"
+        // The uncapped second backoff would be 80s; with the 60s ceiling and
+        // jitter the total cannot exceed 100s.
+        assert!(
+            start.elapsed() <= Duration::from_secs(100),
+            "{:?}",
+            start.elapsed()
         );
+        assert!(start.elapsed() > Duration::ZERO, "{:?}", start.elapsed());
+    }
+
+    #[test]
+    fn jitter_never_exceeds_the_backoff() {
+        let cap = Duration::from_millis(500);
+        for _ in 0..100 {
+            let got = jittered(cap);
+            assert!(got <= cap, "{got:?} exceeded {cap:?}");
+        }
+        assert!(jittered(Duration::ZERO).is_zero());
     }
 
     #[tokio::test(start_paused = true)]
@@ -347,13 +367,10 @@ mod tests {
         // t=100 attempt 2 fails; the next backoff is 200ms and 100+200 >= 250,
         //       so the loop ends here rather than sleeping into a failure.
         assert!(out.is_err());
-        assert_eq!(attempts, 2);
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert_eq!(
-            start.elapsed(),
-            Duration::from_millis(100),
-            "only the first backoff was slept"
-        );
+        // Jitter can shorten the first backoff, so the loop may fit an extra
+        // attempt; what must hold is that it never sleeps past the deadline.
+        assert!(attempts >= 2);
+        assert_eq!(calls.load(Ordering::SeqCst), attempts);
         assert!(
             start.elapsed() < Duration::from_millis(250),
             "and the loop came in under its own deadline rather than sleeping to 300ms \

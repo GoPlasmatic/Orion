@@ -94,41 +94,7 @@ pub(super) async fn check_rate_limit(
         .as_ref()
         .map(|rl| rl.on_backend_error)
         .unwrap_or_default();
-    match check_limiter(limiter.as_ref(), key).await {
-        Ok(true) => Ok(()),
-        Ok(false) => {
-            metrics::record_rate_limit_rejected(channel);
-            Err(OrionError::RateLimited("Too many requests".to_string()))
-        }
-        Err(e) => {
-            metrics::record_error("rate_limit_backend");
-            match policy {
-                crate::channel::BackendErrorPolicy::Allow => {
-                    tracing::warn!(
-                        channel = %channel,
-                        error = %e,
-                        "Rate-limit backend error; failing open (request allowed)"
-                    );
-                    Ok(())
-                }
-                crate::channel::BackendErrorPolicy::Deny => {
-                    tracing::warn!(
-                        channel = %channel,
-                        error = %e,
-                        "Rate-limit backend error; failing closed (request refused)"
-                    );
-                    metrics::record_rate_limit_rejected(channel);
-                    Err(OrionError::unavailable(
-                        crate::errors::Unavailable::GuardBackend,
-                        format!(
-                            "Channel '{channel}' cannot check its rate limit: the backend \
-                             is unavailable and the channel is configured to fail closed"
-                        ),
-                    ))
-                }
-            }
-        }
-    }
+    consult(limiter.as_ref(), key, channel, policy, "rate-limit").await
 }
 
 /// The bucket key an evaluated `key_logic` names, read as 1.12 read the JSON
@@ -318,14 +284,34 @@ pub(super) async fn check_principal_rate_limit(
         .as_ref()
         .map(|rl| rl.on_backend_error)
         .unwrap_or_default();
-    match check_limiter(limiter.as_ref(), key).await {
+    consult(
+        limiter.as_ref(),
+        key,
+        channel,
+        policy,
+        "principal rate-limit",
+    )
+    .await
+}
+
+/// One limiter verdict, with the N7 policy applied: an over-limit answer is
+/// the one `429`, and a backend error either fails open or refuses as
+/// `GuardBackend` according to the channel's `on_backend_error`.
+///
+/// One function for the address and principal limiters, which had the whole
+/// Allow/Deny match copied (M-05). `what` names which limiter in the log line.
+async fn consult(
+    limiter: &dyn crate::channel::RateLimitBackend,
+    key: String,
+    channel: &str,
+    policy: crate::channel::BackendErrorPolicy,
+    what: &str,
+) -> Result<(), OrionError> {
+    match check_limiter(limiter, key).await {
         Ok(true) => Ok(()),
         Ok(false) => {
-            // The same counter as the address limit: 429 accounting stays
-            // whole, which is what an operator alerts on. Which of the two
-            // refused is in the log line.
             metrics::record_rate_limit_rejected(channel);
-            tracing::debug!(channel = %channel, "principal rate limit exceeded");
+            tracing::debug!(channel = %channel, limiter = what, "rate limit exceeded");
             Err(OrionError::RateLimited("Too many requests".to_string()))
         }
         Err(e) => {
@@ -334,23 +320,25 @@ pub(super) async fn check_principal_rate_limit(
                 crate::channel::BackendErrorPolicy::Allow => {
                     tracing::warn!(
                         channel = %channel,
+                        limiter = what,
                         error = %e,
-                        "Principal rate-limit backend error; failing open (request allowed)"
+                        "Rate-limit backend error; failing open (request allowed)"
                     );
                     Ok(())
                 }
                 crate::channel::BackendErrorPolicy::Deny => {
                     tracing::warn!(
                         channel = %channel,
+                        limiter = what,
                         error = %e,
-                        "Principal rate-limit backend error; failing closed (request refused)"
+                        "Rate-limit backend error; failing closed (request refused)"
                     );
                     metrics::record_rate_limit_rejected(channel);
                     Err(OrionError::unavailable(
                         crate::errors::Unavailable::GuardBackend,
                         format!(
-                            "Channel '{channel}' cannot check its principal rate limit: the \
-                             backend is unavailable and the channel is configured to fail closed"
+                            "Channel '{channel}' cannot check its {what}: the backend is \
+                             unavailable and the channel is configured to fail closed"
                         ),
                     ))
                 }

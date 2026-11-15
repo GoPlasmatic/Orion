@@ -769,13 +769,15 @@ async fn a_difference_names_the_table_the_column_and_both_types() {
 
     // An index added to one migration set and forgotten in another.
     let mut unindexed = sqlite_schema().await;
-    unindexed
-        .indexes
-        .remove(&("traces".to_string(), "idx_traces_updated_at".to_string()));
+    unindexed.indexes.remove(&(
+        "traces".to_string(),
+        "idx_traces_channel_created_at_id".to_string(),
+    ));
     let problems = differences("sqlite", &real, "mysql", &unindexed);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(
-        problems[0].contains("idx_traces_updated_at") && problems[0].contains("BACKEND_SPECIFIC"),
+        problems[0].contains("idx_traces_channel_created_at_id")
+            && problems[0].contains("BACKEND_SPECIFIC"),
         "message must name the index and the escape hatch: {}",
         problems[0]
     );
@@ -872,12 +874,24 @@ async fn sqlite_schema_is_introspectable() {
 
     // Every whitelisted sort column needs an index, and the keyset index has
     // to carry the tie-break column (D8) — not just the name.
-    assert_eq!(
-        schema
+    assert!(
+        !schema
             .indexes
-            .get(&("traces".to_string(), "idx_traces_updated_at".to_string())),
-        Some(&vec!["updated_at".to_string()]),
-        "found {:?}",
+            .contains_key(&("traces".to_string(), "idx_traces_updated_at".to_string())),
+        "updated_at changes on every status write and nothing reads it; found {:?}",
+        schema.indexes
+    );
+    assert_eq!(
+        schema.indexes.get(&(
+            "traces".to_string(),
+            "idx_traces_channel_created_at_id".to_string()
+        )),
+        Some(&vec![
+            "channel".to_string(),
+            "created_at".to_string(),
+            "id".to_string()
+        ]),
+        "a channel-filtered list sorts by created_at, id; found {:?}",
         schema.indexes
     );
     assert_eq!(
