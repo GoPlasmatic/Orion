@@ -32,6 +32,86 @@ pub fn data_routes() -> Router<AppState> {
 // Unified Dynamic Route Handler
 // ============================================================
 
+/// The channel a request path names, and how it was matched.
+///
+/// The raw, still-encoded path (the nested router has stripped `/api/v2/data`)
+/// is split on `/` and each segment decoded exactly once by `match_route`.
+/// `Path<String>` would hand us the wildcard already decoded — leniently —
+/// which made `%2F` act as a segment separator before matching. `/async` is
+/// stripped before matching, so only a suffix on a non-empty path is a
+/// submission.
+fn resolve_channel(
+    generation: &crate::runtime::RuntimeGeneration,
+    method: &axum::http::Method,
+    uri_path: &str,
+) -> Result<ChannelMatch, OrionError> {
+    let path = uri_path.trim_start_matches('/');
+
+    // Strip trailing /async suffix
+    let (route_path, is_async) = if let Some(stripped) = path.strip_suffix("/async") {
+        (stripped, true)
+    } else {
+        (path, false)
+    };
+
+    let route_path = route_path.trim_matches('/').trim();
+    if route_path.is_empty() {
+        return Err(OrionError::validation("Channel name must not be empty"));
+    }
+
+    // Resolve channel: try REST route table first, then direct name lookup.
+    // N10: `?` answers 400 for invalid percent-sequences before any
+    // resolution; matched params arrive percent-decoded exactly once.
+    let (channel, route_params, route_role) = if let Some(rm) = generation
+        .channels
+        .match_route(method.as_str(), route_path)?
+    {
+        (rm.channel_name, rm.params, rm.role)
+    } else if !route_path.contains('/') {
+        // Single segment — a channel by its name (`/api/v2/data/{name}`, what
+        // `orion-cli send` calls),
+        // decoded once like a captured param so the encoded spelling of a
+        // name reaches the same channel. `match_route` above has already
+        // answered 400 for invalid sequences, so the decode fallback cannot
+        // fire. A name that decodes to whitespace (`%20`) is as empty as a
+        // literal blank — same 400 as the raw-path emptiness check above.
+        let name = crate::channel::routing::percent_decode_segment(route_path)
+            .map(std::borrow::Cow::into_owned)
+            .unwrap_or_else(|| route_path.to_string());
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err(OrionError::validation("Channel name must not be empty"));
+        }
+        (
+            name,
+            std::collections::HashMap::new(),
+            crate::channel::routing::RouteRole::Primary,
+        )
+    } else {
+        return Err(OrionError::not_found(format!(
+            "No channel matches {method} /{route_path}"
+        )));
+    };
+
+    Ok(ChannelMatch {
+        route_path: route_path.to_string(),
+        channel,
+        route_params,
+        route_role,
+        is_async,
+    })
+}
+
+/// What [`resolve_channel`] found.
+struct ChannelMatch {
+    /// The path with `/async` stripped and surrounding slashes trimmed.
+    route_path: String,
+    channel: String,
+    route_params: std::collections::HashMap<String, String>,
+    route_role: crate::channel::routing::RouteRole,
+    is_async: bool,
+}
+
 /// Unified handler for all data routes. Handles:
 /// - Simple HTTP channels: `POST /{channel}` (single segment, direct name match)
 /// - Async submissions: `POST /{channel}/async` or `POST /{path...}/async`
@@ -140,20 +220,6 @@ pub(crate) async fn dynamic_handler(
     // `/async` path stays a channel *named* `async` rather than a submission
     // with no channel: only a `/async` suffix on a non-empty path is a
     // submission.
-    let path = uri.path().trim_start_matches('/');
-
-    // Strip trailing /async suffix
-    let (route_path, is_async) = if let Some(stripped) = path.strip_suffix("/async") {
-        (stripped, true)
-    } else {
-        (path, false)
-    };
-
-    let route_path = route_path.trim_matches('/').trim();
-    if route_path.is_empty() {
-        return Err(OrionError::validation("Channel name must not be empty"));
-    }
-
     // One generation for this request, loaded once and held to the end: the
     // route table below, the channel's guards, and the engine the workflow
     // runs on all come from the same build.
@@ -165,39 +231,13 @@ pub(crate) async fn dynamic_handler(
     // together.
     let generation = state.runtime.load();
 
-    // Resolve channel: try REST route table first, then direct name lookup.
-    // N10: `?` answers 400 for invalid percent-sequences before any
-    // resolution; matched params arrive percent-decoded exactly once.
-    let (channel, route_params, route_role) = if let Some(rm) = generation
-        .channels
-        .match_route(method.as_str(), route_path)?
-    {
-        (rm.channel_name, rm.params, rm.role)
-    } else if !route_path.contains('/') {
-        // Single segment — a channel by its name (`/api/v2/data/{name}`, what
-        // `orion-cli send` calls),
-        // decoded once like a captured param so the encoded spelling of a
-        // name reaches the same channel. `match_route` above has already
-        // answered 400 for invalid sequences, so the decode fallback cannot
-        // fire. A name that decodes to whitespace (`%20`) is as empty as a
-        // literal blank — same 400 as the raw-path emptiness check above.
-        let name = crate::channel::routing::percent_decode_segment(route_path)
-            .map(std::borrow::Cow::into_owned)
-            .unwrap_or_else(|| route_path.to_string());
-        let name = name.trim().to_string();
-        if name.is_empty() {
-            return Err(OrionError::validation("Channel name must not be empty"));
-        }
-        (
-            name,
-            std::collections::HashMap::new(),
-            crate::channel::routing::RouteRole::Primary,
-        )
-    } else {
-        return Err(OrionError::not_found(format!(
-            "No channel matches {method} /{route_path}"
-        )));
-    };
+    let ChannelMatch {
+        route_path,
+        channel,
+        route_params,
+        route_role,
+        is_async,
+    } = resolve_channel(&generation, &method, uri.path())?;
 
     // #307: `/async` is stripped before matching, so `…/callback/async` would
     // otherwise resolve to the callback route with `Transport::HttpAsync` —
@@ -236,7 +276,7 @@ pub(crate) async fn dynamic_handler(
                 driver,
                 guards: declared,
                 method: &method,
-                path: route_path,
+                path: &route_path,
                 headers: &headers,
                 peer: peer.as_ref(),
                 query: &query_params,
