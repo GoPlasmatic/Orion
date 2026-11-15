@@ -239,7 +239,8 @@ The examples are executable, and two repositories gate them:
 ## Layer 8 — benchmarks (manual, recorded per release)
 
 `crates/orion-server/tests/benchmark/bench.sh` (seven `hey` scenarios, plus
-a `cluster` mode against the HA compose stack). Not in CI — numbers from
+a `cluster` mode against an Orion Ext HA stack: cluster mode is a Standard
+and Enterprise feature). Not in CI — numbers from
 shared runners are noise. Run on dedicated hardware at release checkpoints;
 each release's record is committed under `crates/orion-server/tests/benchmark/results/vX.Y.Z/`
 (procedure: `RELEASING.md`).

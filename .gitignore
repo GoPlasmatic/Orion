@@ -47,9 +47,7 @@ debug/
 # not a blanket `v*` — dev machines hold comparison dirs named after
 # dataflow-rs versions (v2.1.5, v3.0.x) that must stay local.
 /crates/orion-server/tests/benchmark/results/*
-!/crates/orion-server/tests/benchmark/results/v0.2.0/
 !/crates/orion-server/tests/benchmark/results/v1.0.0/
-!/crates/orion-server/tests/benchmark/results/v1.1.0/
 
 !/crates/orion-server/tests/benchmark/results/v2-run-view-2026-10-28/
 

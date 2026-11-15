@@ -259,7 +259,7 @@ mod tests {
         );
     }
 
-    /// #350, #373: a looping workflow run without a trace keeps no audit
+    /// A looping workflow run without a trace keeps no audit
     /// entries and no value copies, so its memory does not grow with the
     /// sweeps. A traced run still keeps both: its per-step diff is built from
     /// them.

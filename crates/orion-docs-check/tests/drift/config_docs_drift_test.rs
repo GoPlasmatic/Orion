@@ -190,8 +190,6 @@ const PROSE_FILES: &[&str] = &[
     "CLAUDE.md",
     "crates/orion-server/config.toml.example",
     "deploy/compose/orion.yml",
-    "deploy/compose/ha.yml",
-    "deploy/compose/ha.build.yml",
     "Dockerfile",
 ];
 
@@ -285,9 +283,9 @@ fn prose_files() -> Vec<std::path::PathBuf> {
     }
     for file in PROSE_FILES {
         let path = root.join(file);
-        if path.is_file() {
-            out.push(path);
-        }
+        // A listed file that is gone is a stale entry, not a pass.
+        assert!(path.is_file(), "PROSE_FILES names a missing file: {file}");
+        out.push(path);
     }
     out
 }

@@ -207,7 +207,7 @@ async fn reconcile_channel(
     // on a node whose slots are all busy, that is the spare workers alone, one
     // claim per poll each. A schedule faster than they drain would grow a
     // backlog of rows that nothing can run and the cleanup (rightly) never
-    // removes, until the node went idle (#377). So the row is written already
+    // removes, until the node went idle. So the row is written already
     // settled. A slot freed between this check and a claim changes nothing
     // that matters: that tick found the key busy when it was due, which is
     // what `forbid` skips on.
@@ -440,7 +440,7 @@ mod tests {
 
     /// A `forbid` occurrence due while every slot of its key is held is
     /// written already settled `skipped_singleton`, not queued `pending` for a
-    /// worker to claim only to skip it (#377). Once a slot is free, the next
+    /// worker to claim only to skip it. Once a slot is free, the next
     /// due occurrence is queued as usual.
     #[tokio::test]
     async fn a_forbid_occurrence_due_with_every_slot_held_is_skipped_when_due() {

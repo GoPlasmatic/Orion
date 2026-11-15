@@ -189,6 +189,6 @@ Each run writes a `SUMMARY.md` plus raw per-scenario `hey` output to
 `tests/benchmark/results/`. Scratch runs stay local — `.gitignore` ignores
 the directory — but each release's record is committed to a
 `results/vX.Y.Z/` directory that `.gitignore` re-includes explicitly (see
-the tracked `results/v0.2.0/` and `results/v1.0.0/`, and `RELEASING.md` for
+the tracked `results/v1.0.0/`, and `RELEASING.md` for
 the release-session procedure). The headline numbers live in the README's
 [Performance](../../../README.md#performance) section.

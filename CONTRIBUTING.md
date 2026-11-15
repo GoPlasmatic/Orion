@@ -299,56 +299,11 @@ new comments should not add audit or tracker IDs.
 
 ## Cutting a Release
 
-Releases are tag-driven. Pushing a version tag runs three workflows —
-`release.yml` (binaries, installers, Homebrew), `docker-release.yml`
-(multi-arch image, Helm chart, signing/attestation), and
-`crates-publish.yml` (crates.io; skips prerelease tags) — and all three
-gate on a successful CI run for the tagged commit (`ci-gate`), so a tag can
-never outrun a red build. Note that this repository releases `orion-server` and the
-rider crates only — `orion-cli` is released from its own repository through
-the installers, the Homebrew tap and GHCR. The
-secrets they need and the full procedure are in `RELEASING.md`.
-
-1. **Version bump.** Every crate shares `workspace.package.version` in the
-   root `Cargo.toml`; `cargo release <level>` rewrites it and every
-   `[workspace.dependencies]` requirement together, then tags. A bare
-   `v`-prefixed tag (`v1.0.0`) releases every package at that version, and
-   lockstep is what keeps the rider crates (`orion-api`, `orion-client`,
-   `orion-definitions`, `orion-extension-api`, `orion-common`, `orion-storage`, `orion-engine`, `orion-plugin-host`, `orion-runtime`, `orion-authoring`, `orion-http`, `orion-plugin-sdk`) publishable — their version always moves with a
-   release, so the skip-if-present rider publish can never leave
-   `orion-server` resolving older crates.io content. The Helm chart's
-   `version` and `appVersion` and the README's release line move with the
-   workspace version in the same commit — `release_stamps_drift_test` fails
-   the build until they do. `docker-release.yml` restamps both from the tag
-   at publish time, so the in-tree values are the pre-tag record, not a
-   value to leave behind.
-2. **CHANGELOG cut.** Fold `## [Unreleased]` into a dated
-   `## [X.Y.Z] - YYYY-MM-DD` heading (merge per category), leave an empty
-   `[Unreleased]` on top, and check the compare links at the foot of the file
-   name the new tag.
-3. **Tag and push.** Push the tag by its full `refs/tags/` name. Releases are
-   cut from `main` and no release branch exists today, but the form is
-   unambiguous whatever a branch is called — and a branch named after its
-   version, which is how the `v1.0.0` branch worked, makes a bare
-   `git push origin vX.Y.Z` fail as an ambiguous refspec.
-   ```bash
-   git tag vX.Y.Z && git push origin refs/tags/vX.Y.Z
-   ```
-4. **Watch the release land.** `release.yml` builds each dist target
-   (macOS/Windows are pre-proven per PR by `cross-os-build.yml`, but the
-   release build is the real one) and publishes the GitHub Release;
-   `docker-release.yml` builds per-platform images, merges the manifest, then
-   signs and attests **the merged manifest digest** and pushes the chart to
-   `oci://ghcr.io/goplasmatic/charts`.
-5. **Verify what shipped.** The merge job's final step already runs
-   `cosign verify` and `gh attestation verify` against the published tag and
-   fails the release if nothing verifiable landed — confirm it ran green
-   rather than assuming. `dry_run` dispatches skip the merge job entirely, so
-   a scratch tag is the only true rehearsal of this half.
-
-Expand/contract migration discipline across releases is described under
-[Database migrations](#database-migrations) — a release may only *add* schema
-alongside code that tolerates both shapes.
+Releases are tag-driven: a `v*` tag runs `release.yml`, `docker-release.yml`
+and `crates-publish.yml`, each gated on a green CI run for the tagged commit.
+This repository releases `orion-server` and its rider crates; `orion-cli` is
+released from Orion-cli. The procedure (version bump, changelog cut, tag,
+verification) is in [`RELEASING.md`](RELEASING.md).
 
 ## License
 

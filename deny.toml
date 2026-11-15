@@ -32,7 +32,7 @@ ignore = [
     # 0.39 is not selectable without forking sqlx. The attack needs a local
     # party already able to write the node's state files — the database's
     # own integrity boundary — and no request path controls either file.
-    # Track sqlx's dependency bump under #389.
+    # Drop this once sqlx allows libsqlite3-sys 0.39.
     "RUSTSEC-2026-0459",
 ]
 
@@ -62,7 +62,6 @@ allow = [
 confidence-threshold = 0.8
 
 [bans]
-# Owners and remaining version constraints are tracked in #389.
 # The ~600-crate tree inevitably carries duplicate minor versions; a hard
 # deny would be permanent noise. Wildcard requirements stay denied.
 multiple-versions = "warn"

@@ -27,7 +27,7 @@ own run conditions.
 | E: Concurrency c=100 | 4932.66 | 20.20 | 30.40 | 0 |
 | F: Reload under load (56x) | 5019.14 | 9.90 | 15.80 | 0 |
 
-## Compared to v0.2.0 (`../v0.2.0/`)
+## Compared to v0.2.0
 
 The runs are not strictly comparable — v0.2.0 was 15s/scenario on an earlier
 macOS, and scenario D was redefined for 1.0 (the old "12 workflows on one

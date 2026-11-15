@@ -1,9 +1,9 @@
-# v4 run-view evidence for Orion #371 and #372
+# Run-view benchmark
 
-Measured on 2026-10-28. The current Community workloads support retiring the
-original per-step context rebuild and per-element message-clone reports.
-No engine rewrite is indicated by these results. Issue closure still requires
-posting this evidence to GitHub; no issue state was changed here.
+How dataflow-rs 4's run view scales on Community workloads: engine allocations,
+execution time and process RSS, measured through the plugin host without HTTP.
+The last recorded run is from 2026-10-28. It shows no per-step context rebuild
+and no per-element message clone.
 
 ## Reproduce
 
@@ -107,7 +107,7 @@ its context-sized allocations are expected and do not establish per-element
 message clones. Legitimate item/result materialization and the growing replay
 also allocate. No timing threshold is used in tests.
 
-## Behavioral evidence and remaining scope
+## Behavioral checks
 
 `orion-engine/src/run_view_tests.rs` uses Orion's expressions and a yielding host
 function at concurrency 1 and 4. It verifies the same base for each element,
@@ -117,44 +117,7 @@ prefix, with null placeholders in unfilled collection slots, and cancellation
 folds no element writes. Every scenario runs with trace capture off and on;
 traces validate and replay to the final data and temporary context.
 
-These measurements and source paths support resolving the original workflow
-claims in #371/#372. They do not establish constant execution cost, universal
-performance parity or an improvement to standalone `ExprEngine::eval` calls.
-A standalone evaluator investigation needs its own profiled workload. Optimized
-release performance, production HTTP/connector workloads and the broader #385
-release matrix remain separate release evidence.
-
-Validation of this checkout: all 36 benchmark cases completed with exact-output
-checks; all three engine regressions pass. The full Rust gate passes: formatting,
-strict workspace Clippy, 3,107 test executions (79 ignored), default-member
-doctests and warnings-as-errors workspace Rustdoc. Documentation structure/link
-lint passes. Container-gated tests were not run for this workload change.
-
-## Closure handoff
-
-On 2026-10-28 we reviewed the original reports and their follow-up comments;
-both issues remain open. We verified the dataset's four source hashes against
-commit `5b9e37d670ef44432093ab5f1095deb658203654`, the complete 36-case grid,
-108 samples and their medians, all 16 table rows above, and fan-out allocation
-agreement between concurrency ceilings 1 and 8. The original dataset records
-the preceding base commit and `dirty: true`; its source hashes identify the
-measured files now present in the evidence commit.
-
-A fresh three-round run completed all 36 cases with exact-output checks.
-Median allocation requests and allocated bytes matched the committed dataset
-in every case. The three yielding-host regressions also passed again.
-The five commands in `just check` passed again (3,107 test executions, 79 ignored),
-as did `bash docs/lint.sh`. This environment lacks `just`, so we ran its recipe
-commands in order. HTTP tests required local-listener access outside the sandbox.
-
-Ready-to-post comments:
-
-- [Issue #371 closure evidence](issue-371-closure.md)
-- [Issue #372 closure evidence](issue-372-closure.md)
-
-The comments link to the evidence commit. GitHub's commit API could not resolve
-that commit during this review, so publish it and verify those links before
-posting either comment. The repository's pending-work rules prohibit pushing
-until asked. Posting comments and closing issues also await explicit user
-authorization. This review changes neither issue state nor the release gate in
-#385.
+These measurements do not establish constant execution cost, universal
+performance parity or an improvement to standalone `ExprEngine::eval` calls;
+a standalone evaluator investigation needs its own profiled workload. Release
+throughput and HTTP/connector workloads are `bench.sh`'s.

@@ -220,7 +220,7 @@ async fn cluster_nodes_with(
 ///
 /// Then the same claim under load: deploying a *new revision* of the plugin
 /// through A refuses nothing on B, whose engine is rebuilt whole for the
-/// changed fingerprint. This is `deploy/ha/plugin-drill.sh`'s second
+/// changed fingerprint. This is Orion Ext's `deploy/ha/plugin-drill.sh`'s second
 /// assertion without the containers — the drill measures it through a load
 /// balancer across two processes, and this pins it per run of the cluster
 /// suite.

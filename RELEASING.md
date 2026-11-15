@@ -1,9 +1,12 @@
 # Releasing Orion
 
-Cut releases from `main` (or a `release/X.Y` maintenance branch) after the workspace gate and the current release
-matrix pass. Long-lived integration branches (such as `dataflow-4`) must merge to `main` before tagging because `ci.yml` triggers on pushes to `main` and `release/**`, while `release.yml`, `docker-release.yml` and `crates-publish.yml` trigger on `v*` tags. A tag mints no CI run of its own, so the tagged commit must already have a successful push run; `main` tracks the active 2.x line, and any maintenance release for an older line is cut from a `release/X.Y` branch. The v2 migration changes the API, deployment model and state
-schema; use the [v2 release evidence](RELEASE-EVIDENCE/release-v2-evidence.md) to track the
-remaining gates and their owners.
+Cut releases from `main` (or a `release/X.Y` maintenance branch) after the
+workspace gate and the release matrix pass. `ci.yml` triggers on pushes to
+`main` and `release/**`, while `release.yml`, `docker-release.yml` and
+`crates-publish.yml` trigger on `v*` tags. A tag mints no CI run of its own, so
+the tagged commit must already have a successful push run. `main` tracks the
+active 2.x line; a maintenance release for an older line is cut from a
+`release/X.Y` branch.
 
 ## Prepare the candidate
 
@@ -23,22 +26,15 @@ remaining gates and their owners.
    warnings. Check advisories through the current CI policy too. Documentation
    lint and the book build run in
    [GoPlasmatic/Orion-docs](https://github.com/GoPlasmatic/Orion-docs).
-4. Verify the registry-only dependency graph. Swagger UI 10.0.2 contains
-   utoipa#1645's ZIP 9 security fixes; this branch removes the temporary utoipa
-   workspace patches and git-source exception. Keep the minimum at 10.0.2 or
-   newer so registry consumers receive the fix too. Run the affected tests,
-   OpenAPI drift guard, dependency policy and workspace gate after updates.
+4. Verify the dependency graph is registry-only (no `[patch]`, no git
+   sources). Keep Swagger UI at 10.0.2 or newer: it carries utoipa#1645's
+   ZIP security fixes.
 5. Reconcile `orion-server`'s `Unreleased` notes (and the CLI's, in
-   Orion-cli) with the final behavior. Document
-   strict v2 definitions, the `{initial, steps, truncated}` trace, matching
-   server/CLI API versions, Community removals and the fresh-database move from
-   1.x. Preserve dated release history. Do not advertise reference-only
-   Enterprise work as shipped Community capability.
+   Orion-cli) with the final behavior. Preserve dated release history. Do not
+   advertise Standard or Enterprise features as Community capability.
 6. Capture the HTTP and run-view benchmark evidence below. Community runs one
    node, so the HA rolling, plugin and cron drills are Orion Ext's (cluster
    mode is a Standard and Enterprise feature).
-7. Confirm Console v2 support in Orion-ui before refreshing its recording and
-   guide. Track that repository's release as an external dependency.
 
 The workspace has fourteen crates sharing `workspace.package.version`;
 `orion-server` is the one binary this repository distributes. The CLI is
@@ -101,7 +97,7 @@ gh attestation verify <downloaded-archive> -R GoPlasmatic/Orion
 ```
 
 Record run URLs and digests. Fix a failed candidate with a new candidate
-version. Repeat the image and HA checks for the artifact you intend to promote.
+version. Repeat the image checks for the artifact you intend to promote.
 The documentation site is published from Orion-docs (Cloudflare Workers
 Builds); once its pin moves to the release, verify the served upgrade guide
 and version in its deployment dashboard.
@@ -109,8 +105,8 @@ and version in its deployment dashboard.
 ## Benchmark evidence
 
 The [v1.0.0 session](crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md)
-is historical. Keep README figures labeled with their measured version until
-a dedicated v2 session replaces them. A debug smoke run proves the benchmark
+is the last committed record. Keep README figures labeled with their measured
+version until a dedicated v2 session replaces them. A debug smoke run proves the benchmark
 setup works; it does not supply release throughput or a speedup claim.
 
 On idle, dedicated hardware, record CPU, cores, memory, OS, toolchain, exact
