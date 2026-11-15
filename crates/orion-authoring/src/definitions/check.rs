@@ -405,7 +405,17 @@ fn check_workflows(
             }
         }
         check_read_only_statements(def, &req.name, findings);
-        if let Err(e) = crate::validation::validate_create_workflow(&req, loop_cap, functions) {
+        // One engine parse for the refusal and the advisories below (P-27).
+        let workflow_issues =
+            crate::validation::workflow_issues(&req.tasks, req.loop_config.as_ref());
+        if let Err(e) = crate::validation::validate_create_workflow_with_issues(
+            &req,
+            loop_cap,
+            functions,
+            workflow_issues
+                .as_ref()
+                .map(crate::validation::ParsedWorkflow::parse_issues),
+        ) {
             let entity = format!("workflow '{}'", req.name);
             for d in schema_diagnostics("schema.workflow", &entity, def, &e) {
                 let named = unknown_function_name(def, &d);
@@ -472,9 +482,12 @@ fn check_workflows(
         // Likewise for what the engine reports and does not refuse: a
         // `$`-prefixed key that loses one `$` when it is emitted, and a
         // `validation` whose failure changes nothing.
-        for advisory in
-            crate::validation::engine_advisories(&req.tasks, req.loop_config.as_ref(), functions)
-        {
+        for advisory in crate::validation::engine_advisories_from(
+            &req.tasks,
+            req.loop_config.as_ref(),
+            functions,
+            workflow_issues,
+        ) {
             findings.push(Diagnostic::warning(
                 advisory.check,
                 format!("workflow '{}' {}", req.name, advisory.path),

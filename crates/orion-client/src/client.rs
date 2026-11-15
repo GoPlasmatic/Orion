@@ -168,8 +168,13 @@ impl OrionClient {
         path: &str,
         body: &Req,
     ) -> Result<Resp, ClientError> {
-        let val = serde_json::to_value(body).map_err(|source| ClientError::Decode { source })?;
-        let bytes = self.execute(Method::POST, path, Some(&val)).await?;
+        // Straight to bytes: a DTO→`Value`→bytes path built a whole JSON tree
+        // the request never reads, which matters for a plugin upload's base64
+        // payload (P-28).
+        let bytes = serde_json::to_vec(body).map_err(|source| ClientError::Decode { source })?;
+        let bytes = self
+            .execute_bytes(Method::POST, path, Some(bytes.into()))
+            .await?;
         decode(&bytes)
     }
 
@@ -262,6 +267,22 @@ impl OrionClient {
         path: &str,
         body: Option<&Value>,
     ) -> Result<bytes::Bytes, ClientError> {
+        // Serialized once here, not by `RequestBuilder::json` on every
+        // attempt: the bytes are the same each time.
+        let body = body
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(|source| ClientError::Decode { source })?
+            .map(bytes::Bytes::from);
+        self.execute_bytes(method, path, body).await
+    }
+
+    async fn execute_bytes(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<bytes::Bytes>,
+    ) -> Result<bytes::Bytes, ClientError> {
         let max_attempts = if method == Method::GET {
             self.get_retries.saturating_add(1)
         } else {
@@ -270,7 +291,7 @@ impl OrionClient {
         let mut attempt = 0u32;
         loop {
             attempt = attempt.saturating_add(1);
-            match self.execute_once(method.clone(), path, body).await {
+            match self.execute_once(method.clone(), path, body.clone()).await {
                 Ok(bytes) => return Ok(bytes),
                 Err(err) if attempt < max_attempts && is_retryable_get_error(&err) => {
                     let shift = (attempt - 1).min(6);
@@ -285,7 +306,7 @@ impl OrionClient {
         &self,
         method: Method,
         path: &str,
-        body: Option<&Value>,
+        body: Option<bytes::Bytes>,
     ) -> Result<bytes::Bytes, ClientError> {
         let url = format!("{}{path}", self.base_url);
         let mut req = self.http.request(method, &url);
@@ -300,7 +321,9 @@ impl OrionClient {
             req = req.header("x-orion-change-context", context);
         }
         if let Some(body) = body {
-            req = req.json(body);
+            req = req
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body);
         }
         let mut resp = req.send().await.map_err(|source| ClientError::Connect {
             url: url.clone(),

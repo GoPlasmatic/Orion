@@ -101,7 +101,7 @@ impl PluginFunctionHandler {
     /// the schema over the resolved values, the size limit, the permit, the
     /// invocation, and its result read as JSON. `guest` is the input the
     /// guest receives, every declared field but `output` that has a value.
-    async fn invoke_resolved(&self, guest: Value) -> Result<Value, Failure> {
+    async fn invoke_resolved(&self, guest: Value) -> Result<OwnedDataValue, Failure> {
         // The schema again, over the resolved values and with every field
         // read as literal: an expression that evaluated to the wrong kind,
         // or to nothing where a field is required, is the caller's error and
@@ -157,6 +157,8 @@ impl PluginFunctionHandler {
             .map_err(super::runtime::Invocation::into_failure)?;
         drop(permit);
 
+        // Straight to the value the context stores: parsing through
+        // `serde_json::Value` first built the whole tree twice (P-28).
         serde_json::from_str(&json).map_err(|e| {
             Failure::host(
                 Category::BadResult,
@@ -398,7 +400,7 @@ impl dataflow_rs::Function for PluginFunction {
         // After the invocation is counted, as the success it was: a write a
         // root refuses (a result that is not an object) is the engine's
         // error, not the plugin's.
-        ctx.set(path, OwnedDataValue::from(value))?;
+        ctx.set(path, value)?;
         Ok(Outcome::Ok)
     }
 }

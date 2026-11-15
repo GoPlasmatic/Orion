@@ -10,6 +10,18 @@ pub fn validate_create_workflow(
     max_loop_iterations: i64,
     functions: &FunctionRegistry,
 ) -> Result<(), OrionError> {
+    validate_create_workflow_with_issues(req, max_loop_iterations, functions, None)
+}
+
+/// [`validate_create_workflow`] with the engine's parse already done by the
+/// caller, so a gate that also asks for advisories parses the document once
+/// (P-27).
+pub(crate) fn validate_create_workflow_with_issues(
+    req: &CreateWorkflowRequest,
+    max_loop_iterations: i64,
+    functions: &FunctionRegistry,
+    issues: Option<&[dataflow_rs::Issue]>,
+) -> Result<(), OrionError> {
     if let Some(ref id) = req.workflow_id {
         validate_id(id, "workflow.workflow_id")?;
     }
@@ -37,10 +49,11 @@ pub fn validate_create_workflow(
             ));
         }
     }
-    reject_task_errors(validate_workflow_tasks_schema(
+    reject_task_errors(validate_workflow_tasks_schema_with_issues(
         &req.tasks,
         req.loop_config.as_ref(),
         functions,
+        issues,
     ))?;
     reject_stray_secret_references(&req.tasks, req.loop_config.as_ref(), functions)
 }
@@ -305,6 +318,17 @@ pub fn validate_workflow_tasks_schema(
     loop_config: Option<&serde_json::Value>,
     functions: &FunctionRegistry,
 ) -> Vec<FieldError> {
+    validate_workflow_tasks_schema_with_issues(tasks, loop_config, functions, None)
+}
+
+/// [`validate_workflow_tasks_schema`] with the engine's parse supplied. The
+/// caller's issues stand in for the parse the catch-all would otherwise run.
+pub(crate) fn validate_workflow_tasks_schema_with_issues(
+    tasks: &serde_json::Value,
+    loop_config: Option<&serde_json::Value>,
+    functions: &FunctionRegistry,
+    issues: Option<&[dataflow_rs::Issue]>,
+) -> Vec<FieldError> {
     if tasks.as_array().is_none() {
         return Vec::new();
     }
@@ -426,8 +450,13 @@ pub fn validate_workflow_tasks_schema(
     // `workflow.name` are validated by their own callers with their own
     // messages.
     if errors.is_empty() {
-        let document = shape_document(tasks, loop_config);
-        let issues = dataflow_rs::def::parse(&document, crate::engine::parse_options()).issues;
+        let issues = match issues {
+            Some(issues) => issues.to_vec(),
+            None => {
+                let document = shape_document(tasks, loop_config);
+                dataflow_rs::def::parse(&document, crate::engine::parse_options()).issues
+            }
+        };
         errors.extend(
             issues
                 .into_iter()

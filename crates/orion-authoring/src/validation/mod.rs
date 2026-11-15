@@ -15,8 +15,10 @@ pub use connectors::{
 pub use endpoints::check_db_endpoint;
 pub use packages::{MAX_PACKAGE_NAME_LEN, package_key};
 pub use ssrf::{PinnedDnsResolver, validate_hostport_not_private, validate_url_not_private};
+pub(crate) use workflows::validate_create_workflow_with_issues;
 pub use workflows::{
-    EngineAdvisory, engine_advisories, quarantine_refusals, secret_reference_errors,
-    unresolvable_logic_warnings, validate_create_workflow, validate_workflow_id,
-    validate_workflow_loop_schema, validate_workflow_tasks_schema,
+    EngineAdvisory, ParsedWorkflow, engine_advisories, engine_advisories_from, quarantine_refusals,
+    secret_reference_errors, unresolvable_logic_warnings, validate_create_workflow,
+    validate_workflow_id, validate_workflow_loop_schema, validate_workflow_tasks_schema,
+    workflow_issues,
 };

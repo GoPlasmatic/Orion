@@ -87,7 +87,9 @@ struct Scope {
 /// to where it lands.
 #[derive(Clone)]
 struct Src {
-    file: String,
+    /// Shared: every node in one document names the same file, and cloning a
+    /// `String` per key and index was the expander's largest allocation (P-27).
+    file: std::rc::Rc<str>,
     path: Option<String>,
     via: Vec<Via>,
 }
@@ -95,7 +97,7 @@ struct Src {
 impl Src {
     fn key(&self, key: &str) -> Src {
         Src {
-            file: self.file.clone(),
+            file: std::rc::Rc::clone(&self.file),
             path: self.path.as_deref().map(|p| join(p, key)),
             via: self.via.clone(),
         }
@@ -103,7 +105,7 @@ impl Src {
 
     fn index(&self, i: usize) -> Src {
         Src {
-            file: self.file.clone(),
+            file: std::rc::Rc::clone(&self.file),
             path: self.path.as_deref().map(|p| format!("{p}[{i}]")),
             via: self.via.clone(),
         }
@@ -170,7 +172,7 @@ impl<'a, 'o> Expander<'a, 'o> {
         let at = Coord {
             compiled: String::new(),
             src: Src {
-                file: self.cx.origin.to_string(),
+                file: self.cx.origin.into(),
                 path: Some(String::new()),
                 via: Vec::new(),
             },
@@ -218,7 +220,7 @@ impl<'a, 'o> Expander<'a, 'o> {
         let at = Coord {
             compiled: path.to_string(),
             src: Src {
-                file: self.cx.origin.to_string(),
+                file: self.cx.origin.into(),
                 path: Some(path.to_string()),
                 via: Vec::new(),
             },
@@ -399,7 +401,7 @@ impl<'a, 'o> Expander<'a, 'o> {
             let mut member = member.clone();
             reanchor_sql(&mut member, &fragment.origin, self.cx.base_dir);
             let at = Src {
-                file: fragment.origin.clone(),
+                file: fragment.origin.as_str().into(),
                 path: Some(format!("fragments.{name}.tasks[{k}]")),
                 via: inner.trail.clone(),
             };
@@ -461,7 +463,7 @@ impl<'a, 'o> Expander<'a, 'o> {
         reanchor_sql(&mut body, &fragment.origin, self.cx.base_dir);
         let start = out.len();
         let at = Src {
-            file: fragment.origin.clone(),
+            file: fragment.origin.as_str().into(),
             path: Some(format!("fragments.{name}.value")),
             via: inner.trail.clone(),
         };
@@ -541,7 +543,7 @@ impl<'a, 'o> Expander<'a, 'o> {
         let body_at = Coord {
             compiled: at.compiled.clone(),
             src: Src {
-                file: fragment.origin.clone(),
+                file: fragment.origin.as_str().into(),
                 path: Some(format!("fragments.{name}.value")),
                 via: inner.trail.clone(),
             },
@@ -623,7 +625,7 @@ impl<'a, 'o> Expander<'a, 'o> {
         let muted = Coord {
             compiled: String::new(),
             src: Src {
-                file: String::new(),
+                file: "".into(),
                 path: None,
                 via: Vec::new(),
             },
@@ -760,7 +762,7 @@ impl<'a, 'o> Expander<'a, 'o> {
         let muted = Coord {
             compiled: String::new(),
             src: Src {
-                file: String::new(),
+                file: "".into(),
                 path: None,
                 via: Vec::new(),
             },
@@ -887,7 +889,7 @@ impl<'a, 'o> Expander<'a, 'o> {
             return;
         }
         let own = at.src.via.is_empty()
-            && at.src.file == self.cx.origin
+            && &*at.src.file == self.cx.origin
             && at.src.path.as_deref() == Some(at.compiled.as_str());
         if own {
             return;
@@ -1209,12 +1211,12 @@ mod tests {
         );
         assert_eq!(doc["tasks"].as_array().map(Vec::len), Some(5));
         let copy = map.resolve("wf.json", "tasks[1].name");
-        assert_eq!(copy.file, "wf.json");
+        assert_eq!(copy.file.to_string(), "wf.json");
         assert_eq!(copy.path.as_deref(), Some("tasks[0].do.name"));
         assert_eq!(copy.describe().as_deref(), Some("$each p = 2"));
         assert!(!copy.is_authored_here());
         let used = map.resolve("wf.json", "tasks[3]");
-        assert_eq!(used.file, "shared.json");
+        assert_eq!(used.file.to_string(), "shared.json");
         assert_eq!(used.path.as_deref(), Some("fragments.pair.tasks[1]"));
         let last = map.resolve("wf.json", "tasks[4].name");
         assert_eq!(last.path.as_deref(), Some("tasks[2].name"));

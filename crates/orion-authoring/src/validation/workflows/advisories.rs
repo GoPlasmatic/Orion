@@ -53,11 +53,22 @@ pub fn engine_advisories(
     loop_config: Option<&Value>,
     functions: &FunctionRegistry,
 ) -> Vec<EngineAdvisory> {
-    // The synthetic wrapper `validate_workflow_tasks_schema` uses, loop
-    // included: the engine reads a loop's `setup` steps and its `over` as it
-    // reads the body.
+    engine_advisories_from(tasks, loop_config, functions, None)
+}
+
+/// [`engine_advisories`] with the engine's parse supplied, so a caller that
+/// already parsed the document does not parse it again (P-27).
+pub fn engine_advisories_from(
+    tasks: &Value,
+    loop_config: Option<&Value>,
+    functions: &FunctionRegistry,
+    parsed: Option<ParsedWorkflow>,
+) -> Vec<EngineAdvisory> {
     let loop_config = loop_config.filter(|l| !l.is_null());
-    let Some(issues) = engine_issues(&shape_document(tasks, loop_config)) else {
+    let Some(issues) = parsed
+        .or_else(|| workflow_issues(tasks, loop_config))
+        .map(ParsedWorkflow::all)
+    else {
         // Unparseable tasks are reported with a better message by the schema
         // check; there is nothing to say about the shape of a document that is
         // not a workflow.
@@ -164,10 +175,39 @@ impl EngineAdvisory {
     pub const UNCLASSIFIED: &'static str = "engine.advisory";
 }
 
+/// What the engine found in one task array, split by which consumer reads
+/// it: the parser's issues are the schema gate's refusal, and the bare
+/// compiler's structural findings are only advisories.
+pub struct ParsedWorkflow {
+    pub parse: Vec<dataflow_rs::Issue>,
+    pub check: Vec<dataflow_rs::Issue>,
+}
+
+impl ParsedWorkflow {
+    /// The parser's issues and the compiler's, in that order.
+    pub fn all(self) -> Vec<dataflow_rs::Issue> {
+        let mut issues = self.parse;
+        issues.extend(self.check);
+        issues
+    }
+
+    /// The parser's issues alone: what the schema gate may refuse.
+    pub fn parse_issues(&self) -> &[dataflow_rs::Issue] {
+        &self.parse
+    }
+}
+
+/// The engine's parse of one task array, over the synthetic wrapper both the
+/// schema check and the advisories read.
+pub fn workflow_issues(tasks: &Value, loop_config: Option<&Value>) -> Option<ParsedWorkflow> {
+    let loop_config = loop_config.filter(|l| !l.is_null());
+    engine_issues(&shape_document(tasks, loop_config))
+}
+
 /// Every issue the engine's parse and its bare check find in `workflow`, in
 /// that order; `None` when the parse refuses it, since there is nothing to
 /// check in a document that is not a workflow.
-fn engine_issues(workflow: &Value) -> Option<Vec<dataflow_rs::Issue>> {
+fn engine_issues(workflow: &Value) -> Option<ParsedWorkflow> {
     static COMPILER: std::sync::LazyLock<dataflow_rs::program::Compiler> =
         std::sync::LazyLock::new(|| {
             dataflow_rs::Registry::new(crate::engine::kit::test_exprs())
@@ -175,9 +215,10 @@ fn engine_issues(workflow: &Value) -> Option<Vec<dataflow_rs::Issue>> {
         });
     let parsed = dataflow_rs::def::parse(workflow, crate::engine::parse_options());
     let def = parsed.def?;
-    let mut issues = parsed.issues;
-    issues.extend(COMPILER.check(&def));
-    Some(issues)
+    Some(ParsedWorkflow {
+        parse: parsed.issues,
+        check: COMPILER.check(&def),
+    })
 }
 
 /// Ask the engine which keys in one arbitrary value it would strip a `$` from,
@@ -201,7 +242,7 @@ pub(super) fn escaped_keys_in(value: &Value) -> Vec<(String, String)> {
             ] } }
         }],
     });
-    let Some(issues) = engine_issues(&synthetic) else {
+    let Some(issues) = engine_issues(&synthetic).map(ParsedWorkflow::all) else {
         return Vec::new();
     };
     issues
