@@ -271,9 +271,14 @@ async fn run_supervised_trace(item: QueuedItem, ctx: ProcessingContext) {
     let dlq_entry_id = item.dlq_entry_id.clone();
     let ctx_for_panic = ctx.clone();
 
-    if let Err(join_err) = tokio::spawn(process_trace(item, ctx)).await
-        && join_err.is_panic()
-    {
+    // P-25: one task, not a task that awaits a second spawned task. The
+    // panic is caught here so the trace still settles, without the extra
+    // spawn and join.
+    use futures::FutureExt as _;
+    let ran = std::panic::AssertUnwindSafe(process_trace(item, ctx))
+        .catch_unwind()
+        .await;
+    if ran.is_err() {
         settle_panicked_trace(&ctx_for_panic, &trace_id, &channel, dlq_entry_id.as_deref()).await;
     }
 }
