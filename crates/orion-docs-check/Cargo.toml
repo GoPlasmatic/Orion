@@ -21,3 +21,4 @@ serde_json = "1"
 # The fmt guard reads a definition file's fields off its schema type.
 utoipa = { workspace = true, features = ["axum_extras", "chrono"] }
 toml.workspace = true
+serde_norway = "0.9.42"

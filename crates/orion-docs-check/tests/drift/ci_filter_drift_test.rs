@@ -68,24 +68,59 @@ fn modules_with_ignored_tests(dir: &str) -> BTreeSet<String> {
     out
 }
 
+/// Every `run:` script the workflow declares, wherever it sits in the job.
+///
+/// Parsed as YAML rather than scanned as text, so a `run:` block folded or
+/// quoted differently — or a prose comment that happens to contain the command
+/// — cannot make the guard pass or fail by accident (M-18).
+fn run_scripts(workflow: &str) -> Vec<String> {
+    fn visit(value: &serde_norway::Value, out: &mut Vec<String>) {
+        match value {
+            serde_norway::Value::Mapping(map) => {
+                for (key, value) in map {
+                    if key.as_str() == Some("run")
+                        && let Some(script) = value.as_str()
+                    {
+                        out.push(script.to_string());
+                    }
+                    visit(value, out);
+                }
+            }
+            serde_norway::Value::Sequence(items) => {
+                for item in items {
+                    visit(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let doc: serde_norway::Value = serde_norway::from_str(workflow).expect("ci.yml is YAML");
+    let mut scripts = Vec::new();
+    visit(&doc, &mut scripts);
+    scripts
+}
+
 /// The union of the name filters on every `cargo test <selector> --
 /// --ignored …` line in the workflow.
 fn ci_filters(selector: &str) -> BTreeSet<String> {
     let workflow = std::fs::read_to_string(Path::new(WORKFLOW)).expect("read ci.yml");
     let mut out = BTreeSet::new();
-    for line in workflow.lines() {
-        let line = line.trim();
-        if !line.contains(selector) || !line.contains("--ignored") {
-            continue;
+    for script in run_scripts(&workflow) {
+        for line in script.lines() {
+            let line = line.trim();
+            if !line.contains(selector) || !line.contains("--ignored") {
+                continue;
+            }
+            let (_, filters) = line.split_once("--ignored").expect("checked above");
+            out.extend(
+                filters
+                    .split_whitespace()
+                    // Trailing flags such as `--test-threads=2` are not filters.
+                    .filter(|tok| !tok.starts_with('-'))
+                    .map(str::to_string),
+            );
         }
-        let (_, filters) = line.split_once("--ignored").expect("checked above");
-        out.extend(
-            filters
-                .split_whitespace()
-                // Trailing flags such as `--test-threads=2` are not filters.
-                .filter(|tok| !tok.starts_with('-'))
-                .map(str::to_string),
-        );
     }
     assert!(
         !out.is_empty(),
