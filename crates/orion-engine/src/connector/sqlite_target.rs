@@ -78,7 +78,7 @@ fn targets_state_db(target: &Path, state_db: &Path) -> std::io::Result<bool> {
 
 /// Parse a URL once, then replace its filename with the confined absolute path.
 /// Passing these options directly to SQLx avoids decoding a filename twice.
-/// Like [`confined_options`], additionally rejecting targets that resolve to
+/// The confined options any caller uses, additionally rejecting targets that resolve to
 /// Orion's configured `state_db` path, its `-wal`/`-shm`/`-journal` sidecars,
 /// or (on Unix) an existing file sharing the same `(dev, ino)` as `state_db`.
 pub fn confined_options_with_state_db(
