@@ -371,9 +371,11 @@ pub async fn execute_request(
         // Connector headers, auth, and task headers can carry credentials —
         // they go only to the connector's own endpoint, never on a cross-host hop.
         if own_endpoint {
-            // Apply connector default headers (lowest priority)
-            for (k, v) in &http_config.headers {
-                req = req.header(k, v);
+            // Apply connector default headers (lowest priority). Parsed once
+            // per connector rather than re-validated on every request and
+            // redirect hop (P-16).
+            if !http_config.headers.is_empty() {
+                req = req.headers(http_config.default_headers().clone());
             }
 
             // Connector query parameters. Applied here rather than merged into

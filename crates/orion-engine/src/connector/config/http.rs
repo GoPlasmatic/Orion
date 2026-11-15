@@ -4,13 +4,23 @@ use serde::{Deserialize, Serialize};
 
 use super::HttpOperationGates;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpConnectorConfig {
     pub url: String,
     #[serde(default)]
     pub method: String,
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    /// [`Self::headers`] parsed once, on the first request that needs them —
+    /// or when the registry loads the connector, whichever comes first.
+    ///
+    /// `RequestBuilder::header` parses a name and a value on every call, and
+    /// these are applied to every request *and* every redirect hop. They come
+    /// from the stored connector, so one parse per loaded connector is enough
+    /// (P-16). Skipped by serde: it is a parse of `headers`, not a second
+    /// field to keep in step.
+    #[serde(skip)]
+    pub parsed_headers: std::sync::OnceLock<reqwest::header::HeaderMap>,
     /// Query parameters appended to every request through this connector —
     /// the home for APIs that authenticate with credentials **in the query
     /// string** (legacy SMS/telecom gateways, older payment and lookup APIs).
@@ -47,6 +57,61 @@ pub struct HttpConnectorConfig {
     /// Which HTTP methods workflows may issue through this connector.
     #[serde(default)]
     pub operations: HttpOperationGates,
+}
+
+/// Equal when the configuration is: the parsed-header cache is derived from
+/// `headers` and must not take part (it is not `Eq`, and a config that was
+/// used once is not a *different* config from one that was not).
+impl PartialEq for HttpConnectorConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.url == other.url
+            && self.method == other.method
+            && self.headers == other.headers
+            && self.query_params == other.query_params
+            && self.auth == other.auth
+            && self.retry == other.retry
+            && self.retry_non_idempotent == other.retry_non_idempotent
+            && self.max_response_size == other.max_response_size
+            && self.allow_private_urls == other.allow_private_urls
+            && self.operations == other.operations
+    }
+}
+
+impl Eq for HttpConnectorConfig {}
+
+impl HttpConnectorConfig {
+    /// The connector's default headers, parsed once.
+    ///
+    /// An invalid pair is skipped with a warning rather than panicking the
+    /// way `RequestBuilder::header` would: authoring validation refuses such a
+    /// connector, and one that reached storage by another route must not turn
+    /// every call through it into a panic.
+    pub fn default_headers(&self) -> &reqwest::header::HeaderMap {
+        self.parsed_headers.get_or_init(|| {
+            let mut map = reqwest::header::HeaderMap::new();
+            for (name, value) in &self.headers {
+                match (
+                    reqwest::header::HeaderName::try_from(name.as_str()),
+                    reqwest::header::HeaderValue::try_from(value.as_str()),
+                ) {
+                    (Ok(name), Ok(value)) => {
+                        map.insert(name, value);
+                    }
+                    _ => tracing::warn!(
+                        header = %name,
+                        "connector default header is not a valid HTTP header; skipped"
+                    ),
+                }
+            }
+            map
+        })
+    }
+
+    /// Build [`Self::parsed_headers`] now, so the first request does not pay
+    /// for it. Called where the connector is loaded.
+    pub fn prebuild_headers(&self) {
+        let _ = self.default_headers();
+    }
 }
 
 fn default_max_response_size() -> usize {

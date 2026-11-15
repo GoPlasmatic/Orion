@@ -133,6 +133,7 @@ async fn test_execute_request_success() {
         max_response_size: 10 * 1024 * 1024,
         allow_private_urls: true, // Tests use localhost
         operations: Default::default(),
+        parsed_headers: Default::default(),
     };
 
     let result = execute_request(
@@ -190,6 +191,7 @@ async fn test_execute_request_with_headers_auth_and_body() {
         max_response_size: 10 * 1024 * 1024,
         allow_private_urls: true, // Tests use localhost
         operations: Default::default(),
+        parsed_headers: Default::default(),
     };
 
     let body = serde_json::json!({"data": "payload"});
@@ -239,6 +241,7 @@ async fn test_execute_request_non_success_status() {
         max_response_size: 10 * 1024 * 1024,
         allow_private_urls: true, // Tests use localhost
         operations: Default::default(),
+        parsed_headers: Default::default(),
     };
 
     let result = execute_request(
@@ -288,6 +291,7 @@ async fn test_execute_request_non_json_response() {
         max_response_size: 10 * 1024 * 1024,
         allow_private_urls: true, // Tests use localhost
         operations: Default::default(),
+        parsed_headers: Default::default(),
     };
 
     let result = execute_request(
@@ -337,6 +341,7 @@ async fn test_execute_request_response_too_large() {
         max_response_size: 10,    // Very small limit
         allow_private_urls: true, // Tests use localhost
         operations: Default::default(),
+        parsed_headers: Default::default(),
     };
 
     let result = execute_request(
@@ -388,6 +393,7 @@ async fn test_execute_request_timeout() {
         max_response_size: 10 * 1024 * 1024,
         allow_private_urls: true, // Tests use localhost
         operations: Default::default(),
+        parsed_headers: Default::default(),
     };
 
     let result = execute_request(
@@ -424,6 +430,7 @@ async fn test_execute_request_connection_refused() {
         max_response_size: 10 * 1024 * 1024,
         allow_private_urls: true, // Tests use localhost
         operations: Default::default(),
+        parsed_headers: Default::default(),
     };
 
     let result = execute_request(
@@ -468,6 +475,7 @@ fn localhost_config(addr: std::net::SocketAddr) -> HttpConnectorConfig {
         max_response_size: 10 * 1024 * 1024,
         allow_private_urls: true, // Tests use localhost
         operations: Default::default(),
+        parsed_headers: Default::default(),
     }
 }
 
@@ -1017,6 +1025,7 @@ fn redaction_config(url: &str) -> HttpConnectorConfig {
         max_response_size: 10 * 1024 * 1024,
         allow_private_urls: true,
         operations: Default::default(),
+        parsed_headers: Default::default(),
     }
 }
 

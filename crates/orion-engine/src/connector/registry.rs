@@ -450,6 +450,12 @@ impl ConnectorRegistry {
             .await
             {
                 Ok(config) => {
+                    // The default headers are applied to every request, so
+                    // parse them once here rather than on the first call
+                    // (P-16).
+                    if let crate::connector::ConnectorConfig::Http(http) = &config {
+                        http.prebuild_headers();
+                    }
                     new_configs.insert(connector.name.clone(), Arc::new(config));
                 }
                 Err(e) => issues.push(ConnectorLoadIssue {
