@@ -124,6 +124,20 @@ pub struct ListQuery {
     pub include_total: Option<bool>,
 }
 
+/// The effective page size: the default, clamped to the maximum, refusing 0.
+pub(crate) fn page_limit(limit: Option<usize>) -> V2Result<usize> {
+    let limit = limit.unwrap_or(DEFAULT_PAGE);
+    if limit == 0 {
+        return Err(OrionError::invalid_field(
+            "limit",
+            orion_api::error::field_codes::INVALID,
+            "limit must be at least 1",
+        )
+        .into());
+    }
+    Ok(limit.min(MAX_PAGE))
+}
+
 /// One page of `items`, which must already be ordered by `key` ascending.
 ///
 /// The cursor is the key of the last row returned: the next page is every row
@@ -134,16 +148,7 @@ pub(crate) fn page_by_key<T>(
     key: impl Fn(&T) -> String,
     query: &ListQuery,
 ) -> V2Result<orion_api::Page<T>> {
-    let limit = query.limit.unwrap_or(DEFAULT_PAGE);
-    if limit == 0 {
-        return Err(OrionError::invalid_field(
-            "limit",
-            orion_api::error::field_codes::INVALID,
-            "limit must be at least 1",
-        )
-        .into());
-    }
-    let limit = limit.min(MAX_PAGE);
+    let limit = page_limit(query.limit)?;
     let total = query
         .include_total
         .unwrap_or(false)

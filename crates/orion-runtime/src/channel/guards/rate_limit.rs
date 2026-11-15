@@ -36,51 +36,18 @@ pub(super) async fn check_rate_limit(
 
     // Compute the bucket key from `key_logic`, defaulting to the transport's
     // caller identity.
-    let key = if let Some(ref compiled) = cfg.rate_limit_key_logic {
-        let context = rate_limit_context(
-            caller_identity,
+    let key = match cfg.rate_limit_key_logic.as_ref() {
+        Some(compiled) => rate_limit_key(
             channel,
+            cfg,
+            exprs,
+            caller_identity,
             header,
-            cfg.rate_limit_key_headers.as_deref(),
-        );
-        // N5: falling back to the caller identity here would silently
-        // re-dimension the limit mid-flight. The key is part of the control,
-        // so a request whose key cannot be computed is rejected rather than
-        // counted in the wrong bucket.
-        //
-        // Its own variant, not `RateLimited`: over-limit is transient and
-        // worth retrying, while a key expression that cannot be evaluated
-        // against this message will fail against every copy of it. Both
-        // answer `429` over HTTP; a transport that retries can tell from the
-        // variant that only this one is terminal.
-        let unavailable = |reason: &str| {
-            tracing::warn!(
-                channel = %channel,
-                reason = %reason,
-                "rate_limit.key_logic produced no usable key; rejecting request"
-            );
-            metrics::record_rate_limit_rejected(channel);
-            metrics::record_rate_limit_key_unavailable(channel);
-            OrionError::RateLimitKeyUnavailable("Too many requests".to_string())
-        };
-        match exprs.eval(compiled, &context) {
-            // A missing path resolves to `null` in datalogic 5 rather than
-            // erroring, and an absent header is exactly that. Serializing it
-            // would make the key the literal string `"null"` for *every*
-            // caller on the channel — one shared bucket, no warning, no
-            // metric, and a rate limit that reads as enforced while enforcing
-            // nothing. A key that resolved to nothing has not been computed,
-            // so it takes the same path as an evaluation error. An
-            // all-whitespace string is the same collapse by a different route
-            // (a header present but empty). `key_text` reads both.
-            Ok(evaluated) => key_text(evaluated.value.into_owned()).map_err(unavailable)?,
-            Err(e) => {
-                let err = unavailable(&format!("evaluation failed: {e}"));
-                return Err(err);
-            }
-        }
-    } else {
-        caller_identity.to_string()
+            None,
+            compiled,
+            "rate_limit",
+        )?,
+        None => caller_identity.to_string(),
     };
 
     let policy = cfg
@@ -90,6 +57,57 @@ pub(super) async fn check_rate_limit(
         .map(|rl| rl.on_backend_error)
         .unwrap_or_default();
     consult(limiter.as_ref(), key, channel, policy, "rate-limit").await
+}
+
+/// Derive the bucket key one limiter counts against.
+///
+/// One function for the address and principal limiters: the context, the
+/// fail-closed `unavailable` refusal and the `null`/blank collapse are the
+/// N5 policy, and stating it twice is how the two drift (M-05).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "all of these are the context one key is derived from"
+)]
+fn rate_limit_key(
+    channel: &str,
+    cfg: &ChannelRuntimeConfig,
+    exprs: &ExprEngine,
+    caller_identity: &str,
+    header: HeaderLookup<'_, '_>,
+    claims: Option<&Value>,
+    compiled: &Arc<dataflow_rs::Expr>,
+    label: &str,
+) -> Result<String, OrionError> {
+    let mut context = rate_limit_context(
+        caller_identity,
+        channel,
+        header,
+        cfg.rate_limit_key_headers.as_deref(),
+    );
+    if let Some(claims) = claims
+        && let Some(obj) = context.as_object_mut()
+    {
+        obj.insert("auth".to_string(), claims.clone());
+    }
+
+    // N5: a key that cannot be computed is rejected, never replaced by the
+    // caller identity. Its own variant because only this failure is terminal.
+    let unavailable = |reason: &str| {
+        crate::metrics::record_error("rate_limit_key_unavailable");
+        tracing::warn!(
+            channel = %channel,
+            limiter = label,
+            reason = %reason,
+            "rate_limit key expression produced no usable key; rejecting request"
+        );
+        metrics::record_rate_limit_rejected(channel);
+        metrics::record_rate_limit_key_unavailable(channel);
+        OrionError::RateLimitKeyUnavailable("Too many requests".to_string())
+    };
+    match exprs.eval(compiled, &context) {
+        Ok(evaluated) => key_text(evaluated.value.into_owned()).map_err(unavailable),
+        Err(e) => Err(unavailable(&format!("evaluation failed: {e}"))),
+    }
 }
 
 /// The bucket key an evaluated `key_logic` names, read as 1.12 read the JSON
@@ -245,30 +263,16 @@ pub(super) async fn check_principal_rate_limit(
         return Ok(());
     };
 
-    let mut context = rate_limit_context(
-        caller_identity,
+    let key = rate_limit_key(
         channel,
+        cfg,
+        exprs,
+        caller_identity,
         header,
-        cfg.rate_limit_key_headers.as_deref(),
-    );
-    if let Some(obj) = context.as_object_mut() {
-        obj.insert("auth".to_string(), claims.cloned().unwrap_or(Value::Null));
-    }
-
-    let unavailable = |reason: &str| {
-        tracing::warn!(
-            channel = %channel,
-            reason = %reason,
-            "principal_rate_limit.key_logic produced no usable key; rejecting request"
-        );
-        metrics::record_rate_limit_rejected(channel);
-        metrics::record_rate_limit_key_unavailable(channel);
-        OrionError::RateLimitKeyUnavailable("Too many requests".to_string())
-    };
-    let key = match exprs.eval(compiled, &context) {
-        Ok(evaluated) => key_text(evaluated.value.into_owned()).map_err(unavailable)?,
-        Err(e) => return Err(unavailable(&format!("evaluation failed: {e}"))),
-    };
+        claims,
+        compiled,
+        "principal_rate_limit",
+    )?;
 
     let policy = cfg
         .parsed_config

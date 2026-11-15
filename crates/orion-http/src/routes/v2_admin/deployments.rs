@@ -30,11 +30,6 @@ pub struct ConvergenceQuery {
     pub target: Option<String>,
 }
 
-/// The default and the largest page of `GET /deployments`, as every list
-/// surface pages.
-const DEFAULT_PAGE: u64 = 50;
-const MAX_PAGE: u64 = 1000;
-
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 #[serde(deny_unknown_fields)]
@@ -171,16 +166,7 @@ pub(crate) async fn list_deployments(
     State(state): State<AppState>,
     OrionQuery(query): OrionQuery<DeploymentsQuery>,
 ) -> V2Result<Json<DeploymentsPage>> {
-    let limit = query.limit.unwrap_or(DEFAULT_PAGE);
-    if limit == 0 {
-        return Err(crate::errors::OrionError::invalid_field(
-            "limit",
-            orion_api::error::field_codes::INVALID,
-            "limit must be at least 1",
-        )
-        .into());
-    }
-    let limit = limit.min(MAX_PAGE);
+    let limit = super::page_limit(query.limit.map(|n| n as usize))? as u64;
     // The cursor is the revision the previous page ended at: this page is
     // what came before it.
     let before = match query.cursor.as_deref() {

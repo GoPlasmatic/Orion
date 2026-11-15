@@ -88,6 +88,7 @@ mod repository_contract_test;
 mod response_cache_invalidation_test;
 mod response_shaping_test;
 mod rest_routing_test;
+mod route_parity_test;
 mod row_dto_wire_shape_test;
 mod scenario_api_gateway_test;
 mod scenario_ecommerce_test;
