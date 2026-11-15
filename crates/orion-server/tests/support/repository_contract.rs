@@ -37,8 +37,6 @@ pub async fn run_all(backend: &str, pool: &DbPool) {
         .expect("repositories must build on every backend");
 
     a_read_snapshot_is_repeatable(backend, pool).await;
-    the_shared_store_keeps_the_store_contract(pool).await;
-    a_shared_rate_window_holds_and_spills_at_most_2x(backend, pool).await;
     a_deployment_audit_row_commits_with_the_head(backend, pool).await;
     concurrent_applies_on_one_base_commit_exactly_once(backend, pool).await;
     a_package_admission_connection_and_revocation_read_back(backend, pool).await;
@@ -612,62 +610,6 @@ async fn a_collection_racing_an_apply_never_takes_what_it_deploys(backend: &str,
             }
         }
     }
-}
-
-/// The cluster's shared store on this backend, through the conformance kit
-/// every store runs (`orion::testing::shared_store_contract`): expiry on the
-/// database's clock, one winner among concurrent claimants, no lost
-/// increment, ordered reads, counted removals and aligned rate windows.
-async fn the_shared_store_keeps_the_store_contract(pool: &DbPool) {
-    use orion::storage::repositories::shared_state::SqlSharedState;
-    orion::testing::shared_store_contract(std::sync::Arc::new(SqlSharedState::new(pool.clone())))
-        .await;
-}
-
-/// A fixed window on the database's clock: the limit holds within a second,
-/// and crossing into the next lets at most one more window's worth through.
-async fn a_shared_rate_window_holds_and_spills_at_most_2x(backend: &str, pool: &DbPool) {
-    use orion::channel::{RateLimitBackend, SharedRateLimitBackend};
-    use orion::storage::repositories::shared_state::SqlSharedState;
-    // limit_per_window = rps + burst = 3.
-    let limiter = SharedRateLimitBackend::new(
-        std::sync::Arc::new(SqlSharedState::new(pool.clone())),
-        format!("contract-{backend}"),
-        3,
-        0,
-    );
-    align_to_fresh_window().await;
-    for i in 0..3 {
-        assert!(
-            limiter.check("caller".into()).await.expect("check"),
-            "{backend}: request {i}"
-        );
-    }
-    assert!(
-        !limiter.check("caller".into()).await.expect("check"),
-        "{backend}: the 4th request in one window is refused"
-    );
-    align_to_fresh_window().await;
-    for i in 0..3 {
-        assert!(
-            limiter.check("caller".into()).await.expect("check"),
-            "{backend}: request {i} in the next window passes"
-        );
-    }
-    assert!(
-        !limiter.check("caller".into()).await.expect("check"),
-        "{backend}: the spill is bounded to one window"
-    );
-}
-
-/// Sleep until shortly after the next second boundary, leaving ~800ms for
-/// the requests that follow. The node's clock stands in for the database's,
-/// which on a test machine is the same clock.
-async fn align_to_fresh_window() {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock");
-    let into_window = u64::from(now.subsec_millis());
-    tokio::time::sleep(std::time::Duration::from_millis(1000 - into_window + 60)).await;
 }
 
 async fn a_read_snapshot_is_repeatable(backend: &str, pool: &DbPool) {

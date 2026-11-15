@@ -453,8 +453,7 @@ jobs:
   # release build wants, which also warms that scope weekly rather than
   # never. Push builds use `linux/amd64-ci` because layers cooked under a
   # different profile are unusable to a release build and would only poison
-  # it. ha-drill.yml reads the `-ci` scope and passes the same overrides so
-  # it keeps hitting the cache.
+  # it.
   docker-build:
     name: Docker Build
     runs-on: ubuntu-22.04

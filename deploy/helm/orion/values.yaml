@@ -1,13 +1,17 @@
 # Default values for the Orion chart.
 #
-# The defaults deploy a 2-replica HA cluster and REQUIRE one input:
+# The defaults deploy one Orion node and REQUIRE one input:
 #   storage.url   — a postgres:// (or mysql://) URL
-# The replicas share that database for everything they coordinate on.
+# Community runs one node. Cluster mode (replicaCount > 1 with
+# cluster.enabled=true) is an Orion Standard and Enterprise feature: it needs
+# the Orion Ext image and its cluster store, whose [extensions.redis] section
+# is set in a config file (it has no env override), which this chart does
+# not render.
 # For a self-contained dev/demo install, set devStack.enabled=true instead:
 # it runs a throwaway single-replica Postgres in the same namespace and
 # wires Orion to it automatically.
 
-replicaCount: 2
+replicaCount: 1
 
 image:
   repository: ghcr.io/goplasmatic/orion
@@ -57,11 +61,12 @@ cors:
   # Access-Control-Max-Age in seconds. Empty omits the header. Max 86400.
   maxAgeSecs: ""
 
-# Orion cluster-mode coordination (multi-instance HA). Fleet-wide rate
-# limits, dedup and the response cache live in the shared database
-# (storage.url); a cluster needs nothing else.
+# Orion cluster-mode coordination (multi-instance HA): Orion Standard and
+# Enterprise only. A Community node with enabled=true does not boot (it has
+# no cluster store). On the Orion Ext image, fleet-wide rate limits, dedup and
+# the response cache live in its cluster store ([extensions.redis]).
 cluster:
-  enabled: true
+  enabled: false
   epochPollIntervalMs: 2000
 
 storage:
@@ -221,8 +226,7 @@ startupProbe:
 # Writable data volume mounted at mountPath — where a sqlite: storage.url
 # and the backup_dir output live. Postgres/MySQL installs do not need it
 # and get a plain emptyDir at the same path. For a single-node SQLite
-# install set persistence.enabled=true with cluster.enabled=false,
-# replicaCount=1 and strategy.type=Recreate (a ReadWriteOnce claim cannot
+# install set persistence.enabled=true and strategy.type=Recreate (a ReadWriteOnce claim cannot
 # serve a surge replica), plus migrateJob.enabled=false with
 # storage.autoMigrate=true — a hook Job cannot share the replica's volume.
 persistence:
@@ -236,6 +240,7 @@ persistence:
   annotations: {}
   mountPath: /app/data
 
+# More than one replica is cluster mode: the Orion Ext image only.
 autoscaling:
   enabled: false
   minReplicas: 2

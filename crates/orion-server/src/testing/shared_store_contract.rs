@@ -11,8 +11,7 @@ use crate::extension_api::{SharedStateStore, StoreErrorKind};
 /// (by panicking, as a test assertion does) at the first case it breaks,
 /// with the store's [`name`](SharedStateStore::name) in the message.
 ///
-/// Run it from an async test against a live store: the state database's
-/// store runs it on SQLite, PostgreSQL and MySQL, and an edition runs it
+/// Run it from an async test against a live store: an edition runs it
 /// against its own (a Redis container, say). Every key it writes is under a
 /// fresh per-run prefix, so runs against one store do not interfere and
 /// nothing needs clearing first. It sleeps for about four seconds in all:

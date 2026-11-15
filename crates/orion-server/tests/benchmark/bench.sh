@@ -8,9 +8,9 @@
 #   ./crates/orion-server/tests/benchmark/bench.sh                        # Run all local scenarios
 #   ./crates/orion-server/tests/benchmark/bench.sh baseline simple        # Run specific scenarios
 #   BENCH_RELEASE=1 BENCH_DURATION=30s ./crates/orion-server/tests/benchmark/bench.sh
-#   ./crates/orion-server/tests/benchmark/bench.sh cluster                # Opt-in: drive the HA compose
-#                                                     # stack through its LB (needs
-#                                                     # deploy/compose/ha.yml up)
+#   ./crates/orion-server/tests/benchmark/bench.sh cluster                # Opt-in: drive an Orion Ext HA
+#                                                     # stack through its LB (cluster
+#                                                     # mode is not Community's)
 #
 # Dependencies: hey, jq, curl, python3, matching orion-server and orion-cli
 # Install hey: brew install hey
@@ -598,10 +598,12 @@ scenario_reload() {
     fi
 }
 
-# G: Cluster through the load balancer — the HA compose stack (opt-in)
+# G: Cluster through the load balancer — an HA stack (opt-in)
 #
-# Runs the same simple workflow as B, but through deploy/compose/ha.yml's
-# topology: nginx → 2 replicas in cluster mode → shared Postgres.
+# Runs the same simple workflow as B, but through an HA topology: a load
+# balancer → 2 replicas in cluster mode → shared Postgres and cluster store.
+# Cluster mode is an Orion Standard and Enterprise feature, so the stack is
+# Orion Ext's (its HA compose); this script only needs its LB URL.
 # This is the half the single-process scenarios cannot measure — the
 # per-request price of cluster mode (shared-store dedup / rate-limit /
 # response-cache round trips ride the hot path) plus the LB hop, and what a
@@ -612,7 +614,7 @@ scenario_reload() {
 # and its numbers are about the topology, not the binary. Start it first:
 #
 #   export ORION_ADMIN_API_KEYS="$(openssl rand -hex 32)"
-#   docker compose -f deploy/compose/ha.yml up -d --wait
+#   (start Orion Ext's HA stack), then BENCH_CLUSTER_URL=<its LB>
 scenario_cluster() {
     log_info "G: Cluster via load balancer (simple workflow)"
     CURRENT_SCENARIO="G_cluster_lb"
@@ -624,7 +626,7 @@ scenario_cluster() {
     if ! curl -sf "${cluster_url}/healthz" >/dev/null 2>&1; then
         log_error "Nothing healthy at ${cluster_url}. Start the stack first:"
         log_error '  Set ORION_ADMIN_API_KEYS to the disposable stack admin key.'
-        log_error '  docker compose -f deploy/compose/ha.yml up -d --wait'
+        log_error '  an Orion Ext HA stack (cluster mode is not Community'"'"'s), then BENCH_CLUSTER_URL=<its LB>'
         log_error "(or point BENCH_CLUSTER_URL at your load balancer)"
         return 1
     fi

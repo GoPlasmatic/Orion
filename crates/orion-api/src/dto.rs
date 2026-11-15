@@ -559,10 +559,9 @@ pub struct ReadinessComponents {
     /// composes none.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub channel_drivers: std::collections::BTreeMap<String, String>,
-    /// The cluster's shared store, when an edition supplies it and the
+    /// The cluster's shared store, which an edition supplies, when the
     /// cluster is enabled. An unreachable store makes the node not ready.
-    /// Absent otherwise: the state database's store is covered by
-    /// `database`.
+    /// Absent on a single node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_store: Option<ClusterStoreReadiness>,
 }

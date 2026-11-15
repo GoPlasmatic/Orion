@@ -142,13 +142,14 @@
                                     # is refused. Must be >= 1.
 
 [cluster]
-# Multi-instance (HA) coordination. With enabled = false (the default) Orion is
-# a plain single node: no epoch watcher, no shared backends, no job leases.
-# When enabled, N replicas sharing one Postgres/MySQL behave as one logical
-# system — config changes made through any node propagate to all, dedup, the
-# response cache and rate limits are shared through that database, and
+# Multi-instance (HA) coordination: an Orion Standard and Enterprise feature.
+# Community runs one node; with enabled = true and no cluster store composed
+# by an edition, it does not boot. On Orion Ext, N replicas sharing one
+# Postgres/MySQL and one cluster store ([extensions.redis]) behave as one
+# logical system — config changes made through any node propagate to all,
+# dedup, the response cache and rate limits are shared through the store, and
 # background jobs (trace cleanup, audit cleanup, DLQ retry) single-flight
-# behind a lease. The database is all the replicas share.
+# behind a lease.
 # Requires postgres:// or mysql:// storage; SQLite is rejected at startup.
 # Prefer auto_migrate = false above, so replicas don't race migrations at boot.
 # enabled = false

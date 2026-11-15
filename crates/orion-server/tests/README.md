@@ -130,7 +130,8 @@ cargo test --test storage_mysql -- --ignored
 # Cross-backend schema parity (all three migration sets)
 cargo test --test schema_parity -- --ignored
 
-# Multi-node cluster mode (two AppStates over one shared Postgres)
+# Multi-node cluster mode (two AppStates over one shared Postgres and one
+# in-memory cluster store: Community composes none)
 cargo test --test cluster -- --ignored --test-threads=1
 ```
 

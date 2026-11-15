@@ -570,14 +570,13 @@ fn tasks_component(state: &AppState) -> (&'static str, Vec<crate::runtime::TaskR
     description = "\
 Readiness probe. Reports `ready` only when the database responds, startup \
 has completed, every background task the node cannot work without is still \
-running, and, in cluster mode with a store the edition supplies, that store \
-responds. In cluster mode the shared dedup store, response cache and rate \
-limits live in the state database unless the edition supplies a store for \
-them; then `components.cluster_store` reports it as `{name, status}`, \
-`status` being `ok` or `error`, and an `error` makes the node not ready, \
-because dedup would otherwise fail open while the data plane answers 200s. \
-The component is absent when the database holds the shared store, whose \
-check `components.database` already is. Both pings run concurrently, each \
+running, and, in cluster mode, the cluster store responds. Cluster mode \
+(Orion Standard and Enterprise) keeps the shared dedup store, response cache \
+and rate limits in a store the edition supplies; `components.cluster_store` \
+reports it as `{name, status}`, `status` being `ok` or `error`, and an \
+`error` makes the node not ready, because dedup would otherwise fail open \
+while the data plane answers 200s. The component is absent on a single \
+node, which keeps all three in process. Both pings run concurrently, each \
 bounded by `engine.health_check_timeout_secs`. The \
 `components.engine` field is a constant `\"ok\"` kept for response-shape \
 stability: the engine snapshot is lock-free and cannot be unavailable once \

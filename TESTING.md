@@ -162,7 +162,7 @@ just test-containers    # all of the below, in CI's exact invocations
 | `integration -- --ignored <filters>` | Portable-dialect parity/round-trips on Postgres/MySQL, raw-SQL backends, Vault secret resolution, column-type matrix |
 | `storage_postgres` / `storage_mysql` | Orion's own repositories on the other two backends |
 | `schema_parity` | The three migration sets produce agreeing schemas (columns, typed+ordered indexes, views) |
-| `cluster` | Multi-node contracts: two AppStates over one shared Postgres, the v2 reconciler, job leases, the cron ledger — one occurrence per instant under two reconcilers, and a `forbid` singleton that holds across nodes (`--test-threads=1`) |
+| `cluster` | Multi-node contracts (cluster mode is an edition's: the nodes compose the Standard edition and one in-memory cluster store, `tests/support/memory_store.rs`): two AppStates over one shared Postgres, the v2 reconciler, job leases, the cron ledger — one occurrence per instant under two reconcilers, and a `forbid` singleton that holds across nodes (`--test-threads=1`) |
 
 `metrics_exposition` (in-memory, no Docker) asserts the rendered `/metrics`
 body from its own process, where the recorder race can't occur.
@@ -234,7 +234,6 @@ The examples are executable, and two repositories gate them:
 | Packaging | `package` CI job | `cargo package --locked --workspace` verify-builds the crates.io tarballs (riders included). Gated by the `changes` job: it runs when a manifest moves or a file is added/renamed under `crates/`, the only two ways an `include` allowlist can drop a needed file, and on the weekly sweep |
 | Docker / Helm | `docker-build`, `helm` jobs | Image builds; chart lints, renders, and rejects misspelled values |
 | CodeQL | `codeql.yml` | Static security analysis |
-| HA rolling drill | `ha-drill.yml` (path-filtered + weekly) | SIGTERM one of two replicas under load through the LB, then the plugin and cron drills. CI also grows the stack to three nodes and verifies plugin convergence there. Setup uses compile + `deployments apply -d`; each drill restores the prior head. Until a v2 image ships, scripts select the local-build overlay. Record zero non-2xx across rolling/plugin replacement and the cron singleton/recovery verdicts against the candidate image. |
 | Plugin SDK | `plugin-sdk` CI job (path-filtered) | The test fixture and both example guests rebuild from source on the shipped `orion-plugin-sdk`; the ABI case suite and the sandbox suites pass against the fresh components |
 
 ## Layer 8 — benchmarks (manual, recorded per release)
@@ -266,7 +265,7 @@ The behavioral regressions run in `orion-engine` with
 Push/PR: `changes`, `fmt`, `lint`, `msrv`, `test`,
 `integration-containers` (a six-leg matrix, one runner per container suite),
 `coverage`, `deny`, `package`, `helm`, `docker-build` — plus
-`mutants` on PRs, `plugin-sdk` and `ha-drill`/`cross-os-build` when their
+`mutants` on PRs, `plugin-sdk` and `cross-os-build` when their
 paths change.
 `changes` is the path gate for `package`; a weekly `schedule` run does the
 whole lot unconditionally, including the two checks trimmed on the push path

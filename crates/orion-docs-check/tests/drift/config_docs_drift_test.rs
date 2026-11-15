@@ -219,20 +219,11 @@ const PROSE_EXTENSIONS: &[&str] = &[
 /// buy an exemption anywhere else, which is precisely the hole this test was
 /// added to close: `ORION_ADMIN_AUTH__API_KEY` (singular) sat in two pages, one
 /// quoting it as the mistake and one telling readers to set it.
-const NOT_A_SERVER_SETTING: &[(&str, &str, &str)] = &[
-    (
-        "ORION_SECTION__KEY",
-        "",
-        "the naming rule itself, written as a placeholder wherever it is quoted",
-    ),
-    (
-        "ORION_CORS_ALLOWED_ORIGINS",
-        "",
-        "compose interpolation, resolved by `docker compose` in the operator's \
-         shell; the container's environment block spells out the real \
-         ORION_CORS__ALLOWED_ORIGINS it fills",
-    ),
-];
+const NOT_A_SERVER_SETTING: &[(&str, &str, &str)] = &[(
+    "ORION_SECTION__KEY",
+    "",
+    "the naming rule itself, written as a placeholder wherever it is quoted",
+)];
 
 /// Whether `token` is excused in the file at repository-relative `path`.
 fn is_excused(token: &str, path: &str) -> bool {

@@ -227,24 +227,6 @@ CREATE TABLE "connector_oauth_state" (
     "updated_at" timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- The cluster's dedup store, response cache and namespace counters, judged on
--- the database's clock.
-CREATE TABLE "cluster_kv" (
-    "key_hash" text NOT NULL PRIMARY KEY,
-    "value" text NOT NULL,
-    "expires_at" timestamp
-);
-
-CREATE INDEX "idx_cluster_kv_expires_at" ON "cluster_kv" ("expires_at");
-
--- Fleet-wide fixed rate-limit windows, one row per (limiter key, second).
-CREATE TABLE "cluster_rate_windows" (
-    "limiter_key" text NOT NULL,
-    "window_start" bigint NOT NULL,
-    "hits" bigint NOT NULL,
-    PRIMARY KEY ("limiter_key", "window_start")
-);
-
 -- ============================================================
 -- The immutable deployment store
 -- ============================================================

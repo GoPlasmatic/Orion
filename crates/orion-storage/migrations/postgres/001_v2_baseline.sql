@@ -194,22 +194,6 @@ CREATE TABLE connector_oauth_state (
     PRIMARY KEY (connector_name)
 );
 
-CREATE TABLE cluster_kv (
-    key_hash character(64) NOT NULL,
-    value text NOT NULL,
-    expires_at timestamp without time zone,
-    PRIMARY KEY (key_hash)
-);
-
-CREATE INDEX idx_cluster_kv_expires_at ON cluster_kv (expires_at);
-
-CREATE TABLE cluster_rate_windows (
-    limiter_key character(64) NOT NULL,
-    window_start bigint NOT NULL,
-    hits bigint NOT NULL,
-    PRIMARY KEY (limiter_key, window_start)
-);
-
 -- ============================================================
 -- The immutable deployment store
 -- ============================================================

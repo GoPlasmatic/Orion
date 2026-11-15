@@ -17,7 +17,6 @@ pub use deployments::{
     DeploymentRevisions, ProviderAdmissions, ProviderPackages,
 };
 pub use runtime::{
-    AuditLogs, ClusterKv, ClusterRateWindows, ConfigEpoch, ConnectorOauthState, CronOccurrences,
-    CronScheduleState, CronSingletonSlots, CronSingletons, JobLeases, RuntimeNodes, TraceDlq,
-    Traces,
+    AuditLogs, ConfigEpoch, ConnectorOauthState, CronOccurrences, CronScheduleState,
+    CronSingletonSlots, CronSingletons, JobLeases, RuntimeNodes, TraceDlq, Traces,
 };

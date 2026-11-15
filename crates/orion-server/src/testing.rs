@@ -29,8 +29,9 @@
 //!
 //! [`shared_store_contract`] checks a cluster
 //! [`SharedStateStore`](crate::extension_api::SharedStateStore) against the
-//! semantics the trait documents: the state database's store runs it on
-//! every backend, and an edition runs it against its own.
+//! semantics the trait documents: an edition runs it against its own (the
+//! Redis store, in Orion Ext); Community's tests run it against their
+//! in-memory one.
 
 mod shared_store_contract;
 

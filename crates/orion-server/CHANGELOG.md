@@ -82,6 +82,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Cluster mode is a Standard and Enterprise feature.** Community ships no
+  cluster store: a node with `cluster.enabled = true` and no store composed
+  by an edition (`CompositionBuilder::with_cluster_store`) does not boot
+  (`cluster::NO_CLUSTER_STORE`). The database-backed store is gone
+  (`SqlSharedState`, and the `cluster_kv` and `cluster_rate_windows` tables
+  of the unreleased v2 baseline), with its repository-contract cases; job
+  leases, breaker epochs, DLQ claims and the config epoch stay on the state
+  database. The HA reference stack (`deploy/compose/ha.yml`, its nginx
+  configs, `deploy/ha/*-drill.sh`, `ha-drill.yml`) moved to Orion Ext with
+  it. The Helm chart deploys one node by default (`replicaCount: 1`,
+  `cluster.enabled: false`); cluster mode needs the Orion Ext image. The
+  multi-node test suite composes the Standard edition over one in-memory
+  store (`tests/support/memory_store.rs`).
 - **Canary rollout is a Standard and Enterprise feature.** A Community node
   serves one workflow revision per channel: a manifest whose channel member
   splits traffic across revisions (`rollouts` with two or more intervals) is

@@ -171,7 +171,7 @@ or deploy a tested package from [`examples/packages/`](examples/packages/).
 | **Delivery** | Offline lint and dry-runs, immutable deployment revisions, plan and apply, rollback, WebAssembly plugins |
 | **Observability** | Health and readiness endpoints, Prometheus metrics, structured logs, OpenTelemetry traces |
 | **Data** | PostgreSQL, MySQL, SQLite, HTTP, an in-process cache |
-| **Operations** | Embedded SQLite for one node; one shared PostgreSQL/MySQL for clustered replicas |
+| **Operations** | One node on embedded SQLite, PostgreSQL or MySQL. Clustered replicas and canary rollout are Orion Standard and Enterprise features |
 
 Configuration is explicit, and several production controls are permissive or
 disabled for local development. In particular, data channels are open unless

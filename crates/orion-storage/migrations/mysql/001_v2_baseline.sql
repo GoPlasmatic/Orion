@@ -173,21 +173,6 @@ CREATE TABLE `connector_oauth_state` (
   PRIMARY KEY (`connector_name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE `cluster_kv` (
-  `key_hash` char(64) NOT NULL,
-  `value` longtext NOT NULL,
-  `expires_at` datetime(6) DEFAULT NULL,
-  PRIMARY KEY (`key_hash`),
-  KEY `idx_cluster_kv_expires_at` (`expires_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE `cluster_rate_windows` (
-  `limiter_key` char(64) NOT NULL,
-  `window_start` bigint NOT NULL,
-  `hits` bigint NOT NULL,
-  PRIMARY KEY (`limiter_key`,`window_start`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
 -- ============================================================
 -- The immutable deployment store
 -- ============================================================

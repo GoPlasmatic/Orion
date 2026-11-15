@@ -62,7 +62,7 @@ async fn the_storage_phase_resolves_the_nodes_identity_once() {
 /// not an error: the node boots on its in-process stores (and logs it).
 #[tokio::test]
 async fn a_registered_store_with_the_cluster_disabled_still_boots() {
-    let store = Arc::new(crate::cluster_store_test::CountingStore::default());
+    let store = Arc::new(crate::memory_store::CountingStore::default());
     // Down, so a boot that pinged it would fail.
     store.down.store(true, std::sync::atomic::Ordering::SeqCst);
     let state = common::test_state_with_composition(
@@ -73,6 +73,22 @@ async fn a_registered_store_with_the_cluster_disabled_still_boots() {
     assert!(state.cluster.shared.is_none());
     assert!(!state.cluster.external_store);
     assert!(state.ready.load(std::sync::atomic::Ordering::Acquire));
+}
+
+/// Cluster mode is not Community's: a Community node with
+/// `cluster.enabled = true` and no composed cluster store does not boot,
+/// and says what it needs.
+#[tokio::test]
+async fn community_does_not_boot_a_cluster() {
+    let mut config = AppConfig::default();
+    config.cluster.enabled = true;
+    let Err(refused) = restart(config, memory_pool().await).await else {
+        unreachable!("Community ships no cluster store");
+    };
+    assert!(
+        refused.contains(orion::cluster::NO_CLUSTER_STORE),
+        "{refused}"
+    );
 }
 
 /// A fresh node serves nothing, says it is ready, and has recorded its own

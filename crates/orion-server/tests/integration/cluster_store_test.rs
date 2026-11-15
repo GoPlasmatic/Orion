@@ -7,13 +7,11 @@
 //! hot-path state reaches the composed store, which a database with one
 //! node can show as well as a fleet.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use axum::http::StatusCode;
-use orion::extension_api::{SharedStateStore, StoreError, async_trait};
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -22,135 +20,14 @@ use crate::common::{
     post_with_idempotency_key, simple_log_workflow,
 };
 
-/// An in-process store named `fake` that counts what the node asks of it.
-/// Its clock is this process's, which is the only clock its one node has.
-#[derive(Default)]
-pub(crate) struct CountingStore {
-    entries: Mutex<HashMap<String, (String, Option<Instant>)>>,
-    windows: Mutex<HashMap<(String, u64), i64>>,
-    pub(crate) claim_calls: AtomicUsize,
-    pub(crate) claims_won: AtomicUsize,
-    pub(crate) sets: AtomicUsize,
-    pub(crate) get_manys: AtomicUsize,
-    pub(crate) window_hits: AtomicUsize,
-    /// When set, every call (the ping included) fails as unavailable.
-    pub(crate) down: AtomicBool,
-}
+pub(crate) use crate::memory_store::CountingStore;
 
-impl CountingStore {
-    fn check(&self) -> Result<(), StoreError> {
-        if self.down.load(Ordering::SeqCst) {
-            Err(StoreError::unavailable("the fake store is down"))
-        } else {
-            Ok(())
-        }
-    }
-
-    fn live(&self, key: &str) -> Option<String> {
-        let entries = self.entries.lock().unwrap();
-        entries.get(key).and_then(|(value, expires)| {
-            expires
-                .is_none_or(|at| at > Instant::now())
-                .then(|| value.clone())
-        })
-    }
-}
-
-fn expiry(ttl_secs: Option<u64>) -> Option<Instant> {
-    ttl_secs.map(|secs| Instant::now() + Duration::from_secs(secs))
-}
-
-#[async_trait]
-impl SharedStateStore for CountingStore {
-    fn name(&self) -> &str {
-        "fake"
-    }
-
-    async fn get(&self, key: &str) -> Result<Option<String>, StoreError> {
-        self.check()?;
-        Ok(self.live(key))
-    }
-
-    async fn get_many(&self, keys: &[String]) -> Result<Vec<Option<String>>, StoreError> {
-        self.check()?;
-        self.get_manys.fetch_add(1, Ordering::SeqCst);
-        Ok(keys.iter().map(|k| self.live(k)).collect())
-    }
-
-    async fn set(&self, key: &str, value: &str, ttl_secs: Option<u64>) -> Result<(), StoreError> {
-        self.check()?;
-        self.sets.fetch_add(1, Ordering::SeqCst);
-        self.entries
-            .lock()
-            .unwrap()
-            .insert(key.to_string(), (value.to_string(), expiry(ttl_secs)));
-        Ok(())
-    }
-
-    async fn remove_many(&self, keys: &[String]) -> Result<u64, StoreError> {
-        self.check()?;
-        let live = keys.iter().filter(|k| self.live(k).is_some()).count();
-        let mut entries = self.entries.lock().unwrap();
-        for key in keys {
-            entries.remove(key);
-        }
-        Ok(live as u64)
-    }
-
-    async fn claim(
-        &self,
-        key: &str,
-        owner: &str,
-        window_secs: u64,
-    ) -> Result<Option<String>, StoreError> {
-        self.check()?;
-        self.claim_calls.fetch_add(1, Ordering::SeqCst);
-        if let Some(holder) = self.live(key) {
-            return Ok(Some(holder));
-        }
-        self.claims_won.fetch_add(1, Ordering::SeqCst);
-        self.entries.lock().unwrap().insert(
-            key.to_string(),
-            (owner.to_string(), expiry(Some(window_secs))),
-        );
-        Ok(None)
-    }
-
-    async fn incr_by(&self, key: &str, by: i64, ttl_secs: Option<u64>) -> Result<i64, StoreError> {
-        self.check()?;
-        let next = match self.live(key) {
-            Some(value) => value
-                .parse::<i64>()
-                .map_err(|_| StoreError::invalid(format!("'{key}' is not an integer")))?
-                .checked_add(by)
-                .ok_or_else(|| StoreError::invalid(format!("'{key}' overflows")))?,
-            None => by,
-        };
-        let mut entries = self.entries.lock().unwrap();
-        let expires = match entries.get(key) {
-            Some((_, expires)) if expires.is_none_or(|at| at > Instant::now()) => *expires,
-            _ => expiry(ttl_secs),
-        };
-        entries.insert(key.to_string(), (next.to_string(), expires));
-        Ok(next)
-    }
-
-    async fn hit_window(&self, key: &str) -> Result<i64, StoreError> {
-        self.check()?;
-        self.window_hits.fetch_add(1, Ordering::SeqCst);
-        let second = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let mut windows = self.windows.lock().unwrap();
-        let hits = windows.entry((key.to_string(), second)).or_insert(0);
-        *hits += 1;
-        Ok(*hits)
-    }
-
-    async fn ping(&self) -> Result<(), StoreError> {
-        self.check()
-    }
+/// The tests' in-memory store keeps the contract every cluster store does,
+/// so what the tests below and the multi-node suite prove over it holds for
+/// a real one.
+#[tokio::test]
+async fn the_in_memory_store_keeps_the_store_contract() {
+    orion::testing::shared_store_contract(Arc::new(CountingStore::default())).await;
 }
 
 /// A cluster node on in-memory SQLite whose shared store is `store`.

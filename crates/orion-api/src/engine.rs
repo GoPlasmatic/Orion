@@ -185,7 +185,7 @@ pub struct CacheInvalidatedResponse {
     pub namespace: String,
     /// How many response-cache stores the bump reached: the default store
     /// and each in-memory store on the node that answered. In a cluster the
-    /// default store is the shared database, which carries the bump to every
+    /// default store is the cluster store, which carries the bump to every
     /// node.
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]

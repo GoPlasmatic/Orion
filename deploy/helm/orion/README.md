@@ -1,10 +1,15 @@
 # Orion Helm Chart
 
-Deploys Orion in cluster mode: N replicas behind a Service, sharing one
-Postgres/MySQL, with a pre-upgrade migration Job, graceful rolling deploys
-(`/readyz` drain), an optional HPA, and a PDB. The shared database is the
-only shared dependency: fleet-wide rate limits, dedup and the response cache
-live in it too.
+Deploys one Orion node behind a Service against a Postgres/MySQL database,
+with a pre-upgrade migration Job, graceful rolling deploys (`/readyz` drain)
+and a PDB.
+
+Cluster mode (N replicas, an optional HPA) is an Orion Standard and
+Enterprise feature: a Community node with `cluster.enabled=true` does not
+boot, because Community ships no cluster store. The Orion Ext image brings
+one (Redis), configured by an `[extensions.redis]` section in its config
+file: extension sections have no env override, and this chart does not
+render a config file, so a clustered deployment is Orion Ext's to describe.
 
 ## Production install
 
@@ -73,7 +78,8 @@ open http://localhost:8080/docs
 
 | Value | Default | Meaning |
 |---|---|---|
-| `replicaCount` | `2` | Replicas (ignored when `autoscaling.enabled`) |
+| `replicaCount` | `1` | Replicas (ignored when `autoscaling.enabled`); more than one is cluster mode, Orion Ext only |
+| `cluster.enabled` | `false` | Cluster mode; needs the Orion Ext image and its cluster store |
 | `storage.url` / `storage.existingSecret` | — | Database URL (required unless devStack) |
 | `env` | `production` | Orion environment; production enforces admin auth |
 | `adminAuth.apiKeys` / `adminAuth.existingSecret` | — | Admin API keys (required unless devStack) |
@@ -180,6 +186,6 @@ The root filesystem is read-only: `/tmp` is an emptyDir and
 `persistence.mountPath` (default `/app/data`) is the only durable writable
 path. A single-node SQLite install
 (`storage.url=sqlite:/app/data/orion.db`) wants `persistence.enabled=true`
-with `cluster.enabled=false`, `replicaCount=1`, `strategy.type=Recreate`,
+with `strategy.type=Recreate`,
 and `migrateJob.enabled=false` + `storage.autoMigrate=true`; backups then
 land under `/app/data/backups`.

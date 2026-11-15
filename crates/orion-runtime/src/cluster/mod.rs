@@ -4,12 +4,17 @@
 //! (the default) there is no shared store: a single node keeps dedup claims,
 //! the response cache and rate limits in process. Deployment reconciliation
 //! still runs so a failed inline build can recover. When enabled it carries
-//! the cluster's [`SharedStateStore`] (the state database's
-//! [`SqlSharedState`], or the store an edition composed), the default shared
-//! cache backend over it, the [`ClusterRepository`] used for breaker-reset
-//! and lease coordination, and the last breaker epoch this node has applied.
-//! Breaker epochs, job leases, DLQ claims and the config epoch always stay
-//! on the state database, whatever the shared store is.
+//! the cluster's [`SharedStateStore`] (the store an edition composed), the
+//! default shared cache backend over it, the [`ClusterRepository`] used for
+//! breaker-reset and lease coordination, and the last breaker epoch this
+//! node has applied. Breaker epochs, job leases, DLQ claims and the config
+//! epoch always stay on the state database, whatever the shared store is.
+//!
+//! **Cluster mode is not Community's.** Community ships no cluster store, so
+//! `cluster.enabled = true` boots only when an edition registered one
+//! ([`CompositionBuilder::with_cluster_store`](crate::extensions::CompositionBuilder::with_cluster_store));
+//! Orion Standard and Enterprise compose a Redis store. A Community node
+//! serves alone.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicI64;
@@ -22,7 +27,6 @@ use crate::connector::cache_backend::CacheBackend;
 use crate::errors::OrionError;
 use crate::storage::DbPool;
 use crate::storage::repositories::cluster::{ClusterRepository, SqlClusterRepository};
-use crate::storage::repositories::shared_state::SqlSharedState;
 
 pub mod reconcile;
 pub mod shared_store;
@@ -38,13 +42,11 @@ pub struct ClusterRuntime {
     /// node list; it names lease holders, DLQ claimants and log lines.
     pub instance_id: String,
     /// The store the fleet's dedup claims, response cache and rate-limit
-    /// windows live in: the state database's (`cluster_kv`,
-    /// `cluster_rate_windows`) or an edition's. `None` when disabled: a
-    /// single node keeps all three in process.
+    /// windows live in: the edition's. `None` when disabled: a single node
+    /// keeps all three in process.
     pub shared: Option<Arc<dyn SharedStateStore>>,
-    /// Whether `shared` is an edition's store rather than the state
-    /// database's. Only an external store is a readiness component of its
-    /// own: the database's is covered by the database ping.
+    /// Whether `shared` is set: the store is then a readiness component of
+    /// its own (`/readyz`), beside the database.
     pub external_store: bool,
     /// Default shared cache backend (dedup/response-cache) on that store.
     pub default_cache: Option<Arc<dyn CacheBackend>>,
@@ -66,9 +68,9 @@ impl From<&ClusterRuntime> for crate::channel::registry::ClusterBackends {
 
 /// Build the cluster runtime.
 ///
-/// When `cluster.enabled`, the shared store is `store` (an edition's) or,
-/// with none, the state database the node has already connected. An
-/// edition's store is pinged first, bounded by
+/// When `cluster.enabled`, the shared store is `store` (an edition's); with
+/// none the node does not boot ([`NO_CLUSTER_STORE`]). The store is pinged
+/// first, bounded by
 /// `engine.health_check_timeout_secs`: one that does not answer fails the
 /// boot, naming it, rather than letting every dedup claim fail open.
 /// Disabled, there is no shared store and `store` is unused. Either way it
@@ -92,12 +94,9 @@ pub async fn init_cluster_runtime(
             .await?;
             (Some(store), true)
         }
-        // The same database every node already shares for epochs and
-        // leases, so a cluster needs no coordination service of its own.
-        (true, None) => (
-            Some(Arc::new(SqlSharedState::new(pool.clone())) as Arc<dyn SharedStateStore>),
-            false,
-        ),
+        // Community ships no cluster store: fleet-wide dedup, rate limits
+        // and the response cache need one an edition composes.
+        (true, None) => return Err(OrionError::validation(NO_CLUSTER_STORE)),
     };
     let default_cache = shared.clone().map(|store| {
         Arc::new(shared_store::SharedCacheBackend::new(store)) as Arc<dyn CacheBackend>
@@ -119,6 +118,12 @@ pub async fn init_cluster_runtime(
         last_seen_breaker_epoch: AtomicI64::new(breaker_epoch),
     }))
 }
+
+/// Why a node with `cluster.enabled = true` and no composed store does not
+/// boot.
+pub const NO_CLUSTER_STORE: &str = "cluster.enabled = true needs a cluster store, and Community ships none: \
+     cluster mode is an Orion Standard and Enterprise feature (their Redis store, \
+     [extensions.redis]). Set cluster.enabled = false to run this node alone";
 
 /// An edition's store must answer before the node serves on it.
 async fn ping_at_boot(store: &dyn SharedStateStore, timeout: Duration) -> Result<(), OrionError> {
@@ -149,6 +154,8 @@ pub(crate) mod test_store {
         pub(crate) name: &'static str,
         pub(crate) ping: Result<(), StoreError>,
         pub(crate) hangs: bool,
+        /// What `needs_sweep` answers.
+        pub(crate) sweeps: bool,
     }
 
     #[async_trait::async_trait]
@@ -183,6 +190,9 @@ pub(crate) mod test_store {
             }
             self.ping.clone()
         }
+        fn needs_sweep(&self) -> bool {
+            self.sweeps
+        }
     }
 
     /// A store named `fake` that answers its ping with `ping`.
@@ -191,6 +201,7 @@ pub(crate) mod test_store {
             name: "fake",
             ping,
             hangs: false,
+            sweeps: false,
         })
     }
 
@@ -200,6 +211,7 @@ pub(crate) mod test_store {
             name,
             ping: Ok(()),
             hangs: false,
+            sweeps: false,
         })
     }
 }
@@ -243,14 +255,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_enabled_cluster_with_no_store_shares_the_database() {
-        let runtime = init_cluster_runtime(&enabled(), &sqlite_pool().await, None)
-            .await
-            .expect("runtime");
-        let shared = runtime.shared.as_ref().expect("a shared store");
-        assert_eq!(shared.name(), "database");
-        assert!(!runtime.external_store);
-        assert!(runtime.default_cache.is_some());
+    async fn an_enabled_cluster_with_no_store_does_not_boot() {
+        let Err(refused) = init_cluster_runtime(&enabled(), &sqlite_pool().await, None).await
+        else {
+            unreachable!("Community has no cluster store to fall back on");
+        };
+        assert!(refused.to_string().contains(NO_CLUSTER_STORE), "{refused}");
     }
 
     #[tokio::test]
@@ -287,6 +297,7 @@ mod tests {
             name: "fake",
             ping: Ok(()),
             hangs: true,
+            sweeps: false,
         });
         let Err(refused) = init_cluster_runtime(&config, &sqlite_pool().await, Some(hung)).await
         else {

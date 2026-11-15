@@ -62,7 +62,7 @@ jobs:
           # runs) or a skipped one has no verdict either, and is ignored
           # like "no run" rather than counted as a break. "Some attempted
           # runs, none successful" fails; "no runs" passes.
-          for wf in cross-os-build.yml codeql.yml ha-drill.yml; do
+          for wf in cross-os-build.yml codeql.yml; do
             wf_runs=$(runs "$wf")
             pending=$(count '.status != "completed"' "$wf_runs")
             if [ "${pending}" != "0" ]; then

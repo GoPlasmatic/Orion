@@ -2,10 +2,11 @@
 //! response cache, namespace invalidation counters and fleet-wide rate
 //! windows.
 //!
-//! Community's is the node's state database. An edition may register its
-//! own ([`crate::Registrar::cluster_store`]), e.g. Redis. Coordination of record (breaker epochs, job leases, DLQ
-//! claims, the config epoch) stays on the state database whatever is
-//! registered here.
+//! Community ships none: cluster mode needs an edition to register one
+//! ([`crate::Registrar::cluster_store`]), e.g. Redis, and a node with
+//! `cluster.enabled = true` and no store does not boot. Coordination of
+//! record (breaker epochs, job leases, DLQ claims, the config epoch) stays on
+//! the state database whatever is registered here.
 
 use async_trait::async_trait;
 

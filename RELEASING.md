@@ -1,7 +1,7 @@
 # Releasing Orion
 
 Cut releases from `main` (or a `release/X.Y` maintenance branch) after the workspace gate and the current release
-matrix pass. Long-lived integration branches (such as `dataflow-4`) must merge to `main` before tagging because `ci.yml` and `ha-drill.yml` trigger on pushes to `main` and `release/**`, while `release.yml`, `docker-release.yml` and `crates-publish.yml` trigger on `v*` tags. A tag mints no CI run of its own, so the tagged commit must already have a successful push run; `main` tracks the active 2.x line, and any maintenance release for an older line is cut from a `release/X.Y` branch. The v2 migration changes the API, deployment model and state
+matrix pass. Long-lived integration branches (such as `dataflow-4`) must merge to `main` before tagging because `ci.yml` triggers on pushes to `main` and `release/**`, while `release.yml`, `docker-release.yml` and `crates-publish.yml` trigger on `v*` tags. A tag mints no CI run of its own, so the tagged commit must already have a successful push run; `main` tracks the active 2.x line, and any maintenance release for an older line is cut from a `release/X.Y` branch. The v2 migration changes the API, deployment model and state
 schema; use the [v2 release evidence](RELEASE-EVIDENCE/release-v2-evidence.md) to track the
 remaining gates and their owners.
 
@@ -34,11 +34,9 @@ remaining gates and their owners.
    server/CLI API versions, Community removals and the fresh-database move from
    1.x. Preserve dated release history. Do not advertise reference-only
    Enterprise work as shipped Community capability.
-6. Capture the HTTP and run-view benchmark evidence below. Run current HA
-   rolling, plugin and cron drills against the candidate image; record the
-   image digest. Until a v2 image exists, the drill scripts use
-   `deploy/compose/ha.build.yml` for a local v2 build. Verify the published
-   candidate before removing that fallback or changing the v1 image pin.
+6. Capture the HTTP and run-view benchmark evidence below. Community runs one
+   node, so the HA rolling, plugin and cron drills are Orion Ext's (cluster
+   mode is a Standard and Enterprise feature).
 7. Confirm Console v2 support in Orion-ui before refreshing its recording and
    guide. Track that repository's release as an external dependency.
 
@@ -138,24 +136,11 @@ an unchanged apply would measure no reload. Output probes precede timing, and
 request failures make the runner fail. Run-view allocations and whole-process
 RSS have different measurement windows; follow [the report's methodology](crates/orion-server/tests/benchmark/RUN_VIEW.md).
 
-The opt-in `cluster` scenario deploys to a disposable v2 HA stack through its
-load balancer and restores the prior head with compare-and-swap. Set
-`ORION_ADMIN_API_KEYS` and point `BENCH_CLUSTER_URL` at the LB. Start the stack
-with `deploy/compose/ha.build.yml` while no published v2 image exists. For three
-local nodes, enable the `n3` profile and select the three-node load balancer config:
-
-```bash
-HA_NGINX=nginx.n3.conf docker compose --profile n3 \
-  -f deploy/compose/ha.yml -f deploy/compose/ha.build.yml up -d --wait
-NODES="orion-a orion-b orion-c" CONSECUTIVE=30 deploy/ha/plugin-drill.sh
-```
-
-The third node shares the base node's runtime settings, and the build override
-selects the same local image for it. For a published candidate, set
-`ORION_VERSION` and omit the build override. `NODES` makes the drill helpers
-load the matching topology and wait for all requested nodes. Capture N=2 and
-N=3, the rolling restart drill and the plugin/cron drill verdicts. Require all upstreams healthy
-before comparing per-node overhead or scaling efficiency.
+The opt-in `cluster` scenario deploys to a disposable HA stack through its
+load balancer and restores the prior head with compare-and-swap. Cluster mode
+is an Orion Standard and Enterprise feature, so the stack is Orion Ext's: set
+`ORION_ADMIN_API_KEYS`, point `BENCH_CLUSTER_URL` at its LB, and require all
+upstreams healthy before comparing per-node overhead or scaling efficiency.
 
 Commit raw outputs and a hardware/methodology `SUMMARY.md` under a new
 `crates/orion-server/tests/benchmark/results/<candidate>/` directory. Add its

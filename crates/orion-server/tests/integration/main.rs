@@ -9,6 +9,8 @@
 #![expect(clippy::unwrap_used, clippy::panic)]
 
 mod common;
+#[path = "../support/memory_store.rs"]
+mod memory_store;
 
 mod admin_channels_test;
 mod admin_connectors_test;

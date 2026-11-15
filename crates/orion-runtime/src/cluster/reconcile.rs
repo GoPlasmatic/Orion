@@ -32,8 +32,8 @@ pub fn start_cluster_tasks(state: &AppState) {
     start_v2_reconciler(state);
 }
 
-/// The shared store the sweeper runs over: only one that asks for it (the
-/// state database's). A store that expires its own keys has nothing to sweep.
+/// The shared store the sweeper runs over: only one that asks for it. A
+/// store that expires its own keys (Redis) has nothing to sweep.
 fn sweeper_store(shared: Option<&Arc<dyn SharedStateStore>>) -> Option<Arc<dyn SharedStateStore>> {
     shared.filter(|store| store.needs_sweep()).cloned()
 }
@@ -287,20 +287,22 @@ async fn apply_breaker_resets(state: &AppState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cluster::test_store::fake;
-    use crate::cluster::tests::sqlite_pool;
-    use crate::storage::repositories::shared_state::SqlSharedState;
+    use crate::cluster::test_store::{Fake, fake};
 
-    #[tokio::test]
-    async fn only_a_store_that_asks_for_it_is_swept() {
-        let database: Arc<dyn SharedStateStore> =
-            Arc::new(SqlSharedState::new(sqlite_pool().await));
-        assert!(sweeper_store(Some(&database)).is_some());
+    #[test]
+    fn only_a_store_that_asks_for_it_is_swept() {
+        let sweeps: Arc<dyn SharedStateStore> = Arc::new(Fake {
+            name: "sweeps",
+            ping: Ok(()),
+            hangs: false,
+            sweeps: true,
+        });
+        assert!(sweeper_store(Some(&sweeps)).is_some());
 
-        let external = fake(Ok(()));
+        let expires_its_own = fake(Ok(()));
         assert!(
-            sweeper_store(Some(&external)).is_none(),
-            "no sweeper for an external store"
+            sweeper_store(Some(&expires_its_own)).is_none(),
+            "no sweeper for a store that expires its own keys"
         );
         assert!(sweeper_store(None).is_none());
     }

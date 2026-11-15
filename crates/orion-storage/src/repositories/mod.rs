@@ -5,7 +5,6 @@ pub mod helpers;
 pub mod job_lease;
 pub mod oauth_state;
 pub mod runtime_nodes;
-pub mod shared_state;
 pub mod trace_dlq;
 pub mod traces;
 
