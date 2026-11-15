@@ -277,7 +277,7 @@ impl OrionClient {
         self.execute_bytes(method, path, body).await
     }
 
-    async fn execute_bytes(
+    pub(crate) async fn execute_bytes(
         &self,
         method: Method,
         path: &str,

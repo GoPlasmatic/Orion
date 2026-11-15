@@ -100,7 +100,7 @@ impl From<&str> for BootstrapError {
 /// that exports all spans via OTLP. Existing `#[instrument]` annotations
 /// automatically become distributed-trace-compatible with zero changes.
 /// Returns the OTel tracer provider (for the shutdown flush) when enabled.
-pub fn init_observability(
+pub(crate) fn init_observability(
     config: &config::AppConfig,
 ) -> Result<Option<opentelemetry_sdk::trace::SdkTracerProvider>, BootstrapError> {
     let env_filter =
@@ -127,7 +127,7 @@ pub fn init_observability(
 }
 
 /// Init metrics (gated by config).
-pub fn init_metrics_handle(
+pub(crate) fn init_metrics_handle(
     config: &config::AppConfig,
 ) -> metrics_exporter_prometheus::PrometheusHandle {
     if config.metrics.enabled {
@@ -163,7 +163,7 @@ pub use crate::storage::repositories::Repositories;
 /// convention. Building the engine consumes the custom-function handlers
 /// (dataflow-rs takes the map by value), so the step is destructive; the only
 /// way to obtain a `ServingComponents` is to have run it.
-pub struct ServingComponents {
+pub(crate) struct ServingComponents {
     pub connector_registry: Arc<ConnectorRegistry>,
     pub http_client: reqwest::Client,
     /// The process's one expression engine (I188), built once here over
@@ -212,7 +212,7 @@ pub struct ServingComponents {
 /// check), shared HTTP client, expression engine, the pre-created engine
 /// lock, cache + external connector pool caches, and the custom function
 /// handlers.
-pub struct EngineComponents {
+pub(crate) struct EngineComponents {
     pub serving: ServingComponents,
     /// Orion's functions and the profile layer included ([`crate::engine::serving_registry`]): what the first
     /// generation compiles every stored workflow on, its plugins added. Its
@@ -224,7 +224,7 @@ pub struct EngineComponents {
 /// shared HTTP client, the expression engine, the runtime handle (pre-created
 /// so the `channel_call` handler can reference it), the cache + external pool
 /// caches, and the custom function handlers.
-pub async fn build_engine_components(
+pub(crate) async fn build_engine_components(
     config: &config::AppConfig,
     channel_loader: &Arc<crate::channel::ChannelLoader>,
     composition: crate::extensions::CompositionBuilder,
@@ -660,7 +660,7 @@ pub async fn run(
 /// failure rather than a silently missing scrape target. Its shutdown
 /// future is an independent `shutdown_signal()` — signal handlers fan out
 /// to every registered stream, so both listeners see the same SIGTERM.
-pub fn start_metrics_listener(
+pub(crate) fn start_metrics_listener(
     config: &Arc<config::AppConfig>,
     state: &crate::runtime::state::AppState,
 ) -> Result<
@@ -711,7 +711,7 @@ pub fn start_metrics_listener(
 /// The metrics listener drains on the same grace window, so by the time the
 /// main server has returned it is at most a scheduling hop behind. Bound
 /// the join anyway — a stuck scrape must not hold the process open.
-pub async fn join_metrics_listener(
+pub(crate) async fn join_metrics_listener(
     handle: Option<tokio::task::JoinHandle<Result<(), crate::errors::OrionError>>>,
 ) {
     if let Some(handle) = handle {
@@ -725,7 +725,7 @@ pub async fn join_metrics_listener(
 }
 
 /// Build rate limiter (if enabled).
-pub fn build_rate_limit_state(
+pub(crate) fn build_rate_limit_state(
     config: &config::AppConfig,
 ) -> Option<Arc<crate::server::rate_limit::RateLimitState>> {
     if config.rate_limit.enabled {
@@ -782,7 +782,7 @@ impl TaskHandles {
 }
 
 /// Structured bundle of the background queues and their drain handles (`SIMP-05`).
-pub struct BackgroundQueues {
+pub(crate) struct BackgroundQueues {
     pub trace_persistence_queue: crate::queue::TracePersistenceQueue,
     pub trace_queue: crate::queue::TraceQueue,
     pub audit_queue: crate::queue::audit_queue::AuditQueue,
@@ -793,7 +793,7 @@ pub struct BackgroundQueues {
 /// pool, trace cleanup, audit-log cleanup, and the DLQ retry consumer.
 /// Returns the [`BackgroundQueues`] bundle owning the queues `AppState` needs
 /// plus the [`TaskHandles`] owning the shutdown sequence.
-pub fn start_background_tasks(
+pub(crate) fn start_background_tasks(
     config: &config::AppConfig,
     tasks: &crate::runtime::TaskRegistry,
     runtime: Arc<crate::runtime::RuntimeHandle>,
@@ -943,7 +943,7 @@ pub fn start_background_tasks(
 ///
 /// A struct rather than three more positional parameters on
 /// [`start_background_tasks`], two of which are `Arc`s of unrelated things.
-pub struct CronComponents {
+pub(crate) struct CronComponents {
     /// The process's expression engine, which the guards evaluate on.
     pub exprs: dataflow_rs::expr::ExprEngine,
     pub vars: Option<Arc<serde_json::Value>>,
@@ -952,7 +952,7 @@ pub struct CronComponents {
 
 /// Inputs to [`build_app_state`] that aren't already carried by
 /// [`Repositories`] / [`EngineComponents`].
-pub struct AppStateParams {
+pub(crate) struct AppStateParams {
     pub config: Arc<config::AppConfig>,
     pub pool: crate::storage::DbPool,
     pub repos: Repositories,
@@ -1181,7 +1181,7 @@ pub async fn open_storage(
 /// encrypted state store, and in cluster mode the refresh lease that keeps N
 /// nodes from rotating against each other. The lease is derived from the
 /// config here, so the harness wires it the same way a cluster node does.
-pub async fn build_serving_components(
+pub(crate) async fn build_serving_components(
     storage: &Storage,
     composition: crate::extensions::CompositionBuilder,
 ) -> Result<EngineComponents, BootstrapError> {
@@ -1207,7 +1207,7 @@ pub async fn build_serving_components(
 /// What [`start_background`] started: the queues `AppState` holds, the
 /// supervisor every long-lived task registered with (so `/health` and
 /// `/readyz` can report their liveness), and the scheduler's own status.
-pub struct Background {
+pub(crate) struct Background {
     pub queues: BackgroundQueues,
     pub tasks: Arc<crate::runtime::TaskRegistry>,
     pub cron_status: Arc<crate::cron::CronStatus>,
@@ -1220,7 +1220,7 @@ pub struct Background {
 /// plugin deadline is measured in, supervised as `Required` so a dead ticker
 /// degrades `/readyz` rather than silently disabling every deadline. Runs
 /// after the first generation is published, which the workers read.
-pub fn start_background(storage: &Storage, components: &ServingComponents) -> Background {
+pub(crate) fn start_background(storage: &Storage, components: &ServingComponents) -> Background {
     let tasks = Arc::new(crate::runtime::TaskRegistry::new());
     let cron_status = Arc::new(crate::cron::CronStatus::new());
     let queues = start_background_tasks(
@@ -1278,7 +1278,7 @@ pub fn start_background(storage: &Storage, components: &ServingComponents) -> Ba
 /// and record this node's status. Reading or building what is committed
 /// failing stops the boot: a node that cannot must not report ready while
 /// serving something else.
-pub async fn build_committed_head(
+pub(crate) async fn build_committed_head(
     state: &crate::runtime::state::AppState,
 ) -> Result<(), BootstrapError> {
     state
@@ -1337,7 +1337,7 @@ pub async fn build_committed_head(
 /// [`Repositories`] / [`ServingComponents`] fields map onto `AppStateInner`.
 /// Called only by [`assemble`], which is the shared entry point the server and
 /// the test harness go through.
-pub fn build_app_state(params: AppStateParams) -> crate::runtime::state::AppState {
+pub(crate) fn build_app_state(params: AppStateParams) -> crate::runtime::state::AppState {
     let AppStateParams {
         config,
         pool,

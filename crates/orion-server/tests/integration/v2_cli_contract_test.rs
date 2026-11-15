@@ -2,7 +2,7 @@
 //! through `orion_client::V2Admin`, against the real routes of an assembled
 //! node.
 
-use serde_json::{Value, json};
+use serde_json::json;
 
 #[tokio::test]
 async fn convergence_requires_a_committed_revision_even_on_a_stale_replica() {
@@ -90,8 +90,8 @@ impl orion_client::V2Admin for RouterClient {
         &self,
         method: orion_client::Method,
         path: &str,
-        body: Option<Value>,
-    ) -> Result<Value, Self::Error> {
+        body: Option<orion_client::Bytes>,
+    ) -> Result<orion_client::Bytes, Self::Error> {
         use axum::body::{Body, to_bytes};
         use tower::ServiceExt as _;
         let mut req = axum::http::Request::builder()
@@ -100,7 +100,7 @@ impl orion_client::V2Admin for RouterClient {
         let body = match body {
             Some(body) => {
                 req = req.header("content-type", "application/json");
-                Body::from(serde_json::to_vec(&body)?)
+                Body::from(body)
             }
             None => Body::empty(),
         };
@@ -118,7 +118,7 @@ impl orion_client::V2Admin for RouterClient {
                 &bytes,
             ));
         }
-        Ok(serde_json::from_slice(&bytes)?)
+        Ok(bytes)
     }
 }
 

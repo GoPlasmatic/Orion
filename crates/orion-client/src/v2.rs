@@ -9,6 +9,7 @@
 
 use std::future::Future;
 
+use bytes::Bytes;
 use orion_api::Page;
 use orion_api::v2::{
     AdmitPackageRequest, AdmitPackageResponse, ConnectionProbeResponse, ConnectionRevisionResponse,
@@ -32,14 +33,19 @@ async fn call<C, Resp>(
     client: &C,
     method: Method,
     path: String,
-    body: Option<Value>,
+    body: Option<Bytes>,
 ) -> Result<Resp, C::Error>
 where
     C: V2Admin + ?Sized,
     Resp: DeserializeOwned,
 {
     let answer = client.send(method, &path, body).await?;
-    Ok(serde_json::from_value(answer)?)
+    // Decoded straight from the wire bytes: a request body already serialized
+    // once, and an answer read once, rather than a `Value` in between (P-28).
+    if answer.is_empty() {
+        return Ok(serde_json::from_str("null")?);
+    }
+    Ok(serde_json::from_slice(&answer)?)
 }
 
 /// Which page of a list to read. Every list pages by an opaque cursor: pass the
@@ -90,8 +96,8 @@ where
     }
 }
 
-fn body<T: Serialize + ?Sized>(request: &T) -> Result<Option<Value>, serde_json::Error> {
-    serde_json::to_value(request).map(Some)
+fn body<T: Serialize + ?Sized>(request: &T) -> Result<Option<Bytes>, serde_json::Error> {
+    serde_json::to_vec(request).map(Bytes::from).map(Some)
 }
 
 /// Whether a server reporting `server` (see [`V2Admin::server_api_version`])
@@ -144,8 +150,8 @@ pub trait V2Admin: Sync {
         &self,
         method: Method,
         path: &str,
-        body: Option<Value>,
-    ) -> impl Future<Output = Result<Value, Self::Error>> + Send;
+        body: Option<Bytes>,
+    ) -> impl Future<Output = Result<Bytes, Self::Error>> + Send;
 
     // -- Capabilities --
 
@@ -159,6 +165,7 @@ pub trait V2Admin: Sync {
             let answer = self
                 .send(Method::GET, paths::V2_RUNTIME_CAPABILITIES, None)
                 .await?;
+            let answer: Value = serde_json::from_slice(&answer)?;
             Ok(answer.get("api_version").and_then(Value::as_u64))
         }
     }
@@ -451,12 +458,8 @@ impl V2Admin for OrionClient {
         &self,
         method: Method,
         path: &str,
-        body: Option<Value>,
-    ) -> Result<Value, ClientError> {
-        let bytes = self.execute(method, path, body.as_ref()).await?;
-        if bytes.is_empty() {
-            return Ok(Value::Null);
-        }
-        serde_json::from_slice(&bytes).map_err(ClientError::from)
+        body: Option<Bytes>,
+    ) -> Result<Bytes, ClientError> {
+        self.execute_bytes(method, path, body).await
     }
 }
