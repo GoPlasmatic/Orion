@@ -291,38 +291,7 @@ pub(crate) async fn dynamic_handler(
     // config-less — serving it here would apply none of its guards.
     let channel_runtime = generation.channels.require_serviceable(&channel)?;
 
-    // D6: a cron channel is reachable by name — every channel is — and must not
-    // be reachable *here*. Running it over HTTP would execute the workflow
-    // outside the occurrence ledger and outside its singleton: no row recording
-    // that it ran, and nothing stopping it overlapping the scheduled run it was
-    // configured to never overlap. The manual-trigger endpoint exists for this,
-    // and goes through the same claim path the schedule does.
-    if let Some(runtime) = channel_runtime.as_ref()
-        && runtime.cron.is_some()
-    {
-        return Err(OrionError::method_not_allowed(format!(
-            "channel '{channel}' is a cron channel: it runs on its schedule, not on \
-             request. To run it now, POST /api/v2/admin/channels/{}/trigger — that \
-             records an occurrence and respects the channel's concurrency policy.",
-            runtime.channel.channel_id
-        )));
-    }
-
-    // A channel whose driver runs its own listener (Kafka, a queue, …)
-    // receives its messages over that transport, behind that transport's
-    // authentication. Serving it here too would let anyone who can reach the
-    // port inject messages the transport would have refused. Checked after the
-    // cron arm so a cron channel keeps its more useful message, and after the
-    // 415/400 checks above so their ordering is unchanged.
-    if let Some(runtime) = channel_runtime.as_ref()
-        && matches!(runtime.http, crate::channel::HttpServing::No)
-    {
-        return Err(OrionError::method_not_allowed(format!(
-            "channel '{channel}' is a '{}' channel: its messages arrive over its \
-             transport, not over HTTP",
-            runtime.channel.protocol
-        )));
-    }
+    refuse_non_http(&channel, &channel_runtime)?;
 
     let request_config = channel_runtime
         .as_ref()
@@ -524,6 +493,41 @@ pub(crate) async fn dynamic_handler(
         admission,
     )
     .await
+}
+
+/// Refuse a channel this transport does not serve, in the words that say
+/// where it does run.
+///
+/// A cron channel is reachable by name — every channel is — and must not be
+/// reachable *here*: running it over HTTP would execute the workflow outside
+/// the occurrence ledger and outside its singleton. A channel whose driver
+/// runs its own listener receives its messages over that transport, behind
+/// that transport's authentication; serving it here too would let anyone who
+/// can reach the port inject messages the driver would have refused. The cron
+/// arm comes first so a cron channel keeps its more useful message.
+fn refuse_non_http(
+    channel: &str,
+    runtime: &Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
+) -> Result<(), OrionError> {
+    let Some(runtime) = runtime.as_ref() else {
+        return Ok(());
+    };
+    if runtime.cron.is_some() {
+        return Err(OrionError::method_not_allowed(format!(
+            "channel '{channel}' is a cron channel: it runs on its schedule, not on \
+             request. To run it now, POST /api/v2/admin/channels/{}/trigger — that \
+             records an occurrence and respects the channel's concurrency policy.",
+            runtime.channel.channel_id
+        )));
+    }
+    if matches!(runtime.http, crate::channel::HttpServing::No) {
+        return Err(OrionError::method_not_allowed(format!(
+            "channel '{channel}' is a '{}' channel: its messages arrive over its \
+             transport, not over HTTP",
+            runtime.channel.protocol
+        )));
+    }
+    Ok(())
 }
 
 /// Render a response a guard built itself.

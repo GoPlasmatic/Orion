@@ -761,82 +761,14 @@ async fn build_and_publish(
             });
         let published = state.runtime.load();
 
-        // Sweep the plugin compile cache down to what this generation serves.
-        // The cache is a compile-time dedup keyed by digest and does not shrink
-        // on its own, so without this sweep drafts, self-test failures,
-        // superseded versions, deleted plugins and one-off `validate`s would
-        // stay resident until restart. A loaded plugin's handler holds its own
-        // component, so this cannot disturb serving; the slack spares recent
-        // uploads that are compiled but not yet activated.
-        if let Some(runtime) = state.plugins.as_ref() {
-            let keep: std::collections::HashSet<&str> = published
-                .plugins
-                .plugins
-                .iter()
-                .map(|p| p.digest.as_str())
-                .collect();
-            let evicted = runtime.retain(&keep, crate::plugin::WasmRuntime::RETAIN_SLACK);
-            if evicted > 0 {
-                tracing::debug!(
-                    evicted,
-                    "swept superseded plugin components from the compile cache"
-                );
-            }
-        }
-
-        // Drop circuit breakers whose channel or connector this generation no
-        // longer carries — a deleted connector or an archived channel — so
-        // their entries do not sit in the map until LRU pressure reclaims them.
-        // Runs on every node (the reload does), keyed off this reload's live
-        // channels and the registry's live connectors.
-        //
-        // A breaker's stored channel is the routing identity stamped into
-        // `metadata.channel` — the channel *name*, which is what `RouteTable`
-        // and `require_serviceable` key on and what the `"{channel}:{connector}"`
-        // breaker key is built from — not the `channel_id` storage PK (a UUID
-        // in general), which matches no breaker's channel: pruning against it
-        // would wipe the whole map on every reload, the exact fan-out the
-        // cluster breaker-reset test pins.
-        let live_channels: std::collections::HashSet<&str> =
-            channels.iter().map(|c| c.name.as_str()).collect();
-        state.connector_registry.prune_breakers(&live_channels);
-
-        let active_connections: std::collections::HashSet<&str> = manifest
-            .members
-            .iter()
-            .filter(|m| {
-                m.entity.kind == crate::extensions::deployment_store::EntityKind::Connection
-            })
-            .map(|m| m.entity.id.as_str())
-            .collect();
-        for conn in state.deployments.list_connections() {
-            if !active_connections.contains(conn.connection_id.as_str()) {
-                state
-                    .composition
-                    .pools()
-                    .evict_connector(&conn.connection_id);
-            }
-        }
-
-        // The connection revisions this generation pins; a provider is told
-        // about every one the previous generation pinned and this one does not.
-        let served: std::collections::BTreeSet<_> = manifest
-            .members
-            .iter()
-            .filter(|m| {
-                m.entity.kind == crate::extensions::deployment_store::EntityKind::Connection
-            })
-            .filter_map(|m| {
-                state
-                    .deployments
-                    .get_connection(&m.entity.id, m.entity.revision)
-                    .map(|row| row.effective_identity())
-            })
-            .collect();
-        state.composition.providers().retire_unserved(served).await;
-
-        // Update active workflows gauge
-        crate::metrics::set_active_workflows(active_workflows.len() as f64);
+        after_publish(
+            state,
+            &published,
+            &channels,
+            &manifest,
+            active_workflows.len(),
+        )
+        .await;
 
         tracing::info!(
             generation,
@@ -882,6 +814,97 @@ async fn build_and_publish(
     }
 
     result
+}
+
+/// What a successful publish does beside serving: keep the caches in step
+/// with the generation that just went live.
+///
+/// The plugin compile cache is swept to the digests this generation serves, so
+/// drafts and superseded uploads do not stay resident until restart. Circuit
+/// breakers whose channel or connector is gone are dropped. Connections the
+/// manifest no longer members have their provider pools evicted, and providers
+/// are told which pinned revisions retired. None of it can disturb serving: a
+/// loaded plugin's handler holds its own component, and a dropped breaker is
+/// rebuilt on the next call (M-07).
+async fn after_publish(
+    state: &AppState,
+    published: &super::RuntimeGeneration,
+    channels: &[crate::engine::Channel],
+    manifest: &crate::extensions::deployment_store::CanonicalManifest,
+    workflow_count: usize,
+) {
+    // Sweep the plugin compile cache down to what this generation serves.
+    // The cache is a compile-time dedup keyed by digest and does not shrink
+    // on its own, so without this sweep drafts, self-test failures,
+    // superseded versions, deleted plugins and one-off `validate`s would
+    // stay resident until restart. A loaded plugin's handler holds its own
+    // component, so this cannot disturb serving; the slack spares recent
+    // uploads that are compiled but not yet activated.
+    if let Some(runtime) = state.plugins.as_ref() {
+        let keep: std::collections::HashSet<&str> = published
+            .plugins
+            .plugins
+            .iter()
+            .map(|p| p.digest.as_str())
+            .collect();
+        let evicted = runtime.retain(&keep, crate::plugin::WasmRuntime::RETAIN_SLACK);
+        if evicted > 0 {
+            tracing::debug!(
+                evicted,
+                "swept superseded plugin components from the compile cache"
+            );
+        }
+    }
+
+    // Drop circuit breakers whose channel or connector this generation no
+    // longer carries — a deleted connector or an archived channel — so
+    // their entries do not sit in the map until LRU pressure reclaims them.
+    // Runs on every node (the reload does), keyed off this reload's live
+    // channels and the registry's live connectors.
+    //
+    // A breaker's stored channel is the routing identity stamped into
+    // `metadata.channel` — the channel *name*, which is what `RouteTable`
+    // and `require_serviceable` key on and what the `"{channel}:{connector}"`
+    // breaker key is built from — not the `channel_id` storage PK (a UUID
+    // in general), which matches no breaker's channel: pruning against it
+    // would wipe the whole map on every reload, the exact fan-out the
+    // cluster breaker-reset test pins.
+    let live_channels: std::collections::HashSet<&str> =
+        channels.iter().map(|c| c.name.as_str()).collect();
+    state.connector_registry.prune_breakers(&live_channels);
+
+    let active_connections: std::collections::HashSet<&str> = manifest
+        .members
+        .iter()
+        .filter(|m| m.entity.kind == crate::extensions::deployment_store::EntityKind::Connection)
+        .map(|m| m.entity.id.as_str())
+        .collect();
+    for conn in state.deployments.list_connections() {
+        if !active_connections.contains(conn.connection_id.as_str()) {
+            state
+                .composition
+                .pools()
+                .evict_connector(&conn.connection_id);
+        }
+    }
+
+    // The connection revisions this generation pins; a provider is told
+    // about every one the previous generation pinned and this one does not.
+    let served: std::collections::BTreeSet<_> = manifest
+        .members
+        .iter()
+        .filter(|m| m.entity.kind == crate::extensions::deployment_store::EntityKind::Connection)
+        .filter_map(|m| {
+            state
+                .deployments
+                .get_connection(&m.entity.id, m.entity.revision)
+                .map(|row| row.effective_identity())
+        })
+        .collect();
+    state.composition.providers().retire_unserved(served).await;
+
+    // Update active workflows gauge
+    crate::metrics::set_active_workflows(workflow_count as f64);
 }
 
 /// The engine half of a candidate generation, compiled but not published.

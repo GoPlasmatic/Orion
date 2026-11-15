@@ -57,6 +57,238 @@ pub fn start_dlq_retry(
     );
 }
 
+/// One claimed DLQ entry's attempt: parse it, refuse or mint a trace, hand it
+/// to the queue, and settle the lease.
+///
+/// Every early exit is terminal for this attempt — the lease is either
+/// settled or left for expiry — which is why the loop's `continue`s are this
+/// function's `return`s (M-07).
+async fn retry_entry(
+    dlq_repo: &dyn crate::storage::repositories::trace_dlq::TraceDlqRepository,
+    trace_queue: &TraceQueue,
+    trace_repo: &dyn TraceSink,
+    runtime: &crate::runtime::RuntimeHandle,
+    entry: crate::storage::models::TraceDlqEntry,
+) {
+    let payload: serde_json::Value = match serde_json::from_str(&entry.payload_json) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(
+                dlq_id = %entry.id,
+                error = %e,
+                "DLQ retry: corrupt payload, marking exhausted"
+            );
+            metrics::record_trace_dlq_retry("exhausted");
+            if let Err(e) = dlq_repo.mark_exhausted(&entry.id).await {
+                tracing::error!(
+                    dlq_id = %entry.id,
+                    error = %e,
+                    "DLQ retry: failed to mark corrupt entry exhausted — \
+                     it will be re-claimed when its lease expires"
+                );
+            }
+            return;
+        }
+    };
+
+    let mut metadata: serde_json::Value =
+        serde_json::from_str(&entry.metadata_json).unwrap_or_default();
+    let next_attempt = entry.retry_count + 1;
+    // Stamp stable DLQ retry lineage and idempotency identity into
+    // metadata so downstream handlers and at-least-once replays
+    // after a crash/lease expiry share a deterministic key (`TD-05`).
+    if !metadata.is_object() {
+        metadata = serde_json::Value::Object(serde_json::Map::new());
+    }
+    if let Some(meta_obj) = metadata.as_object_mut() {
+        meta_obj.insert(
+            "_orion_dlq_id".to_string(),
+            serde_json::Value::String(entry.id.clone()),
+        );
+        meta_obj.insert(
+            "_orion_dlq_origin_trace_id".to_string(),
+            serde_json::Value::String(entry.trace_id.clone()),
+        );
+        meta_obj.insert(
+            "_orion_dlq_attempt".to_string(),
+            serde_json::Value::Number(next_attempt.into()),
+        );
+        meta_obj.insert(
+            "_orion_idempotency_key".to_string(),
+            serde_json::Value::String(format!("dlq:{}:{}", entry.id, next_attempt)),
+        );
+    }
+
+    // P-25: refuse before minting a pending trace. Checking
+    // after the insert cost three writes and left a dead trace row
+    // on every full-queue tick.
+    if let Err(refusal) = trace_queue.check_admissible(&payload, &metadata) {
+        tracing::warn!(
+            dlq_id = %entry.id,
+            error = %refusal,
+            "DLQ retry: trace queue cannot take this entry; rescheduling"
+        );
+        match super::settle_leased_dlq(
+            dlq_repo,
+            &entry.id,
+            entry.retry_count,
+            entry.max_retries,
+            &refusal.to_string(),
+        )
+        .await
+        {
+            Ok(super::DlqSettlement::Exhausted) => {
+                metrics::record_error("dlq_exhausted");
+                metrics::record_trace_dlq_retry("exhausted");
+            }
+            Ok(super::DlqSettlement::Deferred { .. }) => {
+                metrics::record_trace_dlq_retry("failed");
+            }
+            Err(e) => tracing::error!(
+                dlq_id = %entry.id,
+                error = %e,
+                "DLQ retry: failed to settle the refused entry"
+            ),
+        }
+        return;
+    }
+
+    // Create a new pending trace for the retry. DLQ rows only
+    // carry the channel *name*; resolve the ID from the live
+    // generation (NULL when the channel is no longer active —
+    // honest).
+    let channel_id = runtime
+        .load()
+        .channels
+        .get_by_name(&entry.channel)
+        .map(|c| c.channel.channel_id.clone());
+    let new_trace = match trace_repo
+        .create_pending(
+            &entry.channel,
+            channel_id.as_deref(),
+            "async",
+            Some(&entry.payload_json),
+            // Operator-plane row: the original submitter's token
+            // died with the failed trace; reads follow the admin
+            // trust model (R12).
+            None,
+        )
+        .await
+    {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(
+                dlq_id = %entry.id,
+                error = %e,
+                "DLQ retry: failed to create pending trace"
+            );
+            metrics::record_trace_dlq_retry("failed");
+            return;
+        }
+    };
+
+    // Submit to the trace queue. Under TD-05, the DLQ row is NOT
+    // deleted at enqueue time — it stays under its `claim_pending`
+    // lease while the worker executes the retry and is settled
+    // (`remove`, `record_retry`, or `mark_exhausted`) only after
+    // execution finishes. If the node crashes after enqueue and
+    // before settlement, the claim lease expires and the entry is
+    // durably re-claimed.
+    let submit_result = trace_queue.submit_dlq_retry(
+        QueueMessage {
+            trace_id: new_trace.id.clone(),
+            channel: entry.channel.clone(),
+            payload,
+            metadata,
+            trace_headers: std::collections::HashMap::new(),
+            profile_requested: false,
+            backpressure_permit: None,
+        },
+        entry.id.clone(),
+        next_attempt,
+        entry.max_retries,
+    );
+
+    match submit_result {
+        Ok(()) => {
+            metrics::record_trace_dlq_retry("retried");
+            tracing::info!(
+                dlq_id = %entry.id,
+                retry = next_attempt,
+                new_trace_id = %new_trace.id,
+                "DLQ retry: trace handed off to worker queue under lease"
+            );
+        }
+        Err(e) => {
+            // Queue is full or closed — bump retry count with backoff
+            tracing::warn!(
+                dlq_id = %entry.id,
+                error = %e,
+                "DLQ retry: failed to resubmit, scheduling next retry"
+            );
+            // The pending trace minted for this attempt will never
+            // be processed (the next attempt mints its own row) —
+            // settle it or it counts as backlog forever.
+            if let Err(e) = trace_repo
+                .update_status(
+                    &new_trace.id,
+                    crate::storage::models::TRACE_STATUS_FAILED,
+                    Some("DLQ resubmission shed: trace queue at capacity"),
+                )
+                .await
+            {
+                tracing::error!(
+                    trace_id = %new_trace.id,
+                    error = %e,
+                    "DLQ retry: failed to settle pending trace after shed"
+                );
+            }
+            // Both outcomes clear the claim lease. Swallowing
+            // their errors is what let D1's postgres type
+            // mismatch stay invisible while entries were
+            // re-claimed forever.
+            match super::settle_leased_dlq(
+                dlq_repo,
+                &entry.id,
+                entry.retry_count,
+                entry.max_retries,
+                &e.to_string(),
+            )
+            .await
+            {
+                Ok(super::DlqSettlement::Exhausted) => {
+                    metrics::record_error("dlq_exhausted");
+                    metrics::record_trace_dlq_retry("exhausted");
+                    tracing::warn!(
+                        dlq_id = %entry.id,
+                        "DLQ retry: max retries exhausted, giving up"
+                    );
+                }
+                Ok(super::DlqSettlement::Deferred {
+                    retry_count,
+                    delay_secs,
+                }) => {
+                    metrics::record_trace_dlq_retry("failed");
+                    tracing::info!(
+                        dlq_id = %entry.id,
+                        retry_count,
+                        delay_secs,
+                        "DLQ retry: released lease and scheduled the next attempt"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        dlq_id = %entry.id,
+                        error = %e,
+                        "DLQ retry: failed to settle the entry — it keeps its \
+                         old next_retry_at and will be re-claimed on lease expiry"
+                    );
+                }
+            }
+        }
+    }
+}
+
 async fn run_dlq_retry(
     opts: Arc<DlqRetryOptions>,
     dlq_repo: Arc<dyn TraceDlqRepository>,
@@ -113,223 +345,7 @@ async fn run_dlq_retry(
             metrics::record_job_success("dlq_retry");
 
             for entry in entries {
-                let payload: serde_json::Value = match serde_json::from_str(&entry.payload_json) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::error!(
-                            dlq_id = %entry.id,
-                            error = %e,
-                            "DLQ retry: corrupt payload, marking exhausted"
-                        );
-                        metrics::record_trace_dlq_retry("exhausted");
-                        if let Err(e) = dlq_repo.mark_exhausted(&entry.id).await {
-                            tracing::error!(
-                                dlq_id = %entry.id,
-                                error = %e,
-                                "DLQ retry: failed to mark corrupt entry exhausted — \
-                                 it will be re-claimed when its lease expires"
-                            );
-                        }
-                        continue;
-                    }
-                };
-
-                let mut metadata: serde_json::Value =
-                    serde_json::from_str(&entry.metadata_json).unwrap_or_default();
-                let next_attempt = entry.retry_count + 1;
-                // Stamp stable DLQ retry lineage and idempotency identity into
-                // metadata so downstream handlers and at-least-once replays
-                // after a crash/lease expiry share a deterministic key (`TD-05`).
-                if !metadata.is_object() {
-                    metadata = serde_json::Value::Object(serde_json::Map::new());
-                }
-                if let Some(meta_obj) = metadata.as_object_mut() {
-                    meta_obj.insert(
-                        "_orion_dlq_id".to_string(),
-                        serde_json::Value::String(entry.id.clone()),
-                    );
-                    meta_obj.insert(
-                        "_orion_dlq_origin_trace_id".to_string(),
-                        serde_json::Value::String(entry.trace_id.clone()),
-                    );
-                    meta_obj.insert(
-                        "_orion_dlq_attempt".to_string(),
-                        serde_json::Value::Number(next_attempt.into()),
-                    );
-                    meta_obj.insert(
-                        "_orion_idempotency_key".to_string(),
-                        serde_json::Value::String(format!("dlq:{}:{}", entry.id, next_attempt)),
-                    );
-                }
-
-                // P-25: refuse before minting a pending trace. Checking
-                // after the insert cost three writes and left a dead trace row
-                // on every full-queue tick.
-                if let Err(refusal) = trace_queue.check_admissible(&payload, &metadata) {
-                    tracing::warn!(
-                        dlq_id = %entry.id,
-                        error = %refusal,
-                        "DLQ retry: trace queue cannot take this entry; rescheduling"
-                    );
-                    match super::settle_leased_dlq(
-                        dlq_repo.as_ref(),
-                        &entry.id,
-                        entry.retry_count,
-                        entry.max_retries,
-                        &refusal.to_string(),
-                    )
-                    .await
-                    {
-                        Ok(super::DlqSettlement::Exhausted) => {
-                            metrics::record_error("dlq_exhausted");
-                            metrics::record_trace_dlq_retry("exhausted");
-                        }
-                        Ok(super::DlqSettlement::Deferred { .. }) => {
-                            metrics::record_trace_dlq_retry("failed");
-                        }
-                        Err(e) => tracing::error!(
-                            dlq_id = %entry.id,
-                            error = %e,
-                            "DLQ retry: failed to settle the refused entry"
-                        ),
-                    }
-                    continue;
-                }
-
-                // Create a new pending trace for the retry. DLQ rows only
-                // carry the channel *name*; resolve the ID from the live
-                // generation (NULL when the channel is no longer active —
-                // honest).
-                let channel_id = runtime
-                    .load()
-                    .channels
-                    .get_by_name(&entry.channel)
-                    .map(|c| c.channel.channel_id.clone());
-                let new_trace = match trace_repo
-                    .create_pending(
-                        &entry.channel,
-                        channel_id.as_deref(),
-                        "async",
-                        Some(&entry.payload_json),
-                        // Operator-plane row: the original submitter's token
-                        // died with the failed trace; reads follow the admin
-                        // trust model (R12).
-                        None,
-                    )
-                    .await
-                {
-                    Ok(t) => t,
-                    Err(e) => {
-                        tracing::error!(
-                            dlq_id = %entry.id,
-                            error = %e,
-                            "DLQ retry: failed to create pending trace"
-                        );
-                        metrics::record_trace_dlq_retry("failed");
-                        continue;
-                    }
-                };
-
-                // Submit to the trace queue. Under TD-05, the DLQ row is NOT
-                // deleted at enqueue time — it stays under its `claim_pending`
-                // lease while the worker executes the retry and is settled
-                // (`remove`, `record_retry`, or `mark_exhausted`) only after
-                // execution finishes. If the node crashes after enqueue and
-                // before settlement, the claim lease expires and the entry is
-                // durably re-claimed.
-                let submit_result = trace_queue.submit_dlq_retry(
-                    QueueMessage {
-                        trace_id: new_trace.id.clone(),
-                        channel: entry.channel.clone(),
-                        payload,
-                        metadata,
-                        trace_headers: std::collections::HashMap::new(),
-                        profile_requested: false,
-                        backpressure_permit: None,
-                    },
-                    entry.id.clone(),
-                    next_attempt,
-                    entry.max_retries,
-                );
-
-                match submit_result {
-                    Ok(()) => {
-                        metrics::record_trace_dlq_retry("retried");
-                        tracing::info!(
-                            dlq_id = %entry.id,
-                            retry = next_attempt,
-                            new_trace_id = %new_trace.id,
-                            "DLQ retry: trace handed off to worker queue under lease"
-                        );
-                    }
-                    Err(e) => {
-                        // Queue is full or closed — bump retry count with backoff
-                        tracing::warn!(
-                            dlq_id = %entry.id,
-                            error = %e,
-                            "DLQ retry: failed to resubmit, scheduling next retry"
-                        );
-                        // The pending trace minted for this attempt will never
-                        // be processed (the next attempt mints its own row) —
-                        // settle it or it counts as backlog forever.
-                        if let Err(e) = trace_repo
-                            .update_status(
-                                &new_trace.id,
-                                crate::storage::models::TRACE_STATUS_FAILED,
-                                Some("DLQ resubmission shed: trace queue at capacity"),
-                            )
-                            .await
-                        {
-                            tracing::error!(
-                                trace_id = %new_trace.id,
-                                error = %e,
-                                "DLQ retry: failed to settle pending trace after shed"
-                            );
-                        }
-                        // Both outcomes clear the claim lease. Swallowing
-                        // their errors is what let D1's postgres type
-                        // mismatch stay invisible while entries were
-                        // re-claimed forever.
-                        match super::settle_leased_dlq(
-                            dlq_repo.as_ref(),
-                            &entry.id,
-                            entry.retry_count,
-                            entry.max_retries,
-                            &e.to_string(),
-                        )
-                        .await
-                        {
-                            Ok(super::DlqSettlement::Exhausted) => {
-                                metrics::record_error("dlq_exhausted");
-                                metrics::record_trace_dlq_retry("exhausted");
-                                tracing::warn!(
-                                    dlq_id = %entry.id,
-                                    "DLQ retry: max retries exhausted, giving up"
-                                );
-                            }
-                            Ok(super::DlqSettlement::Deferred {
-                                retry_count,
-                                delay_secs,
-                            }) => {
-                                metrics::record_trace_dlq_retry("failed");
-                                tracing::info!(
-                                    dlq_id = %entry.id,
-                                    retry_count,
-                                    delay_secs,
-                                    "DLQ retry: released lease and scheduled the next attempt"
-                                );
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    dlq_id = %entry.id,
-                                    error = %e,
-                                    "DLQ retry: failed to settle the entry — it keeps its \
-                                     old next_retry_at and will be re-claimed on lease expiry"
-                                );
-                            }
-                        }
-                    }
-                }
+                retry_entry(&*dlq_repo, &trace_queue, &*trace_repo, &runtime, entry).await;
             }
         }
     }
