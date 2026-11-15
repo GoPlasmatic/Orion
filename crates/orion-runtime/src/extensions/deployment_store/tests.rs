@@ -201,6 +201,47 @@ fn typed_refs_disjoint_rollouts_and_canonical_manifest_verification() {
     validate_rollout_partition(&valid_rollout).expect("disjoint full partition");
 }
 
+/// A canary (a channel's traffic over two or more revisions) is refused
+/// below Standard; one interval over every bucket is no split.
+#[test]
+fn community_refuses_a_canary_and_a_licensed_edition_serves_it() {
+    use orion_extension_api::EditionTier;
+    let channel = |rollouts: Vec<RolloutInterval>| ManifestMember {
+        entity: EntityRef {
+            kind: EntityKind::Channel,
+            id: "orders".to_string(),
+            revision: crate::extensions::Revision::new(1).expect("a revision"),
+        },
+        definition_digest: format!("sha256:{}", "a".repeat(64)),
+        owning_package: None,
+        requires: Vec::new(),
+        rollouts,
+    };
+    let interval = |workflow_revision, start_bucket, end_bucket| RolloutInterval {
+        workflow_revision,
+        start_bucket,
+        end_bucket,
+    };
+    let manifest = |member| CanonicalManifest {
+        schema_version: 2,
+        providers: Vec::new(),
+        provider_lock_digest: None,
+        members: vec![member],
+    };
+
+    let split = manifest(channel(vec![interval(1, 0, 90), interval(2, 90, 100)]));
+    let refused = refuse_canary(EditionTier::Community, &split).unwrap_err();
+    assert_eq!(refused.code(), "TIER_NOT_ENABLED");
+    assert!(refused.message.contains("orders"), "{refused}");
+    refuse_canary(EditionTier::Standard, &split).expect("Standard serves a canary");
+    refuse_canary(EditionTier::Enterprise, &split).expect("Enterprise serves a canary");
+
+    let whole = manifest(channel(vec![interval(1, 0, 100)]));
+    refuse_canary(EditionTier::Community, &whole).expect("one revision is no split");
+    refuse_canary(EditionTier::Community, &manifest(channel(Vec::new())))
+        .expect("no rollouts is no split");
+}
+
 #[tokio::test]
 async fn end_to_end_archive_admit_plan_apply_rollback_and_gc() {
     let pool = pool().await;

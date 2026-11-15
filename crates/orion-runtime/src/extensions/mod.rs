@@ -328,6 +328,7 @@ impl CompositionBuilder {
             ledger,
             foundation,
         } = node;
+        deployments.set_edition(edition);
 
         let channels = ChannelDriverRegistry::new(channels)
             .map_err(CompositionError::DuplicateChannelDriver)?;

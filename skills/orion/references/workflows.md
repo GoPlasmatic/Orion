@@ -163,6 +163,8 @@ A deployment normally carries one revision per workflow. A traffic split is a
 hand-written manifest: both workflow revisions are members, and the channel
 member's `rollouts` intervals partition buckets `0..100` between them. See
 the traffic-split section of [cli.md](cli.md). `compile` never produces one.
+Splits are Standard and Enterprise only; a Community node refuses one
+(`TIER_NOT_ENABLED`).
 
 HTTP bucketing can be sticky on the header named by
 `engine.rollout_sticky_header`, otherwise the forwarded client IP, with a

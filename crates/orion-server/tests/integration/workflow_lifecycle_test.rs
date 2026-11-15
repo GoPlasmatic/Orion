@@ -403,7 +403,8 @@ async fn test_rollout_traffic_split() {
 /// 50/50 over 60 requests, missing a revision has probability 2⁻⁵⁹.
 #[tokio::test]
 async fn rollout_percentages_split_traffic_across_versions() {
-    let app = common::test_app().await;
+    // Canary rollout is a Standard and Enterprise feature.
+    let app = common::standard_app().await;
 
     let v1 = upload_marker_workflow(&app, "v1").await;
     let v2 = upload_marker_workflow(&app, "v2").await;
@@ -456,6 +457,50 @@ async fn rollout_percentages_split_traffic_across_versions() {
         vec!["v1".to_string(), "v2".to_string()],
         "a 50/50 rollout must reach both revisions"
     );
+}
+
+/// A Community node serves one revision per channel: a manifest that splits
+/// a channel's traffic across revisions is refused at plan and at apply
+/// (`TIER_NOT_ENABLED`, 403), and nothing is deployed.
+#[tokio::test]
+async fn community_refuses_a_canary_rollout() {
+    let app = common::test_app().await;
+
+    let v1 = upload_marker_workflow(&app, "v1").await;
+    let v2 = upload_marker_workflow(&app, "v2").await;
+    let channel = upload_channel(&app, "canary").await;
+    let members = vec![
+        member("workflow", "canary", 1, &v1),
+        member("workflow", "canary", 2, &v2),
+        channel_member(
+            "canary",
+            &channel,
+            "canary",
+            &[1, 2],
+            &[(1, 0, 90), (2, 90, 100)],
+        ),
+    ];
+
+    let (base, _) = common::deploy::head(&app).await;
+    let manifest = json!({"schema_version": 2, "providers": [], "members": members.clone()});
+    let (status, plan) = common::deploy::send(
+        &app,
+        "POST",
+        "/api/v2/admin/deployment-plans",
+        Some(json!({"base_revision": base, "manifest": manifest})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{plan}");
+    assert_eq!(plan["error"]["code"], "TIER_NOT_ENABLED", "{plan}");
+
+    let (status, body) = common::deploy::apply(&app, base, members).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"]["code"], "TIER_NOT_ENABLED", "{body}");
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("canary"), "{body}");
+
+    let (head, _) = common::deploy::head(&app).await;
+    assert_eq!(head, base, "a refused canary deploys nothing");
 }
 
 /// A dry run that dies partway still reports the steps that ran.

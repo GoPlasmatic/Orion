@@ -53,6 +53,20 @@ pub async fn test_app() -> Router {
     test_app_with_config(orion::testing::test_config()).await
 }
 
+/// A test app whose composition reports the Standard edition: what a test
+/// of a Standard and Enterprise feature (canary rollout) boots. Community's
+/// own drivers and providers, under a licensed edition.
+pub async fn standard_app() -> Router {
+    orion::server::build_router(
+        test_state_with_composition(
+            orion::testing::test_config(),
+            orion::extensions::CompositionRoot::community()
+                .with_edition(orion_api::v2::EditionTier::Standard),
+        )
+        .await,
+    )
+}
+
 /// Create a test app with a custom config (e.g. for rate limiting tests).
 pub async fn test_app_with_config(config: AppConfig) -> Router {
     orion::server::build_router(test_state_with_config(config).await)

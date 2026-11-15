@@ -160,9 +160,12 @@ async fn post_status(node: &axum::Router, channel: &str) -> StatusCode {
         .status()
 }
 
-/// Community's composition, for a node of the harness.
+/// Community's drivers and providers under the Standard edition, for a node
+/// of the harness: the suite runs features Community does not serve (a
+/// canary rollout in `sticky_rollout_assignment_is_stable_across_nodes`).
 async fn community(_: &orion::config::AppConfig) -> CompositionBuilder {
     orion::extensions::CompositionRoot::community()
+        .with_edition(orion::extension_api::EditionTier::Standard)
 }
 
 /// Community's composition with an edition-style cluster store injected:

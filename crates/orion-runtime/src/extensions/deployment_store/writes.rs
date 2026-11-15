@@ -122,8 +122,10 @@ async fn plan_in(
     base_revision: u64,
     candidate: CanonicalManifest,
     composed_rust_digests: HashSet<orion_extension_api::Digest>,
+    edition: orion_extension_api::EditionTier,
 ) -> Result<CandidatePlan, DeploymentError> {
     let canonical = candidate.canonicalize_and_verify()?;
+    super::refuse_canary(edition, &candidate)?;
     let base = base_manifest(tx, base_revision).await?;
     let facts = closure_facts(tx, &candidate, composed_rust_digests).await?;
     rules::plan(&facts, base_revision, base.as_ref(), candidate, canonical)
@@ -519,6 +521,7 @@ impl ImmutableDeploymentStore {
             base_revision,
             candidate_manifest,
             self.composed_rust_digests(),
+            self.edition(),
         )
         .await?;
         tx.commit().await.map_err(DeploymentError::read)?;
@@ -638,6 +641,7 @@ impl ImmutableDeploymentStore {
             expected_head_revision,
             target.manifest,
             self.composed_rust_digests(),
+            self.edition(),
         )
         .await?;
         plan.external_effect_warnings.push(

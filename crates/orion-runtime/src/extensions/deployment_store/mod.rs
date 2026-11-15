@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub use error::{DeploymentError, DeploymentErrorKind};
-pub use manifest::{CanonicalManifest, EntityKind, EntityRef, ManifestMember};
+pub use manifest::{CanonicalManifest, EntityKind, EntityRef, ManifestMember, refuse_canary};
 
 use super::ImplementationKind;
 use super::package_identity::{canonical_bytes, sha256_digest};
@@ -629,6 +629,9 @@ pub struct ImmutableDeploymentStore {
     /// boot from the driver's `describe()`; absent for a driver declaring none.
     composed_dependencies:
         Arc<RwLock<BTreeMap<Digest, BTreeMap<String, orion_extension_api::DependencyDescription>>>>,
+    /// The edition the node composes, set at build: what it may commit
+    /// (a Community node refuses a canary rollout). Community until set.
+    edition: Arc<RwLock<orion_extension_api::EditionTier>>,
 }
 
 impl Default for ImmutableDeploymentStore {
@@ -646,7 +649,18 @@ impl ImmutableDeploymentStore {
             held: Arc::default(),
             composed_rust: Arc::default(),
             composed_dependencies: Arc::default(),
+            edition: Arc::new(RwLock::new(orion_extension_api::EditionTier::Community)),
         }
+    }
+
+    /// Record the edition the node composes (at build).
+    pub fn set_edition(&self, edition: orion_extension_api::EditionTier) {
+        *self.edition.write_unpoisoned() = edition;
+    }
+
+    /// The edition the node composes.
+    pub fn edition(&self) -> orion_extension_api::EditionTier {
+        *self.edition.read_unpoisoned()
     }
 
     /// Record the dependencies a composed Direct Rust driver declares.

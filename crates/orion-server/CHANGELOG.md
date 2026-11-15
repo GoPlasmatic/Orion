@@ -82,6 +82,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Canary rollout is a Standard and Enterprise feature.** A Community node
+  serves one workflow revision per channel: a manifest whose channel member
+  splits traffic across revisions (`rollouts` with two or more intervals) is
+  refused with `TIER_NOT_ENABLED` (403) at plan, apply and rollback, and a
+  committed one does not build. A single interval over `0..100` is no split
+  and is still accepted. The deployment store learns the composition's
+  edition at build (`ImmutableDeploymentStore::edition`).
 - **Three edition tiers.** `EditionTier` (a node's `edition` in
   `/runtime-capabilities`, a provider package's `tier`) is `community`,
   `standard` or `enterprise`, a ladder: a node admits a package at or below

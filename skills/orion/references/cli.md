@@ -140,6 +140,11 @@ revision back.
 
 ## Traffic splits
 
+Traffic splits (canary rollout) are a Standard and Enterprise feature: a
+Community node refuses a manifest that splits a channel with
+`TIER_NOT_ENABLED` (403) at plan and apply, and serves one revision per
+channel.
+
 `compile` deploys one revision per workflow. To split a channel's traffic
 between two revisions of one workflow, write the manifest by hand. List both
 workflow revisions as members, and give the channel member `rollouts`

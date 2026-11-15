@@ -105,6 +105,40 @@ pub fn validate_rollout_partition(intervals: &[RolloutInterval]) -> Result<(), D
     Ok(())
 }
 
+/// Refuse a canary rollout on an edition that does not serve one.
+///
+/// A canary is a channel whose traffic is split across more than one
+/// workflow revision (`rollouts` with two or more intervals). It is a
+/// Standard and Enterprise feature: Community serves one revision per
+/// channel, so a Community node refuses such a manifest at plan, apply and
+/// rollback (`TIER_NOT_ENABLED`) and will not build one it finds committed.
+/// A single interval covering every bucket is no split, and is allowed.
+pub fn refuse_canary(
+    edition: orion_extension_api::EditionTier,
+    manifest: &CanonicalManifest,
+) -> Result<(), DeploymentError> {
+    if edition.admits(orion_extension_api::EditionTier::Standard) {
+        return Ok(());
+    }
+    let split: Vec<&str> = manifest
+        .members
+        .iter()
+        .filter(|m| m.entity.kind == EntityKind::Channel && m.rollouts.len() > 1)
+        .map(|m| m.entity.id.as_str())
+        .collect();
+    if split.is_empty() {
+        return Ok(());
+    }
+    Err(DeploymentError::new(
+        DeploymentErrorKind::TierNotEnabled,
+        format!(
+            "canary rollout (a channel's traffic split across workflow revisions) needs Orion Standard or Enterprise; this {} node serves one revision per channel. Split channels: {}",
+            edition.as_str(),
+            split.join(", ")
+        ),
+    ))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestMember {
     pub entity: EntityRef,

@@ -170,6 +170,11 @@ async fn manifest_definitions(
     use crate::errors::OrionError;
     use crate::extensions::deployment_store::{ArtifactState, EntityKind, ManifestMember};
 
+    // A canary committed under another edition (an Orion Ext database this
+    // Community node now runs on) is not served as one revision silently.
+    crate::extensions::deployment_store::refuse_canary(state.composition.edition(), manifest)
+        .map_err(|e| OrionError::validation(e.to_string()))?;
+
     for p in &manifest.providers {
         let Some(adm) = state.deployments.get_admission(&p.digest) else {
             return Err(OrionError::validation(format!(
