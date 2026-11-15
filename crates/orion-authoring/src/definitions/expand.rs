@@ -83,6 +83,60 @@ struct Scope {
     missing: BTreeSet<String>,
 }
 
+/// A node's authored coordinate, as a chain of steps rather than a joined
+/// `String` (P-27).
+///
+/// The expander builds one of these per key and index of every node it walks,
+/// and most are never read: the coordinate only reaches a diagnostic when a
+/// node came from somewhere other than where it lands. A chain of steps makes
+/// that one `Rc` allocation per node, and the text is built by
+/// [`Src::path`] when something asks for it.
+enum Path {
+    /// The document root: the empty coordinate.
+    Root,
+    /// A coordinate handed in whole — a shared constant's own path, or a
+    /// fragment body's.
+    Given(String),
+    Key {
+        parent: std::rc::Rc<Path>,
+        key: String,
+    },
+    Index {
+        parent: std::rc::Rc<Path>,
+        index: usize,
+    },
+}
+
+impl Path {
+    /// The coordinate as authored: `a.b[0].c`.
+    fn render(&self) -> String {
+        let mut steps: Vec<&Path> = Vec::new();
+        let mut base = String::new();
+        let mut current = self;
+        loop {
+            match current {
+                Path::Root => break,
+                Path::Given(path) => {
+                    base = path.clone();
+                    break;
+                }
+                Path::Key { parent, .. } | Path::Index { parent, .. } => {
+                    steps.push(current);
+                    current = parent;
+                }
+            }
+        }
+        for step in steps.iter().rev() {
+            match step {
+                Path::Key { key, .. } => base = join(&base, key),
+                Path::Index { index, .. } => base = format!("{base}[{index}]"),
+                Path::Root | Path::Given(_) => unreachable!("only steps are collected"),
+            }
+        }
+        base
+    }
+}
+
 /// Where a node was authored: a file, the coordinate in it, and how it got
 /// to where it lands.
 #[derive(Clone)]
@@ -90,7 +144,11 @@ struct Src {
     /// Shared: every node in one document names the same file, and cloning a
     /// `String` per key and index was the expander's largest allocation (P-27).
     file: std::rc::Rc<str>,
-    path: Option<String>,
+    path: std::rc::Rc<Path>,
+    /// Whether this coordinate is, by construction, the same text as the
+    /// compiled coordinate it will be paired with — the case [`Expand::note`]
+    /// has nothing to record for, so it need not render the path at all.
+    same_as_compiled: bool,
     via: std::rc::Rc<[Via]>,
 }
 
@@ -98,7 +156,11 @@ impl Src {
     fn key(&self, key: &str) -> Src {
         Src {
             file: std::rc::Rc::clone(&self.file),
-            path: self.path.as_deref().map(|p| join(p, key)),
+            path: std::rc::Rc::new(Path::Key {
+                parent: std::rc::Rc::clone(&self.path),
+                key: key.to_string(),
+            }),
+            same_as_compiled: self.same_as_compiled,
             via: self.via.clone(),
         }
     }
@@ -106,9 +168,21 @@ impl Src {
     fn index(&self, i: usize) -> Src {
         Src {
             file: std::rc::Rc::clone(&self.file),
-            path: self.path.as_deref().map(|p| format!("{p}[{i}]")),
+            // The compiled index is the *output* position and this one the
+            // input's, so the two can differ: comparing them is what `note`
+            // is for.
+            same_as_compiled: false,
+            path: std::rc::Rc::new(Path::Index {
+                parent: std::rc::Rc::clone(&self.path),
+                index: i,
+            }),
             via: self.via.clone(),
         }
+    }
+
+    /// This node's authored coordinate, when something needs its text.
+    fn path(&self) -> String {
+        self.path.render()
     }
 }
 
@@ -175,7 +249,8 @@ impl<'a, 'o> Expander<'a, 'o> {
             compiled: String::new(),
             src: Src {
                 file: self.cx.origin.into(),
-                path: Some(String::new()),
+                path: std::rc::Rc::new(Path::Root),
+                same_as_compiled: true,
                 via: Default::default(),
             },
         };
@@ -223,7 +298,8 @@ impl<'a, 'o> Expander<'a, 'o> {
             compiled: path.to_string(),
             src: Src {
                 file: self.cx.origin.into(),
-                path: Some(path.to_string()),
+                path: std::rc::Rc::new(Path::Given(path.to_string())),
+                same_as_compiled: true,
                 via: Default::default(),
             },
         };
@@ -404,7 +480,8 @@ impl<'a, 'o> Expander<'a, 'o> {
             reanchor_sql(&mut member, &fragment.origin, self.cx.base_dir);
             let at = Src {
                 file: fragment.origin.as_str().into(),
-                path: Some(format!("fragments.{name}.tasks[{k}]")),
+                path: std::rc::Rc::new(Path::Given(format!("fragments.{name}.tasks[{k}]"))),
+                same_as_compiled: false,
                 via: inner.trail.clone().into(),
             };
             self.element(member, Mode::Steps, &inner, list, at, out);
@@ -466,7 +543,8 @@ impl<'a, 'o> Expander<'a, 'o> {
         let start = out.len();
         let at = Src {
             file: fragment.origin.as_str().into(),
-            path: Some(format!("fragments.{name}.value")),
+            path: std::rc::Rc::new(Path::Given(format!("fragments.{name}.value"))),
+            same_as_compiled: false,
             via: inner.trail.clone().into(),
         };
         self.element(body, Mode::Steps, &inner, list, at, out);
@@ -546,7 +624,8 @@ impl<'a, 'o> Expander<'a, 'o> {
             compiled: at.compiled.clone(),
             src: Src {
                 file: fragment.origin.as_str().into(),
-                path: Some(format!("fragments.{name}.value")),
+                path: std::rc::Rc::new(Path::Given(format!("fragments.{name}.value"))),
+                same_as_compiled: false,
                 via: inner.trail.clone().into(),
             },
         };
@@ -628,7 +707,10 @@ impl<'a, 'o> Expander<'a, 'o> {
             compiled: String::new(),
             src: Src {
                 file: "".into(),
-                path: None,
+                // Muted: every finding raised under this coordinate is
+                // discarded, so the path is never read.
+                path: std::rc::Rc::new(Path::Root),
+                same_as_compiled: false,
                 via: Default::default(),
             },
         };
@@ -765,7 +847,10 @@ impl<'a, 'o> Expander<'a, 'o> {
             compiled: String::new(),
             src: Src {
                 file: "".into(),
-                path: None,
+                // Muted: every finding raised under this coordinate is
+                // discarded, so the path is never read.
+                path: std::rc::Rc::new(Path::Root),
+                same_as_compiled: false,
                 via: Default::default(),
             },
         };
@@ -898,14 +983,14 @@ impl<'a, 'o> Expander<'a, 'o> {
         }
         let own = at.src.via.is_empty()
             && &*at.src.file == self.cx.origin
-            && at.src.path.as_deref() == Some(at.compiled.as_str());
+            && (at.src.same_as_compiled || at.src.path() == at.compiled);
         if own {
             return;
         }
         self.map.record(
             &at.compiled,
             &at.src.file,
-            at.src.path.as_deref(),
+            Some(&at.src.path()),
             &at.src.via,
         );
     }
