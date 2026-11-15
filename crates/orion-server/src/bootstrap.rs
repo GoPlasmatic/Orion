@@ -372,29 +372,26 @@ pub(crate) async fn build_engine_components(
     let providers = composition.providers().clone();
 
     // The node's live components, as every function gets them.
-    let handler_deps = || {
-        let hosts = crate::runtime::functions::NodeHosts::new(
-            runtime.clone(),
-            exprs.clone(),
-            channel_loader.clone(),
-            providers.clone(),
-        );
-        crate::engine::HandlerDeps {
-            registry: connector_registry.clone(),
-            client: http_client.clone(),
-            channel_calls: hosts.channel_calls,
-            exprs: exprs.clone(),
-            jwks: jwks.clone(),
-            engine_config: &config.engine,
-            query_config: &config.query,
-            write_config: &config.write,
-            cache_pool: cache_pool.clone(),
-            namespaces: hosts.namespaces,
-            sql_pool_cache: sql_pool_cache.clone(),
-            connector_calls: hosts.connector_calls,
-        }
-    };
-    let registry = crate::engine::serving_registry(handler_deps());
+    let hosts = crate::runtime::functions::NodeHosts::new(
+        runtime.clone(),
+        exprs.clone(),
+        channel_loader.clone(),
+        providers.clone(),
+    );
+    let registry = crate::engine::serving_registry(crate::engine::HandlerDeps {
+        registry: connector_registry.clone(),
+        client: http_client.clone(),
+        channel_calls: hosts.channel_calls,
+        exprs: exprs.clone(),
+        jwks: jwks.clone(),
+        engine_config: &config.engine,
+        query_config: &config.query,
+        write_config: &config.write,
+        cache_pool: cache_pool.clone(),
+        namespaces: hosts.namespaces,
+        sql_pool_cache: sql_pool_cache.clone(),
+        connector_calls: hosts.connector_calls,
+    });
 
     let plugins = if config.plugins.enabled {
         Some(
@@ -442,8 +439,8 @@ impl EngineComponents {
     ///
     /// F55: takes `self` by value. This step *consumes* the custom-function
     /// handlers, so when it took `&mut self` the map was left as an empty hole
-    /// that `build_app_state` had to know to ignore — and calling
-    /// `build_app_state` first compiled fine and silently produced an engine
+    /// that `AppState` assembly has to know to ignore — and assembling the
+    /// state first compiled fine and silently produced an engine
     /// with no Orion handlers registered at all. Consuming the value makes that
     /// order a compile error instead.
     pub fn publish_first_generation(self, config: &config::AppConfig) -> ServingComponents {
@@ -950,33 +947,6 @@ pub(crate) struct CronComponents {
     pub status: Arc<crate::cron::CronStatus>,
 }
 
-/// Inputs to [`build_app_state`] that aren't already carried by
-/// [`Repositories`] / [`EngineComponents`].
-pub(crate) struct AppStateParams {
-    pub config: Arc<config::AppConfig>,
-    pub pool: crate::storage::DbPool,
-    pub repos: Repositories,
-    pub components: ServingComponents,
-    /// The node's channel builder. Held on `AppState` because every reload
-    /// needs it; a request never does — it reads the estate off the published
-    /// generation instead.
-    pub channel_loader: Arc<crate::channel::ChannelLoader>,
-    pub trace_queue: crate::queue::TraceQueue,
-    pub trace_persistence_queue: crate::queue::TracePersistenceQueue,
-    pub audit_queue: crate::queue::audit_queue::AuditQueue,
-    pub rate_limit_state: Option<Arc<crate::server::rate_limit::RateLimitState>>,
-    pub metrics_handle: metrics_exporter_prometheus::PrometheusHandle,
-    pub ready: Arc<std::sync::atomic::AtomicBool>,
-    pub cluster: Arc<crate::cluster::ClusterRuntime>,
-    /// The supervisor the background tasks registered with, so the probes can
-    /// read their liveness.
-    pub tasks: Arc<crate::runtime::TaskRegistry>,
-    /// The scheduler's own view of itself, for `/health`.
-    pub cron_status: Arc<crate::cron::CronStatus>,
-    /// The edition's channel drivers that run their own listener.
-    pub ingress: Arc<crate::ingress::IngressDrivers>,
-}
-
 /// The two inputs [`assemble`] does not build itself, because its callers
 /// build them differently on purpose:
 ///
@@ -1082,23 +1052,57 @@ pub async fn assemble(
         channel_loader,
     } = storage;
     let rate_limit_state = build_rate_limit_state(&config);
-    let state = build_app_state(AppStateParams {
-        config,
-        pool,
-        repos,
-        components,
+    let ServingComponents {
+        connector_registry,
+        http_client,
+        exprs,
+        jwks,
+        oidc_discovery,
+        vars,
+        runtime,
+        cache_pool,
+        sql_pool_cache,
+        plugins,
+        composition,
+        deployments,
+        reconciler,
+        native_scheduler,
+    } = components;
+    // The one place the bootstrap products map onto `AppStateInner`; the
+    // fields are listed once, here, rather than carried through an
+    // intermediate struct (M-08).
+    let state = crate::runtime::state::AppStateInner::new(crate::runtime::state::AppStateParts {
+        runtime,
         channel_loader,
-        trace_queue,
-        trace_persistence_queue,
+        vars,
+        repos,
         audit_queue,
-        rate_limit_state,
+        connector_registry,
+        caches: crate::runtime::state::Caches {
+            cache_pool,
+            sql_pool_cache,
+        },
+        trace_queue,
+        db_pool: pool,
+        config,
         metrics_handle,
+        http_client,
+        exprs,
+        jwks,
+        oidc_discovery,
+        rate_limit_state,
         // Set once the committed head, if there is one, has been built.
         ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        trace_persistence_queue,
         cluster,
         tasks,
         cron_status,
         ingress,
+        plugins,
+        composition,
+        deployments,
+        reconciler,
+        native_scheduler,
     });
 
     build_committed_head(&state).await?;
@@ -1331,76 +1335,4 @@ pub(crate) async fn build_committed_head(
         tracing::warn!(error = %e, "could not record this node's deployment status");
     }
     Ok(())
-}
-
-/// Assemble `AppState` from the bootstrap products — the single place the
-/// [`Repositories`] / [`ServingComponents`] fields map onto `AppStateInner`.
-/// Called only by [`assemble`], which is the shared entry point the server and
-/// the test harness go through.
-pub(crate) fn build_app_state(params: AppStateParams) -> crate::runtime::state::AppState {
-    let AppStateParams {
-        config,
-        pool,
-        repos,
-        components,
-        channel_loader,
-        trace_queue,
-        trace_persistence_queue,
-        audit_queue,
-        rate_limit_state,
-        metrics_handle,
-        ready,
-        cluster,
-        tasks,
-        cron_status,
-        ingress,
-    } = params;
-    let ServingComponents {
-        connector_registry,
-        http_client,
-        exprs,
-        jwks,
-        oidc_discovery,
-        vars,
-        runtime,
-        cache_pool,
-        sql_pool_cache,
-        plugins,
-        composition,
-        deployments,
-        reconciler,
-        native_scheduler,
-    } = components;
-    crate::runtime::state::AppStateInner::new(crate::runtime::state::AppStateParts {
-        runtime,
-        channel_loader,
-        vars,
-        repos,
-        audit_queue,
-        connector_registry,
-        caches: crate::runtime::state::Caches {
-            cache_pool,
-            sql_pool_cache,
-        },
-        trace_queue,
-        db_pool: pool,
-        config,
-        metrics_handle,
-        http_client,
-        exprs,
-        jwks,
-        oidc_discovery,
-        rate_limit_state,
-        ready,
-        trace_persistence_queue,
-        cluster,
-        tasks,
-        cron_status,
-        ingress,
-        plugins,
-        composition,
-        deployments,
-        reconciler,
-        native_scheduler,
-    })
 }
