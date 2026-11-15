@@ -19,9 +19,10 @@
 //! the compile and quarantines the channel (F35), exactly as a malformed block
 //! does; a warm cache carries a reload through a transient outage.
 
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use orion_common::ttl_cache::TtlCache;
 
 /// TTL when the well-known response states none. OIDC metadata changes rarely.
 const DEFAULT_TTL: Duration = Duration::from_secs(3600);
@@ -59,18 +60,11 @@ struct DiscoveryDoc {
     userinfo_endpoint: Option<String>,
 }
 
-struct Entry {
-    doc: Arc<Discovered>,
-    fetched_at: Instant,
-    ttl: Duration,
-}
-
 /// The per-instance OIDC discovery cache, built at startup on the pinned client.
 pub struct DiscoveryCache {
-    entries: tokio::sync::RwLock<HashMap<String, Arc<Entry>>>,
-    /// Per-issuer single-flight, so concurrent misses for one issuer collapse
-    /// into one fetch and issuers do not queue behind each other.
-    flights: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// The TTL, per-issuer single-flight and stale-serve policy, shared with
+    /// the JWKS cache (M-14).
+    cache: TtlCache<String, Discovered>,
     client: reqwest::Client,
     /// `[oauth2_login] allow_private_token_urls`: the same gate the token
     /// exchange uses, because discovery is the same class of authored egress.
@@ -80,8 +74,7 @@ pub struct DiscoveryCache {
 impl DiscoveryCache {
     pub fn new(client: reqwest::Client, allow_private: bool) -> Self {
         Self {
-            entries: tokio::sync::RwLock::new(HashMap::new()),
-            flights: tokio::sync::Mutex::new(HashMap::new()),
+            cache: TtlCache::new(),
             client,
             allow_private,
         }
@@ -89,12 +82,7 @@ impl DiscoveryCache {
 
     /// A cached entry for `issuer` that is still within its TTL, if any.
     async fn fresh(&self, issuer: &str) -> Option<Arc<Discovered>> {
-        self.entries
-            .read()
-            .await
-            .get(issuer)
-            .filter(|e| e.fetched_at.elapsed() < e.ttl)
-            .map(|e| Arc::clone(&e.doc))
+        self.cache.fresh(issuer).await.map(|e| Arc::clone(&e.value))
     }
 
     /// The endpoints for `issuer`, cached. On a refresh failure the last good
@@ -104,20 +92,9 @@ impl DiscoveryCache {
             return Ok(doc);
         }
 
-        // Single-flight per issuer. `get` before `entry` so the hot path (an
-        // issuer already seen) does not allocate a `String` key. The map is not
-        // pruned: issuers are authored config — a small, bounded set — and this
-        // runs only at channel load, so it plateaus at the distinct-issuer count.
-        let flight = {
-            let mut flights = self.flights.lock().await;
-            if let Some(flight) = flights.get(issuer) {
-                Arc::clone(flight)
-            } else {
-                let flight = Arc::new(tokio::sync::Mutex::new(()));
-                flights.insert(issuer.to_string(), Arc::clone(&flight));
-                flight
-            }
-        };
+        // Single-flight per issuer: concurrent misses for one issuer collapse
+        // into one fetch, and issuers do not queue behind each other.
+        let flight = self.cache.flight(issuer);
         let _guard = flight.lock().await;
 
         // Re-check: another task may have refreshed while we waited.
@@ -127,26 +104,21 @@ impl DiscoveryCache {
 
         match self.fetch(issuer).await {
             Ok((doc, ttl)) => {
-                let doc = Arc::new(doc);
-                self.entries.write().await.insert(
-                    issuer.to_string(),
-                    Arc::new(Entry {
-                        doc: Arc::clone(&doc),
-                        fetched_at: Instant::now(),
-                        ttl,
-                    }),
-                );
-                Ok(doc)
+                let entry = self
+                    .cache
+                    .store(issuer.to_string(), Arc::new(doc), ttl, None)
+                    .await;
+                Ok(Arc::clone(&entry.value))
             }
             Err(e) => {
                 // Serve stale if we have any prior copy; a cold miss is fatal.
-                if let Some(entry) = self.entries.read().await.get(issuer).cloned() {
+                if let Some(entry) = self.cache.get(issuer).await {
                     tracing::warn!(
                         issuer = %issuer,
                         error = %e,
                         "OIDC discovery refresh failed; serving the last good document"
                     );
-                    return Ok(Arc::clone(&entry.doc));
+                    return Ok(Arc::clone(&entry.value));
                 }
                 Err(e)
             }

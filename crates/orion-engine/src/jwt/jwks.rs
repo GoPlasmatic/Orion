@@ -17,9 +17,10 @@
 //! path that neither pinned its lookups nor consulted
 //! [`orion_common::ssrf::validate_url_not_private`].
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use orion_common::ttl_cache::{Cached, TtlCache};
 
 use jsonwebtoken::{Algorithm, DecodingKey};
 
@@ -59,38 +60,14 @@ pub(crate) fn fetch_timeout(run: Option<Instant>) -> Option<Duration> {
 }
 
 /// One cached key set: pre-parsed decoding keys with their routing facts.
-struct Entry {
-    keys: Vec<(Option<String>, Option<Algorithm>, Arc<DecodingKey>)>,
-    fetched_at: Instant,
-    ttl: Duration,
-    last_forced: Option<Instant>,
-}
+type Entry = Cached<FetchedKeys>;
 
 /// The per-instance JWKS cache. One is built at startup and shared by the
 /// channel `jwt` auth mode and the `jwt_verify` task.
 pub struct JwksCache {
-    entries: tokio::sync::RwLock<HashMap<String, Arc<Entry>>>,
-    /// Single-flight, **per URL**: concurrent misses for one issuer collapse
-    /// into one fetch, and issuers do not queue behind each other.
-    ///
-    /// One `Mutex<()>` for every URL would do while JWKS fetches are rare —
-    /// until one issuer is slow, and then every *other* issuer's cache miss
-    /// and rotation would wait behind it: the lock is
-    /// held across [`Self::fetch`], which is a DNS resolution
-    /// (`validate_url_not_private`) plus a request bounded only by
-    /// [`FETCH_TIMEOUT`]. With several cold issuers the stalls would add up,
-    /// on the request path, because a key fetch is what a token verification
-    /// is waiting for.
-    ///
-    /// The map holds `Weak`, so an entry lives exactly as long as someone is
-    /// fetching that URL: the last holder to drop its `Arc` leaves a dangling
-    /// weak that the next acquire prunes. That bounds the map by *concurrent
-    /// fetches* rather than by URLs ever seen — which is the stronger
-    /// property, and it means the answer does not depend on where JWKS URLs
-    /// come from. (They are authored, not request data: a channel's stored
-    /// `auth.jwks_url`, or a `jwt_verify` task input validated at engine
-    /// build.)
-    flights: std::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+    /// The TTL, per-URL single-flight and stale-serve policy, shared with the
+    /// OIDC discovery cache (M-14).
+    cache: TtlCache<String, FetchedKeys>,
     /// The serving HTTP client — the one built with `PinnedDnsResolver`.
     client: reqwest::Client,
     /// `jwt.allow_private_jwks_urls`: skip the private-address check. Off by
@@ -101,35 +78,10 @@ pub struct JwksCache {
 impl JwksCache {
     pub fn new(client: reqwest::Client, allow_private: bool) -> Self {
         Self {
-            entries: tokio::sync::RwLock::new(HashMap::new()),
-            flights: std::sync::Mutex::new(HashMap::new()),
+            cache: TtlCache::new(),
             client,
             allow_private,
         }
-    }
-
-    /// The single-flight lock for one URL, shared with anyone else fetching it
-    /// right now.
-    ///
-    /// A `std::sync::Mutex` for the map: it guards plain data, is never held
-    /// across an `.await` (the guard drops at the end of this function, before
-    /// the caller awaits the per-URL lock), and a panic mid-update cannot
-    /// leave a map of weak pointers inconsistent — the same argument
-    /// `runtime::tasks` makes for its slot list.
-    fn flight(&self, url: &str) -> Arc<tokio::sync::Mutex<()>> {
-        let mut flights = self
-            .flights
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // Drop the URLs nobody is fetching any more. O(live fetches), which is
-        // what keeps this from being a map that only grows.
-        flights.retain(|_, weak| weak.strong_count() > 0);
-        if let Some(existing) = flights.get(url).and_then(std::sync::Weak::upgrade) {
-            return existing;
-        }
-        let fresh = Arc::new(tokio::sync::Mutex::new(()));
-        flights.insert(url.to_string(), Arc::downgrade(&fresh));
-        fresh
     }
 
     /// The decoding keys to try for (`kid`, `alg`): kid-exact matches when the
@@ -184,7 +136,7 @@ impl JwksCache {
         force: bool,
         run: Option<Instant>,
     ) -> Option<Arc<Entry>> {
-        let existing = self.entries.read().await.get(url).cloned();
+        let existing = self.cache.get(url).await;
         if !needs_fetch(existing.as_ref(), force) {
             return existing;
         }
@@ -192,44 +144,31 @@ impl JwksCache {
         // Held for this URL only. Queuing behind another caller fetching the
         // *same* URL is the point — that is the single flight; queuing behind
         // a different issuer was not.
-        let flight = self.flight(url);
+        let flight = self.cache.flight(url);
         let _flight = flight.lock().await;
         // Someone else may have fetched while we queued.
-        let current = self.entries.read().await.get(url).cloned();
+        let current = self.cache.get(url).await;
         if !needs_fetch(current.as_ref(), force) {
             return current;
         }
 
         match self.fetch(url, run).await {
-            Ok((keys, ttl)) => {
-                let entry = Arc::new(Entry {
-                    keys,
-                    fetched_at: Instant::now(),
-                    ttl,
-                    last_forced: force.then(Instant::now),
-                });
-                self.entries
-                    .write()
-                    .await
-                    .insert(url.to_string(), Arc::clone(&entry));
-                Some(entry)
-            }
+            Ok((keys, ttl)) => Some(
+                self.cache
+                    .store(
+                        url.to_string(),
+                        Arc::new(keys),
+                        ttl,
+                        force.then(Instant::now),
+                    )
+                    .await,
+            ),
             Err(e) => {
                 tracing::warn!(url = %url, error = %e, "JWKS refresh failed; serving cached keys");
                 // Stale-serve; stamp the forced attempt so a flapping issuer is
                 // not hammered by every unknown-kid token.
-                if force && let Some(old) = current.clone() {
-                    let entry = Arc::new(Entry {
-                        keys: old.keys.clone(),
-                        fetched_at: old.fetched_at,
-                        ttl: old.ttl,
-                        last_forced: Some(Instant::now()),
-                    });
-                    self.entries
-                        .write()
-                        .await
-                        .insert(url.to_string(), Arc::clone(&entry));
-                    return Some(entry);
+                if force && current.is_some() {
+                    return self.cache.mark_forced_failure(url, Instant::now()).await;
                 }
                 current
             }
@@ -301,7 +240,7 @@ impl JwksCache {
 
 fn select(entry: &Entry, kid: Option<&str>, alg: Algorithm) -> Vec<Arc<DecodingKey>> {
     entry
-        .keys
+        .value
         .iter()
         .filter(|(entry_kid, entry_alg, _)| {
             entry_alg.is_none_or(|a| a == alg)
@@ -322,7 +261,7 @@ fn needs_fetch(entry: Option<&Arc<Entry>>, force: bool) -> bool {
     match entry {
         None => true,
         Some(entry) => {
-            entry.fetched_at.elapsed() > entry.ttl
+            !entry.is_fresh()
                 || (force
                     && entry
                         .last_forced
@@ -538,16 +477,12 @@ mod tests {
         // The fetch is over, so nothing holds the flight lock any more; the
         // next acquire prunes it. Ask for one to trigger the prune, then
         // check only that one is left.
-        let _held = cache.flight("http://other.example/jwks.json");
-        let flights = cache
-            .flights
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _held = cache.cache.flight("http://other.example/jwks.json");
+        let flights = cache.cache.live_flights();
         assert_eq!(
             flights.len(),
             1,
-            "a finished fetch must not keep its URL in the map: {:?}",
-            flights.keys().collect::<Vec<_>>()
+            "a finished fetch must not keep its URL in the map: {flights:?}"
         );
     }
 

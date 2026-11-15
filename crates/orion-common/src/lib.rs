@@ -31,4 +31,5 @@ pub mod sync;
 pub mod tasks;
 pub mod text;
 pub mod trace_context;
+pub mod ttl_cache;
 pub mod version;
