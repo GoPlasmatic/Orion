@@ -24,7 +24,7 @@ pub mod ticker;
 pub mod trust;
 
 pub use error::{Category, Failure};
-pub use handler::{PluginFunction, PluginFunctionHandler};
+pub use handler::PluginFunction;
 pub use limits::{HostState, Limits};
 pub use loader::{DeployedPlugin, LoadedPlugin, PluginLoadIssue, PluginSet, load_active};
 pub use manifest::{ABI, Manifest};

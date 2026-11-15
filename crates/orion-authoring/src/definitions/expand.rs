@@ -128,7 +128,9 @@ impl Coord {
     }
 }
 
-fn join(base: &str, key: &str) -> String {
+/// `base.key`, or `key` at the document root. One definition for every walk
+/// that builds a path (M-11); `base` is never empty-then-dotted.
+pub(crate) fn join(base: &str, key: &str) -> String {
     if base.is_empty() {
         key.to_string()
     } else {

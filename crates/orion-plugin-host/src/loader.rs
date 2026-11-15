@@ -16,7 +16,7 @@ use dataflow_rs::program::{IssueCode, PathSeg};
 use crate::config::PluginsConfig;
 use crate::engine::{FunctionEntry, PluginBinding};
 
-use super::handler::{PluginFunction, PluginFunctionHandler};
+use super::handler::PluginFunction;
 use super::limits::Limits;
 use super::manifest::Manifest;
 use super::runtime::WasmRuntime;
@@ -307,13 +307,13 @@ async fn load_one(
         .iter()
         .zip(&entries)
         .map(|(decl, entry)| {
-            let handler = PluginFunctionHandler::new(
+            PluginFunction::new(
                 Arc::new(entry.clone()),
                 loaded.clone(),
                 runtime.clone(),
                 limits,
-            );
-            PluginFunction::new(handler, decl.runtime_fields())
+                decl.runtime_fields(),
+            )
         })
         .collect();
     Ok(LoadedPlugin {
@@ -499,13 +499,13 @@ mod tests {
             .into_iter()
             .zip(&manifest.functions)
             .map(|(entry, decl)| {
-                let handler = crate::PluginFunctionHandler::new(
+                crate::PluginFunction::new(
                     std::sync::Arc::new(entry),
                     loaded.clone(),
                     runtime.clone(),
                     limits,
-                );
-                crate::PluginFunction::new(handler, decl.runtime_fields())
+                    decl.runtime_fields(),
+                )
             })
             .collect();
         let engines = Engines::orion_with(exprs_with_a_secret(), functions);

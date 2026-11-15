@@ -42,11 +42,7 @@ pub(super) fn walk_values<'a>(
     match value {
         serde_json::Value::Object(map) => {
             for (k, v) in map {
-                let at = if path.is_empty() {
-                    k.clone()
-                } else {
-                    format!("{path}.{k}")
-                };
+                let at = crate::definitions::expand::join(path, k);
                 walk_values(v, &at, f);
             }
         }

@@ -568,11 +568,7 @@ fn collect_values<'a>(
                         .any(|(name, _)| *name == f)
                 });
             for (k, v) in map {
-                let at = if path.is_empty() {
-                    k.clone()
-                } else {
-                    format!("{path}.{k}")
-                };
+                let at = crate::definitions::expand::join(path, k);
                 collect_values(v, &at, Some(k), builtin && k == "input", out);
             }
         }

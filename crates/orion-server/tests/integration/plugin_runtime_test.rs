@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use orion::config::PluginsConfig;
 use orion::engine::{FunctionEntry, FunctionRegistry, PluginBinding};
 use orion::plugin::{
-    ABI, Limits, LoadError, Manifest, PluginFunction, PluginFunctionHandler, WasmRuntime,
+    ABI, Limits, LoadError, Manifest, PluginFunction, WasmRuntime,
 };
 
 const COMPONENT: &[u8] = include_bytes!("../fixtures/plugins/fixture.wasm");
@@ -48,15 +48,15 @@ fn fixture(config: &PluginsConfig) -> Fixture {
         .iter()
         .zip(&manifest.functions)
         .map(|(e, decl)| {
-            let handler = PluginFunctionHandler::new(
-                Arc::new(e.clone()),
-                loaded.clone(),
-                runtime.clone(),
-                limits,
-            );
             (
                 e.name.clone(),
-                PluginFunction::new(handler, decl.runtime_fields()),
+                PluginFunction::new(
+                    Arc::new(e.clone()),
+                    loaded.clone(),
+                    runtime.clone(),
+                    limits,
+                    decl.runtime_fields(),
+                ),
             )
         })
         .collect();

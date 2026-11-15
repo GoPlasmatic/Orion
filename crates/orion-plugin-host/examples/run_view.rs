@@ -12,9 +12,7 @@ use dataflow_rs::observe::TraceOptions;
 use dataflow_rs::run::{AuditMode, RunOptions};
 use orion_common::config::PluginsConfig;
 use orion_engine::PluginBinding;
-use orion_plugin_host::{
-    ABI, Limits, Manifest, PluginFunction, PluginFunctionHandler, WasmRuntime,
-};
+use orion_plugin_host::{ABI, Limits, Manifest, PluginFunction, WasmRuntime};
 use serde_json::{Value, json};
 
 #[global_allocator]
@@ -76,15 +74,15 @@ fn engine(kind: &str, steps: usize, concurrency: usize) -> dataflow_rs::Engine {
         .into_iter()
         .zip(&manifest.functions)
     {
-        let handler = PluginFunctionHandler::new(
-            Arc::new(entry),
-            loaded.clone(),
-            runtime.clone(),
-            Limits::effective(&config, &manifest.name),
-        );
         registry.register(
             &decl.name,
-            PluginFunction::new(handler, decl.runtime_fields()),
+            PluginFunction::new(
+                Arc::new(entry),
+                loaded.clone(),
+                runtime.clone(),
+                Limits::effective(&config, &manifest.name),
+                decl.runtime_fields(),
+            ),
         );
     }
     dataflow_rs::Engine::builder()

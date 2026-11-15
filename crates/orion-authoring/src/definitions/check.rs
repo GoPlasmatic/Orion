@@ -108,23 +108,12 @@ fn schema_diagnostics(
 /// statement is skipped, since what runs is only known then.
 fn check_read_only_statements(def: &Definition, name: &str, findings: &mut Vec<Diagnostic>) {
     use orion_definitions::sql_lex::{READ_STATEMENTS, ReadOnlyViolation};
-    let Some(tasks) = def.doc.get("tasks") else {
-        return;
-    };
-    for (path, task) in crate::engine::walk_steps(tasks, def.doc.get("loop")).tasks {
-        let function = task.get("function");
-        if function.and_then(|f| f.get("name")).and_then(Value::as_str) != Some("db_read") {
+    for statement in super::statements::statements_of(def) {
+        // A templated statement is skipped: what runs is only known then.
+        if statement.function != "db_read" || statement.query.contains("{{") {
             continue;
         }
-        let Some(query) = function
-            .and_then(|f| f.get("input"))
-            .and_then(|i| i.get("query"))
-            .and_then(Value::as_str)
-            .filter(|q| !q.contains("{{"))
-        else {
-            continue;
-        };
-        let message = match orion_definitions::sql_lex::read_only_violation(query) {
+        let message = match orion_definitions::sql_lex::read_only_violation(statement.query) {
             None | Some(ReadOnlyViolation::Empty) => continue,
             Some(ReadOnlyViolation::NotARead { keyword }) => format!(
                 "db_read runs read statements only, but this one starts with '{keyword}' — use \
@@ -136,7 +125,7 @@ fn check_read_only_statements(def: &Definition, name: &str, findings: &mut Vec<D
                  '{keyword}' common table expression — use db_write"
             ),
         };
-        let at = format!("{path}.function.input.query");
+        let at = statement.path;
         let line = def.locate(&at);
         let via = def.source_of(&at).describe();
         findings.push(

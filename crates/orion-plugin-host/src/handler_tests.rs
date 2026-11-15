@@ -82,10 +82,9 @@ static SANDBOX: LazyLock<(Arc<WasmRuntime>, Arc<LoadedComponent>)> = LazyLock::n
     (runtime, loaded)
 });
 
-/// One function: its handler, and the engine function over it.
+/// One function: the engine function, which is also the sandboxed call.
 #[derive(Clone)]
 struct Both {
-    handler: PluginFunctionHandler,
     function: PluginFunction,
 }
 
@@ -106,14 +105,14 @@ fn functions_of(manifest: &str, config: &PluginsConfig) -> HashMap<String, Both>
         .into_iter()
         .zip(&manifest.functions)
         .map(|(entry, decl)| {
-            let handler = PluginFunctionHandler::new(
+            let function = PluginFunction::new(
                 Arc::new(entry),
                 loaded.clone(),
                 runtime.clone(),
                 limits,
+                decl.runtime_fields(),
             );
-            let function = PluginFunction::new(handler.clone(), decl.runtime_fields());
-            (function.name().to_string(), Both { handler, function })
+            (function.name().to_string(), Both { function })
         })
         .collect()
 }
@@ -231,7 +230,7 @@ fn the_fixture_manifest_maps_field_by_field() {
         let both = &f[name];
         assert_eq!(shape(both.function.fields()), fields, "{name}");
         let spec = dataflow_rs::Function::spec(&both.function);
-        assert_eq!(spec.description, both.handler.entry.description, "{name}");
+        assert_eq!(spec.description, both.function.entry.description, "{name}");
         assert_eq!(spec.category, "transform", "{name}");
         assert_eq!(spec.retry, RetrySafety::Idempotent, "{name}: pure");
         assert!(spec.references.is_empty(), "{name}");
@@ -584,11 +583,11 @@ async fn every_clone_of_a_function_shares_one_permit() {
     );
     let identity = &f["test.fixture.identity"];
     assert!(Arc::ptr_eq(
-        &identity.handler.permits,
-        &identity.function.handler.permits
+        &identity.function.permits,
+        &identity.function.clone().permits
     ));
     let input = json!({"message": 1, "output": "data.x"});
-    let held = Arc::clone(&identity.handler.permits)
+    let held = Arc::clone(&identity.function.permits)
         .acquire_owned()
         .await
         .expect("the permit is free");
@@ -614,9 +613,9 @@ async fn every_clone_of_a_function_shares_one_permit() {
             .contains("no concurrency permit within 100ms (1 already running)"),
         "{failure:?}"
     );
-    assert_eq!(identity.handler.permits.available_permits(), 0);
+    assert_eq!(identity.function.permits.available_permits(), 0);
     drop(held);
-    assert_eq!(identity.handler.permits.available_permits(), 1);
+    assert_eq!(identity.function.permits.available_permits(), 1);
     // Real Wasm execution uses its own clock; only the permit wait is paused.
     tokio::time::resume();
     let v4 = run(identity, input, json!({})).await;
@@ -850,15 +849,15 @@ fn registration_refuses_a_reserved_name_where_register_would_panic() {
     let f = fixture();
     let identity = &f["test.fixture.identity"];
     let renamed = |name: &str| {
-        let mut entry = (*identity.handler.entry).clone();
+        let mut entry = (*identity.function.entry).clone();
         entry.name = name.to_string();
-        let handler = PluginFunctionHandler::new(
+        PluginFunction::new(
             Arc::new(entry),
-            identity.handler.loaded.clone(),
-            identity.handler.runtime.clone(),
-            identity.handler.limits,
-        );
-        PluginFunction::new(handler, identity.function.fields().to_vec())
+            identity.function.loaded.clone(),
+            identity.function.runtime.clone(),
+            identity.function.limits,
+            identity.function.fields().to_vec(),
+        )
     };
     let mut registry = dataflow_rs::Registry::new(test_exprs());
     let refused = crate::engine::register_plugin_functions(

@@ -813,11 +813,7 @@ fn extract_references(
         Value::Object(map) => {
             let mut moved = Vec::new();
             for (key, child) in map.iter_mut() {
-                let child_path = if path.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{path}.{key}")
-                };
+                let child_path = crate::definitions::expand::join(path, key);
                 let spellable =
                     !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
                 if let Value::String(s) = child

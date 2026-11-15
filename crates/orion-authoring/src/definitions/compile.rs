@@ -330,11 +330,7 @@ fn value_sugar(value: &Value, path: &str, out: &mut Vec<Residue>) {
                 });
             }
             for (key, v) in map {
-                let at = if path.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{path}.{key}")
-                };
+                let at = crate::definitions::expand::join(path, key);
                 value_sugar(v, &at, out);
             }
         }
@@ -428,11 +424,7 @@ fn spliceable(value: &Value, path: &str, out: &mut Vec<Residue>) {
                 });
             }
             for (key, v) in map {
-                let at = if path.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{path}.{key}")
-                };
+                let at = crate::definitions::expand::join(path, key);
                 spliceable(v, &at, out);
             }
         }
@@ -503,11 +495,7 @@ fn sql_references(value: &Value, path: &str, out: &mut Vec<Residue>) {
                 return;
             }
             for (key, v) in map {
-                let at = if path.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{path}.{key}")
-                };
+                let at = crate::definitions::expand::join(path, key);
                 sql_references(v, &at, out);
             }
         }
@@ -548,11 +536,7 @@ fn inline_sql(
                 return;
             }
             for (key, v) in object.iter_mut() {
-                let at = if path.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{path}.{key}")
-                };
+                let at = crate::definitions::expand::join(path, key);
                 inline_sql(v, &at, cx, findings, map);
             }
         }

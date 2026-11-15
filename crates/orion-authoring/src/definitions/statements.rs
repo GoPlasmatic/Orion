@@ -36,46 +36,55 @@ pub struct SqlStatement<'a> {
 pub fn sql_statements(set: &DefinitionSet) -> Vec<SqlStatement<'_>> {
     let mut out = Vec::new();
     for def in set.iter(Entity::Workflow) {
-        let Some(tasks) = def.doc.get("tasks") else {
+        out.extend(statements_of(def));
+    }
+    out
+}
+
+/// Every statement one workflow ships. [`sql_statements`] is this for each
+/// workflow in the set; the read-only gate reads one workflow's, so the walk
+/// is written once (M-11).
+pub fn statements_of(def: &crate::definitions::Definition) -> Vec<SqlStatement<'_>> {
+    let Some(tasks) = def.doc.get("tasks") else {
+        return Vec::new();
+    };
+    let workflow = def
+        .doc
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or(&def.origin);
+    let mut out = Vec::new();
+    for (path, task) in crate::engine::walk_steps(tasks, def.doc.get("loop")).tasks {
+        let function = task.get("function");
+        let function_name = match function.and_then(|f| f.get("name")).and_then(Value::as_str) {
+            Some("db_read") => "db_read",
+            Some("db_write") => "db_write",
+            _ => continue,
+        };
+        let input = function.and_then(|f| f.get("input"));
+        let (Some(query), Some(connector)) = (
+            input.and_then(|i| i.get("query")).and_then(Value::as_str),
+            input
+                .and_then(|i| i.get("connector"))
+                .and_then(Value::as_str),
+        ) else {
             continue;
         };
-        let workflow = def
-            .doc
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or(&def.origin);
-        for (path, task) in crate::engine::walk_steps(tasks, def.doc.get("loop")).tasks {
-            let function = task.get("function");
-            let function_name = match function.and_then(|f| f.get("name")).and_then(Value::as_str) {
-                Some("db_read") => "db_read",
-                Some("db_write") => "db_write",
-                _ => continue,
-            };
-            let input = function.and_then(|f| f.get("input"));
-            let (Some(query), Some(connector)) = (
-                input.and_then(|i| i.get("query")).and_then(Value::as_str),
-                input
-                    .and_then(|i| i.get("connector"))
-                    .and_then(Value::as_str),
-            ) else {
-                continue;
-            };
-            let bound = match input.and_then(|i| i.get("params")) {
-                None | Some(Value::Null) => Some(0),
-                Some(Value::Array(items)) => Some(items.len()),
-                Some(_) => None,
-            };
-            out.push(SqlStatement {
-                workflow,
-                origin: &def.origin,
-                task_id: task.get("id").and_then(Value::as_str).unwrap_or("?"),
-                path: format!("{path}.function.input.query"),
-                function: function_name,
-                connector,
-                query,
-                bound,
-            });
-        }
+        let bound = match input.and_then(|i| i.get("params")) {
+            None | Some(Value::Null) => Some(0),
+            Some(Value::Array(items)) => Some(items.len()),
+            Some(_) => None,
+        };
+        out.push(SqlStatement {
+            workflow,
+            origin: &def.origin,
+            task_id: task.get("id").and_then(Value::as_str).unwrap_or("?"),
+            path: format!("{path}.function.input.query"),
+            function: function_name,
+            connector,
+            query,
+            bound,
+        });
     }
     out
 }

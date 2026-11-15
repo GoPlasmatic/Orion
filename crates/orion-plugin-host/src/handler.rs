@@ -1,5 +1,5 @@
 //! The engine function behind every plugin function: [`PluginFunction`],
-//! whose body is the sandboxed call [`PluginFunctionHandler`] makes.
+//! which is also the sandboxed call it makes.
 //!
 //! The steps are the design's, in order: validate the task's input against
 //! the entry's own table, evaluate its template fields and fold `{"var": …}`
@@ -43,12 +43,16 @@ use crate::manifest::OUTPUT_FIELD;
 
 /// One registered plugin function. Cheap to clone — every field is shared —
 /// so a generation boxes a clone per engine it builds.
+///
+/// The sandboxed call and the engine function are one type: every
+/// construction site paired the two, and nothing outside read the handler's
+/// fields (M-15).
 #[derive(Clone)]
-pub struct PluginFunctionHandler {
-    pub entry: Arc<FunctionEntry>,
-    pub loaded: Arc<LoadedComponent>,
-    pub runtime: Arc<WasmRuntime>,
-    pub limits: Limits,
+pub struct PluginFunction {
+    pub(crate) entry: Arc<FunctionEntry>,
+    pub(crate) loaded: Arc<LoadedComponent>,
+    pub(crate) runtime: Arc<WasmRuntime>,
+    pub(crate) limits: Limits,
     /// The entry as the guest sees it: every field literal. The authored
     /// input is validated against `entry`, whose template and resolvable
     /// fields may hold an expression in place of a value of their kind; the
@@ -56,18 +60,21 @@ pub struct PluginFunctionHandler {
     /// that produced the wrong kind has nothing left to hide behind.
     resolved: Arc<FunctionEntry>,
     /// The function's concurrency permits, shared by every clone.
-    permits: Arc<Semaphore>,
+    pub(crate) permits: Arc<Semaphore>,
     /// The plugin id, for metric labels: a registered name, never a guest
     /// string.
     plugin_id: String,
+    /// The manifest's fields, as the config compiles them.
+    fields: Arc<[RuntimeField]>,
 }
 
-impl PluginFunctionHandler {
+impl PluginFunction {
     pub fn new(
         entry: Arc<FunctionEntry>,
         loaded: Arc<LoadedComponent>,
         runtime: Arc<WasmRuntime>,
         limits: Limits,
+        fields: Vec<RuntimeField>,
     ) -> Self {
         let plugin_id = entry
             .plugin
@@ -89,6 +96,7 @@ impl PluginFunctionHandler {
             resolved: Arc::new(resolved),
             permits: Arc::new(Semaphore::new(limits.max_concurrency as usize)),
             plugin_id,
+            fields: fields.into(),
         }
     }
 
@@ -229,36 +237,9 @@ impl PluginFunctionHandler {
     }
 }
 
-/// One plugin function: its manifest's fields as the
-/// runtime fields of a `Templated` config, and a call that is the sandboxed
-/// one [`PluginFunctionHandler`] makes. Registered under the name its
-/// manifest gives it, `<plugin>.<label>`.
-///
-/// It wraps the function's [`PluginFunctionHandler`], so every clone shares
-/// the component, the limits and the concurrency permits: one function holds
-/// one limit. Cheap to clone.
-#[derive(Clone)]
-pub struct PluginFunction {
-    handler: PluginFunctionHandler,
-    fields: Arc<[RuntimeField]>,
-}
-
+/// The config-facing half: the manifest's fields, and the prologue that
+/// turns a call into the guest's input.
 impl PluginFunction {
-    /// `handler`'s function, its config compiled from `fields`: the
-    /// manifest's, from
-    /// [`FunctionDecl::runtime_fields`](super::manifest::FunctionDecl::runtime_fields).
-    pub fn new(handler: PluginFunctionHandler, fields: Vec<RuntimeField>) -> Self {
-        Self {
-            handler,
-            fields: fields.into(),
-        }
-    }
-
-    /// The function's registered name.
-    pub fn name(&self) -> &str {
-        self.handler.name()
-    }
-
     /// The runtime fields the config compiles.
     pub fn fields(&self) -> &[RuntimeField] {
         &self.fields
@@ -331,7 +312,7 @@ impl dataflow_rs::Function for PluginFunction {
     /// dataflow-rs 4's answers (`Pure`, so `Idempotent`), and the manifest's
     /// fields, which the engine compiles every call site's input against.
     fn spec(&self) -> FunctionSpec {
-        let entry = &self.handler.entry;
+        let entry = &self.entry;
         FunctionSpec::default()
             .with_description(entry.description.clone())
             .with_category(entry.category.clone())
@@ -358,7 +339,7 @@ impl dataflow_rs::Function for PluginFunction {
     /// result may be an object or may not, and a root takes only an object.
     fn prepare(&self, cfg: &mut Templated, _p: &Prepare<'_>) -> Result<(), Vec<Issue>> {
         let mut authored = Authored {
-            entry: &self.handler.entry,
+            entry: &self.entry,
             issues: Vec::new(),
         };
         FunctionConfig::visit(&*cfg, &mut authored);
@@ -387,16 +368,12 @@ impl dataflow_rs::Function for PluginFunction {
     async fn call(&self, ctx: &mut Ctx<'_>, cfg: &Templated) -> dataflow_rs::Result<Outcome> {
         let started = Instant::now();
         let result = match self.prologue(ctx, cfg) {
-            Ok((path, guest)) => self
-                .handler
-                .invoke_resolved(guest)
-                .await
-                .map(|value| (path, value)),
+            Ok((path, guest)) => self.invoke_resolved(guest).await.map(|value| (path, value)),
             Err(failure) => Err(failure),
         };
         let info = ctx.info();
         let (workflow, task) = (info.workflow_id, info.task_id);
-        let (path, value) = self.handler.settle(started, result, workflow, task)?;
+        let (path, value) = self.settle(started, result, workflow, task)?;
         // After the invocation is counted, as the success it was: a write a
         // root refuses (a result that is not an object) is the engine's
         // error, not the plugin's.
