@@ -7,6 +7,8 @@
 //! **Nothing here is covered by semver**: the crate exists for `orion-server`
 //! and changes whenever it needs it to.
 
+#![warn(unreachable_pub)]
+
 // The crates below under their `crate::` names, so the authoring paths read
 // as they did inside `orion-server`.
 pub(crate) use orion_common::{canonical, config, crypto, errors, signatures, text, version};

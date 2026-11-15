@@ -2,9 +2,9 @@ pub use orion_common::text::percent_decode_segment;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
+use crate::engine::Channel;
 use crate::errors::OrionError;
 use crate::extensions::ChannelDriverRegistry;
-use crate::storage::models::Channel;
 
 /// Which of a channel's routes an entry is.
 ///

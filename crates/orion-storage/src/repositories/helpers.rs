@@ -363,17 +363,15 @@ where
         DbBackend::Sqlite | DbBackend::Postgres => {
             update.returning(sea_query::Query::returning().column(returning));
             let (sql, values) = build_sqlx(backend, update);
-            pool.fetch_scalar::<i64>(&sql, values)
-                .await
-                .map_err(OrionError::Storage)
+            Ok(pool.fetch_scalar::<i64>(&sql, values).await?)
         }
         DbBackend::Mysql => {
-            let mut tx = pool.begin_tx().await.map_err(OrionError::Storage)?;
+            let mut tx = pool.begin_tx().await?;
             let (sql, values) = build_sqlx(backend, update);
             tx.execute_query(&sql, values).await?;
             let (sql, values) = build_sqlx(backend, read_back);
             let (value,): (i64,) = fetch_required_tx(&mut tx, &sql, values, missing).await?;
-            tx.commit().await.map_err(OrionError::Storage)?;
+            tx.commit().await?;
             Ok(value)
         }
     }
@@ -447,9 +445,9 @@ pub async fn write_returning_row<T: DbRow>(
             .map_err(map_write_err)?
             .ok_or_else(missing)
     } else {
-        let mut tx = pool.begin_tx().await.map_err(OrionError::Storage)?;
+        let mut tx = pool.begin_tx().await?;
         let row = write_returning_row_tx(&mut tx, write, read_back, map_write_err, missing).await?;
-        tx.commit().await.map_err(OrionError::Storage)?;
+        tx.commit().await?;
         Ok(row)
     }
 }
@@ -529,9 +527,7 @@ where
     let col = sea_query::IntoIden::into_iden(conflict_col);
     apply_do_nothing(&mut insert, vec![col]);
     let (sql, values) = build_sqlx(pool.backend(), &mut insert);
-    pool.execute_query(&sql, values)
-        .await
-        .map_err(OrionError::Storage)
+    Ok(pool.execute_query(&sql, values).await?)
 }
 
 /// [`insert_if_absent`] over a **composite** conflict target.
@@ -557,9 +553,7 @@ where
         .collect();
     apply_do_nothing(&mut insert, cols);
     let (sql, values) = build_sqlx(pool.backend(), &mut insert);
-    pool.execute_query(&sql, values)
-        .await
-        .map_err(OrionError::Storage)
+    Ok(pool.execute_query(&sql, values).await?)
 }
 
 /// [`insert_if_absent_on`] inside a transaction.
@@ -584,7 +578,7 @@ where
         .collect();
     apply_do_nothing(&mut insert, cols);
     let (sql, values) = build_sqlx(tx.backend(), &mut insert);
-    tx.execute_query(&sql, values).await.map_err(Into::into)
+    Ok(tx.execute_query(&sql, values).await?)
 }
 
 /// Rows deleted per statement by [`delete_chunked`].

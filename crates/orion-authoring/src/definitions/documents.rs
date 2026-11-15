@@ -6,7 +6,8 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::storage::models::{ChannelType, Workflow};
+use crate::engine::Workflow;
+use crate::storage::models::ChannelType;
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateWorkflowRequest {

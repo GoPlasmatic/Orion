@@ -28,7 +28,7 @@ use serde_json::Value;
 /// The operator dataflow-rs reserves for a store read. Its own constant is
 /// crate-private; `the_secret_operator_is_the_engines` pins this one to the
 /// operator the engine registers.
-pub const SECRET_OPERATOR: &str = "secret";
+pub(crate) const SECRET_OPERATOR: &str = "secret";
 
 /// The name in a `{"secret": "name"}` node — the reserved operator dataflow-rs
 /// registers on every engine — or `None` for anything else.

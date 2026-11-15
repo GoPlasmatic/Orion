@@ -294,7 +294,7 @@ fn try_key(token: &str, key: &DecodingKey, validation: &Validation) -> Result<Va
 /// can list exactly what exists. `ES512` is deliberately absent: the
 /// underlying library does not implement P-521, and a value that fails at
 /// runtime is worse than absence.
-pub const ALGORITHM_NAMES: &[&str] = &[
+pub(crate) const ALGORITHM_NAMES: &[&str] = &[
     "HS256", "HS384", "HS512", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256",
     "ES384", "EdDSA",
 ];
@@ -324,7 +324,7 @@ pub fn parse_algorithm(name: &str) -> Result<Algorithm, String> {
 
 /// How a textual HS secret becomes bytes — the #259 `key_encoding` precedent
 /// (`utf8` default, or `base64`/`hex` for binary secrets, Supabase-class).
-pub fn secret_bytes(secret: &str, key_encoding: Option<&str>) -> Result<Vec<u8>, String> {
+pub(crate) fn secret_bytes(secret: &str, key_encoding: Option<&str>) -> Result<Vec<u8>, String> {
     use crate::crypto::{Codec, decode_bytes};
     match key_encoding {
         None | Some("utf8") => Ok(secret.as_bytes().to_vec()),
@@ -352,6 +352,62 @@ fn hs_min_len(alg: Algorithm) -> usize {
 /// encoding) or a PEM public key for the asymmetric families. The family
 /// check is structural — `from_rsa_pem` on an EC key fails — and the HS
 /// length floor is enforced here so it holds on every surface.
+/// The decoded-key cache: public verification keys only. An HMAC secret is
+/// symmetric material and is deliberately not retained (P-07).
+fn decoded_keys()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, DecodingKey)>> {
+    static KEYS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, DecodingKey)>>,
+    > = std::sync::OnceLock::new();
+    KEYS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Bound on cached verification keys: a deployment has a handful of issuers,
+/// so this is generous and still finite.
+const MAX_CACHED_DECODING_KEYS: usize = 256;
+
+fn cached_decoding_key(
+    algorithm: Algorithm,
+    material: &str,
+    key_encoding: Option<&str>,
+) -> Result<DecodingKey, String> {
+    use jsonwebtoken::AlgorithmFamily;
+    let cache_key = format!(
+        "{algorithm:?}:{}",
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(material.as_bytes()))
+    );
+    if let Some((_, key)) = decoded_keys()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&cache_key)
+    {
+        return Ok(key.clone());
+    }
+    let key = match algorithm.family() {
+        AlgorithmFamily::Hmac => unreachable!("HMAC keys are not cached"),
+        AlgorithmFamily::Rsa => DecodingKey::from_rsa_pem(material.as_bytes())
+            .map_err(|e| format!("not a usable RSA public key PEM: {e}"))?,
+        AlgorithmFamily::Ec => DecodingKey::from_ec_pem(material.as_bytes())
+            .map_err(|e| format!("not a usable EC public key PEM: {e}"))?,
+        AlgorithmFamily::Ed => DecodingKey::from_ed_pem(material.as_bytes())
+            .map_err(|e| format!("not a usable Ed25519 public key PEM: {e}"))?,
+    };
+    let mut keys = decoded_keys()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if keys.len() >= MAX_CACHED_DECODING_KEYS
+        && let Some(oldest) = keys
+            .iter()
+            .min_by_key(|(_, (at, _))| *at)
+            .map(|(k, _)| k.clone())
+    {
+        keys.remove(&oldest);
+    }
+    keys.insert(cache_key, (std::time::Instant::now(), key.clone()));
+    let _ = key_encoding;
+    Ok(key)
+}
+
 pub fn decoding_key(
     algorithm: Algorithm,
     material: &str,
@@ -371,12 +427,9 @@ pub fn decoding_key(
             }
             Ok(DecodingKey::from_secret(&bytes))
         }
-        AlgorithmFamily::Rsa => DecodingKey::from_rsa_pem(material.as_bytes())
-            .map_err(|e| format!("not a usable RSA public key PEM: {e}")),
-        AlgorithmFamily::Ec => DecodingKey::from_ec_pem(material.as_bytes())
-            .map_err(|e| format!("not a usable EC public key PEM: {e}")),
-        AlgorithmFamily::Ed => DecodingKey::from_ed_pem(material.as_bytes())
-            .map_err(|e| format!("not a usable Ed25519 public key PEM: {e}")),
+        AlgorithmFamily::Rsa | AlgorithmFamily::Ec | AlgorithmFamily::Ed => {
+            cached_decoding_key(algorithm, material, key_encoding)
+        }
     }
 }
 

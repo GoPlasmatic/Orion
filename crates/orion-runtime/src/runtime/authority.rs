@@ -11,10 +11,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
+use crate::engine::Workflow;
 use crate::extensions::context::AuthorityGrant;
 use crate::extensions::deployment_store::{CanonicalManifest, EntityKind};
 use crate::extensions::{ConnectionReference, Revision};
-use crate::storage::models::Workflow;
 
 /// Per engine workflow id, the `(connection, operation)` pairs its
 /// `connector_call` tasks may use.

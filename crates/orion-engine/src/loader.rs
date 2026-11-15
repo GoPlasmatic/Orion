@@ -15,7 +15,7 @@ use dataflow_rs::program::{
 };
 use serde_json::Value;
 
-use crate::storage::models::{Channel, Workflow};
+use crate::workflow::{Channel, Workflow};
 
 /// Filter channels based on include/exclude glob patterns from [`ChannelFilterConfig`].
 ///
@@ -447,7 +447,7 @@ fn load_channel(
 /// A row whose `tasks_json`, `condition_json`, `tags_json` or `loop_json`
 /// is not the JSON it must be.
 pub fn workflow_json(
-    workflow: &crate::storage::models::Workflow,
+    workflow: &crate::Workflow,
     channel: &str,
     id: &str,
     status: &str,
@@ -705,7 +705,8 @@ mod tests;
 #[cfg(test)]
 mod workflow_json_tests {
     use super::workflow_json;
-    use crate::storage::models::{EntityStatus, Workflow};
+    use crate::storage::models::EntityStatus;
+    use crate::workflow::Workflow;
 
     /// The strict reader the engine loads every stored definition with (the
     /// v3 compat reader off). Spelled here rather than borrowed from

@@ -209,7 +209,7 @@ pub fn compile_with_map(
 ///
 /// Empty means the document is canonical: nothing in it is waiting to be
 /// compiled, so it is safe to store, hash and run.
-pub fn residue(doc: &Value, root: &str) -> Vec<Residue> {
+pub(crate) fn residue(doc: &Value, root: &str) -> Vec<Residue> {
     passes()
         .iter()
         .flat_map(|pass| pass.residue(doc, root))
@@ -446,7 +446,7 @@ fn spliceable(value: &Value, path: &str, out: &mut Vec<Residue>) {
 
 /// The largest `.sql` file a reference may inline. Real statements run to a
 /// few kilobytes; a file this size is a mistake, not a statement.
-pub const MAX_SQL_FILE_BYTES: u64 = 1024 * 1024;
+pub(crate) const MAX_SQL_FILE_BYTES: u64 = 1024 * 1024;
 
 struct Sql;
 

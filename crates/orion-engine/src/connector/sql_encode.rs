@@ -144,7 +144,7 @@ impl From<&Value> for Scalar {
 /// `String` and nothing else. A variant that turns up anyway is a shape this
 /// module has never seen, and the honest answer to that is the fallback rather
 /// than a guess at what it meant.
-pub fn scalars_from_sea(values: &sea_query::Values) -> Option<Vec<Scalar>> {
+pub(crate) fn scalars_from_sea(values: &sea_query::Values) -> Option<Vec<Scalar>> {
     use sea_query::Value as V;
 
     values
@@ -304,7 +304,7 @@ const BINDABLE: &[&str] = &[
 /// Build the arguments for one statement, or say the table cannot.
 ///
 /// `declared` is what the server inferred, in placeholder order.
-pub fn pg_arguments(declared: &[PgTypeInfo], values: &[Scalar]) -> Encoded<Binding> {
+pub(crate) fn pg_arguments(declared: &[PgTypeInfo], values: &[Scalar]) -> Encoded<Binding> {
     // Decided over the declared types alone, and before any value is touched,
     // so the choice of path can never depend on what a caller sent.
     for info in declared {
@@ -774,7 +774,10 @@ async fn fall_back(
 /// does not work backwards to its database either. The pool does: `Pool<DB>` is
 /// an ordinary generic struct, and every arm already has one in scope. It is
 /// borrowed only to pin `DB`, which is why it goes unread.
-pub fn sea_args_for<DB>(_pool: &sqlx::Pool<DB>, values: sea_query_sqlx::SqlxValues) -> DB::Arguments
+pub(crate) fn sea_args_for<DB>(
+    _pool: &sqlx::Pool<DB>,
+    values: sea_query_sqlx::SqlxValues,
+) -> DB::Arguments
 where
     DB: sqlx::Database,
     sea_query_sqlx::SqlxValues: sqlx::IntoArguments<DB>,

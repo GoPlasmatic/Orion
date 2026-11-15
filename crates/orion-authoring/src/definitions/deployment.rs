@@ -536,7 +536,7 @@ pub fn channel_definition(
 /// `connector_call` tasks name on a connection it requires.
 ///
 /// [`ConnectorRule`]: crate::engine::ConnectorRule
-pub fn used_connections(
+pub(crate) fn used_connections(
     workflow: &WorkflowDefinition,
     functions: &crate::engine::FunctionRegistry,
 ) -> BTreeMap<String, String> {

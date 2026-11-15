@@ -23,7 +23,7 @@ use crate::query::write::{ConflictAction, ResolvedConflict, ResolvedWrite, Write
 
 /// Column the include's window function writes its per-parent row number into.
 /// Prefixed so it cannot collide with a real column; stripped from the output.
-pub const INCLUDE_RANK_COLUMN: &str = "__orion_include_rank";
+pub(crate) const INCLUDE_RANK_COLUMN: &str = "__orion_include_rank";
 
 /// Alias for the include's inner (windowed) sub-select. A window function is not
 /// usable in `WHERE`, so the rank is computed in a subquery and filtered outside.
@@ -35,7 +35,7 @@ const INCLUDE_SUBQUERY_ALIAS: &str = "__orion_include";
 /// correlation base for any relation subqueries).
 /// The alias `COUNT(*)` is projected under, so the handler reads one column
 /// name on every dialect instead of three.
-pub const COUNT_COLUMN: &str = "orion_count";
+pub(crate) const COUNT_COLUMN: &str = "orion_count";
 
 pub fn render(
     spec: &QuerySpec,
@@ -88,7 +88,7 @@ pub fn render(
 /// Produce the dialect-specific SQL string + bound values for execution on an
 /// its pool. The dialect must match the connector's real driver (see
 /// [`SqlDialect`]).
-pub fn build_for(dialect: SqlDialect, stmt: &SelectStatement) -> (String, SqlxValues) {
+pub(crate) fn build_for(dialect: SqlDialect, stmt: &SelectStatement) -> (String, SqlxValues) {
     match dialect {
         SqlDialect::Postgres => stmt.build_sqlx(PostgresQueryBuilder),
         SqlDialect::Mysql => stmt.build_sqlx(MysqlQueryBuilder),
@@ -121,7 +121,7 @@ pub fn build_for(dialect: SqlDialect, stmt: &SelectStatement) -> (String, SqlxVa
 /// because the outer `ORDER BY` can only name columns the sub-select emits. The
 /// handler drops the extras again ([`IncludePlan::strip`]). Callers must skip
 /// this when `keys` is empty (an empty `IN` is not built here).
-pub fn build_include_select(
+pub(crate) fn build_include_select(
     inc: &IncludePlan,
     keys: &[SeaValue],
     dialect: SqlDialect,
@@ -172,7 +172,7 @@ fn project_child(stmt: &mut SelectStatement, projection: &[String]) {
 
 /// Convert a JSON scalar (a parent key value) into a bound `sea_query::Value` for
 /// an `IN` list. Returns `None` for null / non-scalar values (skipped as keys).
-pub fn json_key_to_sea(v: &serde_json::Value) -> Option<SeaValue> {
+pub(crate) fn json_key_to_sea(v: &serde_json::Value) -> Option<SeaValue> {
     match v {
         serde_json::Value::String(s) => Some(s.clone().into()),
         serde_json::Value::Bool(b) => Some((*b).into()),
@@ -454,7 +454,7 @@ fn to_sea_value(v: &Value) -> SeaValue {
 /// Render a resolved mutation into `(sql, values)` for `dialect`, bound to the
 /// external connector's pool. The `filter` of an update/delete reuses the
 /// query dialect's `render_expr`; every value is a bound parameter.
-pub fn render_write(
+pub(crate) fn render_write(
     w: &ResolvedWrite,
     dialect: SqlDialect,
 ) -> Result<(String, SqlxValues), WriteError> {

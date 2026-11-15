@@ -16,11 +16,32 @@ use crate::{ErrorClass, HandlerError};
 /// `default()` — and neither consulted the connector at all. The order matters:
 /// `require_schema` judges what the task actually declared, and the allowlist is
 /// installed afterwards so it cannot be part of what is being judged.
-pub fn build_entity_registry(
+pub(crate) fn build_entity_registry(
     schema: Option<&Value>,
     connector_config: &crate::connector::DbConnectorConfig,
     connector_name: &str,
-) -> Result<EntityRegistry, HandlerError> {
+) -> Result<Arc<EntityRegistry>, HandlerError> {
+    // P-08: the registry is a pure function of the inline schema and the
+    // connector's dialect guards, which are fixed for a generation. Parsing it
+    // per execution was the cost; a small bounded cache makes the request path
+    // a hash and a lookup.
+    let cache_key = {
+        use sha2::Digest as _;
+        let serialized = serde_json::to_vec(&(schema, &connector_config.dialect))
+            .map_err(|e| HandlerError::caller_input(format!("schema does not serialize: {e}")))?;
+        format!(
+            "{connector_name}:{}",
+            hex::encode(sha2::Sha256::digest(&serialized))
+        )
+    };
+    if let Some((_, registry)) = registries()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&cache_key)
+    {
+        return Ok(registry.clone());
+    }
+
     let mut registry = match schema {
         Some(s) => EntityRegistry::from_json(s)?,
         None => EntityRegistry::default(),
@@ -34,8 +55,31 @@ pub fn build_entity_registry(
         )));
     }
     registry.restrict_to(&guards.allowed_entities);
+    let registry = Arc::new(registry);
+    let mut cache = registries()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cache.len() >= MAX_CACHED_REGISTRIES
+        && let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, (at, _))| *at)
+            .map(|(k, _)| k.clone())
+    {
+        cache.remove(&oldest);
+    }
+    cache.insert(cache_key, (std::time::Instant::now(), registry.clone()));
     Ok(registry)
 }
+
+type RegistryCache =
+    std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Arc<EntityRegistry>)>>;
+
+fn registries() -> &'static RegistryCache {
+    static REGISTRIES: std::sync::OnceLock<RegistryCache> = std::sync::OnceLock::new();
+    REGISTRIES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+const MAX_CACHED_REGISTRIES: usize = 64;
 
 /// A refusal whose text names connector topology: the caller is told the
 /// request failed validation, and `detail` rides as the operator-only text.
@@ -46,7 +90,7 @@ fn connector_detail(detail: impl std::fmt::Display) -> HandlerError {
 /// Reject the call when the connector's operation gates disable `op` — the
 /// per-connector en/disable switch for read / insert / update / delete /
 /// upsert / raw_write (see [`OperationGates`]).
-pub fn require_op_allowed(
+pub(crate) fn require_op_allowed(
     gates: &OperationGates,
     op: &str,
     connector_name: &str,
@@ -91,7 +135,7 @@ pub fn require_method_allowed(
 /// Kept as a named constructor because `.map_err(to_exec_error)` reads better
 /// at a call site than a struct literal; the code it becomes, and its
 /// retryability, are decided once, by [`HandlerError`]'s class.
-pub fn to_exec_error(e: impl std::fmt::Display) -> HandlerError {
+pub(crate) fn to_exec_error(e: impl std::fmt::Display) -> HandlerError {
     HandlerError::new(ErrorClass::Backend, e)
 }
 
@@ -104,7 +148,7 @@ pub fn to_exec_error(e: impl std::fmt::Display) -> HandlerError {
 ///
 /// Use for "could not connect"; keep [`to_exec_error`] for "connected, and the
 /// query failed", which is genuinely not worth retrying.
-pub fn to_connect_error(e: impl std::fmt::Display) -> HandlerError {
+pub(crate) fn to_connect_error(e: impl std::fmt::Display) -> HandlerError {
     HandlerError::new(ErrorClass::Connector, e)
 }
 
@@ -115,7 +159,7 @@ pub fn to_connect_error(e: impl std::fmt::Display) -> HandlerError {
 /// 500 with the text replaced, so deliberately helpful guidance — *"add a
 /// LIMIT to the query or raise the cap"* — would be sanitised away exactly
 /// when the caller needs it (F42).
-pub fn to_limit_error(message: impl std::fmt::Display) -> HandlerError {
+pub(crate) fn to_limit_error(message: impl std::fmt::Display) -> HandlerError {
     HandlerError::new(ErrorClass::Limit, message)
 }
 
@@ -279,7 +323,7 @@ pub fn parse_duration_secs(s: &str) -> Result<u64, String> {
 }
 
 /// Name a JSON value's type for error messages.
-pub fn json_type_name(v: &Value) -> &'static str {
+pub(crate) fn json_type_name(v: &Value) -> &'static str {
     match v {
         Value::Null => "null",
         Value::Bool(_) => "boolean",
@@ -295,7 +339,7 @@ pub fn json_type_name(v: &Value) -> &'static str {
 /// `Validation` for the same reason: a parameter whose value will not convert
 /// to the type the query declares for it is an authoring problem, and a 400
 /// naming the placeholder is worth more than a 500 with the reason in the log.
-pub fn encode_failure(
+pub(crate) fn encode_failure(
     function: &str,
     e: crate::connector::sql_encode::EncodeError,
 ) -> HandlerError {
@@ -309,7 +353,7 @@ pub fn encode_failure(
 /// that. Before native decoding this surfaced as an internal `500` plus an
 /// `unhandled DataflowError variant` log line, which told the caller nothing
 /// and the author less.
-pub fn decode_failure(
+pub(crate) fn decode_failure(
     function: &str,
     e: crate::connector::sql_decode::DecodeError,
 ) -> HandlerError {

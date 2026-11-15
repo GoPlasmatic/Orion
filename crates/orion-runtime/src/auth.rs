@@ -108,7 +108,11 @@ impl FailedAuthTracker {
 
     /// Clear a client's history after a successful authentication.
     pub fn record_success(&self, client: &str) {
-        self.clients.remove(client);
+        // Most successful requests are from clients with no failure history;
+        // `remove` would take a write lock on a shard for nothing (P-16).
+        if self.clients.contains_key(client) {
+            self.clients.remove(client);
+        }
     }
 
     /// Bring the map back under its ceiling. Idle records first — under normal

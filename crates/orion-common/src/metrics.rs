@@ -983,6 +983,60 @@ pub fn record_trace_persistence_failure() {
 // Connector request metrics
 // ---------------------------------------------------------------------------
 
+/// Cached handles for one `(channel, connector)` pair's request metrics.
+///
+/// `record_connector_request`/`_duration` build the label set on every call;
+/// a connector function calls them twice per request. This is the per-pair
+/// form, so the hot path looks up one cached handle (P-12).
+#[derive(Default)]
+pub struct ConnectorMetrics {
+    handles: std::sync::OnceLock<ConnectorHandles>,
+}
+
+struct ConnectorHandles {
+    ok: metrics::Counter,
+    error: metrics::Counter,
+    duration: metrics::Histogram,
+}
+
+impl ConnectorMetrics {
+    fn handles(&self, connector: &str, channel: &str) -> &ConnectorHandles {
+        self.handles.get_or_init(|| ConnectorHandles {
+            ok: counter!(
+                "orion_connector_requests_total",
+                "connector" => connector.to_owned(),
+                "channel" => channel.to_owned(),
+                "status" => "ok"
+            ),
+            error: counter!(
+                "orion_connector_requests_total",
+                "connector" => connector.to_owned(),
+                "channel" => channel.to_owned(),
+                "status" => "error"
+            ),
+            duration: histogram!(
+                "orion_connector_request_duration_seconds",
+                "connector" => connector.to_owned(),
+                "channel" => channel.to_owned()
+            ),
+        })
+    }
+
+    /// Record one outcome and its latency through the cached handles.
+    pub fn record(&self, connector: &str, channel: &str, ok: bool, duration_secs: f64) {
+        if !is_enabled() {
+            return;
+        }
+        let handles = self.handles(connector, channel);
+        if ok {
+            handles.ok.increment(1);
+        } else {
+            handles.error.increment(1);
+        }
+        handles.duration.record(duration_secs);
+    }
+}
+
 /// Record a connector request outcome.
 pub fn record_connector_request(connector: &str, channel: &str, status: &'static str) {
     if !is_enabled() {

@@ -240,6 +240,7 @@ fn blob_to_json(bytes: Vec<u8>, mode: BinaryAs, column: &str, sql_type: &str) ->
 /// an enum, a domain over another type) and `name()` for the rest. Matching the
 /// type the server declared, rather than probing Rust types until one sticks,
 /// is what makes an unhandled type a named error instead of a silent null.
+#[doc(hidden)]
 pub fn pg_rows_to_json(rows: &[sqlx::postgres::PgRow], format: RowFormat) -> Decoded<Vec<Value>> {
     let Some(first) = rows.first() else {
         return Ok(Vec::new());
@@ -463,6 +464,7 @@ fn pg_array(
 /// A far smaller vocabulary than Postgres — no arrays, no user-defined types —
 /// so this sits close to what `Any` already managed, plus the date/time family,
 /// `DECIMAL` and `JSON`.
+#[doc(hidden)]
 pub fn mysql_rows_to_json(
     rows: &[sqlx::mysql::MySqlRow],
     format: RowFormat,
@@ -587,6 +589,7 @@ fn mysql_column(
 /// class the value fits, and what comes back is already an integer, a float or
 /// text. `binary_as` *is* honoured — `BLOB` is a storage class, so it survives
 /// the same round trip a declared type does not.
+#[doc(hidden)]
 pub fn sqlite_rows_to_json(
     rows: &[sqlx::sqlite::SqliteRow],
     format: RowFormat,

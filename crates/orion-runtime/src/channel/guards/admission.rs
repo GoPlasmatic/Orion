@@ -5,8 +5,6 @@
 //! write or settle. A refusal is the whole result, and the only state any of
 //! them holds is the semaphore permit backpressure hands to the caller.
 
-use std::sync::Arc;
-
 use dataflow_rs::expr::ExprEngine;
 use serde_json::Value;
 
@@ -27,16 +25,13 @@ use crate::metrics;
 /// unauthenticated caller which half of the credential they had right.
 pub(super) async fn check_auth(
     channel: &str,
-    channel_config: &Option<Arc<ChannelRuntimeConfig>>,
+    cfg: &ChannelRuntimeConfig,
     header: HeaderLookup<'_, '_>,
     raw_body: Option<&[u8]>,
     exprs: &ExprEngine,
     backoff: Option<&crate::auth::FailedAuthTracker>,
     client: &str,
 ) -> Result<Option<Value>, OrionError> {
-    let Some(cfg) = channel_config else {
-        return Ok(None);
-    };
     let Some(ref auth) = cfg.auth else {
         return Ok(None);
     };
@@ -124,10 +119,10 @@ pub(super) async fn check_auth(
 /// allow-list does not name it.
 pub(super) fn check_allowed_origin(
     channel: &str,
-    channel_config: &Option<Arc<ChannelRuntimeConfig>>,
+    cfg: &ChannelRuntimeConfig,
     origin: Option<&str>,
 ) -> Result<(), OrionError> {
-    if let Some(cfg) = channel_config
+    if let Some(cfg) = Some(cfg)
         && let Some(allowed_origins) = cfg.parsed_config.allowed_origins()
         && let Some(origin) = origin
         && !allowed_origins.iter().any(|o| o == "*" || o == origin)
@@ -143,11 +138,11 @@ pub(super) fn check_allowed_origin(
 /// validation passes or no validation is configured.
 pub(super) fn validate_input(
     channel: &str,
-    channel_config: &Option<Arc<ChannelRuntimeConfig>>,
+    cfg: &ChannelRuntimeConfig,
     context: &super::GuardContext,
     exprs: &ExprEngine,
 ) -> Result<(), OrionError> {
-    if let Some(cfg) = channel_config
+    if let Some(cfg) = Some(cfg)
         && let Some(ref compiled) = cfg.validation_logic
     {
         match exprs.eval(compiled, context.root()) {
@@ -179,9 +174,9 @@ pub(super) fn validate_input(
 /// hold the returned permit for the duration of processing.
 pub(super) fn acquire_backpressure(
     channel: &str,
-    channel_config: &Option<Arc<ChannelRuntimeConfig>>,
+    cfg: &ChannelRuntimeConfig,
 ) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, OrionError> {
-    if let Some(cfg) = channel_config
+    if let Some(cfg) = Some(cfg)
         && let Some(ref semaphore) = cfg.backpressure_semaphore
     {
         match semaphore.clone().try_acquire_owned() {

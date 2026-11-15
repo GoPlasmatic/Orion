@@ -37,6 +37,6 @@ pub use enums::{
     TRACE_STATUS_PENDING, TRACE_STATUS_RUNNING, VALID_CHANNEL_TYPES,
 };
 pub use rows::{
-    AuditLogEntry, Channel, ConnectorOauthStateRow, CronOccurrence, CronScheduleState,
-    CronSingleton, RuntimeNodeRow, Trace, TraceDlqEntry, TraceDlqSummary, TraceListRow, Workflow,
+    AuditLogEntry, ConnectorOauthStateRow, CronOccurrence, CronScheduleState, CronSingleton,
+    RuntimeNodeRow, Trace, TraceDlqEntry, TraceDlqSummary, TraceListRow,
 };

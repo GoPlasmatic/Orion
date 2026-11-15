@@ -419,12 +419,12 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                         .await?)
                 }
                 DbBackend::Mysql => {
-                    let mut tx = self.pool.begin_tx().await.map_err(OrionError::Storage)?;
+                    let mut tx = self.pool.begin_tx().await?;
                     let (sql, values) =
                         build_sqlx(self.pool.backend(), &mut claim_select_query(limit, now));
                     let rows: Vec<TraceDlqEntry> = tx.fetch_all_as(&sql, values).await?;
                     if rows.is_empty() {
-                        tx.commit().await.map_err(OrionError::Storage)?;
+                        tx.commit().await?;
                         return Ok(rows);
                     }
                     let (sql, values) = build_sqlx(
@@ -436,7 +436,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                         ),
                     );
                     tx.execute_query(&sql, values).await?;
-                    tx.commit().await.map_err(OrionError::Storage)?;
+                    tx.commit().await?;
                     Ok(rows)
                 }
             }

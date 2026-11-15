@@ -17,7 +17,7 @@ use crate::definitions::clippy::{Diagnostic, Group, Level, Rule, Scope};
 // correctness.workflow_never_matches
 // ============================================================
 
-pub struct WorkflowNeverMatches;
+pub(crate) struct WorkflowNeverMatches;
 
 impl Rule for WorkflowNeverMatches {
     fn id(&self) -> &'static str {
@@ -113,7 +113,7 @@ impl Rule for WorkflowNeverMatches {
 // correctness.task_never_runs
 // ============================================================
 
-pub struct TaskNeverRuns;
+pub(crate) struct TaskNeverRuns;
 
 impl Rule for TaskNeverRuns {
     fn id(&self) -> &'static str {
@@ -172,7 +172,7 @@ impl Rule for TaskNeverRuns {
 // correctness.unreachable_step
 // ============================================================
 
-pub struct UnreachableStep;
+pub(crate) struct UnreachableStep;
 
 impl Rule for UnreachableStep {
     fn id(&self) -> &'static str {
@@ -254,7 +254,7 @@ impl Rule for UnreachableStep {
 // correctness.unconditional_call_cycle
 // ============================================================
 
-pub struct UnconditionalCallCycle;
+pub(crate) struct UnconditionalCallCycle;
 
 impl Rule for UnconditionalCallCycle {
     fn id(&self) -> &'static str {
@@ -477,7 +477,7 @@ impl Rule for PayloadVar {
 // correctness.mapping_overwritten
 // ============================================================
 
-pub struct MappingOverwritten;
+pub(crate) struct MappingOverwritten;
 
 impl Rule for MappingOverwritten {
     fn id(&self) -> &'static str {
@@ -574,7 +574,7 @@ impl Rule for MappingOverwritten {
 // correctness.metadata_var_undeclared  (needs -c)
 // ============================================================
 
-pub struct MetadataVarUndeclared;
+pub(crate) struct MetadataVarUndeclared;
 
 impl Rule for MetadataVarUndeclared {
     fn id(&self) -> &'static str {
@@ -664,7 +664,7 @@ impl Rule for MetadataVarUndeclared {
 // correctness.secret_undeclared  (needs -c)
 // ============================================================
 
-pub struct SecretUndeclared;
+pub(crate) struct SecretUndeclared;
 
 impl Rule for SecretUndeclared {
     fn id(&self) -> &'static str {
@@ -743,7 +743,7 @@ impl Rule for SecretUndeclared {
 /// authored at all, for the values that are decidable from the source: a
 /// literal is either the type `format_set_cookie` requires or it is not, and no
 /// input can change that.
-pub struct ResponseCookieType;
+pub(crate) struct ResponseCookieType;
 
 /// The three attributes whose literal type is checkable, with the type each
 /// requires. `same_site` and the string fields are deliberately absent: a wrong
@@ -865,7 +865,7 @@ fn wrong_literal(field: &str, value: &Value) -> Option<&'static str> {
 // correctness.unknown_input_key
 // ============================================================
 
-pub struct UnknownInputKey;
+pub(crate) struct UnknownInputKey;
 
 impl Rule for UnknownInputKey {
     fn id(&self) -> &'static str {
@@ -982,7 +982,7 @@ fn nearest_field<'a>(
 // correctness.unordered_page
 // ============================================================
 
-pub struct UnorderedPage;
+pub(crate) struct UnorderedPage;
 
 impl Rule for UnorderedPage {
     fn id(&self) -> &'static str {
@@ -1066,7 +1066,7 @@ impl Rule for UnorderedPage {
 // correctness.mapping_always_null
 // ============================================================
 
-pub struct MappingAlwaysNull;
+pub(crate) struct MappingAlwaysNull;
 
 impl Rule for MappingAlwaysNull {
     fn id(&self) -> &'static str {
@@ -1170,7 +1170,7 @@ impl Rule for MappingAlwaysNull {
 // correctness.sql_bind_count
 // ============================================================
 
-pub struct SqlBindCount;
+pub(crate) struct SqlBindCount;
 
 impl SqlBindCount {
     /// The backend a `db` connector of the set names by a literal connection

@@ -180,7 +180,7 @@ pub fn task_writes(task: &Value, functions: &FunctionRegistry) -> Vec<String> {
 
 /// Where a task writes, with the certainty flag: its function's
 /// destinations, and a `for_each`'s.
-pub fn task_write_facts(task: &Value, functions: &FunctionRegistry) -> Writes {
+pub(crate) fn task_write_facts(task: &Value, functions: &FunctionRegistry) -> Writes {
     let mut out = function_write_facts(task, functions);
     // A fan-out folds each call's writes back onto the message, so the
     // function's own destinations stand, and adds two of its own: `collect`,
@@ -263,7 +263,7 @@ fn function_write_facts(task: &Value, functions: &FunctionRegistry) -> Writes {
 /// there instead of replacing it, so the mapping reads its target as well as
 /// writing it: a rule reasoning about overwrites must not call the value
 /// before it dead.
-pub fn mapping_keeps_target(mapping: &Value) -> bool {
+pub(crate) fn mapping_keeps_target(mapping: &Value) -> bool {
     matches!(
         mapping.get("mode").and_then(Value::as_str),
         Some("append" | "extend")
@@ -273,7 +273,7 @@ pub fn mapping_keeps_target(mapping: &Value) -> bool {
 /// What a task reads by keeping it: the `path` of each of its `map`
 /// mappings that appends rather than replaces. A computed path names nothing
 /// until a message arrives, so it makes the reads uncertain.
-pub fn task_kept_reads(task: &Value) -> Reads {
+pub(crate) fn task_kept_reads(task: &Value) -> Reads {
     let mut out = Reads::default();
     let function = task.get("function");
     if function.and_then(|f| f.get("name")).and_then(Value::as_str) != Some("map") {
@@ -297,7 +297,8 @@ pub fn task_kept_reads(task: &Value) -> Reads {
 /// Whether `path` is covered by something already written, by prefix in
 /// either direction. A bare `data` write is the whole context and covers
 /// everything under it.
-pub fn is_written(path: &str, written: &[String]) -> bool {
+#[cfg(test)]
+fn is_written(path: &str, written: &[String]) -> bool {
     written.iter().any(|w| w == "data" || overlaps(w, path))
 }
 

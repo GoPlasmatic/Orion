@@ -39,7 +39,12 @@ pub mod trace_context;
 
 /// Single middleware that sets all security response headers in one pass,
 /// replacing 5 separate `SetResponseHeaderLayer` wrappers.
-async fn security_headers_middleware(req: axum::extract::Request, next: Next) -> Response {
+async fn security_headers_middleware(
+    axum::extract::State(state): axum::extract::State<crate::runtime::state::AppState>,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let hsts = state.config.server.tls.enabled || state.config.server.hsts;
     let path = req.uri().path();
     let is_docs = path == "/docs" || path.starts_with("/docs/");
     let mut response = next.run(req).await;
@@ -67,6 +72,12 @@ async fn security_headers_middleware(req: axum::extract::Request, next: Next) ->
         axum::http::HeaderName::from_static("permissions-policy"),
         HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
     );
+    if hsts {
+        headers.insert(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static("max-age=63072000; includeSubDomains"),
+        );
+    }
     response
 }
 
@@ -184,22 +195,6 @@ pub fn build_router(state: AppState) -> Router {
         router
     };
 
-    // HSTS header (when TLS is enabled or `server.hsts` is set behind a proxy)
-    let router = if state.config.server.tls.enabled || state.config.server.hsts {
-        router.layer(axum::middleware::from_fn(
-            |req: axum::extract::Request, next: Next| async move {
-                let mut response = next.run(req).await;
-                response.headers_mut().insert(
-                    header::STRICT_TRANSPORT_SECURITY,
-                    HeaderValue::from_static("max-age=63072000; includeSubDomains"),
-                );
-                response
-            },
-        ))
-    } else {
-        router
-    };
-
     // CORS — OUTER to admin auth so a browser preflight (`OPTIONS`, sent
     // without credentials by definition) is answered by CorsLayer instead of
     // being rejected with 401.
@@ -223,7 +218,10 @@ pub fn build_router(state: AppState) -> Router {
     // escape without security headers and without a request id.
     let router = router
         // One middleware sets all five security headers.
-        .layer(axum::middleware::from_fn(security_headers_middleware))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            security_headers_middleware,
+        ))
         // Scope the per-request task-local REQUEST_CONTEXT so OrionError
         // responses can embed the request id in the JSON body (clients then
         // don't need to read both header and body to correlate) and the audit
@@ -263,7 +261,10 @@ pub fn metrics_router(state: AppState) -> Router {
                 "This listener serves GET /metrics only".to_string(),
             )
         })
-        .layer(axum::middleware::from_fn(security_headers_middleware))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            security_headers_middleware,
+        ))
         .layer(CatchPanicLayer::new())
         .with_state(state)
 }

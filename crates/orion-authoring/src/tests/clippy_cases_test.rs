@@ -21,7 +21,7 @@ const FIXTURES: &str = concat!(
 
 /// Run clippy in-process over a set directory: `lint`'s gate, then every
 /// rule. Panics on a lint error — a fixture must be a set the API accepts.
-pub fn run_over(dir: &Path) -> Vec<Diagnostic> {
+pub(crate) fn run_over(dir: &Path) -> Vec<Diagnostic> {
     let (raw, _) = DefinitionSet::from_directory_raw(dir).expect("raw load");
     let (compiled, report) = DefinitionSet::from_directory(dir).expect("compiled load");
     // The set's own registry, as the gate builds it: a `plugin.toml` in the

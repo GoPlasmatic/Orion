@@ -114,7 +114,7 @@ impl Fragment {
 
 /// The reserved key of the set's package declaration — see
 /// [`SharedDefinitions::is_package_declaration`].
-pub const PACKAGE_KEY: &str = "package";
+pub(crate) const PACKAGE_KEY: &str = "package";
 
 /// What a set declares about itself: `{"package": {"name": "orders",
 /// "requires": {"orion": ">=1.8.2, <2"}}}`. At most one per set.

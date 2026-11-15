@@ -131,7 +131,7 @@ pub fn output_path<'o>(
 ///
 /// The one Defect, `INPUT_PARSE` at `output`, when the output is a literal
 /// root.
-pub fn root_output_defect(out: &Output, message: &str) -> Result<(), Vec<Issue>> {
+pub(crate) fn root_output_defect(out: &Output, message: &str) -> Result<(), Vec<Issue>> {
     root_output_issue(out, message, Severity::Defect)
 }
 
@@ -231,8 +231,9 @@ pub async fn guarded<F>(
 where
     F: Future<Output = dataflow_rs::Result<Outcome>>,
 {
+    let metrics = registry.connector_metrics(channel, connector);
     if !registry.circuit_breaker_enabled() {
-        return observed(connector, channel, fut).await;
+        return observed(metrics, connector, channel, fut).await;
     }
 
     // The registry composes the `channel:connector` key, so an operator's
@@ -243,7 +244,7 @@ where
         return Err(crate::service::circuit_open(connector, channel));
     }
 
-    let result = observed(connector, channel, fut).await;
+    let result = observed(metrics, connector, channel, fut).await;
     match &result {
         Ok(_) => breaker.record_success(),
         Err(e) if e.is_retryable() => {
@@ -264,15 +265,23 @@ where
 }
 
 /// The connector request and latency metrics, around the work.
-async fn observed<F>(connector: &str, channel: &str, fut: F) -> dataflow_rs::Result<Outcome>
+async fn observed<F>(
+    metrics: Arc<crate::metrics::ConnectorMetrics>,
+    connector: &str,
+    channel: &str,
+    fut: F,
+) -> dataflow_rs::Result<Outcome>
 where
     F: Future<Output = dataflow_rs::Result<Outcome>>,
 {
     let start = std::time::Instant::now();
     let result = fut.await;
-    let status = if result.is_ok() { "ok" } else { "error" };
-    crate::metrics::record_connector_request(connector, channel, status);
-    crate::metrics::record_connector_duration(connector, channel, start.elapsed().as_secs_f64());
+    metrics.record(
+        connector,
+        channel,
+        result.is_ok(),
+        start.elapsed().as_secs_f64(),
+    );
     result
 }
 
@@ -289,7 +298,7 @@ where
 /// connector shell are profiled too, where 1.12 sampled only the connector
 /// handlers and `channel_call`.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct ProfileLayer;
+pub(crate) struct ProfileLayer;
 
 impl CallLayer for ProfileLayer {
     fn call<'a>(
@@ -417,7 +426,7 @@ impl OfflineDeps {
 }
 
 /// A node with no channels: every `channel_call` target is not found.
-pub struct NoChannels;
+pub(crate) struct NoChannels;
 
 impl ChannelCallHost for NoChannels {
     fn resolve(
@@ -431,7 +440,7 @@ impl ChannelCallHost for NoChannels {
 
 /// A node's own response-cache stores, with no cluster store beside them: a
 /// bump reaches every in-memory response cache the pool holds.
-pub struct LocalNamespaces;
+pub(crate) struct LocalNamespaces;
 
 #[async_trait::async_trait]
 impl NamespaceInvalidator for LocalNamespaces {
@@ -450,7 +459,7 @@ impl NamespaceInvalidator for LocalNamespaces {
 
 /// A node with no providers and no deployment: nothing is registered, and a
 /// call is refused as one made outside a served run.
-pub struct NoProviders;
+pub(crate) struct NoProviders;
 
 #[async_trait::async_trait]
 impl ConnectorCallHost for NoProviders {

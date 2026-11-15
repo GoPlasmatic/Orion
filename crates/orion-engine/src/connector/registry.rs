@@ -22,6 +22,10 @@ tokio::task_local! {
 /// Monotonic counter for LRU tracking of circuit breaker access.
 static BREAKER_ACCESS_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// How many accesses one breaker entry records before it touches the global
+/// LRU counter (P-11).
+const BREAKER_TOUCH_SAMPLE: u64 = 64;
+
 /// Process-wide source of [`ConnectorRegistry::config_generation`] tokens.
 /// Drawn on construction and on every load that *changed* the connector set,
 /// so a token is unique across registry *instances* as well as across the
@@ -112,6 +116,9 @@ impl<'a> Borrow<dyn BreakerKeyLookup + 'a> for BreakerKey {
 struct BreakerEntry {
     breaker: Arc<CircuitBreaker>,
     last_access: AtomicU64,
+    /// Counts this entry's own accesses; only every
+    /// [`BREAKER_TOUCH_SAMPLE`]th reaches the process-wide counter.
+    accesses: AtomicU64,
     /// The composite `"{channel}:{connector}"` string — the shape the admin API
     /// and the cluster reset broadcast (`job_leases.breaker_key`) both speak.
     /// Keying the map by [`BreakerKey`] avoids allocating this formatted string
@@ -125,11 +132,22 @@ impl BreakerEntry {
         Self {
             breaker,
             last_access: AtomicU64::new(BREAKER_ACCESS_COUNTER.fetch_add(1, Ordering::Relaxed)),
+            accesses: AtomicU64::new(0),
             composite_key: format!("{channel}:{connector}"),
         }
     }
 
     fn touch(&self) {
+        // P-11: the global counter is a shared cache line. One touch in
+        // `BREAKER_TOUCH_SAMPLE` is enough for LRU order between a handful of
+        // connectors, and the local counter costs no contention.
+        if !self
+            .accesses
+            .fetch_add(1, Ordering::Relaxed)
+            .is_multiple_of(BREAKER_TOUCH_SAMPLE)
+        {
+            return;
+        }
         self.last_access.store(
             BREAKER_ACCESS_COUNTER.fetch_add(1, Ordering::Relaxed),
             Ordering::Relaxed,
@@ -141,6 +159,9 @@ impl BreakerEntry {
 pub struct ConnectorRegistry {
     configs: ArcSwap<HashMap<String, Arc<ConnectorConfig>>>,
     reload_lock: Mutex<()>,
+    /// One cached metric-handle set per `(channel, connector)`, so the hot
+    /// path does not rebuild labels (P-12).
+    connector_metrics: std::sync::Mutex<HashMap<String, Arc<crate::metrics::ConnectorMetrics>>>,
     /// A synchronous lock, not an async one: no critical section awaits, and
     /// the read side is taken on every guarded connector call. An async
     /// `RwLock` made each of those a future and a semaphore acquisition for a
@@ -199,6 +220,7 @@ impl ConnectorRegistry {
             configs: ArcSwap::from_pointee(HashMap::new()),
             reload_lock: Mutex::new(()),
             circuit_breakers: std::sync::RwLock::new(HashMap::new()),
+            connector_metrics: std::sync::Mutex::new(HashMap::new()),
             cb_config,
             load_issues: RwLock::new(Vec::new()),
             generation: AtomicU64::new(CONNECTOR_GENERATION.fetch_add(1, Ordering::Relaxed)),
@@ -367,6 +389,21 @@ impl ConnectorRegistry {
             .values()
             .map(|v| (v.composite_key.clone(), v.breaker.state_name().to_string()))
             .collect()
+    }
+
+    /// The cached metric handles for `(channel, connector)`.
+    pub fn connector_metrics(
+        &self,
+        channel: &str,
+        connector: &str,
+    ) -> Arc<crate::metrics::ConnectorMetrics> {
+        let key = format!("{channel}:{connector}");
+        self.connector_metrics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(key)
+            .or_default()
+            .clone()
     }
 
     /// Force-reset a circuit breaker by key. Returns `true` if the key existed.

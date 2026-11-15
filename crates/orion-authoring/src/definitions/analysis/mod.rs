@@ -35,7 +35,7 @@ pub use logic::{Evaluator, Expr};
 /// the request body became the *payload*, which is not in the context — and
 /// only `metadata` carries anything. Established in the data routes
 /// (`routes/data/mod.rs` → `sync.rs`'s `payload_json`) and in `channel_call`.
-pub fn selection_context() -> Value {
+pub(crate) fn selection_context() -> Value {
     serde_json::json!({ "data": {}, "temp_data": {}, "metadata": {} })
 }
 
@@ -129,7 +129,7 @@ impl StepFacts {
     /// Every read this step makes that the walk could name, with whether the
     /// list is complete: the condition's, each input expression's, and the
     /// targets it appends to.
-    pub fn reads(&self) -> Reads {
+    pub(crate) fn reads(&self) -> Reads {
         let mut out = self.kept.clone();
         for expr in self
             .condition

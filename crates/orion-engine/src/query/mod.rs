@@ -199,7 +199,7 @@ fn prepare(
 /// Plan a SQL query with `include`s: render the main `SelectStatement` (with any
 /// parent keys needed for grouping added) and resolve each include to an
 /// [`IncludePlan`] the handler hydrates with a per-relation child query.
-pub fn plan_sql(
+pub(crate) fn plan_sql(
     query: &Json,
     params: &Params,
     reg: &EntityRegistry,

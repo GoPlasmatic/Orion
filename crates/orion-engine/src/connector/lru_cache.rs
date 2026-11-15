@@ -258,6 +258,29 @@ impl<V: Clone> LruCache<V> {
         .await
     }
 
+    /// [`Self::get_or_create_versioned`] with the identity digest already
+    /// computed by the caller: the pool cache stores it per connector config
+    /// generation, so the hot path does not re-serialize the config (P-01).
+    pub async fn get_or_create_with_digest<F, Fut, E>(
+        &self,
+        name: &str,
+        digest: [u8; 32],
+        create_fn: F,
+    ) -> Result<V, E>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<V, E>>,
+    {
+        self.get_or_create_key(
+            CacheKeyRef {
+                name,
+                config: Some(digest),
+            },
+            create_fn,
+        )
+        .await
+    }
+
     async fn get_or_create_key<F, Fut, E>(&self, key: CacheKeyRef<'_>, create_fn: F) -> Result<V, E>
     where
         F: FnOnce() -> Fut,

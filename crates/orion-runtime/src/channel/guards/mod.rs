@@ -455,7 +455,7 @@ pub struct GuardRequest<'a> {
     /// The channel's runtime config. `None` means the channel is not in the
     /// registry, and every guard is a no-op — callers reject that case
     /// before getting here.
-    pub runtime: &'a Option<Arc<ChannelRuntimeConfig>>,
+    pub runtime: &'a ChannelRuntimeConfig,
     /// The message as the channel's own expressions read it — the payload
     /// and the metadata, built once by the transport (see [`GuardContext`]).
     pub context: &'a mut GuardContext,
@@ -743,10 +743,8 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
     // `key_logic`. The transport merges the claims into the message itself
     // afterwards (`merge_auth_claims`), the same key with the same value, so
     // what the engine sees does not depend on whether this merge ran.
-    let reads_claims = req.runtime.as_ref().is_some_and(|rt| {
-        (set.validation && rt.validation_logic.is_some())
-            || (set.response_cache && rt.cache_key_logic.is_some())
-    });
+    let reads_claims = (set.validation && req.runtime.validation_logic.is_some())
+        || (set.response_cache && req.runtime.cache_key_logic.is_some());
     if reads_claims && let Some(claims) = auth_claims.as_ref() {
         req.context.merge_auth_claims(claims.clone());
     }
@@ -838,7 +836,7 @@ async fn after_dedup(
     let mut oauth_identity = None;
     if set.oauth2_login
         && let Some(ingress) = req.oauth.as_ref()
-        && let Some(login) = req.runtime.as_ref().and_then(|rt| rt.oauth2_login.as_ref())
+        && let Some(login) = req.runtime.oauth2_login.as_ref()
     {
         match ingress.leg {
             crate::channel::OAuthLeg::Authorize if !login.runs_workflow_on_authorize() => {
@@ -975,14 +973,11 @@ pub fn merge_auth_claims(
 /// `trace_queue.processing_timeout_ms`. A channel can therefore
 /// shorten its deadline below the transport's, never lengthen it past.
 pub fn effective_timeout_ms(
-    runtime: &Option<Arc<ChannelRuntimeConfig>>,
+    runtime: &ChannelRuntimeConfig,
     default_timeout_ms: Option<u64>,
     max_timeout_ms: Option<u64>,
 ) -> Option<u64> {
-    let resolved = runtime
-        .as_ref()
-        .and_then(|c| c.parsed_config.timeout_ms)
-        .or(default_timeout_ms)?;
+    let resolved = runtime.parsed_config.timeout_ms.or(default_timeout_ms)?;
     Some(match max_timeout_ms {
         Some(max) => resolved.min(max),
         None => resolved,

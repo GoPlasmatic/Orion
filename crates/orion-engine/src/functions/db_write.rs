@@ -34,9 +34,10 @@ async fn write_rows(
     db_config: &DbConnectorConfig,
     write: &DbRead<'_>,
     run_deadline: Option<dataflow_rs::run::Instant>,
+    generation: u64,
 ) -> Result<serde_json::Value, HandlerError> {
     let pool = pool_cache
-        .get_pool(connector, db_config)
+        .get_pool_for_generation(connector, db_config, generation)
         .await
         .map_err(to_connect_error)?;
 
@@ -181,8 +182,17 @@ impl Function for DbWriteFunction {
                 &cfg.connector,
             )?;
             gate(db, &cfg.connector)?;
-            answer =
-                Some(write_rows(&self.pool_cache, &cfg.connector, db, &write, run_deadline).await?);
+            answer = Some(
+                write_rows(
+                    &self.pool_cache,
+                    &cfg.connector,
+                    db,
+                    &write,
+                    run_deadline,
+                    self.registry.config_generation(),
+                )
+                .await?,
+            );
             Ok(Outcome::Ok)
         })
         .await?;

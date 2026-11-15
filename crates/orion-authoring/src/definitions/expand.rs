@@ -32,9 +32,9 @@ use super::provenance::{SourceMap, Via, trail_suffix};
 use super::shared::{Fragment, FragmentBody, SharedDefinitions, reanchor_sql};
 
 /// How deep fragments, `$each` and constants may nest inside one another.
-pub const MAX_EXPANSION_DEPTH: usize = 16;
+pub(crate) const MAX_EXPANSION_DEPTH: usize = 16;
 /// How many copies every `$each` in one document may produce, together.
-pub const MAX_EACH_COPIES: usize = 4096;
+pub(crate) const MAX_EACH_COPIES: usize = 4096;
 
 /// Whether a `loop` object holds a step list of its own, rather than being
 /// a value the sugar replaces whole: a `{"$use": …}` or `{"$each": …}` loop

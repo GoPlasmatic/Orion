@@ -96,6 +96,10 @@ fn gate(conn: &DbConnectorConfig, connector: &str) -> Result<(), HandlerError> {
 /// The rows a read returns, as a JSON array, against a resolved and gated
 /// connector. `run_deadline` is the deadline of the run the call belongs
 /// to ([`QueryBudget::within`]).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the generation joins the pool key"
+)]
 async fn read_rows(
     pool_cache: &SqlPoolCache,
     connector: &str,
@@ -104,9 +108,10 @@ async fn read_rows(
     max_result_bytes: usize,
     read: &DbRead<'_>,
     run_deadline: Option<dataflow_rs::run::Instant>,
+    generation: u64,
 ) -> Result<Value, HandlerError> {
     let pool = pool_cache
-        .get_pool(connector, db_config)
+        .get_pool_for_generation(connector, db_config, generation)
         .await
         .map_err(to_connect_error)?;
 
@@ -348,6 +353,7 @@ impl Function for DbReadFunction {
                     self.max_result_bytes,
                     &read,
                     run_deadline,
+                    self.registry.config_generation(),
                 )
                 .await?,
             );

@@ -39,7 +39,7 @@ sha2 = "0.11"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
 tracing = "0.1"
 utoipa = { version = "6", features = ["axum_extras", "chrono"] }
-uuid = { version = "1", features = ["v4", "v7", "serde"] }
+uuid.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

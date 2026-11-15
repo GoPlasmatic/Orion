@@ -72,9 +72,9 @@ impl Chan {
         self
     }
 
-    fn row(&self) -> crate::storage::models::Channel {
+    fn row(&self) -> crate::engine::Channel {
         let now = chrono::Utc::now().naive_utc();
-        crate::storage::models::Channel {
+        crate::engine::Channel {
             tags_json: "[]".to_string(),
             channel_id: format!("ch_{}", self.name),
             version: 1,

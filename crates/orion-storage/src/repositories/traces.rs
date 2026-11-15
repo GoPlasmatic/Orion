@@ -567,7 +567,7 @@ impl TraceSink for SqlTraceRepository {
         }
         orion_common::metrics::timed_db_op("traces.complete_batch", async {
             let now = chrono::Utc::now().naive_utc();
-            let mut tx = self.pool.begin_tx().await.map_err(OrionError::Storage)?;
+            let mut tx = self.pool.begin_tx().await?;
             for row in rows {
                 let (sql, values) = build_sqlx(
                     self.pool.backend(),
@@ -575,7 +575,7 @@ impl TraceSink for SqlTraceRepository {
                 );
                 tx.execute_query(&sql, values).await?;
             }
-            tx.commit().await.map_err(OrionError::Storage)?;
+            tx.commit().await?;
             orion_common::metrics::record_trace_persistence_batch_size(rows.len());
             Ok(())
         })

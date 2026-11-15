@@ -23,7 +23,7 @@ fn opaque(functions: &crate::engine::FunctionRegistry, step: &StepFacts) -> bool
 // perf.parse_result_overwritten
 // ============================================================
 
-pub struct ParseResultOverwritten;
+pub(crate) struct ParseResultOverwritten;
 
 impl Rule for ParseResultOverwritten {
     fn id(&self) -> &'static str {
@@ -124,7 +124,7 @@ impl Rule for ParseResultOverwritten {
 // perf.redundant_step_condition
 // ============================================================
 
-pub struct RedundantStepCondition;
+pub(crate) struct RedundantStepCondition;
 
 /// The path the engine itself overwrites after every executed task
 /// (`{workflow_id, task_id, status_code}` — dataflow-rs
@@ -249,7 +249,7 @@ impl Rule for RedundantStepCondition {
 // perf.group_condition_repeated
 // ============================================================
 
-pub struct GroupConditionRepeated;
+pub(crate) struct GroupConditionRepeated;
 
 impl Rule for GroupConditionRepeated {
     fn id(&self) -> &'static str {

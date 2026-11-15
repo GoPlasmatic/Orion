@@ -31,7 +31,7 @@ orion-common.workspace = true
 orion-definitions.workspace = true
 orion-extension-api.workspace = true
 orion-storage.workspace = true
-dataflow-rs = { version = "4.0.3", features = ["datetime", "budget"] }
+dataflow-rs.workspace = true
 argon2 = "0.6.0"
 arc-swap = "1"
 async-trait = "0.1"
@@ -64,7 +64,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync",
 tracing = "0.1"
 url = "2"
 utoipa = { version = "6", features = ["axum_extras", "chrono"] }
-uuid = { version = "1", features = ["v4", "v7", "serde"] }
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

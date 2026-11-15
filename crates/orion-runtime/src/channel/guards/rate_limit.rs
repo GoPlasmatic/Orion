@@ -3,8 +3,6 @@
 //! Split out of `guards` as one concept: the limiter call and the key
 //! derivation change together and nothing else reads either.
 
-use std::sync::Arc;
-
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::ExprEngine;
 use serde_json::{Value, json};
@@ -27,14 +25,11 @@ use crate::metrics;
 /// unavailable).
 pub(super) async fn check_rate_limit(
     channel: &str,
-    channel_config: &Option<Arc<ChannelRuntimeConfig>>,
+    cfg: &ChannelRuntimeConfig,
     exprs: &ExprEngine,
     caller_identity: &str,
     header: HeaderLookup<'_, '_>,
 ) -> Result<(), OrionError> {
-    let Some(cfg) = channel_config else {
-        return Ok(());
-    };
     let Some(ref limiter) = cfg.rate_limiter else {
         return Ok(());
     };
@@ -237,15 +232,12 @@ pub(crate) fn key_logic_header_paths(logic: &Value) -> Vec<String> {
 /// quota into a per-address one.
 pub(super) async fn check_principal_rate_limit(
     channel: &str,
-    channel_config: &Option<Arc<ChannelRuntimeConfig>>,
+    cfg: &ChannelRuntimeConfig,
     exprs: &ExprEngine,
     caller_identity: &str,
     header: HeaderLookup<'_, '_>,
     claims: Option<&Value>,
 ) -> Result<(), OrionError> {
-    let Some(cfg) = channel_config else {
-        return Ok(());
-    };
     let (Some(limiter), Some(compiled)) = (
         cfg.principal_rate_limiter.as_ref(),
         cfg.principal_rate_limit_key_logic.as_ref(),

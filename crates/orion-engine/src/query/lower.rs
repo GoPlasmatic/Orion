@@ -46,7 +46,7 @@ pub fn lower(filter: &Json, params: &Params) -> Result<Cond, QueryError> {
 
 /// Lower a `filter` rooted at `root_entity`, resolving fields and relations
 /// through `reg`.
-pub fn lower_with(
+pub(crate) fn lower_with(
     filter: &Json,
     params: &Params,
     reg: &EntityRegistry,

@@ -79,7 +79,7 @@ pub fn params(v: Option<Value>) -> Map<String, Value> {
 ///
 /// A [`ErrorClass::CallerInput`] error when the field is unset or not a
 /// scalar.
-pub fn required_str<'a>(
+pub(crate) fn required_str<'a>(
     v: Option<&'a OwnedDataValue>,
     field: &str,
     handler: &str,
@@ -101,7 +101,7 @@ pub fn required_str<'a>(
 ///
 /// A [`ErrorClass::CallerInput`] error when the field is unset, not an
 /// array, longer than `max`, or holds an element that is not a scalar.
-pub fn required_str_list(
+pub(crate) fn required_str_list(
     v: Option<&OwnedDataValue>,
     field: &str,
     handler: &str,
@@ -208,7 +208,7 @@ pub fn optional_str<'a>(
 /// # Errors
 ///
 /// A [`ErrorClass::CallerInput`] error for a value that is not a boolean.
-pub fn bool_or(
+pub(crate) fn bool_or(
     v: Option<&OwnedDataValue>,
     field: &str,
     handler: &str,
@@ -276,7 +276,7 @@ pub fn optional_u64(
 ///
 /// A [`ErrorClass::CallerInput`] error for a fractional number, one outside
 /// 64 bits, or a value that is not a number.
-pub fn optional_i64(
+pub(crate) fn optional_i64(
     v: Option<&OwnedDataValue>,
     field: &str,
     handler: &str,
@@ -348,7 +348,10 @@ pub fn numeric_as(v: Option<&OwnedDataValue>, handler: &str) -> Result<NumericAs
 /// # Errors
 ///
 /// As [`numeric_as`].
-pub fn binary_as(v: Option<&OwnedDataValue>, handler: &str) -> Result<BinaryAs, HandlerError> {
+pub(crate) fn binary_as(
+    v: Option<&OwnedDataValue>,
+    handler: &str,
+) -> Result<BinaryAs, HandlerError> {
     match optional_str(v, "binary_as", handler)? {
         None => Ok(BinaryAs::default()),
         Some(s) => BinaryAs::parse(&s).ok_or_else(|| {
@@ -366,7 +369,7 @@ pub fn binary_as(v: Option<&OwnedDataValue>, handler: &str) -> Result<BinaryAs, 
 /// # Errors
 ///
 /// As [`numeric_as`] and [`binary_as`].
-pub fn row_format(
+pub(crate) fn row_format(
     numeric: Option<&OwnedDataValue>,
     binary: Option<&OwnedDataValue>,
     handler: &str,
@@ -382,7 +385,7 @@ pub fn row_format(
 /// formats): a string as itself, anything else its
 /// compact JSON, so `7` is `"7"` and `null` is `"null"`. Never refused, as it
 /// never was; a string is lent.
-pub fn plain_str(v: &OwnedDataValue) -> Cow<'_, str> {
+pub(crate) fn plain_str(v: &OwnedDataValue) -> Cow<'_, str> {
     match v {
         OwnedDataValue::String(s) => Cow::Borrowed(s),
         other => Cow::Owned(other.to_string()),
@@ -397,7 +400,7 @@ pub fn plain_str(v: &OwnedDataValue) -> Cow<'_, str> {
 ///
 /// A [`ErrorClass::CallerInput`] error for a negative or non-finite number,
 /// one past `u64::MAX`, or a value that is not a number.
-pub fn template_u64(v: &OwnedDataValue, label: &str) -> Result<u64, HandlerError> {
+pub(crate) fn template_u64(v: &OwnedDataValue, label: &str) -> Result<u64, HandlerError> {
     let read = match v {
         OwnedDataValue::Number(n) => {
             let f = n.as_f64();

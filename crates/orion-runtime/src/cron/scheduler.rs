@@ -131,9 +131,18 @@ pub async fn reconcile_once(deps: &ReconcileDeps) -> Result<(), crate::errors::O
         }
     }
 
-    deps.status
-        .set_oldest_pending_secs(deps.repo.oldest_pending_age_secs().await?);
-    crate::metrics::set_cron_pending_occurrences(deps.repo.pending_count(None).await? as f64);
+    // P-23: the two gauges are two more reads of the occurrence ledger every
+    // tick. They are a monitor, not a control, so sampling one pass in ten is
+    // plenty; the reconcile itself still runs every tick.
+    static GAUGE_PASS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    if GAUGE_PASS
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        .is_multiple_of(10)
+    {
+        deps.status
+            .set_oldest_pending_secs(deps.repo.oldest_pending_age_secs().await?);
+        crate::metrics::set_cron_pending_occurrences(deps.repo.pending_count(None).await? as f64);
+    }
     crate::metrics::record_cron_reconcile_duration(started.elapsed().as_secs_f64());
     Ok(())
 }

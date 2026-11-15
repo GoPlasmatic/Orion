@@ -87,7 +87,7 @@ fn is_plain_fragment(fragment: &Fragment) -> bool {
 // duplication.fragment_available
 // ============================================================
 
-pub struct FragmentAvailable;
+pub(crate) struct FragmentAvailable;
 
 impl Rule for FragmentAvailable {
     fn id(&self) -> &'static str {
@@ -287,11 +287,11 @@ fn use_step(first: &Value, fragment: &str, with: &Map<String, Value>) -> String 
 // duplication.repeated_task_sequence
 // ============================================================
 
-pub struct RepeatedTaskSequence;
+pub(crate) struct RepeatedTaskSequence;
 
 impl RepeatedTaskSequence {
-    pub const MIN_TASKS: usize = 2;
-    pub const MIN_OCCURRENCES: usize = 3;
+    pub(crate) const MIN_TASKS: usize = 2;
+    pub(crate) const MIN_OCCURRENCES: usize = 3;
 }
 
 impl Rule for RepeatedTaskSequence {
@@ -431,11 +431,11 @@ fn split_index(path: &str) -> (String, usize) {
 // duplication.repeated_value
 // ============================================================
 
-pub struct RepeatedValue;
+pub(crate) struct RepeatedValue;
 
 impl RepeatedValue {
-    pub const MIN_KEYS: usize = 2;
-    pub const MIN_OCCURRENCES: usize = 3;
+    pub(crate) const MIN_KEYS: usize = 2;
+    pub(crate) const MIN_OCCURRENCES: usize = 3;
 }
 
 impl Rule for RepeatedValue {

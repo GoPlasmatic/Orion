@@ -268,7 +268,7 @@ const ENVELOPE_KEYS: [&str; 8] = [
 ///
 /// `params` are the already-message-resolved named values (`{"param": name}` in
 /// `values`/`set`/`filter` fold to these); `reg` is the optional inline schema.
-pub fn resolve_write(
+pub(crate) fn resolve_write(
     input: &Json,
     params: &Params,
     reg: &EntityRegistry,

@@ -141,14 +141,18 @@ impl Execution {
 }
 
 fn trace_options(max_snapshot_bytes: usize) -> dataflow_rs::observe::TraceOptions {
-    let redact = ["metadata.headers", "metadata.cookies", "metadata.oauth"]
-        .into_iter()
-        .filter_map(|p| p.parse().ok())
-        .collect();
+    // Parsed once for the process: this runs on every traced request (P-16).
+    static REDACT: std::sync::LazyLock<Vec<dataflow_rs::expr::Path>> =
+        std::sync::LazyLock::new(|| {
+            ["metadata.headers", "metadata.cookies", "metadata.oauth"]
+                .into_iter()
+                .filter_map(|p| p.parse().ok())
+                .collect()
+        });
     let mut opts = dataflow_rs::observe::TraceOptions::default()
         .timings(true)
         .changes(true)
-        .redact(redact);
+        .redact(REDACT.clone());
     if max_snapshot_bytes > 0 {
         opts = opts.max_bytes(max_snapshot_bytes);
     }
@@ -171,7 +175,7 @@ fn trace_options(max_snapshot_bytes: usize) -> dataflow_rs::observe::TraceOption
 /// persisted result is the whole message, `payload` included — both read
 /// after tasks have changed `data`. Dropping either half would change what
 /// those see.
-pub fn serving_message(data: &Value, metadata: &Value) -> dataflow_rs::Message {
+pub(crate) fn serving_message(data: &Value, metadata: &Value) -> dataflow_rs::Message {
     use dataflow_rs::datavalue::OwnedDataValue;
     let data = OwnedDataValue::from(data);
     dataflow_rs::Message::from_parts(data.clone(), data, OwnedDataValue::from(metadata))

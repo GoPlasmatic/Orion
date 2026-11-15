@@ -34,7 +34,7 @@ use crate::errors::OrionError;
 pub const MAX_NAMESPACES: usize = 8;
 
 /// Longest namespace name.
-pub const MAX_NAMESPACE_LEN: usize = 64;
+pub(crate) const MAX_NAMESPACE_LEN: usize = 64;
 
 /// The key a namespace's version counter lives under, in every response-cache
 /// store. Documented: in a cluster it is a row of the shared store an

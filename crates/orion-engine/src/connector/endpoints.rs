@@ -29,7 +29,8 @@ use orion_common::ssrf::validate_hostport_not_private;
 /// file rather than a socket — it is allowed because a single-node SQLite
 /// connector is a supported shape, and it is skipped by the runtime address
 /// check because there is no host to judge.
-pub const DB_SQL_SCHEMES: &[&str] = &["postgres", "postgresql", "mysql", "mariadb", "sqlite"];
+pub(crate) const DB_SQL_SCHEMES: &[&str] =
+    &["postgres", "postgresql", "mysql", "mariadb", "sqlite"];
 
 /// Default port per scheme, for connection strings that omit one. Used only to
 /// build the address the private-IP check judges; the driver applies its own

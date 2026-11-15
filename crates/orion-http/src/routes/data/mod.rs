@@ -387,7 +387,7 @@ pub(crate) async fn dynamic_handler(
     let guard_verdict = match guards::apply_guards(guards::GuardRequest {
         transport,
         channel: &channel,
-        runtime: &channel_runtime,
+        runtime: &channel_config,
         context: &mut guard_context,
         exprs: &state.exprs,
         origin: headers.get("origin").and_then(|v| v.to_str().ok()),

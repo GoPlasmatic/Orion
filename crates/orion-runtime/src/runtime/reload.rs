@@ -104,8 +104,8 @@ pub async fn reconcile_deployment_revision(
 /// What one manifest's members build into: the rows the generation builder
 /// reads, and the plugin components by digest.
 struct ManifestDefinitions {
-    channels: Vec<crate::storage::models::Channel>,
-    workflows: Vec<crate::storage::models::Workflow>,
+    channels: Vec<crate::engine::Channel>,
+    workflows: Vec<crate::engine::Workflow>,
     plugins: Vec<crate::plugin::DeployedPlugin>,
     plugin_components: std::collections::HashMap<String, Vec<u8>>,
     /// The connection revisions each channel member requires, by channel id.
@@ -129,13 +129,13 @@ struct ManifestDefinitions {
 /// [`ChannelDriver::validate_set`]: crate::extensions::ChannelDriver::validate_set
 fn refuse_conflicting_channels(
     state: &AppState,
-    channels: &[crate::storage::models::Channel],
+    channels: &[crate::engine::Channel],
     required: &std::collections::BTreeMap<String, Vec<(String, u64)>>,
 ) -> Result<(), crate::errors::OrionError> {
     let drivers = state.composition.channels();
     let mut details = Vec::new();
     for protocol in drivers.protocol_ids() {
-        let of_protocol: Vec<&crate::storage::models::Channel> =
+        let of_protocol: Vec<&crate::engine::Channel> =
             channels.iter().filter(|c| c.protocol == protocol).collect();
         let Some(driver) = drivers.get(&protocol) else {
             continue;
@@ -495,7 +495,7 @@ async fn workflow_package_serves(
 /// `{mount}{route}`, and a platform route there wins, so the channel would
 /// never run (#279) — only the `"/"` mount can produce one.
 fn refuse_route_collisions(
-    channels: &[crate::storage::models::Channel],
+    channels: &[crate::engine::Channel],
     drivers: &crate::extensions::ChannelDriverRegistry,
     data_mounts: &[String],
 ) -> Result<(), crate::errors::OrionError> {
@@ -897,13 +897,27 @@ struct EngineHalf {
     issues: Vec<crate::channel::ChannelLoadIssue>,
 }
 
+/// Run CPU-heavy compilation without monopolising a multi-thread Tokio
+/// worker. A current-thread runtime (some tests) cannot `block_in_place`, so
+/// it runs the closure directly.
+fn compile_blocking<T>(f: impl FnOnce() -> T) -> T {
+    use tokio::runtime::RuntimeFlavor;
+    if tokio::runtime::Handle::try_current()
+        .is_ok_and(|handle| handle.runtime_flavor() == RuntimeFlavor::MultiThread)
+    {
+        tokio::task::block_in_place(f)
+    } else {
+        f()
+    }
+}
+
 /// Compile `workflows` into the engine a generation following `current`
 /// would serve. Builds nothing `current` holds and publishes nothing.
 async fn compile_engine(
     state: &AppState,
     current: &super::RuntimeGeneration,
-    channels: &[crate::storage::models::Channel],
-    workflows: &[crate::storage::models::Workflow],
+    channels: &[crate::engine::Channel],
+    workflows: &[crate::engine::Workflow],
     plugin_rows: Vec<crate::plugin::DeployedPlugin>,
     plugin_components: &std::collections::HashMap<String, Vec<u8>>,
 ) -> Result<EngineHalf, crate::errors::OrionError> {
@@ -941,20 +955,27 @@ async fn compile_engine(
                 })?,
         );
         let compiler = plugin_compiler(state, &plugins);
-        let loaded = crate::engine::build_engine_workflows(
-            channels,
-            workflows,
-            &crate::engine::EngineLoad {
-                compiler: &compiler,
-                plugins: &*plugins,
-            },
-        );
-        let engine = crate::engine::serving_engine(compiler.link(loaded.workflows));
+        // P-24: compiling every workflow is CPU work; on a multi-thread
+        // runtime `block_in_place` lets the remaining tasks move to another
+        // worker instead of stalling the data plane behind this one.
+        let (issues, engine) = compile_blocking(|| {
+            let loaded = crate::engine::build_engine_workflows(
+                channels,
+                workflows,
+                &crate::engine::EngineLoad {
+                    compiler: &compiler,
+                    plugins: &*plugins,
+                },
+            );
+            let program = compiler.link(loaded.workflows);
+            let engine = crate::engine::serving_engine(program);
+            (loaded.issues, engine)
+        });
         EngineHalf {
             engine,
             functions,
             plugins,
-            issues: loaded.issues,
+            issues,
         }
     } else {
         // The running engine's compiler: its registry, so a reload that
@@ -967,25 +988,28 @@ async fn compile_engine(
         } else {
             current.engine.compiler()
         };
-        let loaded = crate::engine::build_engine_workflows(
-            channels,
-            workflows,
-            &crate::engine::EngineLoad {
-                compiler: &compiler,
-                plugins: &*current.plugins,
-            },
-        );
-        let program = compiler.link(loaded.workflows);
-        let engine = if boot {
-            crate::engine::serving_engine(program)
-        } else {
-            current.engine.with_program(program)
-        };
+        let (issues, engine) = compile_blocking(|| {
+            let loaded = crate::engine::build_engine_workflows(
+                channels,
+                workflows,
+                &crate::engine::EngineLoad {
+                    compiler: &compiler,
+                    plugins: &*current.plugins,
+                },
+            );
+            let program = compiler.link(loaded.workflows);
+            let engine = if boot {
+                crate::engine::serving_engine(program)
+            } else {
+                current.engine.with_program(program)
+            };
+            (loaded.issues, engine)
+        });
         EngineHalf {
             engine,
             functions: current.functions.clone(),
             plugins: current.plugins.clone(),
-            issues: loaded.issues,
+            issues,
         }
     };
     Ok(half)

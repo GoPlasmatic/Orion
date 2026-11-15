@@ -28,13 +28,13 @@ fn catalogue() -> &'static std::collections::BTreeMap<String, dataflow_rs::expr:
 
 /// Whether later arguments can read a rebound element rather than the context.
 /// Unknown operators are conservative, so an analysis cannot prove a false read.
-pub fn is_scoping(op: &str) -> bool {
+pub(crate) fn is_scoping(op: &str) -> bool {
     catalogue().get(op).is_none_or(|op| op.scoping)
 }
 
 /// Secrets depend on the engine's store, even though their reads are deterministic.
 /// They must never be evaluated by an offline rule with an empty store.
-pub fn is_nondeterministic(op: &str) -> bool {
+pub(crate) fn is_nondeterministic(op: &str) -> bool {
     catalogue().get(op).is_none_or(|op| {
         !op.deterministic || op.family == dataflow_rs::expr::OperatorFamily::Secret
     })

@@ -14,8 +14,11 @@
 //! [`crate::storage::DbPool`] wraps the same three pools behind a dispatch
 //! macro, for Orion's own database; this is the connector-side twin.
 
+use std::collections::HashMap;
+use std::sync::RwLock;
 use std::time::Duration;
 
+use sha2::{Digest, Sha256};
 use sqlx::mysql::MySqlPoolOptions;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -116,6 +119,10 @@ pub struct SqlPoolCache {
     cache: LruCache<SqlPool>,
     sqlite_root: std::path::PathBuf,
     sqlite_state_db: Option<std::path::PathBuf>,
+    /// The identity digest of each connector's config, with the connector
+    /// registry generation it was computed for. A lookup the generation still
+    /// matches is a read lock and no serialization (P-01).
+    digests: RwLock<HashMap<String, (u64, [u8; 32])>>,
 }
 
 impl SqlPoolCache {
@@ -127,6 +134,7 @@ impl SqlPoolCache {
         Self {
             sqlite_root: root.into(),
             sqlite_state_db: None,
+            digests: RwLock::new(HashMap::new()),
             // F17: close evicted pools on a detached task — new acquires on
             // the closed pool fail fast, in-flight queries finish, and the
             // TCP connections are returned instead of counting against the
@@ -144,64 +152,119 @@ impl SqlPoolCache {
         self
     }
 
+    /// [`Self::get_pool`] for a caller that knows the connector registry
+    /// generation its config came from. The digest is cached per generation,
+    /// so a request path computes it once per reload rather than once per
+    /// query (P-01).
+    pub async fn get_pool_for_generation(
+        &self,
+        connector_name: &str,
+        config: &DbConnectorConfig,
+        generation: u64,
+    ) -> Result<SqlPool, OrionError> {
+        // Read, then drop the guard before a possible write: holding a read
+        // guard while taking the write guard on the same `RwLock` deadlocks.
+        let cached = {
+            let digests = self
+                .digests
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            digests.get(connector_name).copied()
+        };
+        let digest = match cached {
+            Some((at, digest)) if at == generation => digest,
+            _ => {
+                let serialized = serde_json::to_vec(config).map_err(|e| {
+                    OrionError::internal_from("Cannot identify connection settings", e)
+                })?;
+                let digest: [u8; 32] = Sha256::digest(&serialized).into();
+                self.digests
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(connector_name.to_string(), (generation, digest));
+                digest
+            }
+        };
+
+        let max_conns = config.max_connections.unwrap_or(5);
+        let connect_timeout = config.connect_timeout_ms.unwrap_or(5000);
+        self.cache
+            .get_or_create_with_digest(connector_name, digest, || async move {
+                self.open_pool(connector_name, config, max_conns, connect_timeout)
+                    .await
+            })
+            .await
+    }
+
     /// Get or lazily create a pool for the named connector.
     pub async fn get_pool(
         &self,
         connector_name: &str,
         config: &DbConnectorConfig,
     ) -> Result<SqlPool, OrionError> {
-        let conn_str = config.connection_string.clone();
         let max_conns = config.max_connections.unwrap_or(5);
         let connect_timeout = config.connect_timeout_ms.unwrap_or(5000);
 
         self.cache
             .get_or_create_versioned(connector_name, config, || async move {
-                // S6: refuse a private/internal target before dialling. Only on
-                // the create path — a cached pool was checked when it was
-                // opened, and re-resolving per query would put a DNS round trip
-                // on the hot path.
-                crate::connector::endpoints::check_db_endpoint(connector_name, config).await?;
-
-                let timeout = Duration::from_millis(connect_timeout);
-                // The same classifier the server's own `[storage]` URL goes
-                // through, so a connector and the state database agree on what
-                // `postgres://` means.
-                let pool = match crate::storage::detect_backend(&conn_str)? {
-                    crate::storage::DbBackend::Postgres => SqlPool::Postgres(
-                        PgPoolOptions::new()
-                            .max_connections(max_conns)
-                            .acquire_timeout(timeout)
-                            .connect(&conn_str)
-                            .await
-                            .map_err(|e| connect_failed(connector_name, e))?,
-                    ),
-                    crate::storage::DbBackend::Mysql => SqlPool::MySql(
-                        MySqlPoolOptions::new()
-                            .max_connections(max_conns)
-                            .acquire_timeout(timeout)
-                            .connect(&conn_str)
-                            .await
-                            .map_err(|e| connect_failed(connector_name, e))?,
-                    ),
-                    crate::storage::DbBackend::Sqlite => SqlPool::Sqlite(
-                        SqlitePoolOptions::new()
-                            .max_connections(max_conns)
-                            .acquire_timeout(timeout)
-                            .connect_with(
-                                super::sqlite_target::confined_options_with_state_db(
-                                    &self.sqlite_root,
-                                    &conn_str,
-                                    self.sqlite_state_db.as_deref(),
-                                )
-                                .map_err(|e| OrionError::validation(e.to_string()))?,
-                            )
-                            .await
-                            .map_err(|e| connect_failed(connector_name, e))?,
-                    ),
-                };
-                Ok(pool)
+                self.open_pool(connector_name, config, max_conns, connect_timeout)
+                    .await
             })
             .await
+    }
+
+    async fn open_pool(
+        &self,
+        connector_name: &str,
+        config: &DbConnectorConfig,
+        max_conns: u32,
+        connect_timeout: u64,
+    ) -> Result<SqlPool, OrionError> {
+        // Cloned here, on the create path only: a cache hit never pays for it.
+        let conn_str = config.connection_string.clone();
+        // S6: refuse a private/internal target before dialling. Only on the
+        // create path — a cached pool was checked when it was opened, and
+        // re-resolving per query would put a DNS round trip on the hot path.
+        crate::connector::endpoints::check_db_endpoint(connector_name, config).await?;
+
+        let timeout = Duration::from_millis(connect_timeout);
+        // The same classifier the server's own `[storage]` URL goes through,
+        // so a connector and the state database agree on what `postgres://`
+        // means.
+        let pool = match crate::storage::detect_backend(&conn_str)? {
+            crate::storage::DbBackend::Postgres => SqlPool::Postgres(
+                PgPoolOptions::new()
+                    .max_connections(max_conns)
+                    .acquire_timeout(timeout)
+                    .connect(&conn_str)
+                    .await
+                    .map_err(|e| connect_failed(connector_name, e))?,
+            ),
+            crate::storage::DbBackend::Mysql => SqlPool::MySql(
+                MySqlPoolOptions::new()
+                    .max_connections(max_conns)
+                    .acquire_timeout(timeout)
+                    .connect(&conn_str)
+                    .await
+                    .map_err(|e| connect_failed(connector_name, e))?,
+            ),
+            crate::storage::DbBackend::Sqlite => SqlPool::Sqlite(
+                SqlitePoolOptions::new()
+                    .max_connections(max_conns)
+                    .acquire_timeout(timeout)
+                    .connect_with(
+                        super::sqlite_target::confined_options_with_state_db(
+                            &self.sqlite_root,
+                            &conn_str,
+                            self.sqlite_state_db.as_deref(),
+                        )
+                        .map_err(|e| OrionError::validation(e.to_string()))?,
+                    )
+                    .await
+                    .map_err(|e| connect_failed(connector_name, e))?,
+            ),
+        };
+        Ok(pool)
     }
 
     /// Evict a cached pool (e.g., when connector config changes).
@@ -240,16 +303,19 @@ impl orion_extension_api::ConnectionPoolCache for SqlPoolCache {
 /// PostgreSQL does not — it uses `RETURNING`. Under `sqlx::Any` this was
 /// flattened into one method that answered `0` on Postgres, so
 /// `last_insert_id` looked answered and was not.
+#[doc(hidden)]
 pub fn pg_write_result(r: &sqlx::postgres::PgQueryResult) -> (u64, Option<i64>) {
     (r.rows_affected(), None)
 }
 
+#[doc(hidden)]
 pub fn mysql_write_result(r: &sqlx::mysql::MySqlQueryResult) -> (u64, Option<i64>) {
     // `u64` on the wire; the values that fit an `i64` are every id a real
     // table reaches, and JSON has no wider integer anyway.
     (r.rows_affected(), i64::try_from(r.last_insert_id()).ok())
 }
 
+#[doc(hidden)]
 pub fn sqlite_write_result(r: &sqlx::sqlite::SqliteQueryResult) -> (u64, Option<i64>) {
     (r.rows_affected(), Some(r.last_insert_rowid()))
 }

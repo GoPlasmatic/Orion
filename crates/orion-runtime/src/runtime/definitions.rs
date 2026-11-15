@@ -18,9 +18,10 @@ use orion_api::v2::{
     ChannelDefinition, Definition, PluginDefinition, WorkflowDefinition, WorkflowOnFailure,
 };
 
+use crate::engine::{Channel, Workflow};
 use crate::errors::OrionError;
 use crate::plugin::DeployedPlugin;
-use crate::storage::models::{Channel, EntityStatus, Workflow};
+use crate::storage::models::EntityStatus;
 
 /// The bytes the artifact store holds for `definition`: keys sorted at every
 /// depth, compact. Not the package-manifest encoder, which refuses booleans,

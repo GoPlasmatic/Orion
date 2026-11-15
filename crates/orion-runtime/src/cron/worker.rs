@@ -241,7 +241,7 @@ async fn attempt(deps: &WorkerDeps, occurrence: &CronOccurrence) -> Result<(), A
     });
 
     let timeout_ms = crate::channel::guards::effective_timeout_ms(
-        &Some(runtime.clone()),
+        &runtime,
         Some(deps.config.default_timeout_ms),
         // A default, not a ceiling: a cron worker occupies only its own slot,
         // unlike an async worker holding one of a fixed pool. A channel that genuinely needs six hours
@@ -516,7 +516,7 @@ async fn execute(
     let admission = crate::channel::guards::admit(crate::channel::guards::GuardRequest {
         transport: crate::channel::guards::Transport::Cron,
         channel,
-        runtime: &Some(runtime.clone()),
+        runtime: runtime.as_ref(),
         context: &mut message,
         exprs: &deps.exprs,
         origin: None,

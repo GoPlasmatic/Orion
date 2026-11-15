@@ -502,10 +502,10 @@ impl CronRepository for SqlCronRepository {
         orion_common::metrics::timed_db_op("cron.db_now", async {
             let (sql, values) =
                 build_sqlx(self.pool.backend(), Query::select().expr(self.now_expr()));
-            self.pool
+            Ok(self
+                .pool
                 .fetch_scalar::<NaiveDateTime>(&sql, values)
-                .await
-                .map_err(OrionError::Storage)
+                .await?)
         })
         .await
     }
@@ -683,12 +683,12 @@ impl CronRepository for SqlCronRepository {
                         .await?)
                 }
                 DbBackend::Mysql => {
-                    let mut tx = self.pool.begin_tx().await.map_err(OrionError::Storage)?;
+                    let mut tx = self.pool.begin_tx().await?;
                     let (sql, values) =
                         build_sqlx(backend, &mut claim_select_query(req.limit, now));
                     let rows: Vec<CronOccurrence> = tx.fetch_all_as(&sql, values).await?;
                     if rows.is_empty() {
-                        tx.commit().await.map_err(OrionError::Storage)?;
+                        tx.commit().await?;
                         return Ok(rows);
                     }
                     let (sql, values) = build_sqlx(
@@ -700,7 +700,7 @@ impl CronRepository for SqlCronRepository {
                         ),
                     );
                     tx.execute_query(&sql, values).await?;
-                    tx.commit().await.map_err(OrionError::Storage)?;
+                    tx.commit().await?;
                     // The pre-UPDATE rows, with the fields the caller needs
                     // corrected to what the UPDATE wrote — the same read-back
                     // avoidance the DLQ takes, except that `attempt` is
@@ -735,11 +735,7 @@ impl CronRepository for SqlCronRepository {
             // `begin_write_tx` rather than `begin_tx`: this reads the singleton
             // row before it writes one, which is exactly the shape SQLite needs
             // an immediate transaction for (D30).
-            let mut tx = self
-                .pool
-                .begin_write_tx()
-                .await
-                .map_err(OrionError::Storage)?;
+            let mut tx = self.pool.begin_write_tx().await?;
 
             let mut held = None;
             if let Some(singleton) = singleton.as_ref() {
@@ -823,7 +819,7 @@ impl CronRepository for SqlCronRepository {
                 drop(tx);
                 return Ok(AttemptStart::Lost);
             }
-            tx.commit().await.map_err(OrionError::Storage)?;
+            tx.commit().await?;
             Ok(AttemptStart::Started { held })
         })
         .await
@@ -1114,11 +1110,7 @@ impl CronRepository for SqlCronRepository {
             let backend = self.pool.backend();
             let now = helpers::sql_now(backend);
             let grace_until = self.lease_until(grace_secs);
-            let mut tx = self
-                .pool
-                .begin_write_tx()
-                .await
-                .map_err(OrionError::Storage)?;
+            let mut tx = self.pool.begin_write_tx().await?;
 
             // `claimed_by` cleared is what fences the holder: `renew`,
             // `start_attempt` and `settle` all match on it.
@@ -1175,7 +1167,7 @@ impl CronRepository for SqlCronRepository {
                 let (sql, values) = build_sqlx(backend, &mut update);
                 tx.execute_query(&sql, values).await?;
             }
-            tx.commit().await.map_err(OrionError::Storage)?;
+            tx.commit().await?;
             self.get_by_id(id).await
         })
         .await
@@ -1241,8 +1233,7 @@ impl CronRepository for SqlCronRepository {
             let oldest: Option<NaiveDateTime> = self
                 .pool
                 .fetch_scalar::<Option<NaiveDateTime>>(&sql, values)
-                .await
-                .map_err(OrionError::Storage)?;
+                .await?;
             let Some(oldest) = oldest else {
                 return Ok(None);
             };

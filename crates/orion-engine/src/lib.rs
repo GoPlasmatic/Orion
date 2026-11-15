@@ -17,6 +17,8 @@
 //! Everything public is re-exported here, so a `crate::…` path names it
 //! without its module.
 
+#![warn(unreachable_pub)]
+
 /// Where the engine records the **code** of each failed task, for workflows
 /// that must branch on *why* a step failed (#280).
 ///
@@ -38,10 +40,10 @@
 ///
 /// Records carry `{workflow_id, task_id, code, status}` and **never a
 /// message**: see the note in Orion-docs' `src/reference/errors.md`.
-pub const ERROR_CONTEXT_PATH: &str = "metadata._orion_errors";
+pub(crate) const ERROR_CONTEXT_PATH: &str = "metadata._orion_errors";
 
 /// The bare key under `metadata`, for the ingress stamping sites.
-pub const ERROR_CONTEXT_KEY: &str = "_orion_errors";
+pub(crate) const ERROR_CONTEXT_KEY: &str = "_orion_errors";
 
 /// [`ERROR_CONTEXT_PATH`] as dataflow-rs 4's error context, keeping its
 /// default number of records: the one place Orion configures it. Every
@@ -141,7 +143,7 @@ pub fn strip_caller_reserved_metadata(metadata: &mut serde_json::Value) {
 /// whatever the caller sent. Envelope mode merges caller-supplied `metadata`
 /// wholesale, so without that a request could forge the topic prefix its own
 /// run publishes to.
-pub const VARS_KEY: &str = "vars";
+pub(crate) const VARS_KEY: &str = "vars";
 
 /// Force `metadata.vars` to the instance's declared vars.
 ///
@@ -202,6 +204,8 @@ pub mod functions;
 pub mod handlers;
 pub mod kit;
 pub mod loader;
+pub mod workflow;
+pub use workflow::{Channel, Workflow};
 pub mod observer;
 pub mod offline;
 pub mod operators;

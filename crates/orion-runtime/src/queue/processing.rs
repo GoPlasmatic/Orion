@@ -386,12 +386,15 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
     // not a default a channel may raise: a channel declaring `timeout_ms`
     // above it would otherwise hold a worker past the ceiling and starve
     // every other channel's queued work.
-    let timeout_ms = crate::channel::guards::effective_timeout_ms(
-        &channel_runtime,
-        Some(ctx.processing_timeout_ms),
-        Some(ctx.processing_timeout_ms),
-    )
-    .unwrap_or(ctx.processing_timeout_ms);
+    let timeout_ms = match channel_runtime.as_deref() {
+        Some(cfg) => crate::channel::guards::effective_timeout_ms(
+            cfg,
+            Some(ctx.processing_timeout_ms),
+            Some(ctx.processing_timeout_ms),
+        )
+        .unwrap_or(ctx.processing_timeout_ms),
+        None => ctx.processing_timeout_ms,
+    };
     let effective_trace = channel_runtime
         .as_ref()
         .map(|c| c.trace_storage)

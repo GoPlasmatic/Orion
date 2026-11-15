@@ -49,7 +49,7 @@ fn safe_url(url: &str) -> String {
 ///
 /// Fragments are not a supported shape — they are never sent on the wire — so
 /// this splits on `?` only and leaves a `#` wherever it lands.
-pub fn build_url(base: &str, path: Option<&str>) -> String {
+pub(crate) fn build_url(base: &str, path: Option<&str>) -> String {
     let (base_path, base_query) = split_query(base);
     let (task_path, task_query) = match path {
         Some(p) if !p.is_empty() => {
@@ -114,7 +114,9 @@ pub fn apply_auth(req: reqwest::RequestBuilder, auth: &AuthConfig) -> reqwest::R
 /// trip the breaker like any dependency outage); rejections and config
 /// problems are non-retryable connector detail — a credential failure is not
 /// evidence about the API's health.
-pub fn oauth_error_to_dataflow(e: crate::connector::oauth::OAuthError) -> dataflow_rs::Error {
+pub(crate) fn oauth_error_to_dataflow(
+    e: crate::connector::oauth::OAuthError,
+) -> dataflow_rs::Error {
     if e.retryable() {
         HandlerError::connector(e).into()
     } else {
@@ -193,7 +195,7 @@ pub struct EncodedBody {
 /// Workflow validation runs the same function over a *static* `body` at
 /// authoring time (see `schema::validate_input`), keeping the two layers from
 /// drifting.
-pub fn encode_body(body: &Value, format: BodyFormat) -> dataflow_rs::Result<EncodedBody> {
+pub(crate) fn encode_body(body: &Value, format: BodyFormat) -> dataflow_rs::Result<EncodedBody> {
     let encoded = match format {
         BodyFormat::Json => EncodedBody {
             bytes: serde_json::to_vec(body)

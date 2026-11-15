@@ -61,6 +61,9 @@ pub struct DataQuery<'a> {
 /// function's dependencies, borrowed.
 struct Backends<'a> {
     pool_cache: &'a SqlPoolCache,
+    /// Connector-registry generation, so the pool cache can reuse the config
+    /// digest across one reload (P-01).
+    generation: u64,
     limits: &'a crate::config::QueryConfig,
 }
 
@@ -99,7 +102,7 @@ async fn run_query(
         query::plan_sql(query, params, &registry, dialect, limits).map_err(HandlerError::from)?;
     let pool = backends
         .pool_cache
-        .get_pool(connector, db)
+        .get_pool_for_generation(connector, db, backends.generation)
         .await
         .map_err(to_connect_error)?;
     let result = if plan.count {
@@ -278,6 +281,7 @@ impl Function for DataQueryFunction {
             gate(conn, &cfg.connector)?;
             let backends = Backends {
                 pool_cache: &self.pool_cache,
+                generation: self.registry.config_generation(),
                 limits: &self.limits,
             };
             answer = Some(run_query(backends, &parsed, conn, &cfg.connector, run_deadline).await?);

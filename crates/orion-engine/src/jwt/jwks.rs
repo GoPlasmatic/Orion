@@ -53,7 +53,7 @@ pub const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 /// (the engine polls the call first) and turn the run's timeout into the
 /// task's error, which is a different response. Decided per fetch, so a
 /// rotation's second fetch is judged against the time left when it starts.
-pub fn fetch_timeout(run: Option<Instant>) -> Option<Duration> {
+pub(crate) fn fetch_timeout(run: Option<Instant>) -> Option<Duration> {
     let own = tokio::time::Instant::now() + FETCH_TIMEOUT;
     match run.map(tokio::time::Instant::from_std) {
         Some(run) if run <= own => None,

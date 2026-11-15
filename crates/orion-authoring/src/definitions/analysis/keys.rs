@@ -7,7 +7,7 @@ use serde_json::Value;
 /// A step with every `id` and `name` removed, recursively through a group's
 /// members, rendered as canonical JSON. Two steps with equal keys are
 /// interchangeable to the engine up to their ids.
-pub fn step_key(step: &Value) -> String {
+pub(crate) fn step_key(step: &Value) -> String {
     let mut stripped = step.clone();
     strip_labels(&mut stripped);
     crate::canonical::canonical_json(&stripped)
@@ -43,7 +43,7 @@ fn strip_ids(step: &mut Value) {
 }
 
 /// Canonical JSON of any value, for identity of repeated literals.
-pub fn value_key(value: &Value) -> String {
+pub(crate) fn value_key(value: &Value) -> String {
     crate::canonical::canonical_json(value)
 }
 

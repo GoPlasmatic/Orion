@@ -110,15 +110,12 @@ pub(crate) enum OnInFlight {
 /// message that *did* run but whose offset commit was lost.
 pub(super) async fn check_deduplication(
     channel: &str,
-    channel_config: &Option<Arc<ChannelRuntimeConfig>>,
+    cfg: &ChannelRuntimeConfig,
     header: HeaderLookup<'_, '_>,
     key_fallback: Option<&str>,
     owner: Option<&str>,
     on_in_flight: OnInFlight,
 ) -> Result<Option<DedupClaim>, OrionError> {
-    let Some(cfg) = channel_config else {
-        return Ok(None);
-    };
     let Some(ref dedup) = cfg.parsed_config.deduplication else {
         return Ok(None);
     };

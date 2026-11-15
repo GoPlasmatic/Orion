@@ -457,6 +457,27 @@ fn serialize_envelope(envelope: &impl serde::Serialize) -> Result<String, OrionE
         .map_err(|e| OrionError::internal_from("Failed to serialize response", e))
 }
 
+/// The clean envelope, serialized from the engine's borrowed output: no
+/// `Value` conversion, no deep copy (P-09). Field order matches
+/// `response_envelope`'s map (`data`, `errors`, `id`, `status`).
+struct BorrowedEnvelope<'a> {
+    id: &'a str,
+    data: &'a dataflow_rs::datavalue::OwnedDataValue,
+}
+
+impl serde::Serialize for BorrowedEnvelope<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+
+        let mut map = serializer.serialize_map(Some(4))?;
+        map.serialize_entry("data", self.data)?;
+        map.serialize_entry("errors", &[] as &[Value])?;
+        map.serialize_entry("id", self.id)?;
+        map.serialize_entry("status", "ok")?;
+        map.end()
+    }
+}
+
 /// The full-detail envelope — what the trace stores — serialized straight
 /// from the engine's error records.
 ///
@@ -793,17 +814,29 @@ pub(super) async fn process_sync_for_channel(
                 // content. A channel left on the default `envelope` mode never
                 // looks, which is what keeps an incidental `_orion` key in some
                 // workflow's data inert.
-                let mut data_out = Value::from(message.context().data());
+                // P-09: the workflow output is converted to a `Value` only
+                // when something will change it — shaping, the authorize leg,
+                // profile mode or a task error. The clean envelope is
+                // serialized straight from the engine's `OwnedDataValue`.
+                let shaped_cfg = channel_config
+                    .parsed_config
+                    .response
+                    .as_ref()
+                    .filter(|cfg| cfg.is_shaped());
+                let needs_owned = shaped_cfg.is_some()
+                    || oauth_authorize.is_some()
+                    || profile.is_some()
+                    || !message.errors().is_empty();
+                let mut data_out = needs_owned.then(|| Value::from(message.context().data()));
                 // #312: what the workflow declared and did not get. Empty for
                 // every channel on the default `envelope` mode, which never looks
                 // at `_orion.response` at all.
                 let mut response_drops: Vec<Value> = Vec::new();
-                let shaped = channel_config
-                    .parsed_config
-                    .response
-                    .as_ref()
-                    .filter(|cfg| cfg.is_shaped())
-                    .and_then(|cfg| drain_shaped_response(&mut data_out, cfg, &mut response_drops));
+                let shaped = data_out.as_mut().and_then(|data_out| {
+                    shaped_cfg.and_then(|cfg| {
+                        drain_shaped_response(data_out, cfg, &mut response_drops)
+                    })
+                });
                 for entry in &response_drops {
                     let field = |k: &str| {
                         entry
@@ -845,7 +878,11 @@ pub(super) async fn process_sync_for_channel(
                 let mut authorize_outcome: Option<Result<Response, OrionError>> = None;
                 if let Some(login) = oauth_authorize {
                     if shaped.is_none() {
-                        let contributed = drain_authorize_contribution(&mut data_out);
+                        let contributed = drain_authorize_contribution(
+                            data_out
+                                .as_mut()
+                                .expect("the authorize leg requires an owned payload"),
+                        );
                         // `begin` records the authorize `ok` itself, with the
                         // selected provider's label. The provider was confirmed
                         // to exist at guard time (`require_provider`), so an error
@@ -883,16 +920,23 @@ pub(super) async fn process_sync_for_channel(
                 // serialized below, and the public body overwrites the key with
                 // the sanitized list. On an error-free run the two agree — both
                 // empty — which is what the profile variant relies on.
-                let mut response = response_envelope(message.id(), data_out, Vec::new(), None);
+                let mut response = data_out
+                    .map(|data_out| response_envelope(message.id(), data_out, Vec::new(), None));
 
                 // Serialize the full-detail envelope exactly once — reused for the
                 // size check, trace storage, and (on the error-free hot path) the
                 // cache and HTTP body with no re-serialization by Axum.
-                let response_json = serialize_envelope(&FullDetailEnvelope {
-                    envelope: &response,
-                    records: message.errors(),
-                    drops: &response_drops,
-                })?;
+                let response_json = match &response {
+                    Some(response) => serialize_envelope(&FullDetailEnvelope {
+                        envelope: response,
+                        records: message.errors(),
+                        drops: &response_drops,
+                    })?,
+                    None => serialize_envelope(&BorrowedEnvelope {
+                        id: message.id(),
+                        data: message.context().data(),
+                    })?,
+                };
 
                 // G1: when workflow errors are present, the client-facing body
                 // (and the cached copy) carry sanitized entries plus a
@@ -911,6 +955,9 @@ pub(super) async fn process_sync_for_channel(
                 // an incomplete response is not written to the response cache.
                 let has_errors = !message.errors().is_empty() || !response_drops.is_empty();
                 let public_json = if has_errors {
+                    let response = response
+                        .as_mut()
+                        .expect("task errors require an owned envelope");
                     response["errors"] = Value::Array(sanitize_errors(
                         message.errors(),
                         state.config.verbose_errors(),
@@ -1079,7 +1126,8 @@ pub(super) async fn process_sync_for_channel(
                 // `_orion.task_trace`) can be added without colliding with
                 // workflow-level output keys that callers control.
                 if let Some(ref p) = profile {
-                    let mut response_with_profile = response;
+                    let mut response_with_profile =
+                        response.expect("profile mode requires an owned envelope");
                     response_with_profile["_orion"] = json!({ "profile": p.to_json() });
                     return Ok(json_response(
                         StatusCode::OK,

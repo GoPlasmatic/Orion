@@ -16,8 +16,8 @@ use crate::channel::{
 };
 use crate::config::TraceStorageConfig;
 use crate::connector::cache_backend::CacheBackend;
+use crate::engine::Channel;
 use crate::errors::OrionError;
-use crate::storage::models::Channel;
 
 /// Dedup-store stub with a fixed `claim_dedup_key` outcome.
 enum StubOutcome {
@@ -353,7 +353,7 @@ impl Runtime {
         self
     }
 
-    fn build(self) -> Option<Arc<ChannelRuntimeConfig>> {
+    fn build(self) -> Arc<ChannelRuntimeConfig> {
         let now = chrono::Utc::now().naive_utc();
         let cache_flights = self
             .parsed_config
@@ -361,7 +361,7 @@ impl Runtime {
             .as_ref()
             .filter(|c| c.coalesce_misses)
             .map(|_| Arc::new(super::response_cache::CacheFlights::default()));
-        Some(Arc::new(ChannelRuntimeConfig {
+        Arc::new(ChannelRuntimeConfig {
             channel: Channel {
                 tags_json: "[]".to_string(),
                 channel_id: "ch_test".to_string(),
@@ -398,18 +398,18 @@ impl Runtime {
             trace_storage: EffectiveTraceConfig::resolve(&TraceStorageConfig::default(), None),
             auth: self.auth,
             oauth2_login: None,
-        }))
+        })
     }
 }
 
-fn dedup_runtime(outcome: StubOutcome) -> Option<Arc<ChannelRuntimeConfig>> {
+fn dedup_runtime(outcome: StubOutcome) -> Arc<ChannelRuntimeConfig> {
     dedup_runtime_with_policy(outcome, BackendErrorPolicy::Allow)
 }
 
 fn dedup_runtime_with_policy(
     outcome: StubOutcome,
     policy: BackendErrorPolicy,
-) -> Option<Arc<ChannelRuntimeConfig>> {
+) -> Arc<ChannelRuntimeConfig> {
     Runtime::new()
         .dedup(Arc::new(StubDedupBackend { outcome }), policy)
         .build()
@@ -530,7 +530,7 @@ fn the_readers_answer_as_they_did_over_json() {
 /// as one owned [`GuardContext`]. Test-only, and a few bytes per call.
 fn request<'a>(
     transport: Transport,
-    runtime: &'a Option<Arc<ChannelRuntimeConfig>>,
+    runtime: &'a ChannelRuntimeConfig,
     exprs: &'a ExprEngine,
     data: &'a Value,
     metadata: &'a Value,
@@ -882,7 +882,7 @@ async fn the_channel_timeout_outranks_the_transport_default() {
     );
     assert_eq!(effective_timeout_ms(&without, None, None), None);
     assert_eq!(
-        effective_timeout_ms(&None, Some(60_000), None),
+        effective_timeout_ms(&without, Some(60_000), None),
         Some(60_000)
     );
 }
@@ -2118,8 +2118,8 @@ async fn coalesced_misses_wait_for_the_leader_and_share_its_entry() {
     let leader = admitted(lookup().await).expect("the first miss leads");
     assert!(leader.cache_store.is_some());
     let flights = runtime
-        .as_ref()
-        .and_then(|r| r.cache_flights.clone())
+        .cache_flights
+        .clone()
         .expect("coalescing builds a flight table");
     assert_eq!(flights.in_flight(), 1);
 
@@ -2245,12 +2245,7 @@ async fn a_cache_hit_takes_no_backpressure_permit() {
         assert!(matches!(verdict, GuardVerdict::CacheHit(_)));
     }
     // The single permit is still free.
-    let semaphore = runtime
-        .as_ref()
-        .expect("runtime")
-        .backpressure_semaphore
-        .as_ref()
-        .expect("semaphore");
+    let semaphore = runtime.backpressure_semaphore.as_ref().expect("semaphore");
     assert_eq!(semaphore.available_permits(), 1);
 }
 

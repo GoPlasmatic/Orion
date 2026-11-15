@@ -47,6 +47,9 @@ pub struct DataWrite<'a> {
 /// held to: the handler's or the function's, borrowed.
 struct Backends<'a> {
     pool_cache: &'a SqlPoolCache,
+    /// Connector-registry generation, so the pool cache can reuse the config
+    /// digest across one reload (P-01).
+    generation: u64,
     write_config: &'a crate::config::WriteConfig,
     max_returning: usize,
 }
@@ -88,7 +91,7 @@ async fn run_write(
         query::backend::sql::render_write(&resolved, dialect).map_err(HandlerError::from)?;
     let pool = backends
         .pool_cache
-        .get_pool(connector, db)
+        .get_pool_for_generation(connector, db, backends.generation)
         .await
         .map_err(to_connect_error)?;
     execute_sql(
@@ -238,6 +241,7 @@ impl Function for DataWriteFunction {
             )?;
             let backends = Backends {
                 pool_cache: &self.pool_cache,
+                generation: self.registry.config_generation(),
                 write_config: &self.write_config,
                 max_returning: self.max_returning,
             };

@@ -195,7 +195,7 @@ pub fn apply(
 /// Fold the run in a compiled workflow. The checks that need the whole
 /// workflow — the new id is free, the depth fits — are made here, on the
 /// form the engine will parse.
-pub fn fold_value(doc: &mut Value, fix: &Fix) -> Result<(), Refusal> {
+pub(crate) fn fold_value(doc: &mut Value, fix: &Fix) -> Result<(), Refusal> {
     let Fix::FoldRun { members, group_id } = fix;
     // One id namespace across a loop's `setup` and the body, as the engine
     // checks it.
@@ -316,7 +316,7 @@ fn find_run<'a>(ids: impl Iterator<Item = Option<&'a str>>, members: &[String]) 
 /// author wrote steps — the workflow's `tasks`, its loop's `setup`, and each
 /// group's — never
 /// inside a `use` step, and a run holding a `use` or an `$each` is not one.
-pub fn fold_source(root: &mut Node, fix: &Fix) -> Result<(), Refusal> {
+pub(crate) fn fold_source(root: &mut Node, fix: &Fix) -> Result<(), Refusal> {
     let Fix::FoldRun { members, group_id } = fix;
     let not_here = || Refusal::NotAuthoredHere {
         members: members.clone(),

@@ -1,5 +1,5 @@
 use orion_common::sync::LockExt;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -32,7 +32,60 @@ pub struct PartitionedMemoryCache {
     max_partitions: usize,
     max_value_bytes: usize,
     next_seq: AtomicU64,
-    partitions: Mutex<BTreeMap<EffectiveConnectionIdentity, BTreeMap<String, CacheEntry>>>,
+    partitions: Mutex<BTreeMap<EffectiveConnectionIdentity, Partition>>,
+}
+
+/// One identity's entries, with a FIFO index so eviction is O(1) rather than
+/// a scan of every entry (P-26). The index may hold keys already removed;
+/// eviction skips them lazily.
+#[derive(Default)]
+struct Partition {
+    entries: BTreeMap<String, CacheEntry>,
+    order: VecDeque<String>,
+}
+
+impl Partition {
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+    fn contains_key(&self, key: &str) -> bool {
+        self.entries.contains_key(key)
+    }
+    fn get(&self, key: &str) -> Option<&CacheEntry> {
+        self.entries.get(key)
+    }
+    fn remove(&mut self, key: &str) -> Option<CacheEntry> {
+        self.entries.remove(key)
+    }
+    fn insert(&mut self, key: String, entry: CacheEntry) {
+        if self.entries.insert(key.clone(), entry).is_none() {
+            self.order.push_back(key);
+        }
+    }
+    fn retain(&mut self, mut f: impl FnMut(&String, &CacheEntry) -> bool) {
+        self.entries.retain(|k, v| f(k, v));
+        let entries = &self.entries;
+        self.order.retain(|k| entries.contains_key(k));
+    }
+    /// The oldest live key, dropping stale index entries on the way.
+    fn pop_oldest(&mut self) -> Option<String> {
+        while let Some(front) = self.order.front() {
+            if self.entries.contains_key(front) {
+                let front = front.clone();
+                self.order.pop_front();
+                return Some(front);
+            }
+            self.order.pop_front();
+        }
+        None
+    }
+    /// The oldest insertion sequence still stored, for partition eviction.
+    fn oldest_seq(&self) -> Option<u64> {
+        self.entries.values().map(|e| e.inserted_seq).min()
+    }
 }
 
 impl PartitionedMemoryCache {
@@ -102,9 +155,7 @@ impl PartitionedMemoryCache {
             if guard.len() >= self.max_partitions
                 && let Some(oldest_partition_key) = guard
                     .iter()
-                    .min_by_key(|(_, part)| {
-                        part.values().map(|e| e.inserted_seq).min().unwrap_or(0)
-                    })
+                    .min_by_key(|(_, part)| part.oldest_seq().unwrap_or(0))
                     .map(|(k, _)| k.clone())
             {
                 guard.remove(&oldest_partition_key);
@@ -120,10 +171,7 @@ impl PartitionedMemoryCache {
         // If still at capacity, evict the oldest entry (FIFO by insertion sequence).
         if partition.len() >= self.max_entries_per_partition
             && !partition.contains_key(&key)
-            && let Some(oldest_key) = partition
-                .iter()
-                .min_by_key(|(_, v)| v.inserted_seq)
-                .map(|(k, _)| k.clone())
+            && let Some(oldest_key) = partition.pop_oldest()
         {
             partition.remove(&oldest_key);
         }

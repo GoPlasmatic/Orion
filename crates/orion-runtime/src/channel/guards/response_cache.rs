@@ -275,12 +275,9 @@ pub(super) enum CacheLookup {
 pub(super) async fn check_response_cache(
     channel: &str,
     context: &super::GuardContext,
-    channel_config: &Option<Arc<ChannelRuntimeConfig>>,
+    cfg: &ChannelRuntimeConfig,
     exprs: &ExprEngine,
 ) -> CacheLookup {
-    let Some(cfg) = channel_config else {
-        return CacheLookup::Miss(None);
-    };
     let Some(ref cache_cfg) = cfg.parsed_config.cache else {
         return CacheLookup::Miss(None);
     };

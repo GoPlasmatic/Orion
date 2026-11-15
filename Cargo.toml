@@ -65,6 +65,11 @@ orion-storage = { version = "=2.0.0-rc.1", path = "crates/orion-storage" }
 orion-definitions = { version = "=2.0.0-rc.1", path = "crates/orion-definitions" }
 orion-extension-api = { version = "=2.0.0-rc.1", path = "crates/orion-extension-api" }
 orion-http = { version = "=2.0.0-rc.1", path = "crates/orion-http" }
+# Third-party specs shared by every member that names them. Feature sets are
+# the union the workspace already used, so this changes no build.
+dataflow-rs = { version = "4.0.3", features = ["datetime", "budget"] }
+toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
 
 # `cargo release <level|version>` performs a release commit: it rewrites
 # `workspace.package.version` and every `workspace.dependencies` requirement,

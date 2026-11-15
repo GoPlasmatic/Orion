@@ -57,7 +57,7 @@ impl ChannelCallTarget for ResolvedTarget {
             caller,
             default_timeout_ms,
         } = request;
-        let target_runtime = Some(Arc::clone(&self.channel));
+        let target_runtime = Arc::clone(&self.channel);
         // `validation_logic` is the one guard of this transport that reads
         // the message, as JSON; a target without one is admitted with no
         // copy of either.

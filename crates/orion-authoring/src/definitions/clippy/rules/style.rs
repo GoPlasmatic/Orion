@@ -5,7 +5,7 @@
 use crate::definitions::analysis::Analysis;
 use crate::definitions::clippy::{Diagnostic, Group, Level, Rule, Scope};
 
-pub struct TerminalOnLastStep;
+pub(crate) struct TerminalOnLastStep;
 
 impl Rule for TerminalOnLastStep {
     fn id(&self) -> &'static str {

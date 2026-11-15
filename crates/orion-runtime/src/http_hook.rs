@@ -204,7 +204,7 @@ async fn run(host: &RequestHost, data: Value, mut trigger: Map<String, Value>) -
 
     let mut context = GuardContext::new(data, metadata);
     let no_headers = |_: &str| -> Option<&str> { None };
-    let channel_runtime = Some(runtime.clone());
+    let channel_runtime = runtime.clone();
     let admission = crate::channel::guards::admit(GuardRequest {
         transport: Transport::HttpHookRun(host.guards),
         channel: &channel,

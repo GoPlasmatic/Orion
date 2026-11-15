@@ -83,7 +83,7 @@ pub(super) async fn serve(state: &DataPlane, req: Hooked<'_>) -> Result<Response
     let client_ip =
         crate::rate_limit::request_client_ip_from_parts(peer, headers, &state.trusted_proxies);
     let mut context = guards::GuardContext::new(json!({}), json!({ "channel": channel }));
-    let channel_runtime = Some(runtime.clone());
+    let channel_runtime = runtime.clone();
     let admission = guards::admit(guards::GuardRequest {
         transport: guards::Transport::HttpHook(declared),
         channel: &channel,

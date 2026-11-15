@@ -14,7 +14,7 @@ use crate::config::{TraceStorageConfig, TraceStorageMode};
 use crate::connector::ConnectorConfig;
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::{CacheBackend, CachePool, CachePurpose};
-use crate::storage::models::Channel;
+use crate::engine::Channel;
 
 /// Trace-storage policy resolved for a single channel.
 ///

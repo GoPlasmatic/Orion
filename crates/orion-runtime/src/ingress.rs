@@ -149,7 +149,7 @@ async fn dispatch(host: &Host, delivery: Delivery) -> Dispatched {
     let caller_identity = delivery
         .caller_identity
         .unwrap_or_else(|| runtime.channel.channel_id.clone());
-    let channel_runtime = Some(runtime.clone());
+    let channel_runtime = runtime.clone();
 
     // 4. The protocol's row of the guard matrix.
     let admission = crate::channel::guards::admit(GuardRequest {
@@ -341,7 +341,7 @@ fn bindings(
 /// resolver for each connection revision it requires. What reconcile hands a
 /// running driver, and what `validate_set` judges a candidate deployment by.
 pub fn binding_of(
-    channel: &crate::storage::models::Channel,
+    channel: &crate::engine::Channel,
     timeout_ms: Option<u64>,
     required: &[(String, u64)],
     deployments: &crate::extensions::ImmutableDeploymentStore,
@@ -389,7 +389,7 @@ pub fn binding_of(
 /// moved to another channel, a new workflow, rotated broker credentials —
 /// reads as a changed binding.
 fn fingerprint(
-    channel: &crate::storage::models::Channel,
+    channel: &crate::engine::Channel,
     connections: &[&orion_extension_api::EffectiveConnectionIdentity],
 ) -> String {
     let mut hasher = Sha256::new();

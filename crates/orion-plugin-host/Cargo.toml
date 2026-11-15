@@ -23,11 +23,11 @@ workspace = true
 [dependencies]
 orion-common.workspace = true
 orion-engine.workspace = true
-dataflow-rs = { version = "4.0.3", features = ["datetime", "budget"] }
+dataflow-rs.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
-toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
+toml.workspace = true
 tracing = "0.1"
 # The plugin sandbox (Orion-docs' src/concepts/plugins.md): WebAssembly Components behind the
 # `orion:plugin` WIT world. Exactly the features the runtime needs and no
