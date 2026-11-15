@@ -492,10 +492,21 @@ impl ProviderRegistry {
     /// Admit `backend` into the runtime layer. Refused when either layer
     /// already holds its `(kind, driver_id)`: an admitted package cannot
     /// shadow a composed provider, nor replace another admitted one.
-    pub fn admit(&self, backend: Arc<dyn ProviderBackend>) -> Result<(), DuplicateProvider> {
-        let key = backend.key();
+    pub fn admit(
+        &self,
+        backend: Arc<dyn ProviderBackend>,
+    ) -> Result<(), crate::extensions::CompositionError> {
+        let key = backend.key_checked().map_err(|reason| {
+            crate::extensions::CompositionError::InvalidProviderKey {
+                kind: backend.kind(),
+                driver_id: backend.driver_id().to_string(),
+                reason,
+            }
+        })?;
         if self.composed.contains(key.kind(), key.driver_id()) {
-            return Err(DuplicateProvider::from_key(&key));
+            return Err(crate::extensions::CompositionError::DuplicateProvider(
+                DuplicateProvider::from_key(&key),
+            ));
         }
         let _write = self
             .admitted
@@ -503,7 +514,8 @@ impl ProviderRegistry {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let mut next = ProviderTable::clone(&self.admitted.table.load());
-        next.insert(backend)?;
+        next.insert(backend)
+            .map_err(crate::extensions::CompositionError::DuplicateProvider)?;
         self.admitted.table.store(Arc::new(next));
         Ok(())
     }

@@ -235,11 +235,11 @@ impl CompiledAuth {
                             "auth.authorization_logic needs the shared JSONLogic engine, \
                              which this caller cannot supply",
                         )?;
-                        Some(std::sync::Arc::new(
-                            engine
-                                .compile(logic)
-                                .map_err(|e| format!("auth.authorization_logic: {e}"))?,
-                        ))
+                        Some(crate::channel::guards::compile_guard_expr(
+                            engine,
+                            logic,
+                            "auth.authorization_logic",
+                        )?)
                     }
                 };
                 let jwks = match plan.jwks_url {
@@ -306,6 +306,10 @@ impl CompiledAuth {
                         dataflow_rs::datalogic_rs::Engine::builder(),
                     )
                     .build();
+                    crate::channel::guards::refuse_multi_key_object(
+                        logic,
+                        "auth.authorization_logic",
+                    )?;
                     engine
                         .compile(logic)
                         .map_err(|e| format!("auth.authorization_logic does not compile: {e}"))?;

@@ -23,6 +23,12 @@ pub fn start(tasks: &TaskRegistry, runtime: Arc<WasmRuntime>) {
                     return;
                 }
                 runtime.increment_epoch();
+                // B-13: the live-instance gauge had a setter and no caller, so
+                // a dashboard built on `orion_plugin_live_instances` read
+                // nothing. The epoch tick is the one periodic point that
+                // already holds the runtime, and its cadence is the gauge's
+                // resolution.
+                orion_common::metrics::set_plugin_live_instances(runtime.live_instances());
             }
         }
     });

@@ -844,6 +844,40 @@ async fn test_health_serves_topology_with_admin_key() {
     assert!(body["channels"]["quarantined"].is_array());
 }
 
+/// B-05: `/health` serves topology detail only to a valid admin key, so a
+/// wrong key there is a guessing attempt. It must count against the same
+/// backoff the admin plane uses, and an absent header must stay anonymous and
+/// uncounted.
+#[tokio::test]
+async fn test_health_counts_a_wrong_key_against_the_auth_backoff() {
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_keys = vec!["test-secret-key".to_string()];
+    let app = common::test_app_with_config(config).await;
+
+    let app = app;
+    let wrong_key = || {
+        Request::builder()
+            .method("GET")
+            .uri("/health")
+            .header("Authorization", "Bearer not-the-key")
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    // Five failures reach the lockout threshold; none of them reveals detail.
+    for _ in 0..5 {
+        let resp = app.clone().oneshot(wrong_key()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        assert!(body.get("git_hash").is_none(), "body={body}");
+    }
+
+    // The next attempt is refused outright, the way the admin plane refuses.
+    let resp = app.oneshot(wrong_key()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
 #[tokio::test]
 async fn test_health_serves_topology_when_auth_disabled() {
     // Auth off = the whole admin plane is open; /health hiding detail would

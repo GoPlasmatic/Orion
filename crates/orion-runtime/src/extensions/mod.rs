@@ -351,6 +351,16 @@ impl CompositionBuilder {
         } = registrar;
         let mut table = provider_backend::ProviderTable::default();
         for backend in &backends {
+            // B-10: validate the registration key before anything keys it, so
+            // a workflow/wasm backend with a malformed edition id is a
+            // composition error rather than a panic during the build.
+            backend
+                .key_checked()
+                .map_err(|reason| CompositionError::InvalidProviderKey {
+                    kind: backend.kind(),
+                    driver_id: backend.driver_id().to_string(),
+                    reason,
+                })?;
             if backend.kind() == ImplementationKind::Rust {
                 deployments.register_composed_rust_driver(backend.driver_id());
             }
@@ -773,6 +783,52 @@ mod tests {
         }
     }
 
+    /// A workflow backend whose id is not a digest, as a careless edition
+    /// could hand one.
+    struct BadWorkflowKey;
+
+    #[async_trait::async_trait]
+    impl ProviderBackend for BadWorkflowKey {
+        fn kind(&self) -> ImplementationKind {
+            ImplementationKind::Workflow
+        }
+        fn driver_id(&self) -> &str {
+            "not-a-digest"
+        }
+        fn validate_config(&self, _: &serde_json::Value) -> Result<(), ConnectorError> {
+            Ok(())
+        }
+        async fn invoke(
+            &self,
+            _: &orion_extension_api::AttemptContext,
+            _: &str,
+            _: serde_json::Value,
+        ) -> Result<orion_extension_api::ConnectorOutput, ConnectorError> {
+            unreachable!("never invoked")
+        }
+    }
+
+    /// B-10: a malformed workflow/wasm driver id is a composition error at
+    /// the build, not a panic inside `key()` on the boot path.
+    #[test]
+    fn a_provider_key_that_is_not_a_digest_fails_the_build() {
+        let err = CompositionRoot::community()
+            .with_provider_backend(Arc::new(BadWorkflowKey))
+            .build_in_memory()
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CompositionError::InvalidProviderKey {
+                    kind: ImplementationKind::Workflow,
+                    ref driver_id,
+                    ..
+                } if driver_id == "not-a-digest"
+            ),
+            "{err:?}"
+        );
+    }
+
     fn build_declaring(schema: serde_json::Value) -> Result<Composition, CompositionError> {
         CompositionRoot::community()
             .with_provider_backend(Arc::new(Declares(schema)))
@@ -931,7 +987,13 @@ mod tests {
         let shadow = providers
             .admit(Arc::new(MemoryCacheProviderBackend::default()))
             .unwrap_err();
-        assert_eq!(shadow.driver_id, DRIVER_MEMORY_CACHE);
+        assert!(matches!(
+            shadow,
+            CompositionError::DuplicateProvider(DuplicateProvider {
+                driver_id,
+                ..
+            }) if driver_id == DRIVER_MEMORY_CACHE
+        ));
         assert!(!providers.withdraw(ImplementationKind::Rust, DRIVER_MEMORY_CACHE));
         assert!(
             providers

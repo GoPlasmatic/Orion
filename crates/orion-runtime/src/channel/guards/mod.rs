@@ -99,6 +99,58 @@ pub use dedup::DedupClaim;
 pub(crate) use rate_limit::{COMMON_KEY_HEADERS, key_logic_header_paths};
 pub use response_cache::{CacheFlights, CacheStoreCtx};
 
+/// Refuse an object with more than one key anywhere inside a channel
+/// expression.
+///
+/// N3/N4 refuse a channel whose guard config does not compile rather than
+/// serve it with a weaker control than the one configured, but a multi-key
+/// object compiles. The serving engine is dataflow-rs's, so channel
+/// expressions speak the same dialect workflow expressions do — which is what
+/// lets them read `{"secret": …}` — and it runs in **templating mode**, where a
+/// multi-key object is a legal template emitting a structured object. A typo'd
+/// `{"==": [1, 1], "!=": [1, 2]}` would compile to a truthy object and
+/// `validate_input` would then admit everything, silently — precisely the
+/// outcome N4 exists to prevent.
+///
+/// So the refusal is stated here rather than inherited from a compiler mode.
+/// Nothing is lost by it: every channel expression is a predicate or a key, and
+/// none has a reason to emit a structured object.
+pub(crate) fn refuse_multi_key_object(logic: &Value, field: &str) -> Result<(), String> {
+    match logic {
+        Value::Object(map) if map.len() > 1 => Err(format!(
+            "{field} does not compile: an object with more than one key ({}) is not an \
+             expression — an operator call has exactly one",
+            map.keys().cloned().collect::<Vec<_>>().join(", ")
+        )),
+        Value::Object(map) => map
+            .values()
+            .try_for_each(|v| refuse_multi_key_object(v, field)),
+        Value::Array(items) => items
+            .iter()
+            .try_for_each(|v| refuse_multi_key_object(v, field)),
+        _ => Ok(()),
+    }
+}
+
+/// Compile one channel guard expression: the multi-key-object refusal every
+/// guard expression needs, then the shared engine's compile.
+///
+/// One helper so every expression a channel carries — `validation_logic`, both
+/// rate-limit `key_logic`s, the cache key and `auth.authorization_logic` —
+/// gets the same refusal. Missing it on one field is what let a typo'd
+/// authorization expression authorize every token (B-01).
+pub(crate) fn compile_guard_expr(
+    engine: &ExprEngine,
+    logic: &Value,
+    field: &str,
+) -> Result<Arc<dataflow_rs::Expr>, String> {
+    refuse_multi_key_object(logic, field)?;
+    engine
+        .compile(logic)
+        .map(Arc::new)
+        .map_err(|e| format!("{field} does not compile: {e}"))
+}
+
 use admission::{acquire_backpressure, check_allowed_origin, check_auth, validate_input};
 use dedup::{OnInFlight, check_deduplication};
 use rate_limit::{check_principal_rate_limit, check_rate_limit};

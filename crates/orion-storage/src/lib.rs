@@ -670,14 +670,23 @@ where
 
 /// The migration versions already applied to `pool`, empty on a database
 /// no migration has touched.
-async fn applied_migrations(pool: &DbPool) -> std::collections::BTreeSet<i64> {
+///
+/// B-09: only "the migrations table does not exist" means nothing is applied.
+/// Every other error — a dropped connection, a permission refusal — is real
+/// and is returned, because `unwrap_or_default()` used to turn it into
+/// "N migrations pending, run `migrate`" and send the operator the wrong way.
+async fn applied_migrations(pool: &DbPool) -> Result<std::collections::BTreeSet<i64>, OrionError> {
     let sql = "SELECT version FROM _sqlx_migrations ORDER BY version";
-    let result: Result<Vec<i64>, _> = match pool {
+    let result: Result<Vec<i64>, sqlx::Error> = match pool {
         DbPool::Sqlite(p) => sqlx::query_scalar::<_, i64>(sql).fetch_all(p).await,
         DbPool::Postgres(p) => sqlx::query_scalar::<_, i64>(sql).fetch_all(p).await,
         DbPool::Mysql(p) => sqlx::query_scalar::<_, i64>(sql).fetch_all(p).await,
     };
-    result.map(|v| v.into_iter().collect()).unwrap_or_default()
+    match result {
+        Ok(versions) => Ok(versions.into_iter().collect()),
+        Err(e) if is_undefined_table(&e) => Ok(std::collections::BTreeSet::new()),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Refuse a database that holds migrations this binary does not ship.
@@ -712,7 +721,7 @@ fn refuse_unknown_migrations(
 
 /// Run pending database migrations.
 pub async fn run_migrations(pool: &DbPool) -> Result<(), OrionError> {
-    refuse_unknown_migrations(pool, &applied_migrations(pool).await)?;
+    refuse_unknown_migrations(pool, &applied_migrations(pool).await?)?;
     let m = migrator_for(pool.backend());
     match pool {
         DbPool::Sqlite(p) => m.run(p).await,
@@ -727,7 +736,7 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), OrionError> {
 
 /// List pending migrations that have not yet been applied.
 pub async fn pending_migrations(pool: &DbPool) -> Result<Vec<(i64, String)>, OrionError> {
-    let applied = applied_migrations(pool).await;
+    let applied = applied_migrations(pool).await?;
     refuse_unknown_migrations(pool, &applied)?;
 
     let pending: Vec<(i64, String)> = migrator_for(pool.backend())

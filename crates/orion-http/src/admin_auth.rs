@@ -121,6 +121,59 @@ pub(crate) const SINGLE_TRACE_PATH: &str = "/api/v2/admin/traces/{id}";
 /// The Prometheus exposition path, guarded only on a listener that serves it.
 pub(crate) const METRICS_PATH: &str = "/metrics";
 
+/// The brute-force protection shared by every surface that authenticates an
+/// admin credential — the admin middleware, the self-authenticating single
+/// trace read, and `/health`'s optional detail — so the policy (when a
+/// failure counts, what clears it) has one implementation (M-06).
+///
+/// A caller is a client address, identified through the same trusted-proxy
+/// policy the rate limiter uses, so a spoofed `X-Forwarded-For` cannot mint a
+/// fresh budget per request.
+pub(crate) struct Backoff<'a> {
+    failures: &'a orion_runtime::auth::FailedAuthTracker,
+    client: &'a str,
+    /// `/health` stays reachable and anonymous when admin auth is off; there
+    /// is nothing to guess and nothing to count.
+    enabled: bool,
+}
+
+impl<'a> Backoff<'a> {
+    pub(crate) fn new(state: &'a AppState, client: &'a str) -> Self {
+        Self {
+            failures: &state.admin_auth_failures,
+            client,
+            enabled: state.config.admin_auth.enabled,
+        }
+    }
+
+    /// The remaining lockout, recording the refusal in the metric every time
+    /// it refuses a request. `None` when the client may try.
+    pub(crate) fn locked_for(&self) -> Option<std::time::Duration> {
+        if !self.enabled {
+            return None;
+        }
+        let remaining = self.failures.locked_for(self.client)?;
+        metrics::record_admin_auth_failure("locked_out");
+        Some(remaining)
+    }
+
+    /// Record one failed attempt and return the lockout it triggered, if any.
+    pub(crate) fn failed(&self, reason: &'static str) -> Option<std::time::Duration> {
+        if !self.enabled {
+            return None;
+        }
+        metrics::record_admin_auth_failure(reason);
+        self.failures.record_failure(self.client)
+    }
+
+    /// Clear the client's history after a successful authentication.
+    pub(crate) fn succeeded(&self) {
+        if self.enabled {
+            self.failures.record_success(self.client);
+        }
+    }
+}
+
 /// Middleware that authenticates admin API requests.
 ///
 /// Attached, when `admin_auth.enabled`, to exactly the routes
@@ -137,8 +190,8 @@ pub async fn admin_auth_middleware(
     // spoofed `X-Forwarded-For` cannot mint a fresh lockout budget per request.
     let client = crate::rate_limit::request_client_ip(&req, state.trusted_proxies());
 
-    if let Some(remaining) = state.admin_auth_failures.locked_for(&client) {
-        metrics::record_admin_auth_failure("locked_out");
+    let backoff = Backoff::new(&state, &client);
+    if let Some(remaining) = backoff.locked_for() {
         tracing::warn!(
             client = %client,
             path = %req.uri().path(),
@@ -151,8 +204,7 @@ pub async fn admin_auth_middleware(
     let token = match extract_api_key(req.headers(), &state.config.admin_auth) {
         Ok(t) => t,
         Err(e) => {
-            metrics::record_admin_auth_failure("missing_or_malformed");
-            state.admin_auth_failures.record_failure(&client);
+            backoff.failed("missing_or_malformed");
             return Err(e);
         }
     };
@@ -163,8 +215,7 @@ pub async fn admin_auth_middleware(
     let matched_key = match_key(&state.admin_keys, &presented);
 
     let Some(matched_key) = matched_key else {
-        metrics::record_admin_auth_failure("invalid_key");
-        let lockout = state.admin_auth_failures.record_failure(&client);
+        let lockout = backoff.failed("invalid_key");
         tracing::warn!(
             client = %client,
             path = %req.uri().path(),
@@ -174,7 +225,7 @@ pub async fn admin_auth_middleware(
         return Err(OrionError::unauthorized("Invalid API key"));
     };
 
-    state.admin_auth_failures.record_success(&client);
+    backoff.succeeded();
 
     // S13: a read-only key authenticates but does not authorize a mutation.
     // 403, not 401 — the credential is valid, its authority is not — and no
@@ -236,20 +287,52 @@ pub(crate) fn read_only_may_call(method: &Method, path: &str) -> bool {
     *method == Method::POST && SIDE_EFFECT_FREE_POSTS.contains(&path.trim_end_matches('/'))
 }
 
+/// What a request presented as an admin credential.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PresentedCredential {
+    /// No credential header at all: an anonymous caller.
+    Absent,
+    /// A header was present but does not name a configured key.
+    Invalid,
+    Valid,
+}
+
+/// Classify the admin credential a request carries.
+///
+/// The three-way answer exists so a surface that is reachable anonymously can
+/// leave an absent header uncounted while still charging a wrong one against
+/// the brute-force budget (B-05). Treating the two alike is what let anyone
+/// test admin keys against `/health` at full speed.
+pub(crate) fn presented_credential(
+    headers: &axum::http::HeaderMap,
+    config: &AdminAuthConfig,
+    keys: &[crate::config::AdminKey],
+) -> PresentedCredential {
+    if !headers.contains_key(&config.header) {
+        return PresentedCredential::Absent;
+    }
+    let Ok(token) = extract_api_key(headers, config) else {
+        return PresentedCredential::Invalid;
+    };
+    let presented: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+    if match_key(keys, &presented).is_some() {
+        PresentedCredential::Valid
+    } else {
+        PresentedCredential::Invalid
+    }
+}
+
 /// True when the request headers present a valid admin credential. For
 /// surfaces that stay reachable without auth but serve a reduced body to
-/// anonymous callers (O9: `/health`'s topology detail). Failures are not an
-/// error here — they just mean "anonymous" — so nothing is logged or counted.
+/// anonymous callers (O9: `/health`'s topology detail). This is the pure
+/// predicate; a caller that also wants to charge a wrong credential against
+/// the backoff uses [`presented_credential`].
 pub(crate) fn headers_present_valid_key(
     headers: &axum::http::HeaderMap,
     config: &AdminAuthConfig,
     keys: &[crate::config::AdminKey],
 ) -> bool {
-    let Ok(token) = extract_api_key(headers, config) else {
-        return false;
-    };
-    let presented: [u8; 32] = Sha256::digest(token.as_bytes()).into();
-    match_key(keys, &presented).is_some()
+    presented_credential(headers, config, keys) == PresentedCredential::Valid
 }
 
 /// SHA-256 hex of an async-trace capability token (R12). The trace row

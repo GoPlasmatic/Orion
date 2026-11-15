@@ -9,7 +9,7 @@ check:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace --all-targets
-    cargo test --doc
+    cargo test --doc --workspace
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --lib
 
 # Print the OpenAPI spec this build serves. The committed copy lives in the

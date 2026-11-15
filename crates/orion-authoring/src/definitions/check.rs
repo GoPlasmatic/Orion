@@ -37,6 +37,39 @@ use crate::definitions::documents::CreateWorkflowRequest;
 /// diagnostic with its own path: collapsed into one prose line, five field
 /// problems would let a set gate say a workflow failed schema validation but
 /// not which field, leaving `--deny-warnings` the only lever over the lot.
+/// The value at a validator field path, rooted at the entity document.
+///
+/// Segments are dotted with array indices inline — `tasks[2].function.name`,
+/// `loop.setup[0].condition` — which is the shape `FieldError::path` uses.
+fn value_at_path<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut current = root;
+    for segment in path.split('.') {
+        let (key, mut rest) = match segment.find('[') {
+            Some(at) => (&segment[..at], &segment[at..]),
+            None => (segment, ""),
+        };
+        if !key.is_empty() {
+            current = current.get(key)?;
+        }
+        while let Some(after) = rest.strip_prefix('[') {
+            let end = after.find(']')?;
+            let index: usize = after[..end].parse().ok()?;
+            current = current.get(index)?;
+            rest = &after[end + 1..];
+        }
+    }
+    Some(current)
+}
+
+/// The function a `UNKNOWN_FUNCTION` diagnostic names, read from the document
+/// at the refused path rather than from the validator's message text (B-08).
+fn unknown_function_name<'a>(def: &'a Definition, d: &Diagnostic) -> Option<&'a str> {
+    if d.code.as_deref() != Some(orion_api::error::field_codes::UNKNOWN_FUNCTION) {
+        return None;
+    }
+    value_at_path(&def.doc, d.path.as_deref()?)?.as_str()
+}
+
 fn schema_diagnostics(
     check: &'static str,
     entity: &str,
@@ -375,9 +408,8 @@ fn check_workflows(
         if let Err(e) = crate::validation::validate_create_workflow(&req, loop_cap, functions) {
             let entity = format!("workflow '{}'", req.name);
             for d in schema_diagnostics("schema.workflow", &entity, def, &e) {
-                let unknown =
-                    |name: &str| d.message.starts_with(&format!("Unknown function '{name}'"));
-                if let Some(name) = unverifiable.iter().find(|n| unknown(n)) {
+                let named = unknown_function_name(def, &d);
+                if let Some(name) = named.and_then(|n| unverifiable.iter().find(|u| *u == n)) {
                     findings.push(
                         Diagnostic::note(
                             "plugin.unverifiable",
@@ -393,7 +425,7 @@ fn check_workflows(
                         ),
                     );
                 } else if let Some((name, plugin, origin)) =
-                    undeclared.iter().find(|(n, _, _)| unknown(n))
+                    named.and_then(|n| undeclared.iter().find(|(u, _, _)| u == n))
                 {
                     findings.push(Diagnostic::error(
                         "closure.plugin",
@@ -954,6 +986,43 @@ mod tests {
 
     fn checks<'a>(findings: &'a [Diagnostic], check: &str) -> Vec<&'a Diagnostic> {
         findings.iter().filter(|d| d.check == check).collect()
+    }
+
+    /// B-08: the unverifiable/undeclared classifier tells a schema refusal
+    /// apart by its `FieldError` code and the function read from the document
+    /// at the refused path — not by the validator's message wording.
+    #[test]
+    fn an_unknown_function_is_named_from_the_document_and_its_code() {
+        let def = Definition {
+            entity: Entity::Workflow,
+            origin: "w.json".to_string(),
+            doc: json!({
+                "workflow_id": "w",
+                "name": "w",
+                "tasks": [{"function": {"name": "acme-lib.parse"}}],
+                "loop": {"setup": [{"function": {"name": "acme-lib.next"}}]},
+            }),
+            spans: None,
+            provenance: Default::default(),
+        };
+
+        let mut d = Diagnostic::from_field_error(
+            "schema.workflow",
+            "workflow 'w'",
+            &orion_api::FieldError::new(
+                "tasks[0].function.name",
+                orion_api::error::field_codes::UNKNOWN_FUNCTION,
+                "changed wording",
+            ),
+        );
+        assert_eq!(unknown_function_name(&def, &d), Some("acme-lib.parse"));
+
+        d.path = Some("loop.setup[0].function.name".to_string());
+        assert_eq!(unknown_function_name(&def, &d), Some("acme-lib.next"));
+
+        // A different code is not the unknown-function class at all.
+        d.code = Some(orion_api::error::field_codes::REQUIRED.to_string());
+        assert_eq!(unknown_function_name(&def, &d), None);
     }
 
     /// The defect this module's `schema_diagnostics` exists to close.

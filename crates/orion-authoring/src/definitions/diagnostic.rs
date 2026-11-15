@@ -76,6 +76,13 @@ pub struct Diagnostic {
     /// coordinates as the compiled form.
     pub line: Option<(usize, usize)>,
     pub message: String,
+    /// The `FieldError` code this came from, when it came from one.
+    ///
+    /// Internal, not printed: `check` is the id a pipeline grandfathers on.
+    /// A consumer that must tell one schema refusal from another — the
+    /// `plugin.unverifiable` classifier does — reads this rather than matching
+    /// the validator's message text (B-08).
+    pub code: Option<String>,
     /// What to change. `None` when the message already says it.
     pub remedy: Option<String>,
     /// Where the text at `path` was authored, when not in `file` itself — the
@@ -96,6 +103,7 @@ impl Diagnostic {
             file: None,
             path: None,
             line: None,
+            code: None,
             message,
             remedy: None,
             via: None,
@@ -169,10 +177,10 @@ impl Diagnostic {
     /// which field, and report one finding where there were five. So: one
     /// diagnostic per field error, carrying its `path`.
     ///
-    /// The `code` is deliberately not carried. It belongs to the wire
-    /// vocabulary a client reads, and `check` is already the id a pipeline
-    /// grandfathers on — a per-code check id would have to be built at runtime,
-    /// and `check` is `&'static str` precisely so it cannot be.
+    /// The `code` is not used as the check id — `check` is the id a pipeline
+    /// grandfathers on, and `check` is `&'static str` precisely so it cannot be
+    /// built at runtime. It is carried alongside as [`Diagnostic::code`] for an
+    /// internal consumer that has to tell one schema refusal from another.
     pub fn from_field_error(
         check: &'static str,
         entity: &str,
@@ -182,6 +190,7 @@ impl Diagnostic {
         if !err.path.is_empty() {
             out.path = Some(err.path.clone());
         }
+        out.code = Some(err.code.clone());
         out
     }
 

@@ -991,6 +991,33 @@ async fn jwt_authorization_logic_answers_403() {
     ));
 }
 
+/// B-01: a multi-key object is a template to the templating-mode engine, and
+/// every object is truthy, so an `authorization_logic` typo that compiled
+/// would authorize every token. Both the structural check and the load-time
+/// compile must refuse it rather than serve the channel.
+#[tokio::test]
+async fn a_multi_key_authorization_logic_is_refused() {
+    let mut cfg = jwt_config(&["HS512"], HS_SECRET);
+    cfg.authorization_logic = Some(serde_json::json!({
+        "==": [{"var": "claims.role"}, "admin"],
+        "!=": [1, 2],
+    }));
+
+    let err = CompiledAuth::validate_config(&cfg).expect_err("structural");
+    assert!(err.contains("more than one key"), "{err}");
+
+    let err = CompiledAuth::compile(&cfg, Some(&dl()), None)
+        .await
+        .expect_err("load-time");
+    assert!(err.contains("more than one key"), "{err}");
+
+    // A one-key object nested in an array stays legal: `{"secret": …}` reads
+    // a header and is what channel expressions exist to do.
+    cfg.authorization_logic =
+        Some(serde_json::json!({"and": [{"==": [{"var": "claims.role"}, "admin"]}]}));
+    assert!(CompiledAuth::validate_config(&cfg).is_ok());
+}
+
 /// The #331 matrix on a `jwt` channel, including its reproduction: a
 /// source configured as `"scheme": "Bearer"` — no trailing space — accepts
 /// every conforming caller.

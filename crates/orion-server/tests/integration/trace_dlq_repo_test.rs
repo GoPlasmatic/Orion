@@ -82,7 +82,9 @@ async fn test_record_retry_increments_count() {
 
     // Set next_retry_at far in the future (also releases the claim).
     let future_time = chrono::Utc::now().naive_utc() + chrono::Duration::seconds(3600);
-    repo.record_retry(&entry.id, future_time).await.unwrap();
+    repo.record_retry(&entry.id, future_time, "latest failure")
+        .await
+        .unwrap();
 
     let pending = repo.claim_pending("test-node", 10, 60).await.unwrap();
     assert!(

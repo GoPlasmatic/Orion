@@ -297,17 +297,30 @@ pub trait ProviderBackend: Send + Sync {
 
     /// Typed registration key (`BackendKey::Rust(ProviderId)`,
     /// `BackendKey::Workflow(Digest)`, or `BackendKey::Wasm(Digest)`).
+    ///
+    /// Only valid on a backend whose [`key_checked`](Self::key_checked) is
+    /// `Ok`; composition and admission validate before ever calling this.
+    /// A `workflow`/`wasm` backend registers under a `sha256:` digest, and an
+    /// edition handing one an arbitrary string is a composition error, not a
+    /// panic on the boot path (B-10).
     fn key(&self) -> BackendKey {
+        self.key_checked()
+            .expect("ProviderBackend::driver_id was not validated before key()")
+    }
+
+    /// [`key`](Self::key) as a `Result`: a `workflow`/`wasm` backend's
+    /// `driver_id()` must parse as a digest. Composition and admission use
+    /// this so a malformed edition id answers `CompositionError` instead of
+    /// panicking.
+    fn key_checked(&self) -> Result<BackendKey, String> {
         match self.kind() {
-            ImplementationKind::Rust => BackendKey::Rust(ProviderId::from(self.driver_id())),
-            ImplementationKind::Workflow => BackendKey::Workflow(
-                Digest::parse(self.driver_id())
-                    .expect("workflow ProviderBackend::driver_id must be a valid sha256 digest"),
-            ),
-            ImplementationKind::Wasm => BackendKey::Wasm(
-                Digest::parse(self.driver_id())
-                    .expect("wasm ProviderBackend::driver_id must be a valid sha256 digest"),
-            ),
+            ImplementationKind::Rust => Ok(BackendKey::Rust(ProviderId::from(self.driver_id()))),
+            ImplementationKind::Workflow => Digest::parse(self.driver_id())
+                .map(BackendKey::Workflow)
+                .map_err(|e| format!("workflow provider id '{}': {e}", self.driver_id())),
+            ImplementationKind::Wasm => Digest::parse(self.driver_id())
+                .map(BackendKey::Wasm)
+                .map_err(|e| format!("wasm provider id '{}': {e}", self.driver_id())),
         }
     }
 

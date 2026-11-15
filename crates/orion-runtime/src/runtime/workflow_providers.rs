@@ -60,10 +60,11 @@ pub async fn backend(
 /// and unregister every registered one that no longer is. A package that
 /// fails its checks stays unregistered, logged; a connection over it then
 /// fails the build that deploys it.
-pub async fn sync(state: &AppState) {
+/// The workflow packages this node would serve: stored, admitted and not
+/// revoked.
+fn serving_digests(state: &AppState) -> BTreeSet<String> {
     let store = &state.deployments;
-    let providers = state.composition.providers();
-    let serving: BTreeSet<String> = store
+    store
         .list_packages()
         .into_iter()
         .filter(|p| p.implementation == ImplementationKind::Workflow)
@@ -78,7 +79,33 @@ pub async fn sync(state: &AppState) {
                     .is_digest_revoked(&p.package_digest)
         })
         .map(|p| p.package_digest.to_string())
-        .collect();
+        .collect()
+}
+
+/// Check that every package [`sync`] would register still builds, without
+/// registering or withdrawing anything.
+///
+/// This is what a deployment *plan* needs: a plan validates a candidate, and
+/// calling `sync` from it registered backends before anything was committed
+/// (B-14). A package that would not build still fails the plan.
+pub async fn validate(state: &AppState) -> Result<(), crate::errors::OrionError> {
+    let registered = state
+        .composition
+        .providers()
+        .admitted_ids(ImplementationKind::Workflow);
+    for digest in serving_digests(state).difference(&registered) {
+        if let Err(reason) = backend(state, digest).await {
+            return Err(crate::errors::OrionError::internal(format!(
+                "workflow provider package '{digest}' does not build: {reason}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub async fn sync(state: &AppState) {
+    let providers = state.composition.providers();
+    let serving = serving_digests(state);
     let registered = providers.admitted_ids(ImplementationKind::Workflow);
 
     for digest in registered.difference(&serving) {

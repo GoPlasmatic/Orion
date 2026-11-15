@@ -844,17 +844,18 @@ async fn settle_dlq_on_failure(
 ) {
     if let Some(dlq_id) = candidate.dlq_entry_id {
         let Some(dlq) = dlq_repo else { return };
-        if candidate.retry_count >= dlq_max_retries {
-            metrics::record_error("dlq_exhausted");
-            metrics::record_trace_dlq_retry("exhausted");
-            if let Err(e) = dlq.mark_exhausted(dlq_id).await {
-                tracing::error!(
-                    dlq_id = %dlq_id,
-                    trace_id = %candidate.trace_id,
-                    error = %e,
-                    "DLQ retry: failed to mark leased entry exhausted after execution failure"
-                );
-            } else {
+        match super::settle_leased_dlq(
+            dlq.as_ref(),
+            dlq_id,
+            candidate.retry_count,
+            dlq_max_retries,
+            error_str,
+        )
+        .await
+        {
+            Ok(super::DlqSettlement::Exhausted) => {
+                metrics::record_error("dlq_exhausted");
+                metrics::record_trace_dlq_retry("exhausted");
                 tracing::warn!(
                     dlq_id = %dlq_id,
                     trace_id = %candidate.trace_id,
@@ -863,23 +864,24 @@ async fn settle_dlq_on_failure(
                     "DLQ retry: max retries exhausted after execution failure"
                 );
             }
-        } else {
-            let delay_secs = 1i64 << candidate.retry_count.clamp(0, 16);
-            let next_retry =
-                (chrono::Utc::now() + chrono::Duration::seconds(delay_secs)).naive_utc();
-            if let Err(e) = dlq.record_retry(dlq_id, next_retry).await {
+            Ok(super::DlqSettlement::Deferred {
+                retry_count,
+                delay_secs,
+            }) => {
+                tracing::info!(
+                    dlq_id = %dlq_id,
+                    trace_id = %candidate.trace_id,
+                    retry_count,
+                    delay_secs,
+                    "DLQ retry: released lease and recorded retry after execution failure"
+                );
+            }
+            Err(e) => {
                 tracing::error!(
                     dlq_id = %dlq_id,
                     trace_id = %candidate.trace_id,
                     error = %e,
-                    "DLQ retry: failed to record retry on leased entry after execution failure"
-                );
-            } else {
-                tracing::info!(
-                    dlq_id = %dlq_id,
-                    trace_id = %candidate.trace_id,
-                    retry_count = candidate.retry_count,
-                    "DLQ retry: released lease and recorded retry after execution failure"
+                    "DLQ retry: failed to settle leased entry after execution failure"
                 );
             }
         }
@@ -1188,6 +1190,7 @@ mod tests {
             &self,
             id: &str,
             _next_retry_at: chrono::NaiveDateTime,
+            _error_message: &str,
         ) -> Result<(), crate::errors::OrionError> {
             self.retried.lock().expect("test").push(id.to_string());
             Ok(())

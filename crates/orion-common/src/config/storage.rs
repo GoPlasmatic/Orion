@@ -193,9 +193,18 @@ pub fn detect_backend(url: &str) -> Result<DbBackend, OrionError> {
     } else if url.starts_with("mysql://") || url.starts_with("mariadb://") {
         Ok(DbBackend::Mysql)
     } else {
+        // B-04: report the scheme alone. The URL reaches logs and a trace's
+        // `error_message` (served by the admin API), and a mistyped
+        // `storage.url` carries the database password in its userinfo.
+        let scheme = url
+            .split_once("://")
+            .map(|(scheme, _)| scheme)
+            .or_else(|| url.split_once(':').map(|(scheme, _)| scheme))
+            .unwrap_or("");
         Err(OrionError::Config {
             message: format!(
-                "Unsupported database URL scheme: {url}. Expected sqlite:, postgres://, or mysql://"
+                "Unsupported database URL scheme '{scheme}'. Expected sqlite:, postgres://, \
+                 or mysql://"
             ),
         })
     }

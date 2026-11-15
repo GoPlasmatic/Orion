@@ -12,6 +12,7 @@ use axum::{Json, Router};
 use serde_json::json;
 use utoipa::OpenApi;
 
+use crate::errors::OrionError;
 use crate::runtime::state::AppState;
 
 /// What the main listener's router should contain, resolved from config by
@@ -228,8 +229,9 @@ Probes should use `/healthz` and `/readyz`.",
 #[tracing::instrument(skip(state, headers))]
 pub(crate) async fn health_check(
     State(state): State<AppState>,
+    crate::extract::PeerAddr(peer): crate::extract::PeerAddr,
     headers: axum::http::HeaderMap,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     let uptime = chrono::Utc::now() - state.start_time;
 
     // Check database connectivity
@@ -240,8 +242,50 @@ pub(crate) async fn health_check(
     let generation = state.runtime.load();
     let workflows_loaded = workflows_loaded(&generation);
 
-    // Collect circuit breaker states
-    let cb_states = state.connector_registry.circuit_breaker_states().await;
+    // O9: names, failure reasons, build provenance and the breaker map are
+    // internal topology. They are served only when the caller could read the
+    // same detail from the admin plane anyway: either admin auth is disabled
+    // (dev — the whole admin API is open) or a valid admin key is presented.
+    // The coarse per-component states stay public so a monitor can see *that*
+    // something is degraded without learning *what*.
+    //
+    // B-05: the decision comes first — before the circuit-breaker map is even
+    // built — and a *presented* wrong key is charged against the same
+    // brute-force backoff as the admin plane. Without that, `/health` was the
+    // one guarded surface where admin keys could be tested at full speed. An
+    // absent header stays anonymous and uncounted.
+    let auth_cfg = &state.config.admin_auth;
+    let client = crate::rate_limit::request_client_ip_from_parts(
+        peer.as_ref(),
+        &headers,
+        state.trusted_proxies(),
+    );
+    let backoff = crate::admin_auth::Backoff::new(&state, &client);
+    let show_detail = if !auth_cfg.enabled {
+        true
+    } else {
+        match crate::admin_auth::presented_credential(&headers, auth_cfg, &state.admin_keys) {
+            crate::admin_auth::PresentedCredential::Valid => {
+                backoff.succeeded();
+                true
+            }
+            crate::admin_auth::PresentedCredential::Absent => false,
+            crate::admin_auth::PresentedCredential::Invalid => {
+                if backoff.locked_for().is_some() {
+                    return OrionError::unauthorized("Invalid API key").into_response();
+                }
+                backoff.failed("invalid_key");
+                false
+            }
+        }
+    };
+
+    // Collected only when the caller may see it.
+    let cb_states = if show_detail {
+        state.connector_registry.circuit_breaker_states().await
+    } else {
+        Default::default()
+    };
 
     // Every load issue, from the one collector a deployment apply and
     // `GET /engine/status` answer from too, so the three surfaces cannot
@@ -298,16 +342,6 @@ pub(crate) async fn health_check(
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
-
-    // O9: names, failure reasons, build provenance and the breaker map are
-    // internal topology. They are served only when the caller could read the
-    // same detail from the admin plane anyway: either admin auth is disabled
-    // (dev — the whole admin API is open) or a valid admin key is presented.
-    // The coarse per-component states stay public so a monitor can see
-    // *that* something is degraded without learning *what*.
-    let auth_cfg = &state.config.admin_auth;
-    let show_detail = !auth_cfg.enabled
-        || crate::admin_auth::headers_present_valid_key(&headers, auth_cfg, &state.admin_keys);
 
     let ok_or = |fine: bool, otherwise: &str| if fine { "ok" } else { otherwise }.to_string();
     let mut components = std::collections::BTreeMap::from([
@@ -409,7 +443,7 @@ pub(crate) async fn health_check(
         ));
     }
 
-    (http_status, Json(body))
+    (http_status, Json(body)).into_response()
 }
 
 #[utoipa::path(
@@ -640,5 +674,5 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
         },
     };
 
-    (http_status, Json(body))
+    (http_status, Json(body)).into_response()
 }

@@ -1003,7 +1003,7 @@ pub async fn check_candidate(
         .load_for_manifest(&state.db_pool, manifest)
         .await
         .map_err(|e| crate::errors::OrionError::internal(e.to_string()))?;
-    super::workflow_providers::sync(state).await;
+    super::workflow_providers::validate(state).await?;
     let ManifestDefinitions {
         channels,
         channel_connections: _,

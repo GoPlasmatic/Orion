@@ -21,6 +21,54 @@ pub use trace_persistence::{PersistenceWorkerHandle, TracePersistenceQueue, Trac
 
 pub use dlq_retry::{DlqRetryOptions, start_dlq_retry};
 
+/// Seconds to wait before a leased DLQ entry's next attempt.
+///
+/// One function for the two retry paths: the shed-resubmission path and the
+/// failed-execution path computed the same exponential independently, one with
+/// `min(16)` and one with `clamp(0, 16)`, so an entry's wait depended on which
+/// way it failed (B-12). Clamped because an unclamped shift panics in debug and
+/// is nonsense in release.
+pub(super) fn dlq_backoff_secs(retry_count: i64) -> i64 {
+    1i64 << retry_count.clamp(0, 16)
+}
+
+/// What settling a leased DLQ entry decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DlqSettlement {
+    /// The attempt ceiling was reached; the entry is retired.
+    Exhausted,
+    /// The lease is released and the next attempt scheduled.
+    Deferred { retry_count: i64, delay_secs: i64 },
+}
+
+/// Settle a leased DLQ entry after a failed attempt.
+///
+/// `retry_count` is the count on the claimed row. The entry is retired when
+/// this failure reaches `max_retries`; otherwise the lease is released, the
+/// count advances and the latest error replaces the one the entry was enqueued
+/// with. Both retry paths call this, so they cannot disagree about exhaustion
+/// or backoff.
+pub(super) async fn settle_leased_dlq(
+    repo: &dyn TraceDlqRepository,
+    id: &str,
+    retry_count: i64,
+    max_retries: i64,
+    error_message: &str,
+) -> Result<DlqSettlement, crate::errors::OrionError> {
+    let next_count = retry_count.saturating_add(1);
+    if next_count >= max_retries {
+        repo.mark_exhausted(id).await?;
+        return Ok(DlqSettlement::Exhausted);
+    }
+    let delay_secs = dlq_backoff_secs(next_count);
+    let next_retry_at = chrono::Utc::now().naive_utc() + chrono::Duration::seconds(delay_secs);
+    repo.record_retry(id, next_retry_at, error_message).await?;
+    Ok(DlqSettlement::Deferred {
+        retry_count: next_count,
+        delay_secs,
+    })
+}
+
 /// The shared body of the periodic retention jobs (trace cleanup here, audit
 /// cleanup in [`audit_cleanup`]): skip the first immediate tick, single-flight
 /// each tick through the lease gate, run one pass, stamp the job health gauge.

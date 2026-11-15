@@ -181,6 +181,20 @@ pub enum CompositionError {
         /// Which capabilities conflict.
         reason: String,
     },
+    /// A provider backend's `driver_id()` is not the key its implementation
+    /// kind requires: a `workflow` or `wasm` backend registers under a
+    /// `sha256:` digest.
+    #[error(
+        "composition: the {kind:?} provider backend's driver_id '{driver_id}' is not valid: {reason}"
+    )]
+    InvalidProviderKey {
+        /// The backend's implementation kind.
+        kind: crate::ImplementationKind,
+        /// The id it reported.
+        driver_id: String,
+        /// Why the key could not be built.
+        reason: String,
+    },
     /// Two cluster shared-state stores.
     #[error(
         "composition: a cluster store '{existing}' is already registered; \

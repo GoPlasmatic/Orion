@@ -117,7 +117,7 @@ async fn postgres_dlq_record_retry_and_mark_exhausted_persist() {
     assert_eq!(claimed.len(), 1, "entry must be claimable before the retry");
 
     let next_retry = chrono::Utc::now().naive_utc() - chrono::Duration::seconds(2);
-    repo.record_retry(&entry.id, next_retry)
+    repo.record_retry(&entry.id, next_retry, "latest failure")
         .await
         .expect("record_retry must succeed on postgres");
 

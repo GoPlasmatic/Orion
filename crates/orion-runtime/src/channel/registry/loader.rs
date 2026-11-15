@@ -81,42 +81,6 @@ pub fn is_expression_field(key: &str) -> bool {
     key.ends_with("_logic")
 }
 
-/// Refuse an object with more than one key anywhere inside a channel
-/// expression.
-///
-/// N3/N4 refuse a channel whose guard config does not compile rather than
-/// serve it with a weaker control than the one configured, but a multi-key
-/// object compiles. The serving engine is dataflow-rs's, so channel
-/// expressions speak the same dialect workflow expressions do — which is what
-/// lets them read `{"secret": …}` — and it runs in **templating mode**, where a
-/// multi-key object is a legal template emitting a structured object. A typo'd
-/// `{"==": [1, 1], "!=": [1, 2]}` would compile to a truthy object and
-/// `validate_input` would then admit everything, silently — precisely the
-/// outcome N4 exists to prevent.
-///
-/// So the refusal is stated here rather than inherited from a compiler mode.
-/// Nothing is lost by it: every channel expression is a predicate or a key, and
-/// none has a reason to emit a structured object.
-pub(super) fn refuse_multi_key_object(
-    logic: &serde_json::Value,
-    field: &str,
-) -> Result<(), String> {
-    match logic {
-        serde_json::Value::Object(map) if map.len() > 1 => Err(format!(
-            "{field} does not compile: an object with more than one key ({}) is not an \
-             expression — an operator call has exactly one",
-            map.keys().cloned().collect::<Vec<_>>().join(", ")
-        )),
-        serde_json::Value::Object(map) => map
-            .values()
-            .try_for_each(|v| refuse_multi_key_object(v, field)),
-        serde_json::Value::Array(items) => items
-            .iter()
-            .try_for_each(|v| refuse_multi_key_object(v, field)),
-        _ => Ok(()),
-    }
-}
-
 /// Turns stored channel rows into a [`ChannelSnapshot`].
 ///
 /// It holds no published state — the generation it builds is handed to
@@ -351,7 +315,14 @@ impl ChannelLoader {
         // Both limiters are built the same way and reuse the same way; the
         // only difference is which config block they read and which previous
         // backend they may carry forward.
+        // B-07: the two limiters get distinct shared-store scopes. They used
+        // the channel *name* for both, so a request whose address key and
+        // principal key rendered to the same string was counted twice and
+        // halved the effective limit. The id keeps the windows across a
+        // rename, too.
+        let channel_id = channel.channel_id.as_str();
         let build_limiter = |rl: &ChannelRateLimitConfig,
+                             scope: &str,
                              prev_cfg: Option<&ChannelRateLimitConfig>,
                              prev_limiter: Option<&Arc<dyn RateLimitBackend>>|
          -> Arc<dyn RateLimitBackend> {
@@ -367,7 +338,7 @@ impl ChannelLoader {
             match deps.cluster_shared.clone() {
                 Some(store) => Arc::new(SharedRateLimitBackend::new(
                     store,
-                    channel.name.clone(),
+                    format!("{channel_id}:{scope}"),
                     rl.requests_per_second,
                     burst,
                 )) as Arc<dyn RateLimitBackend>,
@@ -390,6 +361,7 @@ impl ChannelLoader {
                 // credit new keys with old consumption.
                 build_limiter(
                     rl,
+                    "addr",
                     prior.and_then(|p| p.parsed_config.rate_limit.as_ref()),
                     prior.and_then(|p| p.rate_limiter.as_ref()),
                 )
@@ -402,6 +374,7 @@ impl ChannelLoader {
             parsed_config.principal_rate_limit.as_ref().map(|rl| {
                 build_limiter(
                     rl,
+                    "principal",
                     prior.and_then(|p| p.parsed_config.principal_rate_limit.as_ref()),
                     prior.and_then(|p| p.principal_rate_limiter.as_ref()),
                 )
@@ -418,15 +391,18 @@ impl ChannelLoader {
             .as_ref()
             .and_then(|rl| rl.key_logic.as_ref())
             .map(|logic| {
-                refuse_multi_key_object(logic, "rate_limit.key_logic")
-                    .map_err(|e| issue(e.clone()))?;
-                deps.exprs.compile(logic).map(Arc::new).map_err(|e| {
+                crate::channel::guards::compile_guard_expr(
+                    deps.exprs,
+                    logic,
+                    "rate_limit.key_logic",
+                )
+                .map_err(|e| {
                     tracing::error!(
                         channel = %channel.name,
                         error = %e,
                         "Refusing to load channel: rate_limit.key_logic does not compile"
                     );
-                    issue(format!("rate_limit.key_logic does not compile: {e}"))
+                    issue(e)
                 })
             })
             .transpose()?;
@@ -440,17 +416,18 @@ impl ChannelLoader {
             .as_ref()
             .and_then(|rl| rl.key_logic.as_ref())
             .map(|logic| {
-                refuse_multi_key_object(logic, "principal_rate_limit.key_logic")
-                    .map_err(|e| issue(e.clone()))?;
-                deps.exprs.compile(logic).map(Arc::new).map_err(|e| {
+                crate::channel::guards::compile_guard_expr(
+                    deps.exprs,
+                    logic,
+                    "principal_rate_limit.key_logic",
+                )
+                .map_err(|e| {
                     tracing::error!(
                         channel = %channel.name,
                         error = %e,
                         "Refusing to load channel: principal_rate_limit.key_logic does not compile"
                     );
-                    issue(format!(
-                        "principal_rate_limit.key_logic does not compile: {e}"
-                    ))
+                    issue(e)
                 })
             })
             .transpose()?;
@@ -471,15 +448,15 @@ impl ChannelLoader {
             .as_ref()
             .and_then(|c| c.key_logic.as_ref())
             .map(|logic| {
-                refuse_multi_key_object(logic, "cache.key_logic").map_err(|e| issue(e.clone()))?;
-                deps.exprs.compile(logic).map(Arc::new).map_err(|e| {
-                    tracing::error!(
-                        channel = %channel.name,
-                        error = %e,
-                        "Refusing to load channel: cache.key_logic does not compile"
-                    );
-                    issue(format!("cache.key_logic does not compile: {e}"))
-                })
+                crate::channel::guards::compile_guard_expr(deps.exprs, logic, "cache.key_logic")
+                    .map_err(|e| {
+                        tracing::error!(
+                            channel = %channel.name,
+                            error = %e,
+                            "Refusing to load channel: cache.key_logic does not compile"
+                        );
+                        issue(e)
+                    })
             })
             .transpose()?;
 
@@ -539,15 +516,15 @@ impl ChannelLoader {
             .validation_logic
             .as_ref()
             .map(|logic| {
-                refuse_multi_key_object(logic, "validation_logic").map_err(|e| issue(e.clone()))?;
-                deps.exprs.compile(logic).map(Arc::new).map_err(|e| {
-                    tracing::error!(
-                        channel = %channel.name,
-                        error = %e,
-                        "Refusing to load channel: validation_logic does not compile"
-                    );
-                    issue(format!("validation_logic does not compile: {e}"))
-                })
+                crate::channel::guards::compile_guard_expr(deps.exprs, logic, "validation_logic")
+                    .map_err(|e| {
+                        tracing::error!(
+                            channel = %channel.name,
+                            error = %e,
+                            "Refusing to load channel: validation_logic does not compile"
+                        );
+                        issue(e)
+                    })
             })
             .transpose()?;
 

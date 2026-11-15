@@ -254,45 +254,44 @@ async fn run_dlq_retry(
                                 "DLQ retry: failed to settle pending trace after shed"
                             );
                         }
-                        let new_retry_count = entry.retry_count + 1;
-                        // Both writes clear the claim lease. Swallowing their
-                        // errors is what let D1's postgres type mismatch stay
-                        // invisible while entries were re-claimed forever.
-                        if new_retry_count >= entry.max_retries {
-                            metrics::record_error("dlq_exhausted");
-                            metrics::record_trace_dlq_retry("exhausted");
-                            if let Err(e) = dlq_repo.mark_exhausted(&entry.id).await {
-                                tracing::error!(
-                                    dlq_id = %entry.id,
-                                    error = %e,
-                                    "DLQ retry: failed to retire exhausted entry — \
-                                     it will be re-claimed when its lease expires"
-                                );
-                            } else {
+                        // Both outcomes clear the claim lease. Swallowing
+                        // their errors is what let D1's postgres type
+                        // mismatch stay invisible while entries were
+                        // re-claimed forever.
+                        match super::settle_leased_dlq(
+                            dlq_repo.as_ref(),
+                            &entry.id,
+                            entry.retry_count,
+                            entry.max_retries,
+                            &e.to_string(),
+                        )
+                        .await
+                        {
+                            Ok(super::DlqSettlement::Exhausted) => {
+                                metrics::record_error("dlq_exhausted");
+                                metrics::record_trace_dlq_retry("exhausted");
                                 tracing::warn!(
                                     dlq_id = %entry.id,
                                     "DLQ retry: max retries exhausted, giving up"
                                 );
                             }
-                        } else {
-                            metrics::record_trace_dlq_retry("failed");
-                            // Exponential backoff: 1s, 2s, 4s, 8s, 16s, …
-                            // capped at 2^16s (~18h). Unclamped, a large
-                            // dlq_max_retries overflows the shift (Q4):
-                            // panic in debug, nonsense in release — either
-                            // way the retry task dies for the process
-                            // lifetime. The validator bounds the config,
-                            // this bounds the arithmetic.
-                            let delay_secs = 1i64 << new_retry_count.min(16);
-                            let next_retry = chrono::Utc::now()
-                                .naive_utc()
-                                .checked_add_signed(chrono::Duration::seconds(delay_secs))
-                                .unwrap_or(chrono::Utc::now().naive_utc());
-                            if let Err(e) = dlq_repo.record_retry(&entry.id, next_retry).await {
+                            Ok(super::DlqSettlement::Deferred {
+                                retry_count,
+                                delay_secs,
+                            }) => {
+                                metrics::record_trace_dlq_retry("failed");
+                                tracing::info!(
+                                    dlq_id = %entry.id,
+                                    retry_count,
+                                    delay_secs,
+                                    "DLQ retry: released lease and scheduled the next attempt"
+                                );
+                            }
+                            Err(e) => {
                                 tracing::error!(
                                     dlq_id = %entry.id,
                                     error = %e,
-                                    "DLQ retry: failed to record backoff — entry keeps its \
+                                    "DLQ retry: failed to settle the entry — it keeps its \
                                      old next_retry_at and will be re-claimed on lease expiry"
                                 );
                             }
@@ -369,6 +368,7 @@ mod tests {
             &self,
             id: &str,
             next_retry_at: chrono::NaiveDateTime,
+            _error_message: &str,
         ) -> Result<(), OrionError> {
             self.state
                 .lock()

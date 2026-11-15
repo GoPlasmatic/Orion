@@ -305,10 +305,12 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --all-targets --no-fail-fast
 
-      # --all-targets silently skips doctests; the config structs carry
-      # heavily documented examples that would otherwise never compile.
+      # --all-targets silently skips doctests, and a bare `cargo test --doc`
+      # covers only default-members. The library crates carry documented
+      # examples — the extension API's `Registrar` is what editions code
+      # against — so the whole workspace is the target.
       - name: Run doctests
-        run: cargo test --doc
+        run: cargo test --doc --workspace
 
   # Advisories AND license compatibility / bans / source policy over the
   # whole tree (proposal T12) — deny.toml is the policy, including the

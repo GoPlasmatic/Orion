@@ -478,8 +478,20 @@ impl TraceSink for SqlTraceRepository {
 
             update.and_where(Expr::col(Traces::Id).eq(id));
 
+            // B-02: entering `running` is conditional on the trace still being
+            // `pending`. In async/batch mode the status writes are queued
+            // separately from the completion, and although the queue pins one
+            // trace to one worker, a replay or a duplicated submission must not
+            // be able to move a finished trace back to `running`. A no-op here
+            // is the correct outcome: the row exists, it is simply terminal.
+            let entering_running = status == models::TRACE_STATUS_RUNNING;
+            if entering_running {
+                update.and_where(Expr::col(Traces::Status).eq(models::TRACE_STATUS_PENDING));
+            }
+
             let (sql, values) = build_sqlx(self.pool.backend(), &mut update);
             match self.pool.execute_query(&sql, values).await? {
+                0 if entering_running => Ok(()),
                 0 => Err(trace_not_found(id)),
                 _ => Ok(()),
             }

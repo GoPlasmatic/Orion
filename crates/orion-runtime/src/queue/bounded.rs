@@ -212,6 +212,27 @@ impl<T> BoundedWorker<T> {
     /// shard is gone; one dead worker among several is a `Full`, because the
     /// others can still make progress.
     pub fn try_submit(&self, item: T) -> Result<(), Rejected<T>> {
+        let start = self.next.fetch_add(1, Ordering::Relaxed);
+        self.try_submit_from(start, item)
+    }
+
+    /// Offer an item whose shard is decided by `key` rather than by the
+    /// round-robin cursor.
+    ///
+    /// A queue whose items carry a trace id uses this so every write for one
+    /// trace lands on the same worker, in submission order. Round-robin spread
+    /// `running` and `completed` for one trace across different workers, and a
+    /// late `running` then overwrote the terminal status (B-02). Siblings are
+    /// still tried when the keyed shard is full, matching [`Self::try_submit`]'s
+    /// no-work-dropped-while-idle rule.
+    pub fn try_submit_hashed(&self, key: u64, item: T) -> Result<(), Rejected<T>> {
+        if self.senders.is_empty() {
+            return Err(Rejected::Closed(item));
+        }
+        self.try_submit_from(key as usize, item)
+    }
+
+    fn try_submit_from(&self, start: usize, item: T) -> Result<(), Rejected<T>> {
         if self.senders.is_empty() {
             return Err(Rejected::Closed(item));
         }
@@ -220,7 +241,6 @@ impl<T> BoundedWorker<T> {
         // the reverse order lets a consumer's `fetch_sub` land at zero and wrap.
         self.pending.fetch_add(1, Ordering::AcqRel);
 
-        let start = self.next.fetch_add(1, Ordering::Relaxed);
         let mut item = item;
         let mut any_open = false;
         for i in 0..self.senders.len() {
@@ -254,12 +274,35 @@ impl<T> BoundedWorker<T> {
     /// One shard, no fallthrough: this is the "slow the producer down" policy,
     /// and hunting for a free sibling is the opposite of what it is for.
     pub async fn submit_blocking(&self, item: T, timeout: Duration) -> Result<(), Blocked<T>> {
+        let start = self.next.fetch_add(1, Ordering::Relaxed);
+        self.submit_blocking_from(start, item, timeout).await
+    }
+
+    /// [`Self::submit_blocking`] with the shard chosen by `key`, for the same
+    /// reason as [`Self::try_submit_hashed`].
+    pub async fn submit_blocking_hashed(
+        &self,
+        key: u64,
+        item: T,
+        timeout: Duration,
+    ) -> Result<(), Blocked<T>> {
+        if self.senders.is_empty() {
+            return Err(Blocked::Closed(item));
+        }
+        self.submit_blocking_from(key as usize, item, timeout).await
+    }
+
+    async fn submit_blocking_from(
+        &self,
+        start: usize,
+        item: T,
+        timeout: Duration,
+    ) -> Result<(), Blocked<T>> {
         if self.senders.is_empty() {
             return Err(Blocked::Closed(item));
         }
 
         self.pending.fetch_add(1, Ordering::AcqRel);
-        let start = self.next.fetch_add(1, Ordering::Relaxed);
         let shard = &self.senders[start % self.senders.len()];
 
         match tokio::time::timeout(timeout, shard.send(item)).await {

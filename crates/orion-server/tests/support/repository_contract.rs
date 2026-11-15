@@ -941,6 +941,7 @@ async fn every_update_moves_updated_at(backend: &str, pool: &DbPool) {
         dlq.record_retry(
             &entry.id,
             chrono::Utc::now().naive_utc() - chrono::Duration::hours(1),
+            "latest failure",
         )
         .await
         .expect("record_retry");

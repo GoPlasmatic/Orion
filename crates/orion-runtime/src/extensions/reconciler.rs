@@ -244,7 +244,13 @@ impl NodeReconciler {
         node.last_error = None;
         node.backoff_attempt = 0;
         node.backoff_delay_ms = 0;
-        node.retained_revisions.insert(candidate_revision);
+        // B-03: retain only what this node is serving. Pinning every revision
+        // it ever applied made `storage.deployment_retain_revisions` a no-op
+        // for a long-lived node and grew the set that is re-serialized to
+        // `runtime_nodes` on every reconciliation tick. A generation already
+        // published is served from memory, so the previous revision needs no
+        // database artifacts once the swap above has happened.
+        node.retained_revisions = BTreeSet::from([candidate_revision]);
         let status = node.clone();
         drop(g);
 
@@ -253,20 +259,6 @@ impl NodeReconciler {
             status.retained_revisions.clone(),
         );
         Ok(status)
-    }
-
-    /// Release an old drained generation from this node's retained set.
-    pub fn release_retained_revision(&self, revision: u64) {
-        let mut g = self.nodes.lock_unpoisoned();
-        if let Some(node) = g.get_mut(&self.local_identity.node_id) {
-            if node.applied_revision != revision {
-                node.retained_revisions.remove(&revision);
-            }
-            let held = node.retained_revisions.clone();
-            drop(g);
-            self.store
-                .update_node_retained_revisions(&self.local_identity.node_id, held);
-        }
     }
 
     /// Evaluate convergence against `ThisNode` or a fixed `ObservedNodes` set.

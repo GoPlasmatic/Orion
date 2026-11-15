@@ -96,6 +96,24 @@ const NEVER_WARNED: u64 = u64::MAX;
 /// happening.
 const OVERFLOW_WARN_INTERVAL_MS: u64 = 5_000;
 
+/// The shard key for a persistence task, when it names an existing trace.
+///
+/// `UpdateStatus` and `Complete` for one trace must be applied in order, so
+/// they are pinned to one worker; a round-robin spread pair could invert and a
+/// late `running` would overwrite the result.
+fn shard_key(task: &TracePersistenceTask) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+
+    let id = match task {
+        TracePersistenceTask::StoreCompleted(_) => return None,
+        TracePersistenceTask::Complete(row) => &row.id,
+        TracePersistenceTask::UpdateStatus { id, .. } => id,
+    };
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut hasher);
+    Some(hasher.finish())
+}
+
 impl TracePersistenceQueue {
     /// Create a no-op queue (used by `Sync` and `Off` modes). Submits return
     /// `Ok(false)`.
@@ -117,15 +135,28 @@ impl TracePersistenceQueue {
         if self.queue.is_disabled() {
             return false;
         }
-        let accepted = match self.overflow_policy {
+        // A task naming a trace goes to that trace's shard, so its status
+        // writes and its completion are applied in submission order by one
+        // worker. Round-robin spread them apart, and a late `running` write
+        // then overwrote `completed` (B-02). `StoreCompleted` carries no id
+        // yet — the row is inserted with a fresh one — so it keeps the
+        // round-robin spread.
+        let key = shard_key(&task);
+        let accepted = match (self.overflow_policy, key) {
             // Round-robin with fallthrough — a stalled worker should not drop
             // tasks while its siblings sit idle.
-            AsyncOnOverflow::Drop => self.queue.try_submit(task).is_ok(),
+            (AsyncOnOverflow::Drop, None) => self.queue.try_submit(task).is_ok(),
+            (AsyncOnOverflow::Drop, Some(key)) => self.queue.try_submit_hashed(key, task).is_ok(),
             // One shard, no fallthrough: this policy exists to slow the
             // producer down, and hunting for a free sibling is the opposite.
-            AsyncOnOverflow::Block => self
+            (AsyncOnOverflow::Block, None) => self
                 .queue
                 .submit_blocking(task, self.overflow_block_timeout)
+                .await
+                .is_ok(),
+            (AsyncOnOverflow::Block, Some(key)) => self
+                .queue
+                .submit_blocking_hashed(key, task, self.overflow_block_timeout)
                 .await
                 .is_ok(),
         };

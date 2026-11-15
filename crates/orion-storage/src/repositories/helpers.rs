@@ -519,9 +519,36 @@ pub async fn write_returning_row_tx<T: DbRow>(
     }
 }
 
+/// Attach the "lose to an existing row" conflict action to `insert`.
+///
+/// One renderer for all three helpers: Postgres/SQLite take the targeted
+/// `ON CONFLICT (cols) DO NOTHING`, and MySQL's `do_nothing_on` polyfill
+/// renders `ON DUPLICATE KEY UPDATE col = col` — never `INSERT IGNORE`, which
+/// downgrades unrelated errors to warnings (B-11).
+fn apply_do_nothing(insert: &mut sea_query::InsertStatement, cols: Vec<sea_query::DynIden>) {
+    match cols.first().cloned() {
+        Some(pk) => {
+            insert.on_conflict(
+                sea_query::OnConflict::columns(cols)
+                    .do_nothing_on([pk])
+                    .to_owned(),
+            );
+        }
+        None => {
+            insert.on_conflict(sea_query::OnConflict::columns(cols).do_nothing().to_owned());
+        }
+    }
+}
+
 /// INSERT that silently loses to an existing row: `ON CONFLICT DO NOTHING` on
-/// Postgres/SQLite, `INSERT IGNORE` on MySQL. Returns rows affected (0 = an
-/// existing row won).
+/// Postgres/SQLite, `ON DUPLICATE KEY UPDATE pk = pk` on MySQL. Returns rows
+/// affected (0 = an existing row won).
+///
+/// B-11: MySQL is not `INSERT IGNORE`. `IGNORE` downgrades data-too-long,
+/// NOT NULL and out-of-range errors to warnings and truncates data even in
+/// strict mode, which silently corrupted what cron occurrence identity and the
+/// deployment store wrote. `do_nothing_on` renders the duplicate-key form, so
+/// a conflict is still handled and every other error still fails.
 pub async fn insert_if_absent<C>(
     pool: &DbPool,
     mut insert: sea_query::InsertStatement,
@@ -530,31 +557,14 @@ pub async fn insert_if_absent<C>(
 where
     C: sea_query::IntoIden,
 {
-    use crate::{DbBackend, build_sqlx};
+    use crate::build_sqlx;
 
-    let backend = pool.backend();
-    match backend {
-        DbBackend::Sqlite | DbBackend::Postgres => {
-            insert.on_conflict(
-                sea_query::OnConflict::column(conflict_col)
-                    .do_nothing()
-                    .to_owned(),
-            );
-            let (sql, values) = build_sqlx(backend, &mut insert);
-            pool.execute_query(&sql, values)
-                .await
-                .map_err(OrionError::Storage)
-        }
-        DbBackend::Mysql => {
-            // sea-query has no INSERT IGNORE rendering; patch the verb into
-            // the rendered SQL rather than hand-rolling placeholders.
-            let (sql, values) = build_sqlx(backend, &mut insert);
-            let sql = sql.replacen("INSERT INTO", "INSERT IGNORE INTO", 1);
-            pool.execute_query(&sql, values)
-                .await
-                .map_err(OrionError::Storage)
-        }
-    }
+    let col = sea_query::IntoIden::into_iden(conflict_col);
+    apply_do_nothing(&mut insert, vec![col]);
+    let (sql, values) = build_sqlx(pool.backend(), &mut insert);
+    pool.execute_query(&sql, values)
+        .await
+        .map_err(OrionError::Storage)
 }
 
 /// [`insert_if_absent`] over a **composite** conflict target.
@@ -572,29 +582,17 @@ where
     I: IntoIterator,
     I::Item: sea_query::IntoIden,
 {
-    use crate::{DbBackend, build_sqlx};
+    use crate::build_sqlx;
 
-    let backend = pool.backend();
-    match backend {
-        DbBackend::Sqlite | DbBackend::Postgres => {
-            insert.on_conflict(
-                sea_query::OnConflict::columns(conflict_cols)
-                    .do_nothing()
-                    .to_owned(),
-            );
-            let (sql, values) = build_sqlx(backend, &mut insert);
-            pool.execute_query(&sql, values)
-                .await
-                .map_err(OrionError::Storage)
-        }
-        DbBackend::Mysql => {
-            let (sql, values) = build_sqlx(backend, &mut insert);
-            let sql = sql.replacen("INSERT INTO", "INSERT IGNORE INTO", 1);
-            pool.execute_query(&sql, values)
-                .await
-                .map_err(OrionError::Storage)
-        }
-    }
+    let cols: Vec<sea_query::DynIden> = conflict_cols
+        .into_iter()
+        .map(sea_query::IntoIden::into_iden)
+        .collect();
+    apply_do_nothing(&mut insert, cols);
+    let (sql, values) = build_sqlx(pool.backend(), &mut insert);
+    pool.execute_query(&sql, values)
+        .await
+        .map_err(OrionError::Storage)
 }
 
 /// [`insert_if_absent_on`] inside a transaction.
@@ -611,25 +609,15 @@ where
     I: IntoIterator,
     I::Item: sea_query::IntoIden,
 {
-    use crate::{DbBackend, build_sqlx};
+    use crate::build_sqlx;
 
-    let backend = tx.backend();
-    match backend {
-        DbBackend::Sqlite | DbBackend::Postgres => {
-            insert.on_conflict(
-                sea_query::OnConflict::columns(conflict_cols)
-                    .do_nothing()
-                    .to_owned(),
-            );
-            let (sql, values) = build_sqlx(backend, &mut insert);
-            tx.execute_query(&sql, values).await.map_err(Into::into)
-        }
-        DbBackend::Mysql => {
-            let (sql, values) = build_sqlx(backend, &mut insert);
-            let sql = sql.replacen("INSERT INTO", "INSERT IGNORE INTO", 1);
-            tx.execute_query(&sql, values).await.map_err(Into::into)
-        }
-    }
+    let cols: Vec<sea_query::DynIden> = conflict_cols
+        .into_iter()
+        .map(sea_query::IntoIden::into_iden)
+        .collect();
+    apply_do_nothing(&mut insert, cols);
+    let (sql, values) = build_sqlx(tx.backend(), &mut insert);
+    tx.execute_query(&sql, values).await.map_err(Into::into)
 }
 
 /// Rows deleted per statement by [`delete_chunked`].
@@ -732,6 +720,46 @@ mod tests {
     }
 
     use super::*;
+
+    /// B-11: MySQL must not use `INSERT IGNORE`; a conflict is handled by the
+    /// duplicate-key form, so data-too-long and NOT NULL still fail.
+    #[test]
+    fn mysql_insert_if_absent_uses_the_duplicate_key_form() {
+        use crate::DbBackend;
+        use crate::schema::CronScheduleState;
+        use sea_query::Query;
+
+        let mut insert = Query::insert()
+            .into_table(CronScheduleState::Table)
+            .columns([CronScheduleState::ChannelId, CronScheduleState::NextFireAt])
+            .values_panic(["c1".into(), "2020-01-01".into()])
+            .to_owned();
+        apply_do_nothing(
+            &mut insert,
+            vec![sea_query::IntoIden::into_iden(CronScheduleState::ChannelId)],
+        );
+        let (sql, _) = crate::build_sqlx(DbBackend::Mysql, &mut insert);
+        assert!(!sql.contains("IGNORE"), "{sql}");
+        assert!(sql.contains("ON DUPLICATE KEY UPDATE"), "{sql}");
+        assert!(sql.contains("`channel_id` = `channel_id`"), "{sql}");
+
+        // Postgres keeps the targeted conflict and reports rows affected the
+        // same way (`DO NOTHING` inserts nothing).
+        let mut insert = Query::insert()
+            .into_table(CronScheduleState::Table)
+            .columns([CronScheduleState::ChannelId, CronScheduleState::NextFireAt])
+            .values_panic(["c1".into(), "2020-01-01".into()])
+            .to_owned();
+        apply_do_nothing(
+            &mut insert,
+            vec![sea_query::IntoIden::into_iden(CronScheduleState::ChannelId)],
+        );
+        let (sql, _) = crate::build_sqlx(DbBackend::Postgres, &mut insert);
+        assert!(
+            sql.contains(r#"ON CONFLICT ("channel_id") DO NOTHING"#),
+            "{sql}"
+        );
+    }
 
     #[test]
     fn optional_string_some() {

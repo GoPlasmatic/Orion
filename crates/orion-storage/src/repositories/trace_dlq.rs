@@ -160,10 +160,16 @@ pub trait TraceDlqRepository: Send + Sync {
 
     /// Increment retry count and set next retry time for a DLQ entry.
     /// Releases any claim lease.
+    /// Release the lease, advance the retry count and set the next attempt.
+    ///
+    /// `error_message` is the *latest* failure, not the one the entry was
+    /// enqueued with: an operator deciding whether to replay a dead-lettered
+    /// message needs the error that killed the last attempt (B-12).
     async fn record_retry(
         &self,
         id: &str,
         next_retry_at: chrono::NaiveDateTime,
+        error_message: &str,
     ) -> Result<(), OrionError>;
 
     /// Remove an entry after successful retry.
@@ -442,6 +448,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
         &self,
         id: &str,
         next_retry_at: chrono::NaiveDateTime,
+        error_message: &str,
     ) -> Result<(), OrionError> {
         orion_common::metrics::timed_db_op("trace_dlq.record_retry", async {
             let (sql, values) = build_sqlx(
@@ -451,7 +458,8 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                         .table(TraceDlq::Table)
                         .value(TraceDlq::UpdatedAt, super::helpers::updated_now())
                         .value(TraceDlq::RetryCount, Expr::col(TraceDlq::RetryCount).add(1))
-                        .value(TraceDlq::NextRetryAt, next_retry_at),
+                        .value(TraceDlq::NextRetryAt, next_retry_at)
+                        .value(TraceDlq::ErrorMessage, error_message),
                 )
                 .and_where(Expr::col(TraceDlq::Id).eq(id)),
             );
@@ -688,7 +696,9 @@ mod tests {
             .naive_utc()
             .checked_sub_signed(chrono::Duration::seconds(2))
             .expect("past");
-        repo.record_retry(&id, past).await.expect("retry");
+        repo.record_retry(&id, past, "latest failure")
+            .await
+            .expect("retry");
         let claimed = repo.claim_pending("node-b", 10, 60).await.expect("claim");
         assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].retry_count, 1);
