@@ -5,9 +5,7 @@ use dataflow_rs::expr::{Interpolated, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec};
 use dataflow_rs::{Ctx, Function, Outcome};
 
-use super::connector_helpers::{
-    QueryBudget, QueryFailure, acquire_conn, encode_failure, require_op_allowed, to_connect_error,
-};
+use super::connector_helpers::{QueryBudget, require_op_allowed, to_connect_error};
 use super::db_read::DbRead;
 use super::schema::{FieldKind, RetrySafety};
 use crate::HandlerError;
@@ -50,36 +48,18 @@ async fn write_rows(
         params.iter().map(Into::into).collect();
     let (rows_affected, last_insert_id) = crate::connector::pool_cache::dispatch_sql_pool!(
         &pool, p, _decode, bind, typed_args, write_result => {
-            // Named for the same reason as `db_read`'s: a prepared
-            // statement's parameter types are cached per connection, so
-            // the prepare and the execute have to share one.
-            let mut conn = acquire_conn(&budget, NAME, p).await?;
-            let bound = budget
-                .run(NAME, async {
-                    typed_args(&mut conn, query, Some(&scalars))
-                        .await
-                        .map_err(|e| QueryFailure::Classified(encode_failure(NAME, e)))
-                })
-                .await?;
-                // `AssertSqlSafe` states what this handler is: the
-                // raw-SQL escape hatch, whose statement is authored in the
-                // workflow rather than assembled here. sqlx 0.9 makes the
-                // caller own that: the text comes from the definition, the
-                // author-supplied *values* travel as bind parameters beside
-                // it, and a definition reaches the runtime only through the
-                // admin API. Authors who want values checked use the
-                // portable dialect (`data_query`/`data_write`) instead.
-            let sqlx_query = match bound {
-                crate::connector::sql_encode::Bound::Typed(args) => {
-                    sqlx::query_with(sqlx::AssertSqlSafe(query), args)
-                }
-                crate::connector::sql_encode::Bound::Fallback { cache } => {
-                    bind(sqlx::query(sqlx::AssertSqlSafe(query)), params).persistent(cache)
-                }
-            };
-            let result = budget
-                .run(NAME, sqlx_query.execute(&mut *conn))
-                .await?;
+            // One connection, prepared for what the server declared, or
+            // bound by value shape when it declared nothing usable (M-04).
+            let (mut conn, statement) = crate::functions::connector_helpers::bound_statement!(
+                budget,
+                NAME,
+                p,
+                query,
+                Some(&scalars),
+                typed_args,
+                |cache| bind(sqlx::query(sqlx::AssertSqlSafe(query)), params).persistent(cache)
+            );
+            let result = budget.run(NAME, statement.execute(&mut *conn)).await?;
             write_result(&result)
         }
     );

@@ -531,6 +531,81 @@ where
         .await
 }
 
+/// Bind `$sql` for execution on an already-open connection, and settle which
+/// arguments to send (M-04).
+///
+/// `acquire_conn`, the typed-arguments attempt on that same connection (a
+/// prepared statement's parameter types are read per connection, so the
+/// declaration and the binding have to happen on one), and then either those
+/// arguments or the caller's value-shaped fallback — the step where sqlx 0.9's
+/// `AssertSqlSafe`, and PostgreSQL's cache-statement rule, have to stay
+/// consistent. Written once here rather than six times.
+///
+/// A macro rather than a function because `$typed_args` is one `async fn` per
+/// driver, chosen by [`crate::connector::pool_cache::dispatch_sql_pool`]: each
+/// returns its own borrow-carrying future, which no single `FnOnce` bound can
+/// name. It expands where the arm's concrete `typed_args` is in scope, which
+/// is the same reason the dispatcher itself is a macro.
+///
+/// `$fallback` is called with `cache` — whether the prepared statement may be
+/// kept. It is `false` only for PostgreSQL, where leaving a value-shaped bind
+/// cached is the very defect the typed path removes; only the caller knows
+/// which driver its fallback belongs to. `Typed` is always cacheable: its
+/// types are the ones the server inferred, so re-preparing under them declares
+/// the same statement again.
+macro_rules! prepare_statement {
+    ($budget:expr, $name:expr, $conn:expr, $sql:expr, $scalars:expr, $typed_args:ident, $fallback:expr) => {{
+        // A leg of the same budget: on a connection that has already seen this
+        // SQL the prepare is a cache hit and no round trip at all, but the
+        // first time through it is a real one.
+        let bound = $budget
+            .run($name, async {
+                $typed_args($conn, $sql, $scalars).await.map_err(|e| {
+                    $crate::functions::connector_helpers::QueryFailure::Classified(
+                        $crate::functions::connector_helpers::encode_failure($name, e),
+                    )
+                })
+            })
+            .await?;
+        // `AssertSqlSafe` states what these handlers are: the raw-SQL escape
+        // hatch, whose statement is authored in the workflow rather than
+        // assembled here. sqlx 0.9 asks the caller to own that, and the answer
+        // is the same as it was before it asked — the text comes from the
+        // definition, the author-supplied *values* travel as bind parameters
+        // beside it, and a definition reaches the runtime only through the
+        // admin API. Authors who want values checked use the portable dialect
+        // (`data_query`/`data_write`) instead.
+        match bound {
+            $crate::connector::sql_encode::Bound::Typed(args) => {
+                sqlx::query_with(sqlx::AssertSqlSafe($sql), args)
+            }
+            $crate::connector::sql_encode::Bound::Fallback { cache } => ($fallback)(cache),
+        }
+    }};
+}
+pub(crate) use prepare_statement;
+
+/// [`prepare_statement!`] on a connection acquired as one leg of the budget:
+/// the pair, so the caller executes on the connection the statement was
+/// prepared on.
+macro_rules! bound_statement {
+    ($budget:expr, $name:expr, $pool:expr, $sql:expr, $scalars:expr, $typed_args:ident, $fallback:expr) => {{
+        let mut conn =
+            $crate::functions::connector_helpers::acquire_conn(&$budget, $name, $pool).await?;
+        let statement = $crate::functions::connector_helpers::prepare_statement!(
+            $budget,
+            $name,
+            &mut conn,
+            $sql,
+            $scalars,
+            $typed_args,
+            $fallback
+        );
+        (conn, statement)
+    }};
+}
+pub(crate) use bound_statement;
+
 /// Execute an async operation with a timeout, classifying a timeout as
 /// [`ErrorClass::Timeout`] and a failure as [`ErrorClass::Backend`].
 /// Consolidates the repeated timeout + error-mapping pattern

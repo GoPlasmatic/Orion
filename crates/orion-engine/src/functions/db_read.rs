@@ -8,8 +8,7 @@ use dataflow_rs::{Ctx, Function, Issue, Outcome};
 use serde_json::Value;
 
 use super::connector_helpers::{
-    QueryBudget, QueryFailure, acquire_conn, decode_failure, encode_failure, require_op_allowed,
-    to_connect_error,
+    QueryBudget, QueryFailure, decode_failure, require_op_allowed, to_connect_error,
 };
 use super::schema::{FieldKind, RetrySafety};
 use crate::connector::pool_cache::SqlPoolCache;
@@ -134,42 +133,20 @@ async fn read_rows(
     // decoder and its binders, and each arm is type-checked on its own.
     let json = crate::connector::pool_cache::dispatch_sql_pool!(
         &pool, p, rows_to_json, bind, typed_args, _write_result => {
-            // The connection is named rather than left to sqlx to acquire
-            // per statement, because PostgreSQL caches a prepared
-            // statement's parameter types per connection — asking the
-            // server what it declared and then binding against it only
-            // means anything if both happen on the same one.
-            let mut conn = acquire_conn(&budget, NAME, p).await?;
-            // Another leg of the same budget: on a connection that has
-            // already seen this SQL it is a cache hit and no round trip at
-            // all, but the first time through it is a real one.
-            let bound = budget
-                .run(NAME, async {
-                    typed_args(&mut conn, query, Some(&scalars))
-                        .await
-                        .map_err(|e| QueryFailure::Classified(encode_failure(NAME, e)))
-                })
-                .await?;
+            // One connection, prepared for what the server declared, or
+            // bound by value shape when it declared nothing usable (M-04).
+            let (mut conn, statement) = crate::functions::connector_helpers::bound_statement!(
+                budget,
+                NAME,
+                p,
+                query,
+                Some(&scalars),
+                typed_args,
+                |cache| bind(sqlx::query(sqlx::AssertSqlSafe(query)), params).persistent(cache)
+            );
             budget.run(NAME, async {
                 use futures::TryStreamExt;
-                // `AssertSqlSafe` states what this handler is: the
-                // raw-SQL escape hatch, whose statement is authored in the
-                // workflow rather than assembled here. sqlx 0.9 asks the
-                // caller to own that, and the answer is the same as it was
-                // before it asked — the text comes from the definition, the
-                // author-supplied *values* travel as bind parameters beside
-                // it, and a definition reaches the runtime only through the
-                // admin API. Authors who want values checked use the
-                // portable dialect (`data_query`/`data_write`) instead.
-                let sqlx_query = match bound {
-                    crate::connector::sql_encode::Bound::Typed(args) => {
-                        sqlx::query_with(sqlx::AssertSqlSafe(query), args)
-                    }
-                    crate::connector::sql_encode::Bound::Fallback { cache } => {
-                        bind(sqlx::query(sqlx::AssertSqlSafe(query)), params).persistent(cache)
-                    }
-                };
-                let mut stream = sqlx_query.fetch(&mut *conn);
+                let mut stream = statement.fetch(&mut *conn);
                 let mut json_rows = Vec::new();
                 let mut total_bytes = 0usize;
                 // Not `.map_err(|e| e.to_string())`: stringifying here

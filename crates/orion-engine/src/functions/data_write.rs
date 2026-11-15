@@ -8,8 +8,7 @@ use dataflow_rs::{Ctx, Function, Outcome};
 use serde_json::{Map, Value, json};
 
 use super::connector_helpers::{
-    QueryBudget, QueryFailure, acquire_conn, build_entity_registry, decode_failure, encode_failure,
-    require_op_allowed, to_connect_error, to_exec_error,
+    QueryBudget, build_entity_registry, decode_failure, require_op_allowed, to_connect_error,
 };
 use super::db_read::rendered_row_format;
 use super::schema::{FieldKind, FieldSchema, RetrySafety};
@@ -20,7 +19,6 @@ use crate::connector::sql_decode::RowFormat;
 use crate::kit::{self, read};
 use crate::query::write::{ResolvedWrite, WriteOp};
 use crate::query::{self, SqlDialect};
-use crate::storage::detect_backend;
 
 /// This handler's name, for the helpers that take it as an argument — a
 /// reference to the one place it is written.
@@ -84,16 +82,16 @@ async fn run_write(
     // individual ops (e.g. delete) regardless of what workflows ask for.
     require_op_allowed(&db.operations, resolved.op().as_str(), connector)?;
 
-    let dialect: SqlDialect = detect_backend(&db.connection_string)
-        .map_err(to_exec_error)?
-        .into();
-    let (sql, values) =
-        query::backend::sql::render_write(&resolved, dialect).map_err(HandlerError::from)?;
     let pool = backends
         .pool_cache
         .get_pool_for_generation(connector, db, backends.generation)
         .await
         .map_err(to_connect_error)?;
+    // The pool's dialect, not a second reading of the connection string, so
+    // the statement is rendered for the driver that runs it.
+    let dialect: SqlDialect = pool.dialect();
+    let (sql, values) =
+        query::backend::sql::render_write(&resolved, dialect).map_err(HandlerError::from)?;
     execute_sql(
         &pool,
         &sql,
@@ -314,21 +312,18 @@ async fn execute_sql(
                 // On the transaction's own connection: that is where the
                 // statement will run, and a prepared statement's parameter
                 // types are cached per connection.
-                let bound = budget
-                    .run(NAME, async {
-                        typed_args(&mut tx, sql, scalars.as_deref())
-                            .await
-                            .map_err(|e| QueryFailure::Classified(encode_failure(NAME, e)))
-                    })
-                    .await?;
-                let (args, persistent) = decide(bound, fallback);
+                let statement = crate::functions::connector_helpers::prepare_statement!(
+                    budget,
+                    NAME,
+                    &mut tx,
+                    sql,
+                    scalars.as_deref(),
+                    typed_args,
+                    |cache| sqlx::query_with(sqlx::AssertSqlSafe(sql), fallback).persistent(cache)
+                );
                 let out = run_write_statement(
                     &mut *tx,
-                    Statement {
-                        sql,
-                        args,
-                        persistent,
-                    },
+                    statement,
                     w,
                     &budget,
                     Shaping {
@@ -346,22 +341,18 @@ async fn execute_sql(
                 // this one names its own for the same reason — a prepared
                 // statement's parameter types are cached per connection, so
                 // the prepare and the execute have to land on the same one.
-                let mut conn = acquire_conn(&budget, NAME, p).await?;
-                let bound = budget
-                    .run(NAME, async {
-                        typed_args(&mut conn, sql, scalars.as_deref())
-                            .await
-                            .map_err(|e| QueryFailure::Classified(encode_failure(NAME, e)))
-                    })
-                    .await?;
-                let (args, persistent) = decide(bound, fallback);
+                let (mut conn, statement) = crate::functions::connector_helpers::bound_statement!(
+                    budget,
+                    NAME,
+                    p,
+                    sql,
+                    scalars.as_deref(),
+                    typed_args,
+                    |cache| sqlx::query_with(sqlx::AssertSqlSafe(sql), fallback).persistent(cache)
+                );
                 run_write_statement(
                     &mut *conn,
-                    Statement {
-                        sql,
-                        args,
-                        persistent,
-                    },
+                    statement,
                     w,
                     &budget,
                     Shaping {
@@ -379,26 +370,6 @@ async fn execute_sql(
     // of the result's documented shape.
     out["status"] = json!("ok");
     Ok((out, Outcome::Ok))
-}
-
-/// Settle a [`Bound`] into the arguments to send and whether the statement may
-/// be cached.
-///
-/// `Typed` is always cacheable: its types are the ones the server inferred, so
-/// re-preparing under them declares the same statement again.
-fn decide<A>(bound: crate::connector::sql_encode::Bound<A>, fallback: A) -> (A, bool) {
-    match bound {
-        crate::connector::sql_encode::Bound::Typed(args) => (args, true),
-        crate::connector::sql_encode::Bound::Fallback { cache } => (fallback, cache),
-    }
-}
-
-/// The statement [`run_write_statement`] sends: its SQL, its bound arguments,
-/// and whether the driver may cache it as a prepared statement.
-struct Statement<'e, A> {
-    sql: &'e str,
-    args: A,
-    persistent: bool,
 }
 
 /// How [`run_write_statement`] turns what the driver answered into the
@@ -426,7 +397,7 @@ struct Shaping<F, G> {
 /// [`QueryFailure::Limit`]: super::connector_helpers::QueryFailure::Limit
 async fn run_write_statement<'e, E, R, F, G>(
     executor: E,
-    statement: Statement<'e, R::Arguments>,
+    statement: sqlx::query::Query<'e, R, R::Arguments>,
     w: &ResolvedWrite,
     budget: &QueryBudget,
     shaping: Shaping<F, G>,
@@ -443,11 +414,6 @@ where
     ) -> Result<Vec<Value>, crate::connector::sql_decode::DecodeError>,
     G: Fn(&R::QueryResult) -> (u64, Option<i64>),
 {
-    let Statement {
-        sql,
-        args,
-        persistent,
-    } = statement;
     let Shaping {
         rows_to_json,
         write_result,
@@ -455,14 +421,7 @@ where
         max_returning,
     } = shaping;
     if w.returning().is_empty() {
-        let res = budget
-            .run(
-                NAME,
-                sqlx::query_with(sqlx::AssertSqlSafe(sql), args)
-                    .persistent(persistent)
-                    .execute(executor),
-            )
-            .await?;
+        let res = budget.run(NAME, statement.execute(executor)).await?;
         let (rows_affected, last_insert_id) = write_result(&res);
         let mut out = json!({ "rows_affected": rows_affected });
         // MySQL and SQLite report an auto-increment id; PostgreSQL does not,
@@ -479,9 +438,7 @@ where
         let rows = budget
             .run(NAME, async {
                 use futures::TryStreamExt;
-                let mut stream = sqlx::query_with(sqlx::AssertSqlSafe(sql), args)
-                    .persistent(persistent)
-                    .fetch(executor);
+                let mut stream = statement.fetch(executor);
                 let mut rows = Vec::new();
                 while let Some(row) = stream.try_next().await? {
                     if rows.len() >= max_returning {

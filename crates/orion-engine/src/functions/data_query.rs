@@ -17,8 +17,7 @@ use serde_json::{Map, Value};
 use sqlx::AssertSqlSafe;
 
 use super::connector_helpers::{
-    QueryBudget, QueryFailure, acquire_conn, build_entity_registry, decode_failure, encode_failure,
-    require_op_allowed, to_connect_error, to_exec_error,
+    QueryBudget, build_entity_registry, decode_failure, require_op_allowed, to_connect_error,
 };
 use super::db_read::rendered_row_format;
 use super::schema::{FieldKind, RetrySafety};
@@ -27,7 +26,6 @@ use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::sql_decode::RowFormat;
 use crate::kit::{self, read};
 use crate::query::{self, GroupKey, SqlDialect};
-use crate::storage::detect_backend;
 use crate::{ErrorClass, HandlerError};
 
 /// This handler's name, for the helpers that take it as an argument — a
@@ -92,19 +90,17 @@ async fn run_query(
     let params = &parsed.params;
     let limits = backends.limits;
 
-    // SQL: dialect from the connection-string scheme, the same source the
-    // pool is built from, so the rendered SQL always matches the driver that
-    // runs it.
-    let dialect: SqlDialect = detect_backend(&db.connection_string)
-        .map_err(to_exec_error)?
-        .into();
-    let plan =
-        query::plan_sql(query, params, &registry, dialect, limits).map_err(HandlerError::from)?;
     let pool = backends
         .pool_cache
         .get_pool_for_generation(connector, db, backends.generation)
         .await
         .map_err(to_connect_error)?;
+    // The dialect is the pool's, not a second reading of the connection
+    // string: the plan renders for the driver that is about to run it, and
+    // the two cannot drift.
+    let dialect: SqlDialect = pool.dialect();
+    let plan =
+        query::plan_sql(query, params, &registry, dialect, limits).map_err(HandlerError::from)?;
     let result = if plan.count {
         return run_sql_count(&pool, &plan, dialect, db.query_timeout_ms, run_deadline).await;
     } else {
@@ -324,27 +320,19 @@ async fn run_sql_count(
     let rows: Vec<Value> = crate::connector::pool_cache::dispatch_sql_pool!(
         pool, p, rows_to_json, _bind, typed_args, _write_result => {
             let scalars = crate::connector::sql_encode::scalars_from_sea(&values.0);
-            let mut conn = acquire_conn(&budget, NAME, p).await?;
-            let bound = budget
-                .run(NAME, async {
-                    typed_args(&mut conn, &sql, scalars.as_deref())
-                        .await
-                        .map_err(|e| QueryFailure::Classified(encode_failure(NAME, e)))
-                })
-                .await?;
             // Converted up front, with the pool pinning which driver's
             // arguments these are; the move itself is free.
             let fallback = crate::connector::sql_encode::sea_args_for(p, values);
-            let q = match bound {
-                crate::connector::sql_encode::Bound::Typed(args) => {
-                    sqlx::query_with(AssertSqlSafe(sql.as_str()), args)
-                }
-                crate::connector::sql_encode::Bound::Fallback { cache } => {
-                    sqlx::query_with(AssertSqlSafe(sql.as_str()), fallback)
-                        .persistent(cache)
-                }
-            };
-            let rows = budget.run(NAME, q.fetch_all(&mut *conn)).await?;
+            let (mut conn, statement) = crate::functions::connector_helpers::bound_statement!(
+                budget,
+                NAME,
+                p,
+                sql.as_str(),
+                scalars.as_deref(),
+                typed_args,
+                |cache| sqlx::query_with(AssertSqlSafe(sql.as_str()), fallback).persistent(cache)
+            );
+            let rows = budget.run(NAME, statement.fetch_all(&mut *conn)).await?;
             rows_to_json(&rows, crate::connector::sql_decode::RowFormat::default())
                 .map_err(|e| decode_failure(NAME, e))?
         }
@@ -425,27 +413,19 @@ async fn run_sql_with_includes(
             // single connection across all of them would raise occupancy
             // against `max_connections` for no gain.
             let scalars = crate::connector::sql_encode::scalars_from_sea(&values.0);
-            let mut conn = acquire_conn(&budget, NAME, p).await?;
-            let bound = budget
-                .run(NAME, async {
-                    typed_args(&mut conn, &sql, scalars.as_deref())
-                        .await
-                        .map_err(|e| QueryFailure::Classified(encode_failure(NAME, e)))
-                })
-                .await?;
             // Converted up front, with the pool pinning which driver's
             // arguments these are; the move itself is free.
             let fallback = crate::connector::sql_encode::sea_args_for(p, values);
-            let q = match bound {
-                crate::connector::sql_encode::Bound::Typed(args) => {
-                    sqlx::query_with(AssertSqlSafe(sql.as_str()), args)
-                }
-                crate::connector::sql_encode::Bound::Fallback { cache } => {
-                    sqlx::query_with(AssertSqlSafe(sql.as_str()), fallback)
-                        .persistent(cache)
-                }
-            };
-            let rows = budget.run(NAME, q.fetch_all(&mut *conn)).await?;
+            let (mut conn, statement) = crate::functions::connector_helpers::bound_statement!(
+                budget,
+                NAME,
+                p,
+                sql.as_str(),
+                scalars.as_deref(),
+                typed_args,
+                |cache| sqlx::query_with(AssertSqlSafe(sql.as_str()), fallback).persistent(cache)
+            );
+            let rows = budget.run(NAME, statement.fetch_all(&mut *conn)).await?;
             rows_to_json(&rows, format).map_err(|e| decode_failure(NAME, e))?
         }
     );
@@ -480,27 +460,21 @@ async fn run_sql_with_includes(
             let children: Vec<Value> = crate::connector::pool_cache::dispatch_sql_pool!(
                 pool, p, rows_to_json, _bind, typed_args, _write_result => {
                     let cscalars = crate::connector::sql_encode::scalars_from_sea(&cvalues.0);
-                    let mut conn = acquire_conn(&budget, NAME, p).await?;
-                    let bound = budget
-                        .run(NAME, async {
-                            typed_args(&mut conn, &csql, cscalars.as_deref())
-                                .await
-                                .map_err(|e| QueryFailure::Classified(encode_failure(NAME, e)))
-                        })
-                        .await?;
                     // Converted up front, with the pool pinning which driver's
                     // arguments these are; the move itself is free.
                     let fallback = crate::connector::sql_encode::sea_args_for(p, cvalues);
-                    let q = match bound {
-                        crate::connector::sql_encode::Bound::Typed(args) => {
-                            sqlx::query_with(AssertSqlSafe(csql.as_str()), args)
-                        }
-                        crate::connector::sql_encode::Bound::Fallback { cache } => {
-                            sqlx::query_with(AssertSqlSafe(csql.as_str()), fallback)
+                    let (mut conn, statement) =
+                        crate::functions::connector_helpers::bound_statement!(
+                            budget,
+                            NAME,
+                            p,
+                            csql.as_str(),
+                            cscalars.as_deref(),
+                            typed_args,
+                            |cache| sqlx::query_with(AssertSqlSafe(csql.as_str()), fallback)
                                 .persistent(cache)
-                        }
-                    };
-                    let crows = budget.run(NAME, q.fetch_all(&mut *conn)).await?;
+                        );
+                    let crows = budget.run(NAME, statement.fetch_all(&mut *conn)).await?;
                     rows_to_json(&crows, format).map_err(|e| decode_failure(NAME, e))?
                 }
             );

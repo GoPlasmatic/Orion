@@ -18,9 +18,10 @@ pub struct HttpConnectorConfig {
     /// these are applied to every request *and* every redirect hop. They come
     /// from the stored connector, so one parse per loaded connector is enough
     /// (P-16). Skipped by serde: it is a parse of `headers`, not a second
-    /// field to keep in step.
+    /// field to keep in step. Boxed so the cache does not widen every
+    /// `ConnectorConfig` enum, which is cloned per resolved call.
     #[serde(skip)]
-    pub parsed_headers: std::sync::OnceLock<reqwest::header::HeaderMap>,
+    pub parsed_headers: std::sync::OnceLock<Box<reqwest::header::HeaderMap>>,
     /// Query parameters appended to every request through this connector —
     /// the home for APIs that authenticate with credentials **in the query
     /// string** (legacy SMS/telecom gateways, older payment and lookup APIs).
@@ -103,7 +104,7 @@ impl HttpConnectorConfig {
                     ),
                 }
             }
-            map
+            Box::new(map)
         })
     }
 
