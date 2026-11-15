@@ -25,7 +25,7 @@ use super::audit_log;
 pub(crate) async fn list_circuit_breakers(
     State(state): State<AppState>,
 ) -> Json<Data<CircuitBreakerStatesResponse>> {
-    let states = state.connector_registry.circuit_breaker_states().await;
+    let states = state.connector_registry.circuit_breaker_states();
     data_response(CircuitBreakerStatesResponse {
         enabled: state.connector_registry.circuit_breaker_enabled(),
         // F21: breakers are node-local state. The *reset* path fans out to
@@ -54,7 +54,7 @@ pub(crate) async fn reset_circuit_breaker(
     principal: Option<Extension<AdminPrincipal>>,
     OrionPath(key): OrionPath<String>,
 ) -> Result<Json<Data<CircuitBreakerResetResponse>>, OrionError> {
-    let found = state.connector_registry.reset_circuit_breaker(&key).await;
+    let found = state.connector_registry.reset_circuit_breaker(&key);
 
     // F21: in cluster mode a 404 for "not on this node" is wrong. Breakers are
     // node-local, so the key an operator wants to clear is very often open on a

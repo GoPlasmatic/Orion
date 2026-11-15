@@ -143,7 +143,7 @@ impl ChannelLoader {
         };
 
         let strict = self.cluster.is_some();
-        let resolved = match connector_registry.get(connector_name).await {
+        let resolved = match connector_registry.get(connector_name) {
             Some(cfg) => match cfg.as_ref() {
                 ConnectorConfig::Cache(cache_cfg) => {
                     if !cache_cfg.operations.write {
@@ -168,7 +168,6 @@ impl ChannelLoader {
                     } else {
                         cache_pool
                             .get_backend(purpose, connector_name, cache_cfg)
-                            .await
                             .map_err(|e| {
                                 format!(
                                     "failed to create backend from connector '{connector_name}': {e}"

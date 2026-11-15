@@ -30,7 +30,6 @@ async fn delete(
     // cache.
     let backend = pool
         .get_backend(CachePurpose::Workflow, connector, conn)
-        .await
         .map_err(to_connect_error)?;
     let deleted = backend.remove_many(keys).await.map_err(to_exec_error)?;
     tracing::debug!(keys = keys.len(), deleted, "Deleted cache keys");

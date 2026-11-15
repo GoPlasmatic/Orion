@@ -223,7 +223,6 @@ pub mod twin {
                     "c",
                     &self.config,
                 )
-                .await
                 .expect("a memory backend opens")
         }
 

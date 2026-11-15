@@ -29,7 +29,6 @@ async fn bump(
 ) -> Result<i64, HandlerError> {
     let backend = pool
         .get_backend(CachePurpose::Workflow, connector, conn)
-        .await
         .map_err(to_connect_error)?;
     let value = backend.incr_by(key, by, ttl).await.map_err(to_exec_error)?;
     tracing::debug!(key = %key, by, value, "Incremented cache key");

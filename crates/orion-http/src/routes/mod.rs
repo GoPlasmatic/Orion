@@ -282,7 +282,7 @@ pub(crate) async fn health_check(
 
     // Collected only when the caller may see it.
     let cb_states = if show_detail {
-        state.connector_registry.circuit_breaker_states().await
+        state.connector_registry.circuit_breaker_states()
     } else {
         Default::default()
     };

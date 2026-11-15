@@ -823,21 +823,18 @@ async fn submit_async(
         .await?;
     let trace_id = trace.id;
 
-    let submitted = state
-        .trace_queue
-        .submit_sized(
-            crate::queue::QueueMessage {
-                trace_id: trace_id.clone(),
-                channel,
-                payload: data,
-                metadata,
-                trace_headers,
-                profile_requested,
-                backpressure_permit,
-            },
-            queued_bytes,
-        )
-        .await;
+    let submitted = state.trace_queue.submit_sized(
+        crate::queue::QueueMessage {
+            trace_id: trace_id.clone(),
+            channel,
+            payload: data,
+            metadata,
+            trace_headers,
+            profile_requested,
+            backpressure_permit,
+        },
+        queued_bytes,
+    );
     if let Err(e) = submitted {
         // Shed. The pending row is already committed, the caller gets a 503
         // and never sees this trace_id — left unsettled, the row would sit

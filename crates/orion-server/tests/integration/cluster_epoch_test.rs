@@ -30,7 +30,6 @@ async fn a_definitions_deployment_leaves_cached_pools_open() {
     let config = state
         .connector_registry
         .get("pool-conn")
-        .await
         .expect("the connector is registered");
     let orion::connector::ConnectorConfig::Db(db_config) = config.as_ref() else {
         panic!("expected a db connector");

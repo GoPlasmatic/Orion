@@ -52,7 +52,6 @@ async fn look_up(
     // or response cache.
     let backend = pool
         .get_backend(CachePurpose::Workflow, connector, conn)
-        .await
         .map_err(to_connect_error)?;
 
     match lookup {

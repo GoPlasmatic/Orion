@@ -280,8 +280,7 @@ async fn apply_breaker_resets(state: &AppState) -> bool {
             // lazily per node (D3).
             let found = state
                 .connector_registry
-                .reset_circuit_breaker(&row.breaker_key)
-                .await;
+                .reset_circuit_breaker(&row.breaker_key);
             tracing::info!(
                 key = %row.breaker_key,
                 found,

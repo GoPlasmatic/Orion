@@ -607,7 +607,7 @@ mod tests {
         registry.insert_for_test("shared-api", rotated_cfg).await;
 
         // Outside a pinned generation, the live registry returns the new URL.
-        let live = registry.get("shared-api").await.expect("live config");
+        let live = registry.get("shared-api").expect("live config");
         let crate::connector::ConnectorConfig::Http(live_http) = live.as_ref() else {
             panic!("expected http connector");
         };
@@ -615,7 +615,7 @@ mod tests {
 
         // Inside a pinned generation, `registry.get` returns the pinned snapshot's URL.
         crate::runtime::generation::pin(pinned_gen, async {
-            let pinned = registry.get("shared-api").await.expect("pinned config");
+            let pinned = registry.get("shared-api").expect("pinned config");
             let crate::connector::ConnectorConfig::Http(pinned_http) = pinned.as_ref() else {
                 panic!("expected http connector");
             };

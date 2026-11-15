@@ -799,10 +799,7 @@ async fn build_and_publish(
         // cluster breaker-reset test pins.
         let live_channels: std::collections::HashSet<&str> =
             channels.iter().map(|c| c.name.as_str()).collect();
-        state
-            .connector_registry
-            .prune_breakers(&live_channels)
-            .await;
+        state.connector_registry.prune_breakers(&live_channels);
 
         let active_connections: std::collections::HashSet<&str> = manifest
             .members

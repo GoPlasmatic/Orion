@@ -323,15 +323,15 @@ impl TraceQueue {
     }
 
     /// Submit a trace to the queue for background processing.
-    pub async fn submit(&self, msg: QueueMessage) -> Result<(), crate::errors::OrionError> {
+    pub fn submit(&self, msg: QueueMessage) -> Result<(), crate::errors::OrionError> {
         let size = message_size(&msg.payload, None, &msg.metadata);
-        self.submit_sized(msg, size).await
+        self.submit_sized(msg, size)
     }
 
     /// [`Self::submit`] for a caller that already knows the message's
     /// [`message_size`] — the async submission, which measured it once for
     /// [`Self::check_admissible_sized`] and must reserve exactly that.
-    pub async fn submit_sized(
+    pub fn submit_sized(
         &self,
         msg: QueueMessage,
         size: usize,
@@ -343,7 +343,6 @@ impl TraceQueue {
             dlq_max_retries: None,
             payload_size: size,
         })
-        .await
     }
 
     /// Fast pre-persistence admission check.
@@ -401,7 +400,7 @@ impl TraceQueue {
     /// lineage has already spent and the durable DLQ entry ID/max-retries so
     /// post-execution settlement updates or removes the leased DLQ row only
     /// after processing completes (Q3).
-    pub(crate) async fn submit_dlq_retry(
+    pub(crate) fn submit_dlq_retry(
         &self,
         msg: QueueMessage,
         dlq_entry_id: String,
@@ -416,14 +415,13 @@ impl TraceQueue {
             dlq_max_retries: Some(dlq_max_retries),
             payload_size,
         })
-        .await
     }
 
     /// Sheds rather than waits. `buffer_size` is a shed threshold, not a
     /// waiting room: awaiting capacity here parks the calling HTTP handler for
     /// as long as the workers stay behind, turning saturation into unbounded
     /// request latency instead of the documented 503 (Q1).
-    async fn enqueue(&self, item: QueuedItem) -> Result<(), crate::errors::OrionError> {
+    fn enqueue(&self, item: QueuedItem) -> Result<(), crate::errors::OrionError> {
         // The payload memory estimate the caller measured (`message_size`).
         let payload_size = item.payload_size;
 
@@ -658,15 +656,13 @@ mod tests {
     async fn submit_rejects_when_buffer_is_full() {
         let (queue, _rx) = TraceQueue::new_for_test(1);
 
-        queue.submit(test_message("t1")).await.expect("first fits");
+        queue.submit(test_message("t1")).expect("first fits");
 
         // Must resolve immediately with 503 rather than parking the caller
         // until a worker drains the buffer.
-        let err =
-            tokio::time::timeout(Duration::from_millis(250), queue.submit(test_message("t2")))
-                .await
-                .expect("submit must not block on a full queue")
-                .expect_err("full queue must be rejected");
+        let err = queue
+            .submit(test_message("t2"))
+            .expect_err("full queue must be rejected");
 
         assert!(
             matches!(err, crate::errors::OrionError::ServiceUnavailable { .. }),
@@ -683,11 +679,11 @@ mod tests {
             .expect("permit available");
 
         let (queue, _rx) = TraceQueue::new_for_test(1);
-        queue.submit(test_message("t1")).await.expect("first fits");
+        queue.submit(test_message("t1")).expect("first fits");
 
         let mut msg = test_message("t2");
         msg.backpressure_permit = Some(permit);
-        assert!(queue.submit(msg).await.is_err(), "second must be shed");
+        assert!(queue.submit(msg).is_err(), "second must be shed");
 
         assert_eq!(
             semaphore.available_permits(),
@@ -703,7 +699,6 @@ mod tests {
 
         let err = queue
             .submit(test_message("t1"))
-            .await
             .expect_err("closed queue must be rejected");
         assert!(
             matches!(err, crate::errors::OrionError::ServiceUnavailable { .. }),

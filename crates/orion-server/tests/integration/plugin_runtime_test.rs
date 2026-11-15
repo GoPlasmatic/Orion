@@ -16,9 +16,7 @@ use serde_json::{Value, json};
 
 use orion::config::PluginsConfig;
 use orion::engine::{FunctionEntry, FunctionRegistry, PluginBinding};
-use orion::plugin::{
-    ABI, Limits, LoadError, Manifest, PluginFunction, WasmRuntime,
-};
+use orion::plugin::{ABI, Limits, LoadError, Manifest, PluginFunction, WasmRuntime};
 
 const COMPONENT: &[u8] = include_bytes!("../fixtures/plugins/fixture.wasm");
 const MANIFEST: &str = include_str!("../fixtures/plugins/fixture.toml");

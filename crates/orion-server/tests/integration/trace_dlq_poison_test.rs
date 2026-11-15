@@ -159,7 +159,6 @@ async fn poison_message_converges_on_dlq_max_retries() {
             profile_requested: false,
             backpressure_permit: None,
         })
-        .await
         .expect("submit");
 
     // Phase 1: the lineage must climb to max_retries. Before the carry, every

@@ -129,7 +129,6 @@ async fn failed_running_write_routes_message_to_dlq() {
             profile_requested: false,
             backpressure_permit: None,
         })
-        .await
         .unwrap();
 
     // The failed running-write must produce a DLQ row for this trace…
@@ -262,7 +261,6 @@ async fn run_one_message_to_terminal_status(
             profile_requested: false,
             backpressure_permit: None,
         })
-        .await
         .unwrap();
 
     for _ in 0..200 {
@@ -839,17 +837,15 @@ async fn a_panicking_trace_does_not_permanently_consume_queue_memory() {
                 .create_pending("panic-ch", None, "async", Some("{}"), None)
                 .await
                 .expect("pending row");
-            queue
-                .submit(orion::queue::QueueMessage {
-                    trace_id: trace.id,
-                    channel: "panic-ch".to_string(),
-                    payload: PAYLOAD.clone(),
-                    metadata: METADATA.clone(),
-                    trace_headers: Default::default(),
-                    profile_requested: false,
-                    backpressure_permit: None,
-                })
-                .await
+            queue.submit(orion::queue::QueueMessage {
+                trace_id: trace.id,
+                channel: "panic-ch".to_string(),
+                payload: PAYLOAD.clone(),
+                metadata: METADATA.clone(),
+                trace_headers: Default::default(),
+                profile_requested: false,
+                backpressure_permit: None,
+            })
         }
     };
 

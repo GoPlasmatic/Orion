@@ -272,11 +272,7 @@ impl ConnectorRegistry {
     /// without allocating a formatted `String`, while the entry caches the
     /// composite `"{channel}:{connector}"` string for admin API / cluster-reset
     /// compatibility.
-    pub async fn get_or_create_breaker(
-        &self,
-        channel: &str,
-        connector: &str,
-    ) -> Arc<CircuitBreaker> {
+    pub fn get_or_create_breaker(&self, channel: &str, connector: &str) -> Arc<CircuitBreaker> {
         let lookup = BreakerKeyRef { channel, connector };
         // Fast path: read lock with zero-allocation borrowed lookup
         {
@@ -364,7 +360,7 @@ impl ConnectorRegistry {
     /// the caller must pass names or every breaker is dropped.
     ///
     /// A no-op when breakers are disabled (the map is then always empty).
-    pub async fn prune_breakers(&self, live_channels: &std::collections::HashSet<&str>) {
+    pub fn prune_breakers(&self, live_channels: &std::collections::HashSet<&str>) {
         if !self.cb_config.enabled {
             return;
         }
@@ -380,7 +376,7 @@ impl ConnectorRegistry {
     }
 
     /// Return all circuit breaker states for admin/health introspection.
-    pub async fn circuit_breaker_states(&self) -> HashMap<String, String> {
+    pub fn circuit_breaker_states(&self) -> HashMap<String, String> {
         let breakers = self
             .circuit_breakers
             .read()
@@ -407,7 +403,7 @@ impl ConnectorRegistry {
     }
 
     /// Force-reset a circuit breaker by key. Returns `true` if the key existed.
-    pub async fn reset_circuit_breaker(&self, key: &str) -> bool {
+    pub fn reset_circuit_breaker(&self, key: &str) -> bool {
         let breakers = self
             .circuit_breakers
             .read()
@@ -530,7 +526,7 @@ impl ConnectorRegistry {
     /// ([`PINNED_CONNECTORS`]), resolves from that snapshot so
     /// connector tasks within one run observe a consistent connector estate
     /// across concurrent reloads.
-    pub async fn get(&self, name: &str) -> Option<Arc<ConnectorConfig>> {
+    pub fn get(&self, name: &str) -> Option<Arc<ConnectorConfig>> {
         if let Ok(pinned) = PINNED_CONNECTORS.try_with(|snapshot| snapshot.get(name).cloned()) {
             return pinned;
         }
@@ -558,7 +554,7 @@ impl ConnectorRegistry {
     }
 
     /// Every loaded connector, by name. A snapshot: no lock is held.
-    pub async fn list_all(&self) -> Vec<(String, Arc<ConnectorConfig>)> {
+    pub fn list_all(&self) -> Vec<(String, Arc<ConnectorConfig>)> {
         self.configs
             .load()
             .iter()
@@ -868,7 +864,7 @@ mod tests {
     #[tokio::test]
     async fn test_connector_registry_get_and_set() {
         let registry = ConnectorRegistry::default();
-        assert!(registry.get("nonexistent").await.is_none());
+        assert!(registry.get("nonexistent").is_none());
     }
 
     #[tokio::test]
@@ -898,8 +894,8 @@ mod tests {
             ..Default::default()
         };
         let registry = ConnectorRegistry::new(config);
-        let b1 = registry.get_or_create_breaker("ch", "conn").await;
-        let b2 = registry.get_or_create_breaker("ch", "conn").await;
+        let b1 = registry.get_or_create_breaker("ch", "conn");
+        let b2 = registry.get_or_create_breaker("ch", "conn");
         // Should return the same breaker
         assert!(Arc::ptr_eq(&b1, &b2));
     }
@@ -913,8 +909,8 @@ mod tests {
             ..Default::default()
         };
         let registry = ConnectorRegistry::new(config);
-        let _ = registry.get_or_create_breaker("ch", "conn").await;
-        let states = registry.circuit_breaker_states().await;
+        let _ = registry.get_or_create_breaker("ch", "conn");
+        let states = registry.circuit_breaker_states();
         assert_eq!(states.len(), 1);
         assert_eq!(states.get("ch:conn").expect("test"), "closed");
     }
@@ -928,11 +924,11 @@ mod tests {
             ..Default::default()
         };
         let registry = ConnectorRegistry::new(config);
-        let breaker = registry.get_or_create_breaker("ch", "conn").await;
+        let breaker = registry.get_or_create_breaker("ch", "conn");
         breaker.record_failure(); // trips it
         assert!(!breaker.check()); // open
 
-        let found = registry.reset_circuit_breaker("ch:conn").await;
+        let found = registry.reset_circuit_breaker("ch:conn");
         assert!(found);
         assert!(breaker.check()); // closed again
     }
@@ -940,7 +936,7 @@ mod tests {
     #[tokio::test]
     async fn test_connector_registry_reset_nonexistent_breaker() {
         let registry = ConnectorRegistry::default();
-        assert!(!registry.reset_circuit_breaker("nope").await);
+        assert!(!registry.reset_circuit_breaker("nope"));
     }
 
     #[tokio::test]
@@ -954,18 +950,18 @@ mod tests {
         let registry = ConnectorRegistry::new(config);
 
         // Fill to capacity
-        let _b1 = registry.get_or_create_breaker("ch", "key1").await;
-        let _b2 = registry.get_or_create_breaker("ch", "key2").await;
-        let _b3 = registry.get_or_create_breaker("ch", "key3").await;
+        let _b1 = registry.get_or_create_breaker("ch", "key1");
+        let _b2 = registry.get_or_create_breaker("ch", "key2");
+        let _b3 = registry.get_or_create_breaker("ch", "key3");
 
         // Access key2 and key3 to make key1 the LRU
-        let _b2_again = registry.get_or_create_breaker("ch", "key2").await;
-        let _b3_again = registry.get_or_create_breaker("ch", "key3").await;
+        let _b2_again = registry.get_or_create_breaker("ch", "key2");
+        let _b3_again = registry.get_or_create_breaker("ch", "key3");
 
         // Adding a 4th should evict key1 (LRU)
-        let _b4 = registry.get_or_create_breaker("ch", "key4").await;
+        let _b4 = registry.get_or_create_breaker("ch", "key4");
 
-        let states = registry.circuit_breaker_states().await;
+        let states = registry.circuit_breaker_states();
         assert_eq!(states.len(), 3);
         assert!(
             !states.contains_key("ch:key1"),
@@ -991,14 +987,14 @@ mod tests {
         let registry = ConnectorRegistry::new(config);
         registry.load(repo.stored()).await;
 
-        registry.get_or_create_breaker("ch-live", "conn-live").await;
-        registry.get_or_create_breaker("ch-gone", "conn-live").await;
-        registry.get_or_create_breaker("ch-live", "conn-gone").await;
+        registry.get_or_create_breaker("ch-live", "conn-live");
+        registry.get_or_create_breaker("ch-gone", "conn-live");
+        registry.get_or_create_breaker("ch-live", "conn-gone");
 
         let live: std::collections::HashSet<&str> = ["ch-live"].into_iter().collect();
-        registry.prune_breakers(&live).await;
+        registry.prune_breakers(&live);
 
-        let states = registry.circuit_breaker_states().await;
+        let states = registry.circuit_breaker_states();
         assert!(
             states.contains_key("ch-live:conn-live"),
             "a live channel + live connector is kept"
@@ -1028,8 +1024,8 @@ mod tests {
         ]);
         let registry = ConnectorRegistry::default();
         assert_eq!(registry.load(repo.stored()).await, 1);
-        assert!(registry.get("old-redis").await.is_none());
-        assert!(registry.get("mem").await.is_some());
+        assert!(registry.get("old-redis").is_none());
+        assert!(registry.get("mem").is_some());
         let issues = registry.load_issues().await;
         assert_eq!(issues.len(), 1, "{issues:?}");
         assert_eq!(issues[0].stage, "deserialize");
@@ -1123,10 +1119,10 @@ mod tests {
             StubConnectorRepo::with(vec![("http-1", "http", r#"{"url":"https://example.com"}"#)]);
         let registry = ConnectorRegistry::default();
         registry.load(repo.stored()).await;
-        let first = registry.get("http-1").await.expect("loaded");
+        let first = registry.get("http-1").expect("loaded");
 
         registry.load(repo.stored()).await;
-        let second = registry.get("http-1").await.expect("loaded");
+        let second = registry.get("http-1").expect("loaded");
         assert!(Arc::ptr_eq(&first, &second));
     }
 

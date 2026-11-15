@@ -237,22 +237,20 @@ async fn run_dlq_retry(
                 // execution finishes. If the node crashes after enqueue and
                 // before settlement, the claim lease expires and the entry is
                 // durably re-claimed.
-                let submit_result = trace_queue
-                    .submit_dlq_retry(
-                        QueueMessage {
-                            trace_id: new_trace.id.clone(),
-                            channel: entry.channel.clone(),
-                            payload,
-                            metadata,
-                            trace_headers: std::collections::HashMap::new(),
-                            profile_requested: false,
-                            backpressure_permit: None,
-                        },
-                        entry.id.clone(),
-                        next_attempt,
-                        entry.max_retries,
-                    )
-                    .await;
+                let submit_result = trace_queue.submit_dlq_retry(
+                    QueueMessage {
+                        trace_id: new_trace.id.clone(),
+                        channel: entry.channel.clone(),
+                        payload,
+                        metadata,
+                        trace_headers: std::collections::HashMap::new(),
+                        profile_requested: false,
+                        backpressure_permit: None,
+                    },
+                    entry.id.clone(),
+                    next_attempt,
+                    entry.max_retries,
+                );
 
                 match submit_result {
                     Ok(()) => {

@@ -272,7 +272,6 @@ pub async fn resolve_connector(
 ) -> Result<Arc<ConnectorConfig>, HandlerError> {
     registry
         .get(name)
-        .await
         .ok_or_else(|| to_exec_error(format!("Connector '{name}' not found")))
 }
 

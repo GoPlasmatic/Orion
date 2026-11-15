@@ -479,7 +479,7 @@ impl CachePool {
     /// same connector. A backend other than `memory` — a row stored before
     /// validation refused it, which the registry also refuses at load — is
     /// an error here rather than a silent memory store.
-    pub async fn get_backend(
+    pub fn get_backend(
         &self,
         purpose: CachePurpose,
         connector_name: &str,
@@ -845,7 +845,6 @@ mod tests {
         let pool = CachePool::new(60, 1000);
         let workflow = pool
             .get_backend(CachePurpose::Workflow, "wf-cache", &memory_connector())
-            .await
             .expect("test");
         workflow
             .set("dedup:orders:token-1", "\"1\"")
@@ -870,7 +869,6 @@ mod tests {
         let pool = CachePool::new(60, 1000);
         let workflow = pool
             .get_backend(CachePurpose::Workflow, "wf-cache", &memory_connector())
-            .await
             .expect("test");
         workflow
             .set("cache:orders:00000000deadbeef", r#"{"forged":true}"#)
@@ -893,11 +891,9 @@ mod tests {
         let pool = CachePool::new(60, 1000);
         let a = pool
             .get_backend(CachePurpose::Workflow, "conn-a", &memory_connector())
-            .await
             .expect("test");
         let b = pool
             .get_backend(CachePurpose::Workflow, "conn-b", &memory_connector())
-            .await
             .expect("test");
 
         a.set("shared-key", "\"from-a\"").await.expect("test");
@@ -909,7 +905,6 @@ mod tests {
         // resolution reattaches to the same entries.
         let a2 = pool
             .get_backend(CachePurpose::Workflow, "conn-a", &memory_connector())
-            .await
             .expect("test");
         assert_eq!(
             a2.get("shared-key").await.expect("test"),
@@ -939,7 +934,6 @@ mod tests {
         let pool = CachePool::new(60, 1000);
         let wf = pool
             .get_backend(CachePurpose::Workflow, "gone", &memory_connector())
-            .await
             .expect("test");
         wf.set("k", "\"v\"").await.expect("test");
         let default_dedup = pool.default_memory(CachePurpose::Dedup);
@@ -950,7 +944,6 @@ mod tests {
         // A fresh resolution of the same connector gets a new, empty namespace.
         let wf2 = pool
             .get_backend(CachePurpose::Workflow, "gone", &memory_connector())
-            .await
             .expect("test");
         assert!(
             wf2.get("k").await.expect("test").is_none(),
@@ -980,7 +973,6 @@ mod tests {
 
         let workflow = pool
             .get_backend(CachePurpose::Workflow, "hot", &memory_connector())
-            .await
             .expect("test");
         for i in 0..1_000 {
             workflow.set(&format!("k{i}"), "v").await.expect("test");

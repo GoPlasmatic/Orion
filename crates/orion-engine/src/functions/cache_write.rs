@@ -51,7 +51,6 @@ async fn store(
     // `dedup:{channel}:…` key is just an ordinary workflow key.
     let backend = pool
         .get_backend(CachePurpose::Workflow, connector, conn)
-        .await
         .map_err(to_connect_error)?;
 
     match ttl {

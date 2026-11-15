@@ -743,7 +743,6 @@ async fn probe_cache(
             name,
             cache,
         )
-        .await
         .map_err(|e| e.client_message())?;
     backend
         .get("__orion_connectivity_probe__")

@@ -212,7 +212,6 @@ pub mod operators;
 pub mod profile;
 pub mod refs;
 pub mod retry;
-pub mod runner;
 pub mod secrets;
 pub mod service;
 pub mod steps;
@@ -220,7 +219,7 @@ pub mod utils;
 
 pub use budget::{RunBudgetLimits, RunBudgetSnapshot, SharedRunAccountant};
 pub use error::{ErrorClass, HTTP_ERROR, HandlerError, HttpFailure, http_error, http_status};
-pub use execute::{ExecOpts, Execution, RunOutcome, execute_on};
+pub use execute::{ExecOpts, Execution, RunOutcome, TraceCapture, execute_on};
 pub use functions::registry::{
     CatalogueEntry, FieldSpec, FunctionEntry, FunctionRegistry, PluginBinding,
 };
@@ -239,7 +238,6 @@ pub use refs::{
     ConnectorFacts, ConnectorRef, RefProblem, channel_call_targets, check_connector_refs,
     connector_refs,
 };
-pub use runner::TraceCapture;
 pub use secrets::ResolvedSecrets;
 pub use steps::{MAX_STEP_DEPTH, is_group, leaf_tasks, walk_steps};
 
