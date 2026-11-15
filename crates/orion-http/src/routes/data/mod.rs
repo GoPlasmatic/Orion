@@ -603,17 +603,12 @@ fn shape_guard_rejection(
 ) -> Response {
     use crate::channel::error_body;
 
-    let Some(bodies) = runtime
-        .parsed_config
-        .response
-        .as_ref()
-        .and_then(|r| r.error_bodies.as_ref())
-    else {
+    let Some(bodies) = runtime.compiled_error_bodies.as_ref() else {
         return err.into_response();
     };
 
     let (status, code, message) = err.response_parts();
-    let Some(entry) = error_body::lookup(bodies, status.as_u16()) else {
+    let Some(entry) = bodies.lookup(status.as_u16()) else {
         return err.into_response();
     };
     let ctx = error_body::RenderContext {
@@ -622,10 +617,8 @@ fn shape_guard_rejection(
         message: &message,
         channel,
     };
-    let Some(rendered) = error_body::render(&entry.body, &ctx) else {
-        return err.into_response();
-    };
-    let content_type = entry.content_type.as_deref().unwrap_or("application/json");
+    let rendered = entry.render(&ctx);
+    let content_type = entry.content_type().unwrap_or("application/json");
     let Ok(content_type) = axum::http::HeaderValue::from_str(content_type) else {
         return err.into_response();
     };

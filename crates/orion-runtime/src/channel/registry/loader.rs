@@ -303,7 +303,7 @@ impl ChannelLoader {
         // N3: `unwrap_or_default()` here would turn one typo in the
         // stored config into a channel with no rate limit, validation,
         // dedup, backpressure, timeout, or cache — and no log line.
-        let parsed_config: ChannelConfig = serde_json::from_value(raw).map_err(|e| {
+        let mut parsed_config: ChannelConfig = serde_json::from_value(raw).map_err(|e| {
             tracing::error!(
                 channel = %channel.name,
                 error = %e,
@@ -692,6 +692,18 @@ impl ChannelLoader {
             .filter(|c| c.enabled && c.coalesce_misses)
             .map(|_| Arc::new(crate::channel::guards::CacheFlights::default()));
 
+        // Header lookups on the ingress path are by lowercase name; normalize
+        // the one configured name that reaches a guard directly.
+        if let Some(dedup) = parsed_config.deduplication.as_mut() {
+            dedup.header.make_ascii_lowercase();
+        }
+
+        let compiled_error_bodies = parsed_config
+            .response
+            .as_ref()
+            .and_then(|r| r.error_bodies.as_ref())
+            .map(|b| Arc::new(crate::channel::error_body::CompiledBodies::from_bodies(b)));
+
         Ok(Arc::new(ChannelRuntimeConfig {
             channel: channel.clone(),
             parsed_config,
@@ -709,6 +721,7 @@ impl ChannelLoader {
             trace_storage,
             auth,
             oauth2_login,
+            compiled_error_bodies,
             cron,
             http,
             metrics: Default::default(),

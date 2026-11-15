@@ -151,14 +151,66 @@ fn parse(template: &str) -> Result<Vec<Segment>, String> {
     Ok(segments)
 }
 
-/// Render a template. Returns `None` when it does not compile, which the call
-/// site treats as "use the platform envelope".
-pub fn render(template: &str, ctx: &RenderContext<'_>) -> Option<String> {
-    let segments = parse(template).ok()?;
-    let mut out = String::with_capacity(template.len() + 64);
+/// A template compiled once, at channel load, so a refusal renders without
+/// re-parsing it (P-16).
+#[derive(Debug, Clone)]
+pub struct CompiledBody {
+    segments: Vec<Segment>,
+    content_type: Option<String>,
+    capacity: usize,
+}
+
+impl CompiledBody {
+    pub fn content_type(&self) -> Option<&str> {
+        self.content_type.as_deref()
+    }
+
+    pub fn render(&self, ctx: &RenderContext<'_>) -> String {
+        render_segments(&self.segments, self.capacity, ctx)
+    }
+}
+
+/// Every template a channel declares, compiled, with `"default"` kept apart
+/// so a status with no exact entry falls back to it.
+#[derive(Debug, Clone, Default)]
+pub struct CompiledBodies {
+    by_status: BTreeMap<u16, CompiledBody>,
+    default: Option<CompiledBody>,
+}
+
+impl CompiledBodies {
+    /// Compile what parses. A template that does not is dropped here as it is
+    /// at render time: the platform envelope answers, never a 500.
+    pub fn from_bodies(bodies: &ErrorBodies) -> Self {
+        let mut compiled = Self::default();
+        for (key, entry) in bodies {
+            let Some(segments) = parse(&entry.body).ok() else {
+                continue;
+            };
+            let body = CompiledBody {
+                segments,
+                content_type: entry.content_type.clone(),
+                capacity: entry.body.len() + 64,
+            };
+            if key == "default" {
+                compiled.default = Some(body);
+            } else if let Ok(status) = key.parse::<u16>() {
+                compiled.by_status.insert(status, body);
+            }
+        }
+        compiled
+    }
+
+    pub fn lookup(&self, status: u16) -> Option<&CompiledBody> {
+        self.by_status.get(&status).or(self.default.as_ref())
+    }
+}
+
+fn render_segments(segments: &[Segment], capacity: usize, ctx: &RenderContext<'_>) -> String {
+    let mut out = String::with_capacity(capacity);
     for segment in segments {
         match segment {
-            Segment::Literal(s) => out.push_str(&s),
+            Segment::Literal(s) => out.push_str(s),
             Segment::Status => out.push_str(&ctx.status.to_string()),
             Segment::Code => out.push_str(ctx.code),
             // Already redacted — `response_parts` is the single place the
@@ -172,7 +224,17 @@ pub fn render(template: &str, ctx: &RenderContext<'_>) -> Option<String> {
                 .push_str(&chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
         }
     }
-    Some(out)
+    out
+}
+
+/// Render a template. Returns `None` when it does not compile, which the call
+/// site treats as "use the platform envelope".
+///
+/// A channel's own templates go through [`CompiledBodies`] instead; this is
+/// the one-shot form for a value that did not arrive through a channel config.
+pub fn render(template: &str, ctx: &RenderContext<'_>) -> Option<String> {
+    let segments = parse(template).ok()?;
+    Some(render_segments(&segments, template.len() + 64, ctx))
 }
 
 /// Pick the template for a status: the exact key, else `"default"`.

@@ -123,6 +123,21 @@ pub fn mac_verify<M: Mac + KeyInit>(key: &[u8], data: &[u8], signature: &[u8]) -
     mac.verify_slice(signature).is_ok()
 }
 
+/// [`mac_verify`] over a message assembled from parts.
+///
+/// A signed webhook's message is header values and the request body. Joining
+/// them first copies the body, which is the largest thing a verification
+/// touches; this feeds each part to the MAC in order instead (P-16).
+pub fn mac_verify_parts<M: Mac + KeyInit>(key: &[u8], parts: &[&[u8]], signature: &[u8]) -> bool {
+    let Ok(mut mac) = M::new_from_slice(key) else {
+        return false;
+    };
+    for part in parts {
+        mac.update(part);
+    }
+    mac.verify_slice(signature).is_ok()
+}
+
 /// `n` bytes from the operating-system CSPRNG.
 ///
 /// Lives here rather than at each call site because the alternatives are all

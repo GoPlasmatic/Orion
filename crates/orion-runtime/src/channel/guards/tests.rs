@@ -387,6 +387,7 @@ impl Runtime {
             response_cache: self.response_cache,
             trace_storage: EffectiveTraceConfig::resolve(&TraceStorageConfig::default(), None),
             auth: self.auth,
+            compiled_error_bodies: None,
             oauth2_login: None,
         })
     }
@@ -773,7 +774,8 @@ async fn authentication_applies_to_every_http_ingress() {
         );
 
         let runtime = Runtime::new().api_key("s3cret").await.build();
-        let present: HeaderLookup<'_, '_> = &|name: &str| (name == "X-API-Key").then_some("s3cret");
+        // Ingress header lookups are by lowercase name.
+        let present: HeaderLookup<'_, '_> = &|name: &str| (name == "x-api-key").then_some("s3cret");
         let mut req = request(transport, &runtime, &dl, &data, &metadata);
         req.header = present;
         assert!(

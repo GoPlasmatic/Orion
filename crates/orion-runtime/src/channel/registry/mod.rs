@@ -223,6 +223,10 @@ pub struct ChannelRuntimeConfig {
     pub cache_flights: Option<Arc<crate::channel::guards::CacheFlights>>,
     /// Trace storage policy after merging the global and per-channel config.
     pub trace_storage: EffectiveTraceConfig,
+    /// The channel's error-body templates, compiled at load so a guard
+    /// refusal is a render and never a parse (P-16). `None` when the channel
+    /// declares none.
+    pub compiled_error_bodies: Option<Arc<crate::channel::error_body::CompiledBodies>>,
     /// Compiled `auth` policy: secrets resolved and keys pre-hashed once at
     /// load, so the request path never resolves an `env://` reference or
     /// hashes a stored key. `None` means the channel is unauthenticated.

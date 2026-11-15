@@ -339,6 +339,13 @@ pub async fn execute_request(
     // Encoded once — the bytes are identical on every retry and redirect hop.
     let mut body = body.map(|b| encode_body(b, body_format)).transpose()?;
 
+    // Trace context is the request's, not the hop's: inject once.
+    let trace_headers = {
+        let mut headers = std::collections::HashMap::new();
+        crate::trace_context::inject_trace_context(&mut headers);
+        headers
+    };
+
     for _ in 0..=MAX_REDIRECTS {
         // SSRF protection: block requests to private/internal IPs.
         // `allow_private_urls` exempts only the connector's own endpoint — a
@@ -355,13 +362,10 @@ pub async fn execute_request(
             .request(method.clone(), current.clone())
             .timeout(timeout);
 
-        // Inject W3C trace context headers (traceparent/tracestate) for distributed tracing
-        {
-            let mut trace_headers = std::collections::HashMap::new();
-            crate::trace_context::inject_trace_context(&mut trace_headers);
-            for (k, v) in &trace_headers {
-                req = req.header(k, v);
-            }
+        // Inject W3C trace context headers (traceparent/tracestate) for
+        // distributed tracing.
+        for (k, v) in &trace_headers {
+            req = req.header(k, v);
         }
 
         // Connector headers, auth, and task headers can carry credentials —
@@ -529,14 +533,16 @@ async fn read_response(
     format: ResponseFormat,
 ) -> dataflow_rs::Result<Value> {
     let status = response.status();
-    let safe = safe_url(url.as_str());
+    // Computed only on the paths that put it in a message: a successful read
+    // should not pay for a URL redaction no one sees (P-16).
+    let safe = || safe_url(url.as_str());
 
     // The declared-length refusal is taken before the status branch, so a
     // non-2xx that announces an oversized body is refused as oversized rather
     // than quoted back — the preview below would otherwise be the only thing
     // standing between that body and the trace it lands in.
     crate::http_body::check_declared_length(&response, max_size)
-        .map_err(|e| HandlerError::backend(format!("Response from {safe}: {e}")))?;
+        .map_err(|e| HandlerError::backend(format!("Response from {}: {e}", safe())))?;
 
     if !status.is_success() {
         // Read at most `ERROR_BODY_PREVIEW` bytes of the error body for the
@@ -548,18 +554,21 @@ async fn read_response(
             crate::http_body::read_preview(response, max_size.min(ERROR_BODY_PREVIEW)).await;
         return Err(http_error(
             status.as_u16(),
-            format!("HTTP {status} from {safe}: {}", preview.to_message()),
+            format!("HTTP {status} from {}: {}", safe(), preview.to_message()),
         ));
     }
 
     let body_bytes = crate::http_body::read_bounded(response, max_size)
         .await
-        .map_err(|e| HandlerError::backend(format!("Response from {safe}: {e}")))?;
+        .map_err(|e| HandlerError::backend(format!("Response from {}: {e}", safe())))?;
 
     match format {
         ResponseFormat::Json => serde_json::from_slice(&body_bytes).map_err(|e| {
-            HandlerError::backend(format!("Failed to parse response from {safe} as JSON: {e}"))
-                .into()
+            HandlerError::backend(format!(
+                "Failed to parse response from {} as JSON: {e}",
+                safe()
+            ))
+            .into()
         }),
         // Lossy on invalid UTF-8, matching the error-path body capture above.
         ResponseFormat::Text => Ok(Value::String(

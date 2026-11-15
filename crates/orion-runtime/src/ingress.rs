@@ -146,7 +146,9 @@ async fn dispatch(host: &Host, delivery: Delivery) -> Dispatched {
         .into_iter()
         .map(|(name, value)| (name.to_ascii_lowercase(), value))
         .collect();
-    let header_lookup = |name: &str| headers.get(&name.to_ascii_lowercase()).map(String::as_str);
+    // Every configured header name is lowercased where it is compiled or
+    // parsed, so this is one lookup and no allocation.
+    let header_lookup = |name: &str| headers.get(name).map(String::as_str);
     let caller_identity = delivery
         .caller_identity
         .unwrap_or_else(|| runtime.channel.channel_id.clone());

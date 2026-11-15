@@ -28,7 +28,7 @@ use crate::config::constant_time_eq;
 use dataflow_rs::Expr;
 use dataflow_rs::expr::ExprEngine;
 
-use crate::crypto::{Codec, decode_bytes, mac_verify};
+use crate::crypto::{Codec, decode_bytes, mac_verify_parts};
 use crate::errors::OrionError;
 
 /// A channel's authentication policy, resolved and pre-hashed at load time.
@@ -168,10 +168,13 @@ impl CompiledAuth {
                     .filter(|k| !k.is_empty())
                     .ok_or("auth.mode = \"api_key\" requires a non-empty auth.keys")?;
 
+                // Lowercased once: the ingress maps header names in that
+                // form, so the request path never normalizes a lookup (P-16).
                 let header = cfg
                     .header
                     .clone()
-                    .unwrap_or_else(|| "Authorization".to_string());
+                    .unwrap_or_else(|| "authorization".to_string())
+                    .to_ascii_lowercase();
                 let scheme = api_key_scheme(cfg, &header)?;
 
                 let mut digests = Vec::with_capacity(keys.len());
@@ -200,7 +203,7 @@ impl CompiledAuth {
                     secrets.push(resolved.into_bytes());
                 }
                 Ok(Self::Hmac(CompiledHmac {
-                    header: plan.header,
+                    header: plan.header.to_ascii_lowercase(),
                     extraction: plan.extraction,
                     encoding: plan.encoding,
                     algorithm: plan.algorithm,
@@ -547,24 +550,23 @@ impl CompiledHmac {
         // bytes, and treating that as "cannot verify" would refuse a
         // legitimately signed request.
         let body = raw_body.unwrap_or(&[]);
-        let mut message: Vec<u8> = Vec::new();
+        // Borrowed parts, not one contiguous message: the body is the largest
+        // thing here and copying it is the cost this avoids (P-16).
+        let mut message: Vec<&[u8]> = Vec::with_capacity(self.message.len());
         for segment in &self.message {
-            match segment {
-                Segment::Literal(text) => message.extend_from_slice(text.as_bytes()),
-                Segment::Body => message.extend_from_slice(body),
-                Segment::Header(name) => {
-                    let value = header(name).ok_or_else(refused)?;
-                    message.extend_from_slice(value.as_bytes());
-                }
+            message.push(match segment {
+                Segment::Literal(text) => text.as_bytes(),
+                Segment::Body => body,
+                Segment::Header(name) => header(name).ok_or_else(refused)?.as_bytes(),
                 Segment::HeaderPart(name, key) => {
                     let value = header(name).ok_or_else(refused)?;
-                    let part = packed_values(value, key)
+                    packed_values(value, key)
                         .first()
                         .copied()
-                        .ok_or_else(refused)?;
-                    message.extend_from_slice(part.as_bytes());
+                        .ok_or_else(refused)?
+                        .as_bytes()
                 }
-            }
+            });
         }
 
         // 4. Verify every candidate against every accepted secret — several of
@@ -576,12 +578,14 @@ impl CompiledHmac {
             };
             for secret in &self.secrets {
                 let ok = match self.algorithm {
-                    HmacAlgorithm::Sha1 => mac_verify::<Hmac<Sha1>>(secret, &message, &signature),
+                    HmacAlgorithm::Sha1 => {
+                        mac_verify_parts::<Hmac<Sha1>>(secret, &message, &signature)
+                    }
                     HmacAlgorithm::Sha256 => {
-                        mac_verify::<Hmac<Sha256>>(secret, &message, &signature)
+                        mac_verify_parts::<Hmac<Sha256>>(secret, &message, &signature)
                     }
                     HmacAlgorithm::Sha512 => {
-                        mac_verify::<Hmac<Sha512>>(secret, &message, &signature)
+                        mac_verify_parts::<Hmac<Sha512>>(secret, &message, &signature)
                     }
                 };
                 if ok {

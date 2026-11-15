@@ -20,7 +20,7 @@
 //! guards pin the two halves to each other against a live engine.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, LazyLock, OnceLock, RwLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -733,9 +733,13 @@ fn check_unknown_fields(
 /// label value. Bounded by the distinct names registered over the process's
 /// life: the static tables once, plus each distinct plugin function name once
 /// however many generations load it.
-fn labels() -> &'static RwLock<HashSet<&'static str>> {
-    static LABELS: OnceLock<RwLock<HashSet<&'static str>>> = OnceLock::new();
-    LABELS.get_or_init(|| RwLock::new(HashSet::new()))
+///
+/// `ArcSwap`, not a lock: this is read on every task for its metric label, and
+/// a shared read lock put every task on one cache line (P-16). Writes are
+/// rare and copy-on-write.
+fn labels() -> &'static arc_swap::ArcSwap<HashSet<&'static str>> {
+    static LABELS: OnceLock<arc_swap::ArcSwap<HashSet<&'static str>>> = OnceLock::new();
+    LABELS.get_or_init(|| arc_swap::ArcSwap::from_pointee(HashSet::new()))
 }
 
 /// Maximum distinct function names interned as static metric labels over the
@@ -745,28 +749,23 @@ const MAX_INTERNED_LABELS: usize = 1024;
 
 /// Record `name` as a label value, leaking it once while below [`MAX_INTERNED_LABELS`].
 fn intern(name: &str) {
-    let labels = labels();
-    if labels
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .contains(name)
-    {
+    if labels().load().contains(name) {
         return;
     }
-    let mut write = labels.write().unwrap_or_else(|e| e.into_inner());
-    if write.len() < MAX_INTERNED_LABELS && !write.contains(name) {
-        write.insert(Box::leak(name.to_string().into_boxed_str()));
-    }
+    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+    labels().rcu(|set| {
+        let mut next = (**set).clone();
+        if next.len() < MAX_INTERNED_LABELS {
+            next.insert(leaked);
+        }
+        std::sync::Arc::new(next)
+    });
 }
 
 /// The `&'static str` a registered name interns to, or `None` for a name no
 /// registry has held — the caller collapses that to one label value.
 pub fn interned(name: &str) -> Option<&'static str> {
-    labels()
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(name)
-        .copied()
+    labels().load().get(name).copied()
 }
 
 impl FunctionEntry {
