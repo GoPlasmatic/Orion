@@ -8,11 +8,15 @@
 //! rebuilds the fixture from source on the shipped SDK and points this suite
 //! at the fresh bytes, which is what makes "supported SDK" mean something.
 
+// Tests unwrap and panic on what they did not expect; the workspace's
+// lints against both are for production code.
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 use serde::Deserialize;
 use serde_json::Value;
 
-use orion::config::PluginsConfig;
-use orion::plugin::{Category, Limits, WasmRuntime};
+use orion_common::config::PluginsConfig;
+use orion_plugin_host::{Category, Limits, WasmRuntime};
 
 #[derive(Deserialize)]
 struct Case {
@@ -54,14 +58,16 @@ fn component() -> Vec<u8> {
             let path = fixture_override(&path);
             std::fs::read(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
         }
-        Err(_) => include_bytes!("../fixtures/plugins/fixture.wasm").to_vec(),
+        Err(_) => include_bytes!("../../orion-server/tests/fixtures/plugins/fixture.wasm").to_vec(),
     }
 }
 
 #[tokio::test]
 async fn every_abi_case_holds_for_the_fixture_component() {
-    let cases: Vec<Case> =
-        serde_json::from_str(include_str!("../fixtures/plugins/abi-cases.json")).expect("cases");
+    let cases: Vec<Case> = serde_json::from_str(include_str!(
+        "../../orion-server/tests/fixtures/plugins/abi-cases.json"
+    ))
+    .expect("cases");
     assert!(cases.len() >= 5, "the case file has been emptied");
 
     let config = PluginsConfig {

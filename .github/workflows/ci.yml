@@ -209,6 +209,12 @@ jobs:
   # equivalence is the contract. Path-filtered by the `changes` job's
   # plugin-surface output would be tidier, but the job is a minute on top of
   # a warm cache, so it runs with the rest.
+  #
+  # The suites themselves live in `orion-plugin-host` beside the code they
+  # exercise (P-29): building orion-server's integration binary for them was
+  # the bulk of this job's wall time. The SDK-versus-host check is a
+  # cross-crate consistency guard and lives with the other drift guards, in
+  # `orion-docs-check`, which the test job already runs.
   plugin-sdk:
     name: Plugin SDK
     runs-on: ubuntu-22.04
@@ -255,7 +261,7 @@ jobs:
       - name: Run the ABI cases and the sandbox suites against the fresh fixture
         env:
           ORION_PLUGIN_FIXTURE: crates/orion-server/tests/fixtures/plugins/fixture.wasm
-        run: cargo test -p orion-server --test integration -- plugin_abi_cases_test plugin_runtime_test plugin_sdk_test
+        run: cargo test -p orion-plugin-host
 
       - name: The SDK's own tests
         run: cargo test -p orion-plugin-sdk

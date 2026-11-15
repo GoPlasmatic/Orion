@@ -4,11 +4,28 @@
 //! cannot reach into the server's tree — so the two copies are one contract
 //! written twice, and this is what keeps them the same file. The SDK's `ABI`
 //! constant and the host's are pinned to each other the same way.
+//!
+//! Here rather than in the plugin host's own tests (P-29): this is a
+//! cross-crate consistency check, the same shape as the other drift guards,
+//! and it needs no Wasmtime to run.
 
 const HOST_WIT: &str = include_str!("../../../orion-plugin-host/wit/orion-plugin.wit");
 const SDK_WIT: &str = include_str!("../../../orion-plugin-sdk/wit/orion-plugin.wit");
 const SDK_LIB: &str = include_str!("../../../orion-plugin-sdk/src/lib.rs");
 const SDK_MANIFEST: &str = include_str!("../../../orion-plugin-sdk/Cargo.toml");
+const HOST_MANIFEST: &str = include_str!("../../../orion-plugin-host/src/manifest.rs");
+
+/// The host's ABI, read off its declaration.
+///
+/// Read as text rather than imported: depending on `orion-plugin-host` here
+/// would build Wasmtime to check three strings.
+fn host_abi() -> &'static str {
+    HOST_MANIFEST
+        .lines()
+        .find_map(|line| line.strip_prefix("pub const ABI: &str = \""))
+        .and_then(|rest| rest.strip_suffix("\";"))
+        .expect("orion-plugin-host/src/manifest.rs declares `pub const ABI: &str = \"…\";`")
+}
 
 #[test]
 fn the_sdk_ships_the_hosts_wit_file_byte_for_byte() {
@@ -21,13 +38,14 @@ fn the_sdk_ships_the_hosts_wit_file_byte_for_byte() {
 
 #[test]
 fn the_sdk_abi_constant_is_the_hosts() {
-    let expected = format!("pub const ABI: &str = \"{}\";", orion::plugin::ABI);
+    let abi = host_abi();
+    let expected = format!("pub const ABI: &str = \"{abi}\";");
     assert!(
         SDK_LIB.contains(&expected),
         "the SDK's ABI constant must read `{expected}`"
     );
     assert!(
-        HOST_WIT.contains(&format!("package {};", orion::plugin::ABI)),
+        HOST_WIT.contains(&format!("package {abi};")),
         "the WIT package version is the ABI"
     );
 }
