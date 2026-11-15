@@ -226,13 +226,12 @@ impl PartitionedMemoryCache {
     }
 }
 
-#[async_trait::async_trait]
 impl ConnectionPoolCache for PartitionedMemoryCache {
     fn cache_id(&self) -> &str {
         DRIVER_MEMORY_CACHE
     }
 
-    async fn evict(&self, connector_name: &str) {
+    fn evict(&self, connector_name: &str) {
         let mut guard = self.partitions.lock_unpoisoned();
         guard.retain(|k, _| k.connection_id != connector_name);
         orion_common::metrics::set_memory_cache_partitions(guard.len());

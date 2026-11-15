@@ -468,15 +468,14 @@ impl<D: RemoteSqlDialect> Default for RemoteSqlProviderBackend<D> {
     }
 }
 
-#[async_trait::async_trait]
 impl<D: RemoteSqlDialect> orion_extension_api::ConnectionPoolCache for RemoteSqlProviderBackend<D> {
     fn cache_id(&self) -> &str {
         D::DRIVER_ID
     }
 
-    async fn evict(&self, connector_name: &str) {
-        self.sessions.evict(connector_name).await;
-        self.live_pools.evict(connector_name).await;
+    fn evict(&self, connector_name: &str) {
+        self.sessions.evict(connector_name);
+        self.live_pools.evict(connector_name);
     }
 }
 
@@ -571,7 +570,7 @@ impl<D: RemoteSqlDialect> ProviderBackend for RemoteSqlProviderBackend<D> {
 
     async fn dispose(&self, identity: &EffectiveConnectionIdentity) {
         self.sessions.invalidate(identity, None);
-        self.live_pools.evict(identity.connection_id.as_str()).await;
+        self.live_pools.evict(identity.connection_id.as_str());
     }
 }
 
@@ -778,15 +777,14 @@ impl Default for SqliteProviderBackend {
     }
 }
 
-#[async_trait::async_trait]
 impl orion_extension_api::ConnectionPoolCache for SqliteProviderBackend {
     fn cache_id(&self) -> &str {
         DRIVER_SQLITE
     }
 
-    async fn evict(&self, connector_name: &str) {
-        self.sessions.evict(connector_name).await;
-        self.live_pools.evict(connector_name).await;
+    fn evict(&self, connector_name: &str) {
+        self.sessions.evict(connector_name);
+        self.live_pools.evict(connector_name);
     }
 }
 
@@ -873,6 +871,6 @@ impl ProviderBackend for SqliteProviderBackend {
 
     async fn dispose(&self, identity: &EffectiveConnectionIdentity) {
         self.sessions.invalidate(identity, None);
-        self.live_pools.evict(identity.connection_id.as_str()).await;
+        self.live_pools.evict(identity.connection_id.as_str());
     }
 }

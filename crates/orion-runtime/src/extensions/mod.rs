@@ -546,7 +546,7 @@ mod tests {
             .expect("acquired");
         assert_eq!(pool.cached_count(), 1);
 
-        comp.pools().evict_connector("local-sqlite").await;
+        comp.pools().evict_connector("local-sqlite");
         assert_eq!(pool.cached_count(), 0);
 
         // Verify CommunityPackageVerifier rejects enterprise-tier packages on Community root.

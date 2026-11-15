@@ -3,18 +3,17 @@
 use std::any::{Any, TypeId};
 use std::sync::Arc;
 
-use async_trait::async_trait;
-
 /// A provider's connection-pool cache, evicted per connector when a
-/// connection changes. Implement it with
-/// `#[async_trait]`.
-#[async_trait]
+/// connection changes.
+///
+/// Eviction is synchronous: every implementation evicts from memory and hands
+/// any pooled connection to a detached close, so there is nothing to await.
 pub trait ConnectionPoolCache: Send + Sync {
     /// Stable cache identifier, unique on a node (e.g. `"org.orion.postgresql"`).
     fn cache_id(&self) -> &str;
 
     /// Evict all cached sessions/pools belonging to `connector_name`.
-    async fn evict(&self, connector_name: &str);
+    fn evict(&self, connector_name: &str);
 }
 
 /// One pool cache as a composition registers it: erased for eviction, and

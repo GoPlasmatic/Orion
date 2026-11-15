@@ -814,8 +814,7 @@ async fn build_and_publish(
                 state
                     .composition
                     .pools()
-                    .evict_connector(&conn.connection_id)
-                    .await;
+                    .evict_connector(&conn.connection_id);
             }
         }
 

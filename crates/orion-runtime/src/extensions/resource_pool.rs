@@ -13,7 +13,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
 use orion_extension_api::{
     ConnectionId, ConnectionPoolCache, ConnectorError, Digest, EffectStatus,
     EffectiveConnectionIdentity, PoolEntry, Revision,
@@ -71,9 +70,9 @@ impl ResourcePoolRegistry {
     }
 
     /// Evict `connector_name` across all registered provider pool caches.
-    pub async fn evict_connector(&self, connector_name: &str) {
+    pub fn evict_connector(&self, connector_name: &str) {
         for entry in self.entries.values() {
-            entry.cache().evict(connector_name).await;
+            entry.cache().evict(connector_name);
         }
     }
 }
@@ -316,13 +315,12 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
     }
 }
 
-#[async_trait]
 impl<S: Clone + Send + Sync + 'static> ConnectionPoolCache for VersionedSessionPool<S> {
     fn cache_id(&self) -> &str {
         &self.cache_id
     }
 
-    async fn evict(&self, connector_name: &str) {
+    fn evict(&self, connector_name: &str) {
         let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let epoch = guard
             .connector_eviction_epochs
@@ -533,7 +531,7 @@ mod tests {
         });
 
         start_rx.await.expect("creator started");
-        registry.evict_connector("orders-db").await;
+        registry.evict_connector("orders-db");
         let _ = finish_tx.send(());
 
         let res = task.await.expect("joined");

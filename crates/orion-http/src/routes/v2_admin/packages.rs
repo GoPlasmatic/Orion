@@ -348,8 +348,7 @@ pub(crate) async fn revoke_connector_package(
                 state
                     .composition
                     .pools()
-                    .evict_connector(&conn.connection_id)
-                    .await;
+                    .evict_connector(&conn.connection_id);
             }
         }
     }

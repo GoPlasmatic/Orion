@@ -56,7 +56,7 @@ async fn sql_pool_identity_includes_the_connection_settings() {
         .await
         .expect("old caller can finish");
     assert_eq!(marker, 1);
-    cache.evict_all().await;
+    cache.evict_all();
     old.close().await;
     new.close().await;
 }

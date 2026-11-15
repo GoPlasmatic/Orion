@@ -373,7 +373,7 @@ impl<V: Clone> LruCache<V> {
 
     /// Evict a cached entry (e.g., when connector config changes). The
     /// removed value is handed to the evict handler (F17).
-    pub async fn evict(&self, key: &str) {
+    pub fn evict(&self, key: &str) {
         let removed = {
             let mut entries = self.entries();
             self.invalidated.fetch_add(1, Ordering::Release);
@@ -394,7 +394,7 @@ impl<V: Clone> LruCache<V> {
     /// cannot know which connector changed, and pools rebuild lazily. Every
     /// removed value is handed to the evict handler (F17), so a resync does
     /// not leak the old pools' connections.
-    pub async fn evict_all(&self) {
+    pub fn evict_all(&self) {
         let drained: Vec<V> = {
             let mut entries = self.entries();
             self.invalidated.fetch_add(1, Ordering::Release);
@@ -409,14 +409,13 @@ impl<V: Clone> LruCache<V> {
     }
 }
 
-#[async_trait::async_trait]
 impl<V: Clone + Send + Sync + 'static> orion_extension_api::ConnectionPoolCache for LruCache<V> {
     fn cache_id(&self) -> &str {
         self.cache_label
     }
 
-    async fn evict(&self, connector_name: &str) {
-        LruCache::evict(self, connector_name).await
+    fn evict(&self, connector_name: &str) {
+        LruCache::evict(self, connector_name)
     }
 }
 
@@ -445,9 +444,9 @@ mod tests {
             });
             ready.await.expect("creation started");
             if all {
-                cache.evict_all().await;
+                cache.evict_all();
             } else {
-                cache.evict("db").await;
+                cache.evict("db");
             }
             finish.send(()).expect("creator waits");
             assert_eq!(old.await.expect("joined"), 1);
@@ -491,7 +490,7 @@ mod tests {
                 .expect("new cache hit"),
             2
         );
-        cache.evict("db").await;
+        cache.evict("db");
         assert_eq!(
             cache
                 .get_or_create_versioned("db", &"old-secret", || async { Ok(4) })
@@ -522,7 +521,7 @@ mod tests {
         cache.get_or_create("b", || create(2)).await.expect("test");
 
         // Explicit evict.
-        cache.evict("a").await;
+        cache.evict("a");
         assert_eq!(closed.load(AtomicOrdering::SeqCst), 1);
 
         // Capacity eviction: cache is at max 2 after c + d insert once.
@@ -535,7 +534,7 @@ mod tests {
         );
 
         // evict_all drains the remaining two.
-        cache.evict_all().await;
+        cache.evict_all();
         assert_eq!(closed.load(AtomicOrdering::SeqCst), 4);
     }
 
@@ -729,7 +728,7 @@ mod tests {
             .get_or_create("key1", || async { Ok("value1".to_string()) })
             .await;
 
-        cache.evict("key1").await;
+        cache.evict("key1");
 
         // After eviction, create_fn should be called again
         let call_count = Arc::new(AtomicUsize::new(0));

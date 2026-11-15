@@ -394,7 +394,7 @@ async fn memory_cache_provider_partitions_by_connection_and_revision_and_evicts(
     );
 
     // Evicting "conn-a" via ResourcePoolRegistry clears revision 1.
-    pools.evict_connector("conn-a").await;
+    pools.evict_connector("conn-a");
     let inv_get_after = make_invocation(DRIVER_MEMORY_CACHE, "conn-a", 1, "get");
     let res_after = dispatch(
         &providers,
@@ -591,7 +591,7 @@ async fn sqlite_invoke_persists_in_memory_and_memory_cache_bounds_partitions_and
     assert_eq!(sel_out.data["rows"][0]["label"], "persisted");
 
     // Evicting the connection through ConnectionPoolCache closes its live SQLite pool.
-    ConnectionPoolCache::evict(&sqlite, "sqlite-conn").await;
+    ConnectionPoolCache::evict(&sqlite, "sqlite-conn");
     let inv_after_evict = make_invocation(DRIVER_SQLITE, "sqlite-conn", 1, "query");
     let attempt_after_evict = inv_after_evict.next_attempt().unwrap();
     let evicted_err = sqlite

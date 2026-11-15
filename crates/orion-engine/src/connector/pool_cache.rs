@@ -268,12 +268,12 @@ impl SqlPoolCache {
     }
 
     /// Evict a cached pool (e.g., when connector config changes).
-    pub async fn evict(&self, connector_name: &str) {
-        self.cache.evict(connector_name).await;
+    pub fn evict(&self, connector_name: &str) {
+        self.cache.evict(connector_name);
     }
 
-    pub async fn evict_all(&self) {
-        self.cache.evict_all().await;
+    pub fn evict_all(&self) {
+        self.cache.evict_all();
     }
 }
 
@@ -283,14 +283,13 @@ impl Default for SqlPoolCache {
     }
 }
 
-#[async_trait::async_trait]
 impl orion_extension_api::ConnectionPoolCache for SqlPoolCache {
     fn cache_id(&self) -> &str {
         "sql_pool"
     }
 
-    async fn evict(&self, connector_name: &str) {
-        SqlPoolCache::evict(self, connector_name).await
+    fn evict(&self, connector_name: &str) {
+        SqlPoolCache::evict(self, connector_name)
     }
 }
 
