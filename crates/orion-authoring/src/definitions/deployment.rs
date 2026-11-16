@@ -20,7 +20,7 @@ use std::path::Path;
 
 use orion_api::v2::{
     COMPILED_DEPLOYMENT_SCHEMA_VERSION, ChannelDefinition, CompiledConnection, CompiledDeployment,
-    CompiledMember, CompiledRequirement, Definition, EntityKind, PluginDefinition,
+    CompiledMember, CompiledRequirement, CompiledRollout, Definition, EntityKind, PluginDefinition,
     WorkflowDefinition,
 };
 use serde_json::{Map, Value};
@@ -132,6 +132,7 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
                     definition: None,
                     connection: Some(id),
                     requires,
+                    rollouts: Vec::new(),
                 });
                 out.counts.connections += 1;
             }
@@ -149,8 +150,13 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
         }
     }
 
+    // Workflow id → version → definition digest. Two documents may share an
+    // id only when each names a distinct explicit `version`: they are two
+    // revisions of one workflow, selected by a channel's `rollouts`.
+    let mut variants: BTreeMap<String, BTreeMap<u64, String>> = BTreeMap::new();
+    let mut unversioned_workflows: BTreeSet<String> = BTreeSet::new();
     for def in set.iter(Entity::Workflow) {
-        let (id, workflow) = match workflow_definition(&def.doc, &def.origin) {
+        let (id, version, workflow) = match workflow_variant(&def.doc, &def.origin) {
             Ok(converted) => converted,
             Err(e) => {
                 errors.push(e);
@@ -175,6 +181,51 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
         }
         match definition_file(&Definition::Workflow(workflow)) {
             Ok((digest, path, bytes)) => {
+                match version {
+                    Some(version) => {
+                        if unversioned_workflows.contains(&id) {
+                            errors.push(format!(
+                                "workflow '{id}' ({}): one definition of it names no `version` \
+                                 and another names version {version}; a set with two \
+                                 revisions must give every one of them a distinct `version`",
+                                def.origin
+                            ));
+                            continue;
+                        }
+                        let by_version = variants.entry(id.clone()).or_default();
+                        if by_version.contains_key(&version) {
+                            errors.push(format!(
+                                "workflow '{id}' ({}): a second definition names version \
+                                 {version}; each variant needs a distinct `version`",
+                                def.origin
+                            ));
+                            continue;
+                        }
+                        if let Some((other, _)) =
+                            by_version.iter().find(|(_, known)| **known == digest)
+                        {
+                            errors.push(format!(
+                                "workflow '{id}' ({}): versions {other} and {version} have \
+                                 identical definitions, so the target would assign them the \
+                                 same revision; a split needs two different definitions",
+                                def.origin
+                            ));
+                            continue;
+                        }
+                        by_version.insert(version, digest.clone());
+                    }
+                    None => {
+                        if variants.contains_key(&id) || !unversioned_workflows.insert(id.clone()) {
+                            errors.push(format!(
+                                "workflow '{id}' ({}): another definition of it is already in \
+                                 the set; two revisions of one workflow need distinct explicit \
+                                 `version`s",
+                                def.origin
+                            ));
+                            continue;
+                        }
+                    }
+                }
                 out.files.insert(path, bytes);
                 members.push(member(EntityKind::Workflow, id, digest, requires));
                 out.counts.workflows += 1;
@@ -190,8 +241,8 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
         .collect();
     let mut channel_members = Vec::new();
     for def in set.iter(Entity::Channel) {
-        let (id, workflow_id, connections, channel) =
-            match channel_definition(&def.doc, &def.origin) {
+        let (id, workflow_id, connections, rollouts, channel) =
+            match channel_variants(&def.doc, &def.origin) {
                 Ok(converted) => converted,
                 Err(e) => {
                     errors.push(e);
@@ -205,6 +256,44 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
             ));
             continue;
         }
+        let versions = variants.get(&workflow_id);
+        let compiled_rollouts = if rollouts.is_empty() {
+            if versions.is_some_and(|versions| versions.len() > 1) {
+                errors.push(format!(
+                    "channel '{id}' ({}): workflow '{workflow_id}' has {} versions in the set, \
+                     so the channel must name which one each bucket serves with `rollouts`",
+                    def.origin,
+                    versions.map_or(0, BTreeMap::len)
+                ));
+                continue;
+            }
+            Vec::new()
+        } else {
+            let mut compiled = Vec::with_capacity(rollouts.len());
+            let mut missing = false;
+            for rollout in rollouts {
+                let Some(definition) = versions.and_then(|versions| versions.get(&rollout.version))
+                else {
+                    errors.push(format!(
+                        "channel '{id}' ({}): `rollouts` names version {} of workflow \
+                         '{workflow_id}', and the set carries no such version",
+                        def.origin, rollout.version
+                    ));
+                    missing = true;
+                    continue;
+                };
+                compiled.push(CompiledRollout {
+                    workflow: workflow_id.clone(),
+                    definition: definition.clone(),
+                    start_bucket: rollout.start_bucket,
+                    end_bucket: rollout.end_bucket,
+                });
+            }
+            if missing {
+                continue;
+            }
+            compiled
+        };
         let mut requires = vec![CompiledRequirement {
             kind: EntityKind::Workflow,
             id: workflow_id,
@@ -231,7 +320,13 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
         match definition_file(&Definition::Channel(channel)) {
             Ok((digest, path, bytes)) => {
                 out.files.insert(path, bytes);
-                channel_members.push(member(EntityKind::Channel, id, digest, requires));
+                channel_members.push(member_with_rollouts(
+                    EntityKind::Channel,
+                    id,
+                    digest,
+                    requires,
+                    compiled_rollouts,
+                ));
                 out.counts.channels += 1;
             }
             Err(e) => errors.push(format!("channel '{id}' ({}): {e}", def.origin)),
@@ -269,6 +364,12 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
 
     let mut seen: BTreeSet<(EntityKind, String)> = BTreeSet::new();
     for m in &members {
+        // Workflows are the one kind two members may share an id under: they
+        // are two revisions of one workflow, and the channel's rollouts
+        // select between them.
+        if m.kind == EntityKind::Workflow {
+            continue;
+        }
         if !seen.insert((m.kind, m.id.clone())) {
             errors.push(format!(
                 "two {}s in the set share the id '{}'",
@@ -280,13 +381,33 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
         return Err(errors);
     }
 
-    // By the kind's name, then the id: the order `deployment.json` has
-    // always listed members and requirements in.
-    members.sort_by(|a, b| (a.kind.as_str(), &a.id).cmp(&(b.kind.as_str(), &b.id)));
+    // By the kind's name, then the id and digest: the order `deployment.json`
+    // has always listed members in, made deterministic when two workflow
+    // variants share an id.
+    members.sort_by(|a, b| {
+        (
+            a.kind.as_str(),
+            &a.id,
+            a.definition.as_deref().unwrap_or_default(),
+        )
+            .cmp(&(
+                b.kind.as_str(),
+                &b.id,
+                b.definition.as_deref().unwrap_or_default(),
+            ))
+    });
     for m in &mut members {
         m.requires
             .sort_by(|a, b| (a.kind.as_str(), &a.id).cmp(&(b.kind.as_str(), &b.id)));
         m.requires.dedup();
+        m.rollouts.sort_by(|a, b| {
+            (a.start_bucket, a.end_bucket, &a.workflow, &a.definition).cmp(&(
+                b.start_bucket,
+                b.end_bucket,
+                &b.workflow,
+                &b.definition,
+            ))
+        });
     }
     let deployment = CompiledDeployment {
         schema_version: COMPILED_DEPLOYMENT_SCHEMA_VERSION,
@@ -305,12 +426,23 @@ fn member(
     digest: String,
     requires: Vec<CompiledRequirement>,
 ) -> CompiledMember {
+    member_with_rollouts(kind, id, digest, requires, Vec::new())
+}
+
+fn member_with_rollouts(
+    kind: EntityKind,
+    id: String,
+    digest: String,
+    requires: Vec<CompiledRequirement>,
+    rollouts: Vec<CompiledRollout>,
+) -> CompiledMember {
     CompiledMember {
         kind,
         id,
         definition: Some(digest),
         connection: None,
         requires,
+        rollouts,
     }
 }
 
@@ -410,6 +542,20 @@ pub fn workflow_definition(
     doc: &Value,
     origin: &str,
 ) -> Result<(String, WorkflowDefinition), String> {
+    let (id, _, definition) = workflow_variant(doc, origin)?;
+    Ok((id, definition))
+}
+
+/// A set's workflow as a [`WorkflowDefinition`], with its id and the
+/// authoring `version` that names it among the variants of one id.
+///
+/// `version` is a selector, not a deployment revision: the deployer assigns
+/// revisions from the target's history. It is stripped from the definition,
+/// like the rest of the identity.
+pub fn workflow_variant(
+    doc: &Value,
+    origin: &str,
+) -> Result<(String, Option<u64>, WorkflowDefinition), String> {
     let obj = object(doc, "workflow", origin)?;
     let id = entity_id(obj, "workflow_id", "workflow", origin)?;
     let what = format!("workflow '{id}' ({origin})");
@@ -420,6 +566,7 @@ pub fn workflow_definition(
         &what,
     )?;
     check_activate(obj, &what)?;
+    let version = identity_version(obj, &what)?;
 
     let mut definition: Map<String, Value> = obj
         .iter()
@@ -447,7 +594,146 @@ pub fn workflow_definition(
     }
     let workflow: WorkflowDefinition =
         serde_json::from_value(Value::Object(definition)).map_err(|e| format!("{what}: {e}"))?;
-    Ok((id, workflow))
+    Ok((id, version, workflow))
+}
+
+/// The identity `version` a definition carries, when it carries one. A
+/// version of `0` is refused: it reads as "no revision", which is not a
+/// variant an author can mean.
+pub(crate) fn identity_version(
+    obj: &Map<String, Value>,
+    what: &str,
+) -> Result<Option<u64>, String> {
+    match obj.get("version") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => match value.as_u64() {
+            Some(version) if version >= 1 => Ok(Some(version)),
+            _ => Err(format!(
+                "{what}: `version` must be an integer of at least 1, not {value}"
+            )),
+        },
+    }
+}
+
+/// One bucket interval of a channel's traffic split, selecting a workflow
+/// `version` of the channel's own workflow id.
+///
+/// The `version` is the authoring selector a workflow document carries. The
+/// target still assigns deployment revisions; this never names one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ChannelRollout {
+    pub version: u64,
+    pub start_bucket: u8,
+    pub end_bucket: u8,
+}
+
+/// A channel's compiled pieces: id, workflow id, driver connections,
+/// optional split, and the definition itself.
+pub type ChannelVariant = (
+    String,
+    String,
+    Vec<String>,
+    Vec<ChannelRollout>,
+    ChannelDefinition,
+);
+
+/// Validate that `rollouts` partition `[0, 100)` with no gaps, overlaps or
+/// repeated versions — the rule the server applies to a new revision's
+/// intervals, applied offline so a set fails before it is deployed.
+pub(crate) fn validate_channel_rollouts(rollouts: &[ChannelRollout]) -> Result<(), String> {
+    if rollouts.is_empty() {
+        return Err("at least one rollout interval is required".to_string());
+    }
+    let mut sorted = rollouts.to_vec();
+    sorted.sort_by_key(|rollout| (rollout.start_bucket, rollout.end_bucket));
+    let mut seen = BTreeSet::new();
+    let mut cursor = 0u8;
+    for rollout in &sorted {
+        if rollout.version == 0 || !seen.insert(rollout.version) {
+            return Err("duplicate or zero workflow version in rollout".to_string());
+        }
+        if rollout.start_bucket >= rollout.end_bucket || rollout.end_bucket > 100 {
+            return Err(format!(
+                "rollout for version {} has invalid bucket bounds [{}, {})",
+                rollout.version, rollout.start_bucket, rollout.end_bucket
+            ));
+        }
+        if rollout.start_bucket != cursor {
+            return Err(format!(
+                "rollout intervals have a gap or overlap at bucket {cursor} vs {}",
+                rollout.start_bucket
+            ));
+        }
+        cursor = rollout.end_bucket;
+    }
+    if cursor != 100 {
+        return Err(format!("rollout intervals end at {cursor}, expected 100"));
+    }
+    Ok(())
+}
+
+/// The `rollouts` list a channel document carries, validated. Absent or
+/// `null` is no split.
+pub(crate) fn parse_channel_rollouts(
+    doc: &Value,
+    what: &str,
+) -> Result<Vec<ChannelRollout>, String> {
+    let Some(obj) = doc.as_object() else {
+        return Ok(Vec::new());
+    };
+    rollouts_from_object(obj, what)
+}
+
+fn rollouts_from_object(
+    obj: &Map<String, Value>,
+    what: &str,
+) -> Result<Vec<ChannelRollout>, String> {
+    let Some(value) = obj.get("rollouts") else {
+        return Ok(Vec::new());
+    };
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    let Some(items) = value.as_array() else {
+        return Err(format!(
+            "{what}: `rollouts` is a list of bucket intervals, not {value}"
+        ));
+    };
+    let mut rollouts = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let at = format!("`rollouts[{index}]`");
+        let Some(map) = item.as_object() else {
+            return Err(format!("{what}: {at} is not an object"));
+        };
+        if let Some(key) = map
+            .keys()
+            .find(|key| !matches!(key.as_str(), "version" | "start_bucket" | "end_bucket"))
+        {
+            return Err(format!(
+                "{what}: {at} has `{key}`, which is not part of a bucket interval \
+                 (`version`, `start_bucket`, `end_bucket`)"
+            ));
+        }
+        let version = map
+            .get("version")
+            .and_then(Value::as_u64)
+            .filter(|version| *version >= 1)
+            .ok_or_else(|| format!("{what}: {at} needs a `version` of at least 1"))?;
+        let bucket = |key: &str| -> Result<u8, String> {
+            map.get(key)
+                .and_then(Value::as_u64)
+                .and_then(|bucket| u8::try_from(bucket).ok())
+                .filter(|bucket| *bucket <= 100)
+                .ok_or_else(|| format!("{what}: {at} needs `{key}` as a bucket in 0..=100"))
+        };
+        rollouts.push(ChannelRollout {
+            version,
+            start_bucket: bucket("start_bucket")?,
+            end_bucket: bucket("end_bucket")?,
+        });
+    }
+    validate_channel_rollouts(&rollouts).map_err(|error| format!("{what}: {error}"))?;
+    Ok(rollouts)
 }
 
 /// A set's channel as a [`ChannelDefinition`], with its id, the id of the
@@ -458,6 +744,13 @@ pub fn channel_definition(
     doc: &Value,
     origin: &str,
 ) -> Result<(String, String, Vec<String>, ChannelDefinition), String> {
+    let (id, workflow_id, connections, _, channel) = channel_variants(doc, origin)?;
+    Ok((id, workflow_id, connections, channel))
+}
+
+/// A set's channel with its optional traffic split, alongside the id of the
+/// workflow it serves and the connections its driver connects with.
+pub fn channel_variants(doc: &Value, origin: &str) -> Result<ChannelVariant, String> {
     let obj = object(doc, "channel", origin)?;
     let id = entity_id(obj, "channel_id", "channel", origin)?;
     let what = format!("channel '{id}' ({origin})");
@@ -474,7 +767,7 @@ pub fn channel_definition(
         CHANNEL_KEYS,
         &[
             CHANNEL_IDENTITY,
-            &["workflow_id", "activate", "connections"],
+            &["workflow_id", "activate", "connections", "rollouts"],
         ]
         .concat(),
         &what,
@@ -486,6 +779,7 @@ pub fn channel_definition(
         ));
     }
     let workflow_id = entity_id(obj, "workflow_id", "channel", origin)?;
+    let rollouts = rollouts_from_object(obj, &what)?;
     let connections = match obj.get("connections") {
         None | Some(Value::Null) => Vec::new(),
         Some(Value::Array(items)) => {
@@ -520,7 +814,7 @@ pub fn channel_definition(
         .collect();
     let channel: ChannelDefinition =
         serde_json::from_value(Value::Object(definition)).map_err(|e| format!("{what}: {e}"))?;
-    Ok((id, workflow_id, connections, channel))
+    Ok((id, workflow_id, connections, rollouts, channel))
 }
 
 /// Every connection `workflow` uses, each with a function that names it:
@@ -871,6 +1165,256 @@ mod tests {
         .expect("converts");
         assert_eq!(id, "w");
         assert_eq!(wf.on_failure, WorkflowOnFailure::Continue);
+    }
+
+    /// Two workflow documents may share an id when each names a distinct
+    /// `version`; a channel's `rollouts` then selects between them, and the
+    /// compiled member carries each variant's digest.
+    #[test]
+    fn two_workflow_versions_compile_to_a_channel_rollout() {
+        let def = |entity, doc, origin: &str| super::super::set::Definition {
+            entity,
+            origin: origin.to_string(),
+            doc,
+            spans: None,
+            provenance: Default::default(),
+        };
+        let set = DefinitionSet {
+            definitions: vec![
+                def(
+                    Entity::Workflow,
+                    json!({"workflow_id": "checkout", "version": 1, "name": "V1",
+                           "tasks": []}),
+                    "v1.json",
+                ),
+                def(
+                    Entity::Workflow,
+                    json!({"workflow_id": "checkout", "version": 2, "name": "V2",
+                           "tasks": []}),
+                    "v2.json",
+                ),
+                def(
+                    Entity::Channel,
+                    json!({"channel_id": "orders", "name": "Orders", "protocol": "rest",
+                    "workflow_id": "checkout",
+                    "rollouts": [
+                        {"version": 1, "start_bucket": 0, "end_bucket": 50},
+                        {"version": 2, "start_bucket": 50, "end_bucket": 100}
+                    ]}),
+                    "channel.json",
+                ),
+            ],
+            plugins: Vec::new(),
+        };
+        let out = build(&set).expect("compiles");
+        let deployment: CompiledDeployment =
+            serde_json::from_slice(&out.files["deployment.json"]).expect("a manifest");
+        assert_eq!(deployment.schema_version, 2);
+        let workflows: Vec<&CompiledMember> = deployment
+            .members
+            .iter()
+            .filter(|member| member.kind == EntityKind::Workflow)
+            .collect();
+        assert_eq!(workflows.len(), 2, "one member per variant");
+        assert!(workflows.iter().all(|member| member.id == "checkout"));
+        assert_ne!(workflows[0].definition, workflows[1].definition);
+
+        let channel = deployment
+            .members
+            .iter()
+            .find(|member| member.kind == EntityKind::Channel)
+            .expect("the channel");
+        assert_eq!(channel.rollouts.len(), 2);
+        assert_eq!(channel.rollouts[0].workflow, "checkout");
+        assert_eq!(channel.rollouts[0].start_bucket, 0);
+        assert_eq!(channel.rollouts[0].end_bucket, 50);
+        assert_eq!(channel.rollouts[1].start_bucket, 50);
+        assert_eq!(channel.rollouts[1].end_bucket, 100);
+        assert_eq!(
+            channel.rollouts[0].definition,
+            workflows[0].definition.as_deref().unwrap_or_default()
+        );
+        assert_eq!(
+            channel.rollouts[1].definition,
+            workflows[1].definition.as_deref().unwrap_or_default()
+        );
+        assert!(
+            out.files.contains_key(
+                channel.rollouts[0]
+                    .definition
+                    .strip_prefix("sha256:")
+                    .map(|hex| format!("definitions/{hex}.json"))
+                    .expect("a digest")
+                    .as_str()
+            ),
+            "every rollout names a definition file"
+        );
+    }
+
+    /// A set with one revision per workflow still compiles to the old shape:
+    /// no `rollouts` key, only the version-2 schema number.
+    #[test]
+    fn a_single_revision_channel_has_no_rollouts() {
+        let def = |entity, doc, origin: &str| super::super::set::Definition {
+            entity,
+            origin: origin.to_string(),
+            doc,
+            spans: None,
+            provenance: Default::default(),
+        };
+        let set = DefinitionSet {
+            definitions: vec![
+                def(
+                    Entity::Workflow,
+                    json!({"workflow_id": "checkout", "name": "Checkout", "tasks": []}),
+                    "workflow.json",
+                ),
+                def(
+                    Entity::Channel,
+                    json!({"channel_id": "orders", "name": "Orders", "protocol": "rest",
+                           "workflow_id": "checkout"}),
+                    "channel.json",
+                ),
+            ],
+            plugins: Vec::new(),
+        };
+        let out = build(&set).expect("compiles");
+        let deployment: CompiledDeployment =
+            serde_json::from_slice(&out.files["deployment.json"]).expect("a manifest");
+        assert_eq!(deployment.schema_version, 2);
+        assert!(
+            deployment
+                .members
+                .iter()
+                .all(|member| member.rollouts.is_empty()),
+            "an unsplit deployment carries no rollout metadata"
+        );
+        let json: Value = serde_json::from_slice(&out.files["deployment.json"]).expect("json");
+        assert!(
+            !json.to_string().contains("\"rollouts\""),
+            "the key is omitted, not empty: {json}"
+        );
+    }
+
+    /// A canary's split has to be unambiguous and total. Each case is
+    /// refused by name rather than compiled into something the server will
+    /// reject later.
+    #[test]
+    fn an_invalid_or_ambiguous_split_is_refused() {
+        let def = |entity, doc, origin: &str| super::super::set::Definition {
+            entity,
+            origin: origin.to_string(),
+            doc,
+            spans: None,
+            provenance: Default::default(),
+        };
+        let workflow = |version: u64, name: &str| {
+            def(
+                Entity::Workflow,
+                json!({"workflow_id": "checkout", "version": version, "name": name,
+                       "tasks": []}),
+                &format!("v{version}.json"),
+            )
+        };
+        let channel = |rollouts: Value| {
+            def(
+                Entity::Channel,
+                json!({"channel_id": "orders", "name": "Orders", "protocol": "rest",
+                       "workflow_id": "checkout", "rollouts": rollouts}),
+                "channel.json",
+            )
+        };
+        let build_set = |definitions| {
+            build(&DefinitionSet {
+                definitions,
+                plugins: Vec::new(),
+            })
+        };
+
+        // A gap and an overlap.
+        for rollouts in [
+            json!([
+                {"version": 1, "start_bucket": 0, "end_bucket": 40},
+                {"version": 2, "start_bucket": 50, "end_bucket": 100}
+            ]),
+            json!([
+                {"version": 1, "start_bucket": 0, "end_bucket": 60},
+                {"version": 2, "start_bucket": 50, "end_bucket": 100}
+            ]),
+        ] {
+            let errors = build_set(vec![
+                workflow(1, "V1"),
+                workflow(2, "V2"),
+                channel(rollouts),
+            ])
+            .expect_err("refused");
+            assert!(
+                errors.iter().any(|error| error.contains("gap or overlap")
+                    || error.contains("invalid bucket bounds")),
+                "{errors:?}"
+            );
+        }
+
+        // A version the set does not carry.
+        let errors = build_set(vec![
+            workflow(1, "V1"),
+            workflow(2, "V2"),
+            channel(json!([
+                {"version": 1, "start_bucket": 0, "end_bucket": 50},
+                {"version": 3, "start_bucket": 50, "end_bucket": 100}
+            ])),
+        ])
+        .expect_err("refused");
+        assert!(
+            errors.iter().any(|error| error.contains("no such version")),
+            "{errors:?}"
+        );
+
+        // A multi-version workflow with no split at all.
+        let errors = build_set(vec![
+            workflow(1, "V1"),
+            workflow(2, "V2"),
+            def(
+                Entity::Channel,
+                json!({"channel_id": "orders", "name": "Orders", "protocol": "rest",
+                   "workflow_id": "checkout"}),
+                "channel.json",
+            ),
+        ])
+        .expect_err("refused");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("must name which one each bucket serves")),
+            "{errors:?}"
+        );
+
+        // Two versions with the same definition would collapse to one
+        // revision at the target.
+        let errors = build_set(vec![
+            workflow(1, "Same"),
+            workflow(2, "Same"),
+            channel(json!([
+                {"version": 1, "start_bucket": 0, "end_bucket": 50},
+                {"version": 2, "start_bucket": 50, "end_bucket": 100}
+            ])),
+        ])
+        .expect_err("refused");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("identical definitions")),
+            "{errors:?}"
+        );
+
+        // A repeated version.
+        let errors = build_set(vec![workflow(1, "V1"), workflow(1, "V2")]).expect_err("refused");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("distinct `version`")),
+            "{errors:?}"
+        );
     }
 
     /// A connector over a `provider` may bind the provider's dependencies to

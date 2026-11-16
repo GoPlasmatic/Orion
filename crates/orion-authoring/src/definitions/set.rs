@@ -83,6 +83,24 @@ impl Boundary {
     pub fn allows_connector(&self, name: &str) -> bool {
         self.connectors.iter().any(|n| n == name)
     }
+
+    /// What the target node's driver `driver` declares, when known: the
+    /// caller's `--capabilities` description, else Community's built-in.
+    ///
+    /// A `ProviderDescription` carries both the operations a
+    /// `connector_call` may name and the dependency aliases a connection
+    /// over it binds, so this is the one lookup the operation and binding
+    /// checks share.
+    pub fn describe_provider(
+        &self,
+        driver: &str,
+    ) -> Option<orion_extension_api::ProviderDescription> {
+        self.provider_operations
+            .as_ref()
+            .and_then(|known| known.get(driver))
+            .cloned()
+            .or_else(|| crate::extensions::foundation::builtin_description(driver))
+    }
 }
 
 /// One entity as authored, with where it came from.

@@ -49,7 +49,7 @@ mod v2;
 /// Re-exported so a `V2Admin` implementation can name the body type without
 /// taking its own dependency on `bytes`.
 pub use bytes::Bytes;
-pub use client::OrionClient;
+pub use client::{OrionClient, RequestOptions};
 pub use error::ClientError;
 pub use paths::query_string;
 pub use reqwest::{Method, StatusCode};

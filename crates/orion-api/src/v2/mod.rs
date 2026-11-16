@@ -43,8 +43,8 @@ pub mod vocab;
 
 pub use manifest::{
     COMPILED_DEPLOYMENT_SCHEMA_VERSION, CompiledConnection, CompiledDeployment, CompiledMember,
-    CompiledRequirement, DEPLOYMENT_MANIFEST_SCHEMA_VERSION, DeploymentManifest, EntityRef,
-    ManifestMember, ManifestProvider, RolloutInterval,
+    CompiledRequirement, CompiledRollout, DEPLOYMENT_MANIFEST_SCHEMA_VERSION, DeploymentManifest,
+    EntityRef, ManifestMember, ManifestProvider, RolloutInterval,
 };
 pub use vocab::{
     ConnectorErrorClass, EditionTier, EffectStatus, EntityKind, ImplementationKind,
@@ -56,11 +56,11 @@ pub use vocab::{
 /// client speaks exactly one; see the module documentation for what moves
 /// it.
 ///
-/// `1` is the first *published* v2 contract: the 2.0 candidates before it
-/// were local builds, never tagged or distributed, so no client exists that
-/// was written against an earlier revision. The next change that moves the
-/// number therefore moves it to `2`.
-pub const API_VERSION: u32 = 1;
+/// `1` was the first *published* v2 contract. `2` adds
+/// [`ScaffoldRequest::tier`]: a version-1 server refuses that field as
+/// unknown, so the move is what stops an old server from misreading a new
+/// request.
+pub const API_VERSION: u32 = 2;
 
 // ============================================================
 // Runtime capabilities
@@ -759,6 +759,11 @@ pub struct ScaffoldRequest {
     #[serde(default = "default_scaffold_version")]
     pub version: String,
     pub kind: ImplementationKind,
+    /// The edition tier the package's `distribution.json` declares. Absent
+    /// keeps today's `community` default, so an older caller's body is
+    /// unchanged in meaning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<EditionTier>,
 }
 
 /// A generated provider package (`POST /api/v2/admin/authoring/scaffold`).
@@ -1013,7 +1018,34 @@ mod tests {
     /// type change. This pin makes that decision visible in the diff.
     #[test]
     fn the_contract_revision_is_pinned() {
-        assert_eq!(API_VERSION, 1);
+        assert_eq!(API_VERSION, 2);
+    }
+
+    /// A scaffold request without a tier keeps `community`; a declared one
+    /// decodes, and an unknown name is refused rather than read as
+    /// community.
+    #[test]
+    fn a_scaffold_request_tier_is_optional_and_named() {
+        let bare: ScaffoldRequest = serde_json::from_str(
+            r#"{"publisher":"org.orion","provider_id":"org.orion.sample","kind":"rust"}"#,
+        )
+        .expect("no tier");
+        assert_eq!(bare.tier, None);
+
+        let standard: ScaffoldRequest = serde_json::from_str(
+            r#"{"publisher":"org.orion","provider_id":"org.orion.sample","kind":"rust",
+                "tier":"standard"}"#,
+        )
+        .expect("standard tier");
+        assert_eq!(standard.tier, Some(EditionTier::Standard));
+
+        assert!(
+            serde_json::from_str::<ScaffoldRequest>(
+                r#"{"publisher":"org.orion","provider_id":"org.orion.sample","kind":"rust",
+                    "tier":"platinum"}"#
+            )
+            .is_err()
+        );
     }
 
     /// An answer missing a field is a decode error, not a silent default:

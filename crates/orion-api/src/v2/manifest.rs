@@ -117,7 +117,10 @@ pub struct RolloutInterval {
 
 /// The `schema_version` a compiled deployment directory's
 /// `deployment.json` carries.
-pub const COMPILED_DEPLOYMENT_SCHEMA_VERSION: u64 = 1;
+///
+/// Version 2 added [`CompiledMember::rollouts`]. A version-1 directory has no
+/// canary split and still reads: every member's `rollouts` defaults to empty.
+pub const COMPILED_DEPLOYMENT_SCHEMA_VERSION: u64 = 2;
 
 /// `deployment.json` of a compiled deployment directory: the members a
 /// deployment deploys, with no revisions. Only the target knows which
@@ -129,9 +132,38 @@ pub struct CompiledDeployment {
     pub members: Vec<CompiledMember>,
 }
 
+impl CompiledDeployment {
+    /// `true` for every schema this build writes or still reads.
+    ///
+    /// Version 1 predates [`CompiledMember::rollouts`]; version 2 is what
+    /// [`COMPILED_DEPLOYMENT_SCHEMA_VERSION`] names. A reader accepts both,
+    /// and refuses anything else rather than guessing.
+    pub fn supports_schema_version(version: u64) -> bool {
+        (1..=COMPILED_DEPLOYMENT_SCHEMA_VERSION).contains(&version)
+    }
+}
+
+/// One workflow revision a channel's rollout routes to, and the bucket
+/// interval it serves.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompiledRollout {
+    /// The workflow id whose revision this interval routes to.
+    pub workflow: String,
+    /// The digest of that revision's definition (the file
+    /// `definitions/<hex>.json`).
+    pub definition: String,
+    pub start_bucket: u8,
+    pub end_bucket: u8,
+}
+
 /// One member of a compiled deployment. A workflow, channel or plugin names
 /// its `definition` by digest (the file `definitions/<hex>.json`); a
 /// connection names its `connection` file (`connections/<id>.json`).
+///
+/// Two workflow members may share an id: they are two revisions of one
+/// workflow, and a channel's `rollouts` selects between them. Every other
+/// kind is unique by id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompiledMember {
@@ -146,6 +178,12 @@ pub struct CompiledMember {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection: Option<String>,
     pub requires: Vec<CompiledRequirement>,
+    /// A channel's workflow split: disjoint bucket intervals covering
+    /// `[0, 100)`, each naming the workflow id and definition digest it
+    /// serves. Empty for a channel that serves one revision, and for every
+    /// other kind.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rollouts: Vec<CompiledRollout>,
 }
 
 /// A member another member depends on, by kind and id. The deployer
@@ -177,4 +215,94 @@ pub struct CompiledConnection {
     /// when empty, so a connection without any compiles as it always did.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub bindings: BTreeMap<String, String>,
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A version-1 directory predates `rollouts`: every member reads with an
+    /// empty split, so an old compiled tree still deploys.
+    #[test]
+    fn a_version_one_directory_reads_with_no_rollouts() {
+        let text = r#"{
+            "schema_version": 1,
+            "members": [{
+                "kind": "channel",
+                "id": "orders",
+                "definition": "sha256:abc",
+                "requires": [{"kind": "workflow", "id": "checkout"}]
+            }]
+        }"#;
+        let deployment: CompiledDeployment = serde_json::from_str(text).unwrap();
+        assert_eq!(deployment.schema_version, 1);
+        assert!(deployment.members[0].rollouts.is_empty());
+        assert!(CompiledDeployment::supports_schema_version(1));
+        assert!(CompiledDeployment::supports_schema_version(2));
+        assert!(!CompiledDeployment::supports_schema_version(0));
+        assert!(!CompiledDeployment::supports_schema_version(3));
+    }
+
+    /// Version 2 carries a channel's split, and an unsplit member omits the
+    /// key entirely so its bytes are the version-1 shape plus the version.
+    #[test]
+    fn a_canary_channel_round_trips_and_an_unsplit_one_omits_rollouts() {
+        let split = CompiledMember {
+            kind: EntityKind::Channel,
+            id: "orders".into(),
+            definition: Some("sha256:channel".into()),
+            connection: None,
+            requires: vec![CompiledRequirement {
+                kind: EntityKind::Workflow,
+                id: "checkout".into(),
+            }],
+            rollouts: vec![
+                CompiledRollout {
+                    workflow: "checkout".into(),
+                    definition: "sha256:v1".into(),
+                    start_bucket: 0,
+                    end_bucket: 50,
+                },
+                CompiledRollout {
+                    workflow: "checkout".into(),
+                    definition: "sha256:v2".into(),
+                    start_bucket: 50,
+                    end_bucket: 100,
+                },
+            ],
+        };
+        let json = serde_json::to_value(&split).unwrap();
+        assert_eq!(json["rollouts"][1]["definition"], "sha256:v2");
+        let back: CompiledMember = serde_json::from_value(json).unwrap();
+        assert_eq!(back, split);
+
+        let unsplit = CompiledMember {
+            rollouts: Vec::new(),
+            ..split
+        };
+        let json = serde_json::to_value(&unsplit).unwrap();
+        assert!(json.get("rollouts").is_none(), "{json}");
+    }
+
+    /// The member type stays strict: a typo in a rollout is refused, not
+    /// silently ignored.
+    #[test]
+    fn an_unknown_rollout_key_is_refused() {
+        let text = json!({
+            "kind": "channel",
+            "id": "orders",
+            "definition": "sha256:channel",
+            "requires": [],
+            "rollouts": [{
+                "workflow": "checkout",
+                "definition": "sha256:v1",
+                "start_bucket": 0,
+                "end_bucket": 100,
+                "weight": 100
+            }]
+        });
+        assert!(serde_json::from_value::<CompiledMember>(text).is_err());
+    }
 }

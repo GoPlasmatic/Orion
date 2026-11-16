@@ -45,6 +45,10 @@ pub enum ClientError {
         source: reqwest::Error,
     },
 
+    /// A request header name or value is not valid HTTP.
+    #[error("invalid request header '{name}': {message}")]
+    InvalidRequestHeader { name: String, message: String },
+
     /// The server sent a response body larger than the client's safety cap.
     #[error("Response from {url} exceeded the {max_bytes}-byte client limit")]
     ResponseTooLarge { url: String, max_bytes: usize },

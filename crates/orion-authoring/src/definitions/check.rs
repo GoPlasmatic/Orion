@@ -144,12 +144,11 @@ pub fn check(
 ) -> Vec<Diagnostic> {
     let mut findings = Vec::new();
 
-    let mut provider_backed = BTreeSet::new();
-    let connectors = check_connectors(set, &mut provider_backed, &mut findings);
+    let connectors = check_connectors(set, &mut findings);
     let workflows = check_workflows(set, require_explicit_ids, functions, &mut findings);
     let known_connector = |name: &str| {
-        connectors.contains_key(name)
-            || provider_backed.contains(name)
+        connectors.facts.contains_key(name)
+            || connectors.provider_backed.contains(name)
             || boundary.allows_connector(name)
     };
     let drivers = boundary
@@ -158,7 +157,7 @@ pub fn check(
         .unwrap_or_else(crate::extensions::ChannelDriverRegistry::community);
     let channels = check_channels(
         set,
-        &workflows.ids,
+        &workflows,
         &drivers,
         &known_connector,
         require_explicit_ids,
@@ -167,13 +166,14 @@ pub fn check(
 
     check_closure(
         &workflows,
-        &connectors,
+        &connectors.facts,
         &channels,
         boundary,
         functions,
         &mut findings,
     );
     check_operations(&workflows, boundary, &mut findings);
+    check_bindings(set, boundary, &connectors, &mut findings);
     check_env_refs(set, &mut findings);
     check_cron_slots(set, &mut findings);
 
@@ -252,17 +252,31 @@ pub(super) fn check_db_drivers(set: &DefinitionSet, findings: &mut Vec<Diagnosti
 /// What the workflow pass learned.
 struct Workflows {
     ids: Vec<String>,
+    /// workflow id → the explicit authoring `version`s the set carries. One
+    /// entry means no split is possible; more than one is a canary candidate.
+    versions: std::collections::BTreeMap<String, BTreeSet<u64>>,
     /// (id-or-origin, tasks, loop) in set order.
     tasks: Vec<(String, Value, Option<Value>)>,
 }
 
+/// What the connector pass learned. `facts` is what a typed function checks
+/// against; `compiled` is what `compile` would write, which is where a
+/// binding check finds a connector's driver.
+struct Connectors {
+    facts: BTreeMap<String, crate::engine::ConnectorFacts>,
+    provider_backed: BTreeSet<String>,
+    names: BTreeSet<String>,
+    compiled: BTreeMap<String, orion_api::v2::CompiledConnection>,
+}
+
 /// name → what the connector is, for the closure checks.
-fn check_connectors(
-    set: &DefinitionSet,
-    provider_backed: &mut BTreeSet<String>,
-    findings: &mut Vec<Diagnostic>,
-) -> BTreeMap<String, crate::engine::ConnectorFacts> {
-    let mut by_name = BTreeMap::new();
+fn check_connectors(set: &DefinitionSet, findings: &mut Vec<Diagnostic>) -> Connectors {
+    let mut connectors = Connectors {
+        facts: BTreeMap::new(),
+        provider_backed: BTreeSet::new(),
+        names: BTreeSet::new(),
+        compiled: BTreeMap::new(),
+    };
     let mut seen: Vec<String> = Vec::new();
     for def in set.iter(Entity::Connector) {
         // A connector over a Direct Rust driver named by id (an edition's, such
@@ -273,7 +287,7 @@ fn check_connectors(
         if def.doc.get("provider").is_some() {
             let name = def.doc.get("name").and_then(Value::as_str).unwrap_or("?");
             match crate::definitions::deployment::connection(&def.doc, &def.origin) {
-                Ok(_) => {
+                Ok((connection, _notes)) => {
                     if seen.iter().any(|n| n == name) {
                         findings.push(Diagnostic::error(
                             "duplicate.connector_name",
@@ -282,7 +296,9 @@ fn check_connectors(
                         ));
                     }
                     seen.push(name.to_string());
-                    provider_backed.insert(name.to_string());
+                    connectors.names.insert(name.to_string());
+                    connectors.provider_backed.insert(name.to_string());
+                    connectors.compiled.insert(name.to_string(), connection);
                 }
                 Err(e) => findings.push(Diagnostic::error(
                     "schema.connector",
@@ -329,14 +345,23 @@ fn check_connectors(
             ));
         }
         seen.push(req.name.clone());
-        by_name.insert(
+        connectors.names.insert(req.name.clone());
+        connectors.facts.insert(
             req.name.clone(),
             crate::engine::ConnectorFacts {
                 connector_type: req.connector_type,
             },
         );
+        // A typed connector can be a binding target. Its driver comes from
+        // the same conversion `compile` uses; a conversion problem is already
+        // reported by the schema or db-driver pass, so it is not repeated.
+        if let Ok((connection, _notes)) =
+            crate::definitions::deployment::connection(&def.doc, &def.origin)
+        {
+            connectors.compiled.insert(req.name, connection);
+        }
     }
-    by_name
+    connectors
 }
 
 fn check_workflows(
@@ -347,6 +372,8 @@ fn check_workflows(
 ) -> Workflows {
     let loop_cap = crate::config::EngineConfig::default().max_loop_iterations;
     let mut ids = Vec::new();
+    let mut versions: std::collections::BTreeMap<String, BTreeSet<u64>> = Default::default();
+    let mut unversioned: BTreeSet<String> = BTreeSet::new();
     let mut tasks = Vec::new();
     for def in set.iter(Entity::Workflow) {
         let req: CreateWorkflowRequest = match serde_json::from_value(def.doc.clone()) {
@@ -483,16 +510,51 @@ fn check_workflows(
                 advisory.message,
             ));
         }
+        let version = match def.doc.as_object() {
+            Some(doc) => match crate::definitions::deployment::identity_version(
+                doc,
+                &format!("workflow '{}'", req.name),
+            ) {
+                Ok(version) => version,
+                Err(error) => {
+                    findings.push(Diagnostic::error(
+                        "schema.workflow",
+                        format!("workflow '{}'", req.name),
+                        error,
+                    ));
+                    None
+                }
+            },
+            None => None,
+        };
         match &req.workflow_id {
             Some(id) => {
-                if ids.contains(id) {
+                let duplicate = match version {
+                    Some(version) => {
+                        unversioned.contains(id)
+                            || !versions.entry(id.clone()).or_default().insert(version)
+                    }
+                    None => versions.contains_key(id) || !unversioned.insert(id.clone()),
+                };
+                if duplicate {
                     findings.push(Diagnostic::error(
                         "duplicate.workflow_id",
                         format!("workflow '{}'", req.name),
-                        format!("two workflows in the set share workflow_id '{id}'"),
+                        match version {
+                            Some(version) => format!(
+                                "two workflows in the set share workflow_id '{id}' and \
+                                 version {version}; each variant needs a distinct `version`"
+                            ),
+                            None => format!(
+                                "a second workflow in the set shares workflow_id '{id}': give \
+                                 each revision a distinct explicit `version`"
+                            ),
+                        },
                     ));
                 }
-                ids.push(id.clone());
+                if !ids.iter().any(|known| known == id) {
+                    ids.push(id.clone());
+                }
                 tasks.push((id.clone(), req.tasks.clone(), req.loop_config.clone()));
             }
             None if require_explicit_ids => findings.push(
@@ -513,12 +575,16 @@ fn check_workflows(
             )),
         }
     }
-    Workflows { ids, tasks }
+    Workflows {
+        ids,
+        versions,
+        tasks,
+    }
 }
 
 fn check_channels(
     set: &DefinitionSet,
-    workflow_ids: &[String],
+    workflows: &Workflows,
     drivers: &crate::extensions::ChannelDriverRegistry,
     known_connector: &dyn Fn(&str) -> bool,
     require_explicit_ids: bool,
@@ -569,6 +635,20 @@ fn check_channels(
                 &e,
             ));
         }
+        let rollouts = match crate::definitions::deployment::parse_channel_rollouts(
+            &def.doc,
+            &format!("channel '{}'", req.name),
+        ) {
+            Ok(rollouts) => Some(rollouts),
+            Err(error) => {
+                let at = "channel.rollouts";
+                findings.push(
+                    Diagnostic::error("rollouts.invalid", format!("channel '{}'", req.name), error)
+                        .with_location(&def.origin, Some(at), def.locate(at)),
+                );
+                None
+            }
+        };
         match &req.channel_id {
             Some(id) => {
                 if channel_ids.contains(id) {
@@ -667,12 +747,51 @@ fn check_channels(
 
         match &req.workflow_id {
             Some(wf) if !wf.is_empty() => {
-                if !workflow_ids.iter().any(|id| id == wf) {
+                if !workflows.ids.iter().any(|id| id == wf) {
                     findings.push(Diagnostic::error(
                         "closure.workflow",
                         format!("channel '{}'", req.name),
                         format!("workflow '{wf}' is not in the set"),
                     ));
+                } else if let Some(rollouts) = &rollouts {
+                    let versions = workflows.versions.get(wf);
+                    if rollouts.is_empty() {
+                        if versions.is_some_and(|versions| versions.len() > 1) {
+                            findings.push(Diagnostic::error(
+                                "rollouts.ambiguous",
+                                format!("channel '{}'", req.name),
+                                format!(
+                                    "workflow '{wf}' has {} versions in the set, so the channel \
+                                     must name which one each bucket serves with `rollouts`",
+                                    versions.map_or(0, BTreeSet::len)
+                                ),
+                            ));
+                        }
+                    } else {
+                        for (index, rollout) in rollouts.iter().enumerate() {
+                            if versions.is_some_and(|versions| versions.contains(&rollout.version))
+                            {
+                                continue;
+                            }
+                            let at = format!("channel.rollouts[{index}].version");
+                            findings.push(
+                                Diagnostic::error(
+                                    "rollouts.unknown_version",
+                                    format!("channel '{}'", req.name),
+                                    format!(
+                                        "`rollouts` names version {} of workflow '{wf}', and \
+                                         the set carries no such version",
+                                        rollout.version
+                                    ),
+                                )
+                                .with_location(
+                                    &def.origin,
+                                    Some(&at),
+                                    def.locate(&at),
+                                ),
+                            );
+                        }
+                    }
                 }
             }
             _ => findings.push(Diagnostic::error(
@@ -765,13 +884,6 @@ fn check_cron_slots(set: &DefinitionSet, findings: &mut Vec<Diagnostic>) {
 /// declares nothing, or a target the set cannot name offline, is judged by
 /// the node.
 fn check_operations(workflows: &Workflows, boundary: &Boundary, findings: &mut Vec<Diagnostic>) {
-    let describe = |target: &str| {
-        boundary
-            .provider_operations
-            .as_ref()
-            .and_then(|known| known.get(target).cloned())
-            .or_else(|| crate::extensions::foundation::builtin_description(target))
-    };
     for (workflow, tasks, loop_config) in &workflows.tasks {
         for task in crate::engine::leaf_tasks(tasks, loop_config.as_ref()) {
             if task["function"]["name"] != crate::engine::functions::connector_call::NAME {
@@ -786,7 +898,7 @@ fn check_operations(workflows: &Workflows, boundary: &Boundary, findings: &mut V
             if operation.starts_with("orion.internal.") {
                 continue;
             }
-            let Some(described) = describe(target) else {
+            let Some(described) = boundary.describe_provider(target) else {
                 continue;
             };
             if described.operation(operation).is_none() {
@@ -799,6 +911,144 @@ fn check_operations(workflows: &Workflows, boundary: &Boundary, findings: &mut V
                         declared.join(", ")
                     ),
                 ));
+            }
+        }
+    }
+}
+
+/// Every connection over a provider that declares dependencies, checked
+/// against that declaration: an unknown alias, an unbound required alias, a
+/// target on the wrong provider, a target that itself declares dependencies,
+/// and bindings on a provider that declares none.
+///
+/// A provider the boundary cannot describe is skipped, like an operation
+/// check on one: the target node judges it. The rule mirrors the server's
+/// `binding_problems` (`runtime::extensions::workflow_provider::validation`),
+/// so a set that lints clean is one the admin API accepts.
+fn check_bindings(
+    set: &DefinitionSet,
+    boundary: &Boundary,
+    connectors: &Connectors,
+    findings: &mut Vec<Diagnostic>,
+) {
+    for def in set.iter(Entity::Connector) {
+        let Some(name) = def.doc.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        // Only a `provider` declares dependencies; a `connector_type` driver
+        // declares none and cannot bind.
+        if def.doc.get("provider").is_none() {
+            continue;
+        }
+        let Some(connection) = connectors.compiled.get(name) else {
+            continue;
+        };
+        let Some(described) = boundary.describe_provider(&connection.driver) else {
+            continue;
+        };
+        let entity = format!("connector '{name}'");
+        let report = |findings: &mut Vec<Diagnostic>,
+                      code: &'static str,
+                      alias: Option<&str>,
+                      message: String| {
+            let mut diagnostic = Diagnostic::error(code, &entity, message);
+            if let Some(alias) = alias {
+                let path = format!("connector.bindings.{alias}");
+                diagnostic =
+                    diagnostic.with_location(&def.origin, Some(path.as_str()), def.locate(&path));
+            }
+            findings.push(diagnostic);
+        };
+
+        if described.dependencies.is_empty() {
+            if !connection.bindings.is_empty() {
+                report(
+                    findings,
+                    "binding.undeclared",
+                    None,
+                    "this connection's provider declares no dependencies, so it binds none"
+                        .to_string(),
+                );
+            }
+            continue;
+        }
+
+        for (alias, dependency) in &described.dependencies {
+            if !dependency.optional && !connection.bindings.contains_key(alias) {
+                report(
+                    findings,
+                    "binding.required",
+                    Some(alias),
+                    format!(
+                        "provider '{}' declares the dependency '{alias}': bind it to a \
+                         connection",
+                        connection.driver
+                    ),
+                );
+            }
+        }
+
+        for (alias, target) in &connection.bindings {
+            let Some(dependency) = described.dependencies.get(alias) else {
+                report(
+                    findings,
+                    "binding.unknown_alias",
+                    Some(alias),
+                    format!(
+                        "provider '{}' declares no dependency '{alias}'",
+                        connection.driver
+                    ),
+                );
+                continue;
+            };
+            if target == name {
+                report(
+                    findings,
+                    "binding.self",
+                    Some(alias),
+                    "a connection cannot be its own dependency".to_string(),
+                );
+                continue;
+            }
+            let Some(target_connection) = connectors.compiled.get(target) else {
+                if !connectors.names.contains(target) {
+                    report(
+                        findings,
+                        "binding.target_missing",
+                        Some(alias),
+                        format!("no connector '{target}' is in the set"),
+                    );
+                }
+                continue;
+            };
+            let target_driver = target_connection.driver.as_str();
+            if let Some(wanted) = &dependency.provider
+                && wanted != target_driver
+            {
+                report(
+                    findings,
+                    "binding.wrong_provider",
+                    Some(alias),
+                    format!(
+                        "dependency '{alias}' runs on '{wanted}', and connection '{target}' \
+                         on '{target_driver}'"
+                    ),
+                );
+            }
+            if boundary
+                .describe_provider(target_driver)
+                .is_some_and(|described| !described.dependencies.is_empty())
+            {
+                report(
+                    findings,
+                    "binding.chained",
+                    Some(alias),
+                    format!(
+                        "connection '{target}' runs on '{target_driver}', which declares \
+                         dependencies of its own: a dependency's dependencies are not carried, \
+                         so they cannot chain"
+                    ),
+                );
             }
         }
     }
@@ -1164,6 +1414,284 @@ mod tests {
             mismatches
                 .iter()
                 .all(|d| d.severity == crate::definitions::Severity::Warning)
+        );
+    }
+
+    /// Two revisions of one workflow are legal when each names a distinct
+    /// `version`; a true repeat is still `duplicate.workflow_id`.
+    #[test]
+    fn workflow_variants_need_distinct_versions() {
+        let versioned = |version: u64, name: &str| {
+            (
+                Entity::Workflow,
+                format!("{name}.json"),
+                json!({"workflow_id": "wf", "version": version, "name": name, "tasks": []}),
+            )
+        };
+        let set = DefinitionSet::from_entries([versioned(1, "A"), versioned(2, "B")]);
+        let findings = check(
+            &set,
+            &Boundary::default(),
+            false,
+            FunctionRegistry::builtin(),
+        );
+        assert!(
+            checks(&findings, "duplicate.workflow_id").is_empty(),
+            "{findings:?}"
+        );
+
+        let set = DefinitionSet::from_entries([versioned(1, "A"), versioned(1, "B")]);
+        let findings = check(
+            &set,
+            &Boundary::default(),
+            false,
+            FunctionRegistry::builtin(),
+        );
+        assert_eq!(checks(&findings, "duplicate.workflow_id").len(), 1);
+        assert!(
+            checks(&findings, "duplicate.workflow_id")[0]
+                .message
+                .contains("version 1"),
+            "{findings:?}"
+        );
+    }
+
+    /// A channel's split names versions that exist, and a multi-version
+    /// workflow cannot be served without one.
+    #[test]
+    fn channel_rollouts_must_name_existing_versions_and_cannot_be_ambiguous() {
+        let versioned = |version: u64, name: &str| {
+            (
+                Entity::Workflow,
+                format!("{name}.json"),
+                json!({"workflow_id": "wf", "version": version, "name": name, "tasks": []}),
+            )
+        };
+        let channel = |rollouts: Option<Value>| {
+            let mut doc = json!({"channel_id": "c", "name": "c", "channel_type": "sync",
+                                 "protocol": "rest", "workflow_id": "wf"});
+            if let Some(rollouts) = rollouts {
+                doc["rollouts"] = rollouts;
+            }
+            (Entity::Channel, "c.json".to_string(), doc)
+        };
+
+        let set = DefinitionSet::from_entries([
+            versioned(1, "A"),
+            versioned(2, "B"),
+            channel(Some(json!([
+                {"version": 1, "start_bucket": 0, "end_bucket": 50},
+                {"version": 2, "start_bucket": 50, "end_bucket": 100}
+            ]))),
+        ]);
+        let findings = check(
+            &set,
+            &Boundary::default(),
+            false,
+            FunctionRegistry::builtin(),
+        );
+        assert!(
+            checks(&findings, "rollouts.invalid").is_empty(),
+            "{findings:?}"
+        );
+        assert!(
+            checks(&findings, "rollouts.unknown_version").is_empty(),
+            "{findings:?}"
+        );
+        assert!(
+            checks(&findings, "rollouts.ambiguous").is_empty(),
+            "{findings:?}"
+        );
+
+        let set = DefinitionSet::from_entries([
+            versioned(1, "A"),
+            versioned(2, "B"),
+            channel(Some(json!([
+                {"version": 1, "start_bucket": 0, "end_bucket": 50},
+                {"version": 9, "start_bucket": 50, "end_bucket": 100}
+            ]))),
+        ]);
+        let findings = check(
+            &set,
+            &Boundary::default(),
+            false,
+            FunctionRegistry::builtin(),
+        );
+        assert_eq!(checks(&findings, "rollouts.unknown_version").len(), 1);
+        assert!(
+            checks(&findings, "rollouts.unknown_version")[0]
+                .message
+                .contains("version 9"),
+            "{findings:?}"
+        );
+
+        let set =
+            DefinitionSet::from_entries([versioned(1, "A"), versioned(2, "B"), channel(None)]);
+        let findings = check(
+            &set,
+            &Boundary::default(),
+            false,
+            FunctionRegistry::builtin(),
+        );
+        assert_eq!(checks(&findings, "rollouts.ambiguous").len(), 1);
+
+        let set = DefinitionSet::from_entries([
+            versioned(1, "A"),
+            versioned(2, "B"),
+            channel(Some(json!([
+                {"version": 1, "start_bucket": 0, "end_bucket": 40},
+                {"version": 2, "start_bucket": 50, "end_bucket": 100}
+            ]))),
+        ]);
+        let findings = check(
+            &set,
+            &Boundary::default(),
+            false,
+            FunctionRegistry::builtin(),
+        );
+        assert_eq!(checks(&findings, "rollouts.invalid").len(), 1);
+    }
+
+    /// The binding rule lives here now: a provider's declared aliases decide
+    /// what a connection may bind, and a target must be able to serve.
+    #[test]
+    fn provider_bindings_are_checked_against_the_declaration() {
+        use orion_extension_api::{
+            DependencyDescription, OperationDescription, ProviderDescription,
+        };
+
+        let connector = |name: &str, provider: &str, bindings: Value| {
+            let mut doc = json!({"name": name, "provider": provider, "config": {}});
+            if !bindings.is_null() {
+                doc["bindings"] = bindings;
+            }
+            (Entity::Connector, format!("{name}.json"), doc)
+        };
+        let describe = |dependencies: Vec<(&str, DependencyDescription)>| {
+            let mut description =
+                ProviderDescription::new().with_operation("get", OperationDescription::new());
+            for (alias, dependency) in dependencies {
+                description = description.with_dependency(alias, dependency);
+            }
+            description
+        };
+        let boundary = Boundary {
+            provider_operations: Some(BTreeMap::from([
+                (
+                    "com.orion.models".to_string(),
+                    describe(vec![(
+                        "store",
+                        DependencyDescription::new().on_provider("com.orion.storage"),
+                    )]),
+                ),
+                ("com.orion.storage".to_string(), describe(Vec::new())),
+                ("com.orion.http".to_string(), describe(Vec::new())),
+            ])),
+            ..Boundary::default()
+        };
+        let bindings = |findings: &[Diagnostic]| -> Vec<String> {
+            findings
+                .iter()
+                .filter(|finding| finding.check.starts_with("binding."))
+                .map(|finding| format!("{}: {}", finding.check, finding.message))
+                .collect()
+        };
+        let run = |definitions| {
+            let set = DefinitionSet::from_entries(definitions);
+            check(&set, &boundary, false, FunctionRegistry::builtin())
+        };
+
+        // A required alias bound to a connection over the provider the
+        // dependency names is clean.
+        let findings = run(vec![
+            connector("store", "com.orion.storage", Value::Null),
+            connector("models", "com.orion.models", json!({"store": "store"})),
+        ]);
+        assert!(bindings(&findings).is_empty(), "{:?}", bindings(&findings));
+
+        // Unbound required alias.
+        let findings = run(vec![
+            connector("store", "com.orion.storage", Value::Null),
+            connector("models", "com.orion.models", Value::Null),
+        ]);
+        assert!(
+            bindings(&findings)
+                .iter()
+                .any(|finding| finding.starts_with("binding.required:")),
+            "{:?}",
+            bindings(&findings)
+        );
+
+        // Unknown alias.
+        let findings = run(vec![
+            connector("store", "com.orion.storage", Value::Null),
+            connector(
+                "models",
+                "com.orion.models",
+                json!({"store": "store", "nope": "store"}),
+            ),
+        ]);
+        assert!(
+            bindings(&findings)
+                .iter()
+                .any(|finding| finding.starts_with("binding.unknown_alias:")),
+            "{:?}",
+            bindings(&findings)
+        );
+
+        // A provider that declares nothing binds nothing.
+        let findings = run(vec![
+            connector("store", "com.orion.storage", Value::Null),
+            connector("http", "com.orion.http", json!({"anything": "store"})),
+        ]);
+        assert!(
+            bindings(&findings)
+                .iter()
+                .any(|finding| finding.starts_with("binding.undeclared:")),
+            "{:?}",
+            bindings(&findings)
+        );
+
+        // A target on the wrong provider.
+        let findings = run(vec![
+            connector("api", "com.orion.http", Value::Null),
+            connector("models", "com.orion.models", json!({"store": "api"})),
+        ]);
+        assert!(
+            bindings(&findings)
+                .iter()
+                .any(|finding| finding.starts_with("binding.wrong_provider:")),
+            "{:?}",
+            bindings(&findings)
+        );
+
+        // A target that is not in the set.
+        let findings = run(vec![connector(
+            "models",
+            "com.orion.models",
+            json!({"store": "nowhere"}),
+        )]);
+        assert!(
+            bindings(&findings)
+                .iter()
+                .any(|finding| finding.starts_with("binding.target_missing:")),
+            "{:?}",
+            bindings(&findings)
+        );
+
+        // Dependencies do not chain: a target over a provider that declares
+        // its own dependencies is refused.
+        let findings = run(vec![
+            connector("store", "com.orion.storage", Value::Null),
+            connector("other", "com.orion.models", Value::Null),
+            connector("models", "com.orion.models", json!({"store": "other"})),
+        ]);
+        assert!(
+            bindings(&findings)
+                .iter()
+                .any(|finding| finding.starts_with("binding.chained:")),
+            "{:?}",
+            bindings(&findings)
         );
     }
 }

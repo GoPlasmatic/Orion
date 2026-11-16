@@ -50,7 +50,7 @@ use std::sync::Arc;
 pub use orion_extension_api::{
     AttemptContext, BackendKey, ChannelDriver, ChannelProtocolFields, CompositionError,
     ConnectionId, ConnectionPoolCache, ConnectionReference, ConnectionResolver, ConnectorError,
-    ConnectorErrorClass, ConnectorOutput, Digest, EditionTier, EffectStatus,
+    ConnectorErrorClass, ConnectorOutput, DependencyDescription, Digest, EditionTier, EffectStatus,
     EffectiveConnectionIdentity, ErrorOrigin, ImplementationKind, NodeInfo, OperationDescription,
     PackageAdmissionRequest, PackageVerifier, PoolEntry, ProviderBackend, ProviderDescription,
     ProviderId, ProviderRef, Registrar, RetryAdvice, Revision, SecretValue, SharedStateStore,

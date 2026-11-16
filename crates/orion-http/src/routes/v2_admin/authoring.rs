@@ -11,7 +11,7 @@ use orion_api::v2::{
 use super::{V2Error, V2Result, decode_files_map};
 use crate::extensions::ImplementationKind;
 use crate::extensions::authoring::{
-    lint_provider_package, pack_provider_package, scaffold_provider_package,
+    lint_provider_package, pack_provider_package, scaffold_provider_package_with_tier,
 };
 use crate::extensions::deployment_store::DeploymentErrorKind;
 use crate::extract::OrionJson;
@@ -32,7 +32,13 @@ use crate::extract::OrionJson;
 pub(crate) async fn authoring_scaffold(
     OrionJson(req): OrionJson<ScaffoldRequest>,
 ) -> V2Result<Json<ScaffoldResponse>> {
-    let pkg = scaffold_provider_package(&req.publisher, &req.provider_id, &req.version, req.kind);
+    let pkg = scaffold_provider_package_with_tier(
+        &req.publisher,
+        &req.provider_id,
+        &req.version,
+        req.kind,
+        req.tier,
+    );
     let package_digest = pack_provider_package(&pkg.files)
         .map_err(|err| {
             V2Error::new(

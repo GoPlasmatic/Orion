@@ -9,11 +9,11 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::ImplementationKind;
 use super::package_identity::{
     PackageIdentityFinding, build_inventory, canonical_bytes, verify_inventory,
 };
 use super::schema_profile::{DIALECT_URI, SchemaProfileFinding, check_manifest_bundle};
+use super::{EditionTier, ImplementationKind};
 
 /// Scaffolded provider package bundle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,11 +44,27 @@ pub struct PackedPackageInventory {
 }
 
 /// Generate a canonical scaffold for a `rust`, `workflow`, or `wasm` connector package.
+///
+/// No tier is declared, so `distribution.json` stays `community` — the
+/// historical shape. [`scaffold_provider_package_with_tier`] is the
+/// edition-aware form.
 pub fn scaffold_provider_package(
     publisher: &str,
     provider_id: &str,
     version: &str,
     implementation: ImplementationKind,
+) -> ScaffoldedPackage {
+    scaffold_provider_package_with_tier(publisher, provider_id, version, implementation, None)
+}
+
+/// Generate a scaffold that declares `tier` in `distribution.json`, when it
+/// is given.
+pub fn scaffold_provider_package_with_tier(
+    publisher: &str,
+    provider_id: &str,
+    version: &str,
+    implementation: ImplementationKind,
+    tier: Option<EditionTier>,
 ) -> ScaffoldedPackage {
     let mut files = BTreeMap::new();
 
@@ -99,11 +115,14 @@ pub fn scaffold_provider_package(
         }
     });
 
-    let distribution = json!({
+    let mut distribution = json!({
         "schema_version": 2,
         "publisher": publisher,
         "policy_requirements": []
     });
+    if let Some(tier) = tier {
+        distribution["tier"] = json!(tier.as_str());
+    }
 
     let config_public = json!({
         "$schema": DIALECT_URI,
@@ -319,6 +338,37 @@ pub fn pack_provider_package(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_scaffold_declares_its_tier_only_when_given_one() {
+        let none = scaffold_provider_package(
+            "org.orion",
+            "org.orion.sample",
+            "2.0.0",
+            ImplementationKind::Rust,
+        );
+        let distribution: Value =
+            serde_json::from_slice(&none.files["distribution.json"]).expect("distribution");
+        assert!(
+            distribution.get("tier").is_none(),
+            "an absent tier keeps today's community default: {distribution}"
+        );
+
+        let standard = scaffold_provider_package_with_tier(
+            "org.orion",
+            "org.orion.sample",
+            "2.0.0",
+            ImplementationKind::Rust,
+            Some(EditionTier::Standard),
+        );
+        let distribution: Value =
+            serde_json::from_slice(&standard.files["distribution.json"]).expect("distribution");
+        assert_eq!(distribution["tier"], "standard", "{distribution}");
+        assert!(
+            lint_provider_package(&standard.files).valid,
+            "a tiered scaffold still lints"
+        );
+    }
 
     #[test]
     fn scaffold_lint_and_pack_all_three_implementation_kinds() {

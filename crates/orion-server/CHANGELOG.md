@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Canary splits compile from a definition set.** Two workflow documents may
+  share a `workflow_id` when each carries a distinct `version`; a channel's
+  `rollouts` list selects a version per bucket. `compile -d` writes a
+  version-2 compiled deployment whose channel member names each variant by
+  workflow id and definition digest, and `deployments apply -d` assigns every
+  variant a revision and emits the manifest's `rollouts`. Version-1 directories
+  still read (no split). Splits remain Standard and Enterprise only.
+- **Provider bindings are checked in the definition gate.** `lint`, `compile`,
+  `clippy` and `sql check` now refuse an unknown alias, an unbound required
+  alias, a target on the wrong provider, a dependency chain, and `bindings` on
+  a provider that declares none. The declarations come from the same
+  `ProviderDescription` the capability answer already carries.
+- **`orion-client` can send non-JSON bodies and stream a GET.**
+  `RequestOptions` carries a content type and extra headers;
+  `request_bytes_with` sends a raw body; `get_stream` yields response chunks
+  under the same response ceiling, auth, change-context and retry policy as
+  the buffered verbs. `send --header`/`--content-type` and `streams tail` use
+  it.
+- **A scaffold can declare its edition tier.** `ScaffoldRequest.tier` writes
+  `distribution.json`'s `tier`; an absent field keeps `community`. The v2
+  admin contract moves to `API_VERSION` 2 because a version-1 server refuses
+  the field.
 - **One command line for every edition binary.** `orion::cli::main(binary,
   compose)` is `orion-server`'s argument parsing, config loading, operator
   subcommands (`validate-config`, `migrate`, `test-connectivity`,

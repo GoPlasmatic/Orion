@@ -122,6 +122,56 @@ impl orion_client::V2Admin for RouterClient {
     }
 }
 
+/// A scaffolded `standard` package is admitted by a licensed node and
+/// refused by Community at admission, not silently read as `community`.
+#[tokio::test]
+async fn a_standard_scaffold_is_refused_by_community_admission() {
+    use orion_api::v2::*;
+    use orion_client::V2Admin as _;
+
+    let client = RouterClient(crate::common::test_app().await);
+    let scaffold = client
+        .authoring_scaffold(&ScaffoldRequest {
+            publisher: "org.orion".to_string(),
+            provider_id: "org.orion.standard-only".to_string(),
+            version: "1.0.0".to_string(),
+            kind: ImplementationKind::Rust,
+            tier: Some(EditionTier::Standard),
+        })
+        .await
+        .unwrap();
+    let distribution = &scaffold.files["distribution.json"];
+    assert!(
+        distribution.contains("\"tier\":\"standard\""),
+        "{distribution}"
+    );
+
+    let packed = client
+        .authoring_pack(&PackageFilesRequest {
+            files: scaffold.files,
+        })
+        .await
+        .unwrap();
+    let uploaded = client
+        .upload_connector_package(&UploadPackageRequest {
+            files: packed.files,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let refused = client
+        .admit_connector_package(&uploaded.package.digest, &AdmitPackageRequest::default())
+        .await
+        .expect_err("a Community node refuses a standard package");
+    match refused {
+        orion_client::ClientError::Api { status, error } => {
+            assert_eq!(status, orion_client::StatusCode::FORBIDDEN);
+            assert_eq!(error.code, "TIER_NOT_ENABLED");
+        }
+        other => panic!("expected Api, got {other:?}"),
+    }
+}
+
 /// Every typed client call the CLI makes, against the real router:
 /// upload, admit, connect, probe, plan, apply, read back, roll back,
 /// revoke.
@@ -154,7 +204,7 @@ async fn cli_and_server_contract_end_to_end_against_running_server() {
     // 1. Capabilities
     let cap = client.runtime_capabilities().await.unwrap();
     assert_eq!(cap.api_version, orion_api::v2::API_VERSION);
-    assert_eq!(client.server_api_version().await.unwrap(), Some(1));
+    assert_eq!(client.server_api_version().await.unwrap(), Some(2));
     assert_eq!(cap.edition, EditionTier::Community);
     assert_eq!(cap.wasm_worlds, vec!["orion:plugin@1.0.0"]);
     assert_eq!(cap.channel_drivers, vec!["cron", "http", "rest"]);
@@ -173,6 +223,7 @@ async fn cli_and_server_contract_end_to_end_against_running_server() {
             provider_id: "org.orion.memory-cache".to_string(),
             version: "2.0.0".to_string(),
             kind: ImplementationKind::Rust,
+            tier: None,
         })
         .await
         .unwrap();
