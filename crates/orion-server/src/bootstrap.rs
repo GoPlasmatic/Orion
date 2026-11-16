@@ -738,7 +738,7 @@ pub(crate) fn build_rate_limit_state(
     }
 }
 
-/// The three queue drains started by [`start_background_tasks`], owning the
+/// The three queue drains started by `start_background_tasks`, owning the
 /// order they must run in on graceful shutdown.
 ///
 /// Only the queue consumers are here. The periodic jobs (trace cleanup, audit
@@ -981,13 +981,13 @@ pub struct Assembled {
 ///
 /// 1. [`open_storage`]: the node's identity, the cluster runtime, the
 ///    repositories and the channel loader over the open pool;
-/// 2. [`build_serving_components`]: connector registry, HTTP client, runtime
+/// 2. `build_serving_components`: connector registry, HTTP client, runtime
 ///    handle, caches, plugin sandbox, composition and the managed-OAuth2
 ///    runtime;
-/// 3. [`EngineComponents::publish_first_generation`]: generation 1, the
+/// 3. `EngineComponents::publish_first_generation`: generation 1, the
 ///    serving registry with no workflows or channels;
-/// 4. [`start_background`]: the queues, their workers and the supervisor;
-/// 5. [`build_committed_head`]: the deployment store hydrated and its head
+/// 4. `start_background`: the queues, their workers and the supervisor;
+/// 5. `build_committed_head`: the deployment store hydrated and its head
 ///    built, after which the node reports ready.
 ///
 /// The server's startup ([`run`]) and the test harness

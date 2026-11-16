@@ -212,7 +212,7 @@ impl EncodeError {
 
 type Encoded<T> = Result<T, EncodeError>;
 
-/// What [`pg_arguments`] decided.
+/// What `pg_arguments` decided.
 #[derive(Debug)]
 pub enum Binding {
     /// Every declared type is in the table; the arguments are typed to them.

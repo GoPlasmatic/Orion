@@ -1,7 +1,7 @@
 //! SQL rendering over sea-query.
 //!
 //! Walks a [`Cond`] + [`QuerySpec`] into a `sea_query::SelectStatement`, then
-//! [`build_for`] produces the dialect-specific `(sql, values)` bound to the
+//! `build_for` produces the dialect-specific `(sql, values)` bound to the
 //! external connector's pool. Identifiers are dynamic
 //! (`sea_query::Alias`) and every literal is a bound value, so the output is
 //! injection-safe and quoted per dialect.

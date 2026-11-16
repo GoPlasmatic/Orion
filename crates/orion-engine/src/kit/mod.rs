@@ -10,10 +10,10 @@
 //! - [`retry`]: Orion's retry safety on dataflow-rs 4's answers; each
 //!   function owns its spec in `functions::definition`.
 //! - [`output_path`]: where a call's result goes, resolved before its work;
-//!   [`root_output_defect`], the Defect for a result no context root takes;
+//!   `root_output_defect`, the Defect for a result no context root takes;
 //!   and [`root_output_advisory`] for one a root may not take.
 //! - [`rendered`]: a document field rendered for this call, as JSON.
-//! - [`ProfileLayer`]: the per-request profile, as one registry layer
+//! - `ProfileLayer`: the per-request profile, as one registry layer
 //!   around every host call.
 //! - [`OfflineDeps`]: inert dependencies, so every function can be
 //!   registered with no `AppState`.
@@ -130,7 +130,7 @@ pub(crate) fn root_output_defect(out: &Output, message: &str) -> Result<(), Vec<
     root_output_issue(out, message, Severity::Defect)
 }
 
-/// [`root_output_defect`]'s Advisory, for a result that may be an object
+/// `root_output_defect`'s Advisory, for a result that may be an object
 /// and may not (one key's cached value): an `output` that is a literal
 /// context root, the default `data` included, fails each call whose result
 /// is not an object. The call is not refused, since an object is written
@@ -209,7 +209,7 @@ pub use crate::functions::connector_helpers::{
 /// unconditional, since observability is not resilience configuration.
 ///
 /// `name` is the function's, for the breaker's log line. The profile sample
-/// is not taken here: [`ProfileLayer`] wraps every host call, this one
+/// is not taken here: `ProfileLayer` wraps every host call, this one
 /// included.
 ///
 /// # Errors
@@ -340,8 +340,8 @@ pub fn test_exprs() -> ExprEngine {
 /// register every real function with no `AppState`, for a registry that
 /// runs offline, where a stubbed call never reaches a dependency.
 ///
-/// The hosts default to [`NoChannels`], [`LocalNamespaces`] and
-/// [`NoProviders`]; the offline tools hand it the node-shaped ones with
+/// The hosts default to `NoChannels`, `LocalNamespaces` and
+/// `NoProviders`; the offline tools hand it the node-shaped ones with
 /// [`OfflineDeps::with_hosts`], so a `connector_call` to a built-in provider
 /// is still checked at compile.
 pub struct OfflineDeps {

@@ -101,7 +101,7 @@ pub struct Residue {
     pub key: &'static str,
     /// What it names: `constants.db`, or a fragment name.
     pub target: String,
-    /// Authored coordinate, rooted at whatever [`residue`] was given:
+    /// Authored coordinate, rooted at whatever `residue` was given:
     /// `tasks[1].function.input`.
     pub path: String,
 }

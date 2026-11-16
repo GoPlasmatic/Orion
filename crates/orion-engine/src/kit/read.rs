@@ -226,11 +226,11 @@ pub(crate) fn bool_or(
     }
 }
 
-/// [`bool_or`] with `false` as the default. `resolve_bool`'s reading.
+/// `bool_or` with `false` as the default. `resolve_bool`'s reading.
 ///
 /// # Errors
 ///
-/// As [`bool_or`].
+/// As `bool_or`.
 pub fn boolean(
     v: Option<&OwnedDataValue>,
     field: &str,

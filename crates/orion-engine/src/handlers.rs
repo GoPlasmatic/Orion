@@ -56,7 +56,7 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
 /// its plugins: every Orion function ([`register_functions`]), on the
 /// process's expression engine (`deps.exprs`), with the per-request
 /// profile as its one call layer
-/// ([`kit::ProfileLayer`](crate::kit::ProfileLayer)).
+/// (`kit::ProfileLayer`).
 ///
 /// Boot and every reload assemble it. The generation's plugin functions join it
 /// ([`register_plugin_functions`]) before anything compiles, since a

@@ -8,7 +8,8 @@
 //! - [`loader`] — stored channels + workflows → the engine's workflow set,
 //!   dataflow-rs 4's verdict deciding which load (I182),
 //!   with the per-channel quarantine.
-//! - [`runner`] — the trace-capture policy every transport shares.
+//! - [`execute`] — how one run is driven, and the trace-capture policy every
+//!   transport shares.
 //! - [`observer`] — always-on per-task timing, including the sync built-ins no
 //!   host can otherwise reach.
 //! - [`kit`] — what every dataflow-rs 4 function shares: the error mapping's
@@ -45,7 +46,7 @@ pub(crate) const ERROR_CONTEXT_PATH: &str = "metadata._orion_errors";
 /// The bare key under `metadata`, for the ingress stamping sites.
 pub(crate) const ERROR_CONTEXT_KEY: &str = "_orion_errors";
 
-/// [`ERROR_CONTEXT_PATH`] as dataflow-rs 4's error context, keeping its
+/// `ERROR_CONTEXT_PATH` as dataflow-rs 4's error context, keeping its
 /// default number of records: the one place Orion configures it. Every
 /// dataflow-rs 4 engine Orion builds takes it
 /// (`EngineConfig::default().error_context(ERROR_CONTEXT.clone())`), and
@@ -74,7 +75,7 @@ pub fn clear_error_context(metadata: &mut serde_json::Value) {
 
 /// The metadata key describing what started a scheduled run.
 ///
-/// Lives here beside [`VARS_KEY`] and [`ERROR_CONTEXT_KEY`] rather than in
+/// Lives here beside `VARS_KEY` and `ERROR_CONTEXT_KEY` rather than in
 /// `cron`, because it is a *reserved metadata key* and this is where the
 /// reserved namespace is declared — and because the offline metadata validator
 /// in `engine::utils` has to know the name, which it could not if the name

@@ -7,7 +7,7 @@
 //! filter — lowered by [`crate::query::lower`] into the same [`Cond`] IR the read
 //! path uses, so relation predicates (`some`/`all`/`none`) work unchanged.
 //!
-//! [`resolve_write`] does the whole backend-neutral transformation once: parse the
+//! `resolve_write` does the whole backend-neutral transformation once: parse the
 //! envelope, fold `{"param": ..}` value nodes into literals, resolve logical column
 //! names to physical (honouring the schema allowlist and `writable` flag), coerce
 //! values into the IR, lower the filter, and enforce the write-safety guards
@@ -63,7 +63,7 @@ pub struct ResolvedConflict {
 }
 
 /// A fully resolved, backend-neutral mutation: physical names, IR values, and a
-/// lowered filter. Produced by [`resolve_write`] and consumed by the renderers.
+/// lowered filter. Produced by `resolve_write` and consumed by the renderers.
 ///
 /// One variant per operation, so the op-dependent invariants (rows for an
 /// insert, a conflict clause for an upsert, …) are carried by the type — a
@@ -145,7 +145,7 @@ impl ResolvedWrite {
     /// has already been held to.
     ///
     /// An insert or upsert returns exactly one row per row written, and
-    /// [`resolve_write`] has already capped those at `write.max_rows`. An
+    /// `resolve_write` has already capped those at `write.max_rows`. An
     /// update or delete returns one row per row *matched*, which is whatever
     /// the filter happens to select — a whole table, for an acknowledged
     /// unfiltered mutation. That is the case the execution path has to bound,
@@ -160,7 +160,7 @@ impl ResolvedWrite {
     }
 
     /// Whether the lowered filter actually restricts the affected rows — this,
-    /// not the mere presence of a `filter` key, is what [`resolve_write`]'s
+    /// not the mere presence of a `filter` key, is what `resolve_write`'s
     /// unfiltered guard is keyed on.
     ///
     /// A filter that is satisfied by every row (`{"and": []}`, `{"!": {"or": []}}`,

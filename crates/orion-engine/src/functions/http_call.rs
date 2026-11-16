@@ -158,8 +158,8 @@ async fn send(
 /// is one of the five methods the `HttpMethod` vocabulary reads, upper case;
 /// the config's check refuses anything else with that type's own message.
 ///
-/// The string parameters are read with [`read::plain_str`] and `timeout_ms`
-/// with [`read::template_u64`], `Template::resolve_string`'s and
+/// The string parameters are read with `read::plain_str` and `timeout_ms`
+/// with `read::template_u64`, `Template::resolve_string`'s and
 /// `resolve_u64`'s readings, and an optional parameter written as `null` is
 /// unset ([`read::present`]), as serde reads an `Option<Template>`.
 #[derive(Debug, FunctionConfig)]

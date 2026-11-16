@@ -98,7 +98,7 @@ impl JwksCache {
     }
 
     /// [`Self::decoding_keys`], inside the deadline of the run the caller
-    /// belongs to: each fetch arms [`fetch_timeout`]'s timer, none when the
+    /// belongs to: each fetch arms `fetch_timeout`'s timer, none when the
     /// run's deadline comes first.
     pub async fn decoding_keys_within(
         &self,

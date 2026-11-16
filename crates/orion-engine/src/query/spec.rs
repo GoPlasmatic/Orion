@@ -49,7 +49,7 @@ pub struct IncludeSpec {
     /// Ordering of the children within each parent. Required by the SQL planner
     /// (F27): the per-parent page is cut in SQL, so without an order key "the
     /// first `n` children" is whatever the plan happened to emit. Left empty
-    /// here; [`crate::query::plan_sql`] refuses it.
+    /// here; `crate::query::plan_sql` refuses it.
     pub sort: Vec<SortKey>,
     /// Max related rows per parent. Absent means `query.default_limit`, and a
     /// value above `query.max_limit` is rejected — the same policy the

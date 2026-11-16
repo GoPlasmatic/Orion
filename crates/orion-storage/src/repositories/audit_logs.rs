@@ -76,8 +76,8 @@ where
 ///
 /// Lives beside the repository that writes it rather than beside the queue
 /// that carries it: the queue is one of two sinks now (§2.6), and the other —
-/// [`AuditLogRepository::insert_tx`], writing inside the caller's transaction
-/// — is the one a mutation goes through when it can. A type owned by either
+/// [`insert_in_tx`], writing inside the caller's transaction — is the one a
+/// mutation goes through when it can. A type owned by either
 /// sink would have to be named by the other.
 #[derive(Debug, Clone)]
 pub struct AuditEvent {
@@ -152,10 +152,9 @@ fn insert_statement(event: &AuditEvent) -> sea_query::InsertStatement {
         .to_owned()
 }
 
-/// Write `event` inside `tx`, so it commits with the mutation it describes —
-/// [`AuditLogRepository::insert_tx`] without a repository, for a writer that
-/// owns its transaction outside the repository layer (the v2 deployment
-/// store's head move).
+/// Write `event` inside `tx`, so it commits with the mutation it describes.
+/// It takes no repository, so a writer that owns its transaction outside the
+/// repository layer (the v2 deployment store's head move) can call it.
 pub async fn insert_in_tx(
     tx: &mut crate::DbTransaction,
     event: &AuditEvent,

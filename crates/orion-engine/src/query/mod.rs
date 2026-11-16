@@ -3,9 +3,9 @@
 //! live in Orion-docs' `src/reference/data-dialect.md` (published at
 //! <https://docs.goplasmatic.io/reference/data-dialect.html>).
 //!
-//! Pipeline: [`spec::parse`] (envelope) → [`lower::lower_with`] (filter →
+//! Pipeline: [`spec::parse`] (envelope) → `lower::lower_with` (filter →
 //! [`ir::Cond`]) → [`backend::sql::render`] (`Cond` → `sea_query::SelectStatement`)
-//! → [`backend::sql::build_for`] (dialect-specific `(sql, values)` for the
+//! → `backend::sql::build_for` (dialect-specific `(sql, values)` for the
 //!   connector's pool).
 
 pub mod backend;
@@ -55,7 +55,7 @@ pub struct IncludePlan {
     pub fields: Vec<String>,
     /// Ordering within each parent's children (physical names). Never empty —
     /// the per-parent page is cut in SQL, so it needs a deterministic key (F27);
-    /// [`plan_sql`] refuses an include that does not state one.
+    /// `plan_sql` refuses an include that does not state one.
     pub sort: Vec<spec::SortKey>,
     /// Resolved per-parent row cap, already bounded by `query.max_limit`.
     pub limit: u64,
@@ -124,7 +124,7 @@ pub enum GroupKey {
 impl GroupKey {
     /// The grouping key for a JSON scalar, or `None` for a value that cannot
     /// join anything (null, array, object) — mirroring
-    /// [`backend::sql::json_key_to_sea`], which skips exactly those.
+    /// `backend::sql::json_key_to_sea`, which skips exactly those.
     pub fn from_json(v: &Json) -> Option<Self> {
         match v {
             Json::Bool(b) => Some(GroupKey::Bool(*b)),

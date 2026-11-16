@@ -97,7 +97,7 @@ pub(crate) fn require_op_allowed(
     require_op(gates.allows(op), op, connector_name)
 }
 
-/// [`require_op_allowed`] for the gates that are not the db set: the cache
+/// `require_op_allowed` for the gates that are not the db set: the cache
 /// (`read` / `write`) and storage (`presign_get` / `presign_put` / `head`)
 /// gates each have their own struct,
 /// because a `raw_write` flag on a cache would be a field nothing reads.

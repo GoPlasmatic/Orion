@@ -173,7 +173,7 @@ impl Writes {
     }
 }
 
-/// The literal destinations only — [`task_write_facts`] without the certainty.
+/// The literal destinations only — `task_write_facts` without the certainty.
 pub fn task_writes(task: &Value, functions: &FunctionRegistry) -> Vec<String> {
     task_write_facts(task, functions).paths
 }
