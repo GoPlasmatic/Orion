@@ -38,7 +38,7 @@ tracing = "0.1"
 # world imports nothing — and none of `wat`, `gc`, `debug`, `cache` or the
 # backtrace symbolisers, which are what a default build's size is made of.
 # Wasmtime's MSRV (stable minus two) is what Orion's now tracks.
-wasmtime = { version = "49", default-features = false, features = ["runtime", "cranelift", "component-model", "async", "pooling-allocator", "std"] }
+wasmtime = { version = "50", default-features = false, features = ["runtime", "cranelift", "component-model", "async", "pooling-allocator", "std"] }
 
 [dev-dependencies]
 orion-engine = { workspace = true, features = ["test-support"] }
