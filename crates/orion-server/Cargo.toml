@@ -89,7 +89,7 @@ uuid = { version = "1", features = ["v4", "v7", "serde"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 # TLS serving (`server.tls`).
-axum-server = { version = "0.8", features = ["tls-rustls"] }
+axum-server = { version = "0.9", features = ["tls-rustls"] }
 # OpenTelemetry export (`tracing.enabled`).
 opentelemetry_sdk = { version = "0.33", default-features = false, features = ["rt-tokio", "trace"] }
 tracing-opentelemetry = { version = "0.34", default-features = false }
