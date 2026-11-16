@@ -138,7 +138,7 @@ jobs:
 
       # Restores the shared `linux-stable` entry written by `test`; never
       # writes, so one cache serves every stable-Linux job instead of ten.
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           shared-key: linux-stable
           save-if: false
@@ -176,7 +176,7 @@ jobs:
 
       # Its own entry, not `linux-stable`: a different rustc hashes every
       # artifact differently, so there is nothing to share.
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -224,7 +224,7 @@ jobs:
           toolchain: "1.100"
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           shared-key: linux-stable
           save-if: false
@@ -291,7 +291,7 @@ jobs:
       # restore it read-only. One writer keeps the save deterministic: with
       # several, whichever finished first won the key and the rest logged a
       # 409.
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           shared-key: linux-stable
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -364,7 +364,7 @@ jobs:
 
       # Restores the shared `linux-stable` entry written by `test`; never
       # writes, so one cache serves every stable-Linux job instead of ten.
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           shared-key: linux-stable
           save-if: false
@@ -518,7 +518,7 @@ jobs:
       # Its own entry, not `linux-stable`: instrumented builds carry different
       # RUSTFLAGS, so these artifacts are not interchangeable with the ones
       # `test` writes.
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -601,7 +601,7 @@ jobs:
 
       # Restores the shared `linux-stable` entry written by `test`; never
       # writes, so one cache serves every stable-Linux job instead of ten.
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           shared-key: linux-stable
           save-if: false
@@ -714,7 +714,7 @@ jobs:
       # This matters more here than anywhere: seven legs restoring one warm
       # entry is what makes fanning out cost roughly the same runner minutes
       # as the single job did.
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           shared-key: linux-stable
           save-if: false

@@ -105,7 +105,7 @@ jobs:
       # Windows or musl entry at all, so both of these runners recompiled the
       # full dependency graph every time. macOS bills at 10x and Windows at
       # 2x, which made it the most expensive cache miss in the repo.
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -130,7 +130,7 @@ jobs:
           toolchain: "1.100"
           targets: x86_64-unknown-linux-musl
 
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
