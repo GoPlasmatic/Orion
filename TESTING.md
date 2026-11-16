@@ -5,7 +5,7 @@ what it needs, how to run it, and which CI job gates it. Detail lives next
 to the code — [`crates/orion-server/tests/README.md`](crates/orion-server/tests/README.md)
 for the server's cargo test binaries — this file is the top of that tree.
 The CLI's suites and the end-to-end suite live with the CLI in
-[Orion-cli](https://github.com/codetiger/Orion-cli); the guards that hold the documentation to the code live
+[Orion-cli](https://github.com/GoPlasmatic/Orion-cli); the guards that hold the documentation to the code live
 with the book in [GoPlasmatic/Orion-docs](https://github.com/GoPlasmatic/Orion-docs).
 
 Three principles shape the setup:
@@ -38,7 +38,7 @@ Three principles shape the setup:
 | Touched the authoring layer (`$from`, `use`, a `compile` pass) | `cargo test -p orion-authoring definitions::compile` + `cargo test --test integration source_form_refusal_test`, and Orion-cli's `compile_test` — a pass's `residue()` is read three ways (empty after compiling, `compile`'s report, the admin API's refusal), so a pass that only satisfies one of them is a passing test away from shipping |
 | Touched `[vars]` / `[secrets]`, or anything a message carries into a trace | `cargo test --test integration secrets_and_vars_test` — the leak sweep asserts a secret reaches no recording surface *and* carries its own controls, so an assertion that stops seeing anything fails rather than passing quietly |
 | Touched a **rider crate** (`orion-api`, `orion-client`, `orion-definitions`, `orion-extension-api`, `orion-common`, `orion-storage`, `orion-engine`, `orion-plugin-host`, `orion-runtime`, `orion-authoring`, `orion-http`, `orion-plugin-sdk`), including its manifest | `cargo package --locked --workspace` (needs a clean tree) — no version bump: every crate shares `workspace.package.version` and a release moves it |
-| Touched the MSRV surface (new language features) | `cargo +1.98 check --workspace --all-targets` — `just check` does **not** cover this; CI runs it as its own job |
+| Touched the MSRV surface (new language features) | `cargo +1.100 check --workspace --all-targets` — `just check` does **not** cover this; CI runs it as its own job |
 | Touched the examples | `cargo test -p orion-authoring` (format and clippy gates), the offline cases in [`examples/workflow-tests/`](examples/workflow-tests/) with `orion-cli test`, and `./examples/deploy.sh <name>` against a local server (`ORION_PLUGINS__ENABLED=true` for `fixed-width-statement` and `c4-referee`; it needs an installed `orion-cli`) |
 | Touched the plugin sandbox, the manifest, the SDK, or the WIT | `cargo test -p orion-plugin-host` (the ABI cases and the sandbox suites; the SDK-versus-host guard is `cargo test -p orion-docs-check`), plus `cargo test --test integration admin_plugins_test plugin_runtime_test` for the admin surface and the node-level scheduler test; after a guest or SDK change, `crates/orion-server/tests/fixtures/plugins/build.sh` `examples/plugins/fixed-width/build.sh` and `examples/plugins/c4-rules/build.sh` (needs `wasm32-unknown-unknown` + `wasm-tools`) and commit the components — the `plugin-sdk` CI job rebuilds all three from source and runs the ABI cases against the fresh bytes |
 | Release session | `RELEASING.md` — rc pipeline rehearsal, benchmarks, HA drill |
@@ -77,7 +77,7 @@ subcommands, and OpenAPI are covered.
 The tests that drive the **compiled `orion-cli` binary** — `lint` in both
 file and set mode, `dry-run`, the `*.case.json` runner, `compile`, `fmt`'s and
 `clippy`'s exit codes and output, `clippy --fix`, `sql check`, plugin signing
-— live in [Orion-cli](https://github.com/codetiger/Orion-cli), beside the CLI.
+— live in [Orion-cli](https://github.com/GoPlasmatic/Orion-cli), beside the CLI.
 
 The parser, formatter and clippy corpus checks run as `orion-authoring` unit
 tests; their fixtures live under `orion-server/tests/fixtures` (Orion-cli
@@ -175,7 +175,7 @@ runner per invocation) — kept drift-free by `ci_filter_drift_test`.*
 The shell suites that drive a real `orion-server` binary over HTTP with the
 `orion-cli` binary — the one place the full contract chain (server ⇄
 `orion-api` ⇄ `orion-client` ⇄ CLI rendering) is exercised end to end — live
-in [Orion-cli](https://github.com/codetiger/Orion-cli), with the CLI. Its CI runs them against an `orion-server` installed
+in [Orion-cli](https://github.com/GoPlasmatic/Orion-cli), with the CLI. Its CI runs them against an `orion-server` installed
 from the Orion tag the CLI is built from. Every test deploys what it needs the
 way an operator does: a definition set compiled with `orion-cli compile` and
 applied with `orion-cli deployments apply -d`, replacing the node's head. The
@@ -229,7 +229,7 @@ The examples are executable, and two repositories gate them:
 
 | Gate | Where | What it proves |
 |------|-------|----------------|
-| MSRV | `msrv` CI job | The workspace still compiles on Rust 1.98 (`cargo check --workspace --all-targets --locked` per push; the full suite on the weekly sweep) |
+| MSRV | `msrv` CI job | The workspace still compiles on Rust 1.100 (`cargo check --workspace --all-targets --locked` per push; the full suite on the weekly sweep) |
 | Cross-OS builds | `cross-os-build.yml` | macOS/Windows/musl targets compile (musl promotion criterion: `RELEASING.md`) |
 | Packaging | `package` CI job | `cargo package --locked --workspace` verify-builds the crates.io tarballs (riders included). Gated by the `changes` job: it runs when a manifest moves or a file is added/renamed under `crates/`, the only two ways an `include` allowlist can drop a needed file, and on the weekly sweep |
 | Docker / Helm | `docker-build`, `helm` jobs | Image builds; chart lints, renders, and rejects misspelled values |

@@ -739,7 +739,7 @@ fn mint(alg: jsonwebtoken::Algorithm, secret: &str, claims: serde_json::Value) -
     jsonwebtoken::encode(
         &jsonwebtoken::Header::new(alg),
         &claims,
-        &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
+        &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()).expect("HS secret"),
     )
     .expect("test")
 }

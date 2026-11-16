@@ -2,7 +2,7 @@
 
 The HTTP client for [Orion](https://github.com/GoPlasmatic/Orion)'s admin and
 data APIs — the transport
-[`orion-cli`](https://github.com/codetiger/Orion-cli) drives, so there is
+[`orion-cli`](https://github.com/GoPlasmatic/Orion-cli) drives, so there is
 exactly one implementation of the wire protocol.
 
 Response types come from [`orion-api`](https://crates.io/crates/orion-api);

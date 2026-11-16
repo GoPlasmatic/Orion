@@ -5,12 +5,12 @@
 #
 # `orion-cli` sits behind the `cli` profile so `up` starts the server only: the
 # CLI is a one-shot command, not a long-running service.
-# Pinned for reproducibility; override with e.g. ORION_VERSION=1.0.0.
+# Pinned for reproducibility; override with e.g. ORION_VERSION=2.0.0.
 name: orion
 
 services:
   orion:
-    image: ghcr.io/goplasmatic/orion:${ORION_VERSION:-1.12.0}
+    image: ghcr.io/goplasmatic/orion:${ORION_VERSION:-2.0.0}
     ports:
       - "8080:8080"
     environment:
@@ -27,7 +27,7 @@ services:
       retries: 3
 
   orion-cli:
-    image: ghcr.io/goplasmatic/orion-cli:${ORION_CLI_VERSION:-${ORION_VERSION:-1.12.0}}
+    image: ghcr.io/goplasmatic/orion-cli:${ORION_CLI_VERSION:-${ORION_VERSION:-2.0.0}}
     profiles: ["cli"]
     environment:
       ORION_SERVER_URL: "http://orion:8080"

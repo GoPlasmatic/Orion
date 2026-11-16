@@ -89,7 +89,7 @@ uuid.workspace = true
 chrono = { workspace = true, features = ["clock", "std", "serde"] }
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 # TLS serving (`server.tls`).
-axum-server = { version = "0.8", features = ["tls-rustls"] }
+axum-server = { version = "0.9", features = ["tls-rustls"] }
 # OpenTelemetry export (`tracing.enabled`).
 opentelemetry_sdk = { version = "0.33", default-features = false, features = ["rt-tokio", "trace"] }
 tracing-opentelemetry = { version = "0.34", default-features = false }
@@ -111,7 +111,7 @@ hex = "0.4"
 base64 = "0.23"
 tower = { version = "0.5", default-features = false, features = ["util"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
-jsonwebtoken = { version = "11.1.0", features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "12.0.0", features = ["aws_lc_rs"] }
 # The test helpers orion-common keeps for this crate's unit tests.
 orion-common = { workspace = true, features = ["test-support"] }
 orion-storage = { workspace = true, features = ["test-support"] }

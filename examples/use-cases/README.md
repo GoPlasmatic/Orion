@@ -4,7 +4,7 @@ Each `*.json` file here is a complete, end-to-end scenario built on one of
 the [example packages](../packages/): the requests to send and the exact
 responses to expect from a **live Orion server** running that package's
 workflow. They are the data-driven half of the e2e suite in the
-[Orion-cli](https://github.com/codetiger/Orion-cli) repository — and proof that the shipped examples behave as
+[Orion-cli](https://github.com/GoPlasmatic/Orion-cli) repository — and proof that the shipped examples behave as
 documented, asserted in its CI against this repository at a release tag.
 
 The package under test is **named, never duplicated**: each case names the

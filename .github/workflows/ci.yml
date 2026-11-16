@@ -18,7 +18,7 @@ on:
   schedule:
     # Weekly full sweep (Sundays 05:23 UTC, off the on-the-hour herd). Two
     # checks are too slow to earn a slot on every push but must not go
-    # unrun: `msrv` builds AND tests on 1.98 here rather than only checking,
+    # unrun: `msrv` builds AND tests on 1.100 here rather than only checking,
     # and `package` verify-builds the crates.io tarballs regardless of what
     # changed. Everything else simply runs again, which also catches
     # dependency drift that no commit of ours would have triggered.
@@ -113,7 +113,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (toolchain from `with`)
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (toolchain from `with`)
         with:
           toolchain: "1.100"
           components: rustfmt
@@ -131,14 +131,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (toolchain from `with`)
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (toolchain from `with`)
         with:
           toolchain: "1.100"
           components: clippy
 
       # Restores the shared `linux-stable` entry written by `test`; never
       # writes, so one cache serves every stable-Linux job instead of ten.
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: linux-stable
           save-if: false
@@ -161,7 +161,7 @@ jobs:
   # rust-version in Cargo.toml is a public stability promise; this job is
   # the only thing that keeps it honest (proposal T9).
   msrv:
-    name: MSRV (1.98)
+    name: MSRV (1.100)
     runs-on: ubuntu-22.04
     permissions:
       contents: read
@@ -170,26 +170,26 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (toolchain from `with`)
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (toolchain from `with`)
         with:
-          toolchain: "1.98"
+          toolchain: "1.100"
 
       # Its own entry, not `linux-stable`: a different rustc hashes every
       # artifact differently, so there is nothing to share.
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
 
-      # The promise is that a contributor on 1.98 can build AND test, so the
+      # The promise is that a contributor on 1.100 can build AND test, so the
       # weekly sweep still runs the whole suite. Per push it only *checks* —
       # `--all-targets` so dev-dependencies stay honest about the MSRV, and
       # `--locked` so a resolver bump that needs a newer rustc is caught.
       #
       # What actually regresses an MSRV is a language feature or an API that
-      # 1.98 does not have, and `cargo check` catches all of it; running the
+      # 1.100 does not have, and `cargo check` catches all of it; running the
       # tests again on a second toolchain re-ran a suite `test` had already
       # run green, for 8 minutes a push. Codegen- and runtime-level breaks are
       # what the weekly full run is for.
@@ -225,12 +225,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (toolchain from `with`)
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (toolchain from `with`)
         with:
           toolchain: "1.100"
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: linux-stable
           save-if: false
@@ -239,7 +239,7 @@ jobs:
         uses: ./.github/actions/apt-build-deps
 
       - name: Install wasm-tools
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2 (tool from `with`)
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5 (tool from `with`)
         with:
           tool: wasm-tools
 
@@ -280,7 +280,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (toolchain from `with`)
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (toolchain from `with`)
         with:
           toolchain: "1.100"
 
@@ -299,7 +299,7 @@ jobs:
       # restore it read-only. One writer keeps the save deterministic: with
       # several, whichever finished first won the key and the rest logged a
       # 409.
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: linux-stable
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -335,12 +335,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (toolchain from `with`)
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (toolchain from `with`)
         with:
           toolchain: "1.100"
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2 (tool from `with`)
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5 (tool from `with`)
         with:
           tool: cargo-deny
 
@@ -368,13 +368,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (toolchain from `with`)
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (toolchain from `with`)
         with:
           toolchain: "1.100"
 
       # Restores the shared `linux-stable` entry written by `test`; never
       # writes, so one cache serves every stable-Linux job instead of ten.
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: linux-stable
           save-if: false
@@ -519,7 +519,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (toolchain from `with`)
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (toolchain from `with`)
         with:
           toolchain: "1.100"
           components: llvm-tools-preview
@@ -527,7 +527,7 @@ jobs:
       # Its own entry, not `linux-stable`: instrumented builds carry different
       # RUSTFLAGS, so these artifacts are not interchangeable with the ones
       # `test` writes.
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -544,7 +544,7 @@ jobs:
           sudo swapon /swapfile
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2 (tool from `with`)
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5 (tool from `with`)
         with:
           tool: cargo-llvm-cov
 
@@ -565,7 +565,7 @@ jobs:
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info -j 2 --fail-under-lines 88
 
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-report
           path: lcov.info
@@ -604,13 +604,13 @@ jobs:
           # shallow clone does not contain.
           fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (toolchain from `with`)
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (toolchain from `with`)
         with:
           toolchain: "1.100"
 
       # Restores the shared `linux-stable` entry written by `test`; never
       # writes, so one cache serves every stable-Linux job instead of ten.
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: linux-stable
           save-if: false
@@ -619,7 +619,7 @@ jobs:
         uses: ./.github/actions/apt-build-deps
 
       - name: Install cargo-mutants
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2 (tool from `with`)
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5 (tool from `with`)
         with:
           tool: cargo-mutants
 
@@ -635,7 +635,7 @@ jobs:
 
       - name: Upload mutants report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mutants-report
           path: mutants.out/
@@ -714,7 +714,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (toolchain from `with`)
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (toolchain from `with`)
         with:
           toolchain: "1.100"
 
@@ -723,7 +723,7 @@ jobs:
       # This matters more here than anywhere: seven legs restoring one warm
       # entry is what makes fanning out cost roughly the same runner minutes
       # as the single job did.
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: linux-stable
           save-if: false

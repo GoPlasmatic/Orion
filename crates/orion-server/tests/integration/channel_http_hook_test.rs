@@ -392,7 +392,7 @@ async fn claims_reach_the_driver_and_every_run() {
     let token = jsonwebtoken::encode(
         &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
         &json!({ "sub": "user-42", "exp": chrono::Utc::now().timestamp() + 3600 }),
-        &jsonwebtoken::EncodingKey::from_secret(JWT_SECRET.as_bytes()),
+        &jsonwebtoken::EncodingKey::from_secret(JWT_SECRET.as_bytes()).expect("HS secret"),
     )
     .expect("signs");
     let (status, body) = send(

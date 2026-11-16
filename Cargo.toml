@@ -6,7 +6,7 @@
 # commands (`cargo run`, `cargo test`, `cargo build`) pointed at the server,
 # matching the pre-workspace muscle memory; CI covers the rest with
 # `--workspace`. The CLI and the documentation site live in their own
-# repositories (codetiger/Orion-cli, GoPlasmatic/Orion-docs) and depend on
+# repositories (GoPlasmatic/Orion-cli, GoPlasmatic/Orion-docs) and depend on
 # these crates by tag.
 [workspace]
 resolver = "3"
@@ -30,9 +30,9 @@ default-members = ["crates/orion-server", "crates/orion-docs-check"]
 # release always changes their versions too, so the skip can never fire on a
 # rider that changed. Nothing is lost: neither library has ever had a release
 # cycle of its own, and no tag names either.
-version = "2.0.0-rc.1"
+version = "2.0.0"
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.100"
 license = "Apache-2.0"
 repository = "https://github.com/GoPlasmatic/Orion"
 
@@ -54,23 +54,23 @@ panic = "warn"
 # (each lib.rs says so) and ship in lockstep, so a 2.0.0 orion-server must
 # never resolve a 2.0.1 orion-runtime. cargo-release rewrites these with the
 # workspace version and keeps the operator.
-orion-api = { version = "=2.0.0-rc.1", path = "crates/orion-api" }
-orion-authoring = { version = "=2.0.0-rc.1", path = "crates/orion-authoring" }
-orion-client = { version = "=2.0.0-rc.1", path = "crates/orion-client" }
-orion-common = { version = "=2.0.0-rc.1", path = "crates/orion-common" }
-orion-engine = { version = "=2.0.0-rc.1", path = "crates/orion-engine" }
-orion-plugin-host = { version = "=2.0.0-rc.1", path = "crates/orion-plugin-host" }
-orion-runtime = { version = "=2.0.0-rc.1", path = "crates/orion-runtime" }
-orion-storage = { version = "=2.0.0-rc.1", path = "crates/orion-storage" }
-orion-definitions = { version = "=2.0.0-rc.1", path = "crates/orion-definitions" }
-orion-extension-api = { version = "=2.0.0-rc.1", path = "crates/orion-extension-api" }
-orion-http = { version = "=2.0.0-rc.1", path = "crates/orion-http" }
+orion-api = { version = "=2.0.0", path = "crates/orion-api" }
+orion-authoring = { version = "=2.0.0", path = "crates/orion-authoring" }
+orion-client = { version = "=2.0.0", path = "crates/orion-client" }
+orion-common = { version = "=2.0.0", path = "crates/orion-common" }
+orion-engine = { version = "=2.0.0", path = "crates/orion-engine" }
+orion-plugin-host = { version = "=2.0.0", path = "crates/orion-plugin-host" }
+orion-runtime = { version = "=2.0.0", path = "crates/orion-runtime" }
+orion-storage = { version = "=2.0.0", path = "crates/orion-storage" }
+orion-definitions = { version = "=2.0.0", path = "crates/orion-definitions" }
+orion-extension-api = { version = "=2.0.0", path = "crates/orion-extension-api" }
+orion-http = { version = "=2.0.0", path = "crates/orion-http" }
 # Third-party specs shared by every member that names them. Features stay on
 # the member, because they genuinely differ: `orion-api`'s `chrono` omits
 # `clock` so its DTOs cannot read the wall clock, `orion-common`'s `sqlx` is
 # macro- and driver-free, and `orion-api`'s `utoipa` is optional.
 dataflow-rs = { version = "4.0.3", features = ["datetime", "budget"] }
-toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
+toml = { version = "1.2", default-features = false, features = ["parse", "display", "serde"] }
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 chrono = { version = "0.4", default-features = false }
 sqlx = { version = "0.9", default-features = false }

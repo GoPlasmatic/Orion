@@ -18,7 +18,7 @@
 # requests again.
 #
 # Needs `orion-cli` to compile and deploy: point ORION_CLI at it, or put it on
-# PATH. It is built and released from https://github.com/codetiger/Orion-cli
+# PATH. It is built and released from https://github.com/GoPlasmatic/Orion-cli
 # against this repository's crates; it is not a member of this workspace.
 # Also needs curl, python3 and a running Orion server.
 #
@@ -85,7 +85,7 @@ done
 ORION_CLI="${ORION_CLI:-$(command -v orion-cli || true)}"
 [[ -n "$ORION_CLI" && -x "$ORION_CLI" ]] || {
   echo "orion-cli not found: set ORION_CLI=<path> or put it on PATH" >&2
-  echo "build it from https://github.com/codetiger/Orion-cli against this repository's crates" >&2
+  echo "build it from https://github.com/GoPlasmatic/Orion-cli against this repository's crates" >&2
   exit 1
 }
 

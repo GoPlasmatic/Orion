@@ -12,10 +12,10 @@ active 2.x line; a maintenance release for an older line is cut from a
 
 1. Run `just check`: workspace formatting, Clippy with `-D warnings`, workspace
    tests, default-member doctests and workspace Rustdoc with `-D warnings`.
-   Run `cargo +1.98 check --workspace --all-targets --locked` for the MSRV.
+   Run `cargo +1.100 check --workspace --all-targets --locked` for the MSRV.
 2. Run all **six** `just test-containers` legs. Rebuild all three plugin
    components and run the SDK/ABI/runtime suites against the fresh bytes. With
-   [Orion-cli](https://github.com/codetiger/Orion-cli) built against the
+   [Orion-cli](https://github.com/GoPlasmatic/Orion-cli) built against the
    candidate, run its 11-suite e2e runner and its examples job: this repo's
    examples linted, their offline cases run (the plugin examples against the
    fresh components), and live quickstart/package deployments twice. Use the

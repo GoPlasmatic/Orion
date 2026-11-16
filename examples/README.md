@@ -44,7 +44,7 @@ one set — `deploy.sh` does that, then sends each package's `request.json`:
 ```
 
 It finds `orion-cli` on `PATH` or through `ORION_CLI` (the CLI is built and
-released from [its own repository](https://github.com/codetiger/Orion-cli)). `quickstart.sh` deploys a one-workflow
+released from [its own repository](https://github.com/GoPlasmatic/Orion-cli)). `quickstart.sh` deploys a one-workflow
 service the same way. Both scripts need a running Orion server.
 
 ## The packages
@@ -73,7 +73,7 @@ orion-cli test examples/workflow-tests \
 
 The two `--plugin-dir`s hand the runner the plugins the cases call for
 real; without them those cases fail rather than pass on a stub. Live, the
-end-to-end suite in [Orion-cli](https://github.com/codetiger/Orion-cli) deploys the packages to a real server
+end-to-end suite in [Orion-cli](https://github.com/GoPlasmatic/Orion-cli) deploys the packages to a real server
 through the [`use-cases/`](use-cases/) scenarios.
 
 [`workflow-tests/README.md`](workflow-tests/README.md) documents the case format
@@ -86,4 +86,4 @@ documents the server-backed scenario format.
 - [Deployment endpoints](https://docs.goplasmatic.io/reference/admin-api/deployments.html) — how a compiled directory is deployed
 - [Task Functions](https://docs.goplasmatic.io/reference/functions/index.html) — every function's input schema
 - [Workflow Schema](https://docs.goplasmatic.io/reference/workflows.html) — workflow shape, conditions, and matching
-- [Orion CLI](https://github.com/codetiger/Orion-cli) — deploy with `orion-cli deployments apply -d <dir>`
+- [Orion CLI](https://github.com/GoPlasmatic/Orion-cli) — deploy with `orion-cli deployments apply -d <dir>`

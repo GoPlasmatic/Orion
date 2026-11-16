@@ -43,10 +43,10 @@ bytes = "1"
 chrono = { workspace = true, features = ["clock", "std", "serde"] }
 dashmap = "6"
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
-hashlink = "0.11"
+hashlink = "0.12"
 hex = "0.4"
 hmac = "0.13"
-jsonwebtoken = { version = "11.1.0", features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "12.0.0", features = ["aws_lc_rs"] }
 md-5 = "0.11"
 metrics = "0.24"
 rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
@@ -72,6 +72,6 @@ orion-common = { workspace = true, features = ["test-support"] }
 orion-storage = { workspace = true, features = ["test-support"] }
 tokio = { version = "1", features = ["test-util"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
-axum-server = { version = "0.8", features = ["tls-rustls"] }
+axum-server = { version = "0.9", features = ["tls-rustls"] }
 proptest = "1"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }

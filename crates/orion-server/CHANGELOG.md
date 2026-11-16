@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-11-16
+
 ### Added
 
 - **Canary splits compile from a definition set.** Two workflow documents may
@@ -104,6 +106,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The MSRV is Rust 1.100**, the toolchain CI and the release builds already
+  pinned; `rust-version`, the MSRV job and the contributor docs move with it.
+- **Dependencies:** `wasmtime` 49 → 50, `jsonwebtoken` 11 → 12 (empty HMAC
+  keys are refused by the library too; Orion already required the hash
+  length), `axum-server` 0.8 → 0.9, `hashlink` 0.11 → 0.12, `toml` 1.1 → 1.2,
+  and the lockfile refreshed to the latest compatible releases.
+  `testcontainers` stays on 0.27 until `testcontainers-modules` supports 0.28.
 - **Cluster mode is a Standard and Enterprise feature.** Community ships no
   cluster store: a node with `cluster.enabled = true` and no store composed
   by an edition (`CompositionBuilder::with_cluster_store`) does not boot
@@ -170,7 +179,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The CLI and the documentation site moved to their own repositories,**
   because the Community and Enterprise editions share both. `orion-cli`, with
   its offline authoring tools and the end-to-end suite, is built and released
-  from [Orion-cli](https://github.com/codetiger/Orion-cli) against this
+  from [Orion-cli](https://github.com/GoPlasmatic/Orion-cli) against this
   repository's crates at a release tag; it still ships through the installers,
   Homebrew (`GoPlasmatic/tap/orion-cli`) and `ghcr.io/goplasmatic/orion-cli`.
   The mdBook site, the committed `openapi.json` and the guards that hold the
@@ -6421,7 +6430,8 @@ Initial release.
 [#280]: https://github.com/GoPlasmatic/Orion/issues/280
 [#281]: https://github.com/GoPlasmatic/Orion/issues/281
 
-[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.12.0...HEAD
+[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/GoPlasmatic/Orion/compare/v1.12.0...v2.0.0
 [1.12.0]: https://github.com/GoPlasmatic/Orion/compare/v1.11.1...v1.12.0
 [1.11.1]: https://github.com/GoPlasmatic/Orion/compare/v1.11.0...v1.11.1
 [1.11.0]: https://github.com/GoPlasmatic/Orion/compare/v1.10.0...v1.11.0

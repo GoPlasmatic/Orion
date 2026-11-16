@@ -503,7 +503,7 @@ fn mint_jwt(claims: Value) -> String {
     jsonwebtoken::encode(
         &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
         &claims,
-        &jsonwebtoken::EncodingKey::from_secret(JWT_SECRET.as_bytes()),
+        &jsonwebtoken::EncodingKey::from_secret(JWT_SECRET.as_bytes()).expect("HS secret"),
     )
     .expect("test")
 }

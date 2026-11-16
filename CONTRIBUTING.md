@@ -8,7 +8,7 @@ Contributions are welcome! Whether it's a bug fix, new feature, documentation im
 
 **Prerequisites:**
 
-- [Rust 1.98+](https://www.rust-lang.org/tools/install) (Orion uses the 2024 edition; MSRV is 1.98)
+- [Rust 1.100+](https://www.rust-lang.org/tools/install) (Orion uses the 2024 edition; MSRV is 1.100)
   — and the MSRV now tracks [Wasmtime's](https://docs.wasmtime.dev/stability-release.html) (stable minus two), which the plugin sandbox depends on; a Wasmtime upgrade may move it
 - SQLite (bundled — no separate install needed)
 
@@ -64,7 +64,7 @@ depends on nothing else here). Bare cargo commands target the server via
 Two companions live in their own repositories, because the Community and
 Enterprise editions share them: the CLI, with its offline authoring tools and
 the end-to-end suite that drives the server with it, in
-[Orion-cli](https://github.com/codetiger/Orion-cli), and the documentation
+[Orion-cli](https://github.com/GoPlasmatic/Orion-cli), and the documentation
 site in [GoPlasmatic/Orion-docs](https://github.com/GoPlasmatic/Orion-docs).
 Both build against this repository's crates at a release tag.
 
@@ -244,7 +244,7 @@ from CI's name filters fails the build, in both directions.
 
 The shell suites that drive a real `orion-server` over HTTP with the
 `orion-cli` binary live in the
-[Orion-cli](https://github.com/codetiger/Orion-cli) repository, together
+[Orion-cli](https://github.com/GoPlasmatic/Orion-cli) repository, together
 with the CLI. They run against a server built from an Orion tag; their
 scenario cases are this repo's `examples/use-cases/`, which deploy the shipped
 example packages.

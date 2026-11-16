@@ -163,7 +163,7 @@ impl Verifier {
 
     /// [`Self::verify`], inside the deadline of the run the caller belongs
     /// to (`jwt_verify`'s `Ctx::deadline`): a JWKS fetch arms its 5 s timer
-    /// only when that comes first ([`jwks::fetch_timeout`]).
+    /// only when that comes first (`jwks::fetch_timeout`).
     pub async fn verify_within(
         &self,
         token: &str,
@@ -425,7 +425,7 @@ pub fn decoding_key(
                     hs_min_len(algorithm)
                 ));
             }
-            Ok(DecodingKey::from_secret(&bytes))
+            DecodingKey::from_secret(&bytes).map_err(|e| format!("not a usable HS secret: {e}"))
         }
         AlgorithmFamily::Rsa | AlgorithmFamily::Ec | AlgorithmFamily::Ed => {
             cached_decoding_key(algorithm, material, key_encoding)
@@ -452,7 +452,7 @@ pub fn encoding_key(
                     hs_min_len(algorithm)
                 ));
             }
-            Ok(EncodingKey::from_secret(&bytes))
+            EncodingKey::from_secret(&bytes).map_err(|e| format!("not a usable HS secret: {e}"))
         }
         AlgorithmFamily::Rsa => EncodingKey::from_rsa_pem(material.as_bytes())
             .map_err(|e| format!("not a usable RSA private key PEM: {e}")),

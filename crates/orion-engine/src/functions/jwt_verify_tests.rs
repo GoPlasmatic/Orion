@@ -53,7 +53,7 @@ async fn jwks_fetch_and_kid_rotation_work() {
         jsonwebtoken::encode(
             &header,
             &serde_json::json!({"sub": "u", "exp": chrono::Utc::now().timestamp() + 300}),
-            &jsonwebtoken::EncodingKey::from_secret(HS_SECRET.as_bytes()),
+            &jsonwebtoken::EncodingKey::from_secret(HS_SECRET.as_bytes()).expect("HS secret"),
         )
         .expect("test")
     };
@@ -187,7 +187,7 @@ fn hs_token(kid: &str) -> String {
     jsonwebtoken::encode(
         &header,
         &json!({"sub": "u", "exp": chrono::Utc::now().timestamp() + 300}),
-        &jsonwebtoken::EncodingKey::from_secret(HS_SECRET.as_bytes()),
+        &jsonwebtoken::EncodingKey::from_secret(HS_SECRET.as_bytes()).expect("HS secret"),
     )
     .expect("test")
 }
@@ -720,7 +720,7 @@ async fn a_static_key_reads_as_1_12s_element_reader_did() {
     let token = jsonwebtoken::encode(
         &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
         &json!({"sub": "u", "exp": chrono::Utc::now().timestamp() + 300}),
-        &jsonwebtoken::EncodingKey::from_secret(HS_SECRET.as_bytes()),
+        &jsonwebtoken::EncodingKey::from_secret(HS_SECRET.as_bytes()).expect("HS secret"),
     )
     .expect("test");
     let data = json!({"token": token, "k": HS_SECRET, "n": 5});

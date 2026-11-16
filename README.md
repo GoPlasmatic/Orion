@@ -10,7 +10,7 @@
   [![CI](https://github.com/GoPlasmatic/Orion/actions/workflows/ci.yml/badge.svg)](https://github.com/GoPlasmatic/Orion/actions/workflows/ci.yml)
   [![Crates.io](https://img.shields.io/crates/v/orion-server.svg)](https://crates.io/crates/orion-server)
   [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-  [![Rust](https://img.shields.io/badge/rust-1.98+-orange.svg)](https://www.rust-lang.org)
+  [![Rust](https://img.shields.io/badge/rust-1.100+-orange.svg)](https://www.rust-lang.org)
   [![Documentation](https://img.shields.io/badge/docs-docs.goplasmatic.io-blue.svg)](https://docs.goplasmatic.io/)
   [![GitHub Release](https://img.shields.io/github/v/release/GoPlasmatic/Orion)](https://github.com/GoPlasmatic/Orion/releases)
 </div>
@@ -225,9 +225,9 @@ engines, and embedded `dataflow-rs`.
 
 ## Install
 
-The current workspace release is **2.0.0-rc.1** and requires Rust **1.98** when built
+The current workspace release is **2.0.0** and requires Rust **1.100** when built
 from source. The CLI is built from its own
-[repository](https://github.com/codetiger/Orion-cli) against each server
+[repository](https://github.com/GoPlasmatic/Orion-cli) against each server
 release and versioned with it; use matching versions.
 
 ```bash
@@ -239,7 +239,7 @@ brew install GoPlasmatic/tap/orion-cli
 cargo install --git https://github.com/GoPlasmatic/Orion --locked orion-server
 
 # CLI from source
-cargo install --git https://github.com/codetiger/Orion-cli --locked orion-cli
+cargo install --git https://github.com/GoPlasmatic/Orion-cli --locked orion-cli
 ```
 
 Release installers are also available for Linux, macOS Apple Silicon, and
@@ -304,7 +304,7 @@ editorial conventions.
 
 - [Orion UI](https://github.com/GoPlasmatic/Orion-ui) provides the browser-based
   operations console.
-- [`orion-cli`](https://github.com/codetiger/Orion-cli) deploys definition
+- [`orion-cli`](https://github.com/GoPlasmatic/Orion-cli) deploys definition
   sets and inspects traces, schedules and health from a terminal; it lives in
   its own repository.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) covers development setup, tests, and pull

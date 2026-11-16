@@ -71,6 +71,28 @@ fn the_helm_chart_ships_the_workspace_version() {
 }
 
 #[test]
+fn the_compose_file_defaults_to_the_workspace_version() {
+    let version = workspace_version();
+    let compose = read("deploy/compose/orion.yml");
+    let default = format!("${{ORION_VERSION:-{version}}}");
+    let images = compose
+        .lines()
+        .filter(|line| line.trim_start().starts_with("image:"))
+        .collect::<Vec<_>>();
+    assert!(
+        !images.is_empty(),
+        "deploy/compose/orion.yml has no `image:`"
+    );
+    for image in images {
+        assert!(
+            image.contains(&default),
+            "deploy/compose/orion.yml `{}` must default to `{default}`",
+            image.trim()
+        );
+    }
+}
+
+#[test]
 fn the_readme_names_the_current_release() {
     let version = workspace_version();
     let readme = read("README.md");
