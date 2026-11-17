@@ -190,6 +190,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A read-only admin key may plan and use the authoring tools, as
+  documented.** `POST deployment-plans` and `authoring/{scaffold,lint,pack}`
+  answered a read-only key 403: the admin routes are nested under
+  `/api/v2/admin`, so the middleware saw their paths with that prefix stripped
+  and never matched them against the allowed list. Every other mutation is
+  still refused, and the OpenAPI document was already right.
 - Cancelled or timed-out Wasm calls release live-instance accounting after
   their stores drop. Concurrency-limit deadline coverage now uses a controlled
   permit holder. Offline connector stubs follow the declared output policy.

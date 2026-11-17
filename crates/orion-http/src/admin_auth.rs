@@ -278,14 +278,21 @@ fn match_key(
 /// including `definitions/test`, which runs a workflow against live
 /// connectors, and a connection probe, which dials one —
 /// so it stays with a full-access key.
+///
+/// `path` is taken with or without the `/api/v2/admin` prefix. The middleware
+/// runs on the admin router, which `routes::api_routes` nests under that
+/// prefix, and a nested router sees its requests with the prefix stripped —
+/// so the path it hands over is `/deployment-plans`, not the full one.
 pub(crate) fn read_only_may_call(method: &Method, path: &str) -> bool {
+    const ADMIN_PREFIX: &str = "/api/v2/admin";
     const SIDE_EFFECT_FREE_POSTS: [&str; 4] = [
-        "/api/v2/admin/deployment-plans",
-        "/api/v2/admin/authoring/scaffold",
-        "/api/v2/admin/authoring/lint",
-        "/api/v2/admin/authoring/pack",
+        "/deployment-plans",
+        "/authoring/scaffold",
+        "/authoring/lint",
+        "/authoring/pack",
     ];
-    *method == Method::POST && SIDE_EFFECT_FREE_POSTS.contains(&path.trim_end_matches('/'))
+    let relative = path.strip_prefix(ADMIN_PREFIX).unwrap_or(path);
+    *method == Method::POST && SIDE_EFFECT_FREE_POSTS.contains(&relative.trim_end_matches('/'))
 }
 
 /// What a request presented as an admin credential.
@@ -428,6 +435,9 @@ mod tests {
             "/api/v2/admin/deployment-plans",
             "/api/v2/admin/authoring/lint",
             "/api/v2/admin/authoring/pack/",
+            // As the middleware sees them: the nested admin router strips its prefix.
+            "/deployment-plans",
+            "/authoring/scaffold",
         ] {
             assert!(read_only_may_call(&Method::POST, allowed), "{allowed}");
         }
@@ -439,6 +449,8 @@ mod tests {
             "/api/v2/admin/connections/db/revisions/1/probes",
             "/api/v2/admin/channels/c/trigger",
             "/api/v2/admin/deployment-plans/extra",
+            "/definitions",
+            "/connections/db/revisions/1/probes",
         ] {
             assert!(!read_only_may_call(&Method::POST, refused), "{refused}");
         }

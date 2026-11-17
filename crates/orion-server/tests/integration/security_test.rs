@@ -996,6 +996,65 @@ async fn test_read_only_key_reads_but_cannot_mutate() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
 
+/// A read-only key may still call the `POST`s that store, send and run
+/// nothing — a deployment plan and the authoring tools — through the real
+/// router, where the admin routes are nested under `/api/v2/admin` and the
+/// middleware sees their paths with that prefix stripped. The unit test of
+/// `read_only_may_call` alone passed full paths and missed exactly that.
+#[tokio::test]
+async fn test_read_only_key_may_plan_and_use_the_authoring_tools() {
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_keys = vec!["full-access-key-long-enough-000000".to_string()];
+    config.admin_auth.read_only_api_keys = vec!["read-only-key-long-enough-00000000".to_string()];
+    let app = common::test_app_with_config(config).await;
+
+    let post = |uri: &str, body: serde_json::Value| {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("Authorization", "Bearer read-only-key-long-enough-00000000")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap()
+    };
+
+    let plan = post(
+        "/api/v2/admin/deployment-plans",
+        serde_json::json!({
+            "base_revision": 0,
+            "manifest": {"schema_version": 2, "providers": [], "members": []},
+        }),
+    );
+    let resp = app.clone().oneshot(plan).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "{}", body_json(resp).await);
+
+    let scaffold = post(
+        "/api/v2/admin/authoring/scaffold",
+        serde_json::json!({"publisher": "acme", "provider_id": "acme.ro", "kind": "workflow"}),
+    );
+    let resp = app.clone().oneshot(scaffold).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let files = body_json(resp).await["files"].clone();
+
+    for tool in ["lint", "pack"] {
+        let req = post(
+            &format!("/api/v2/admin/authoring/{tool}"),
+            serde_json::json!({ "files": files }),
+        );
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "authoring/{tool}");
+    }
+
+    // Uploading what was packed stores it: still a full-access key's.
+    let upload = post(
+        "/api/v2/admin/connector-packages",
+        serde_json::json!({ "files": files }),
+    );
+    let resp = app.oneshot(upload).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
 /// The `sha256:` at-rest form carries the role too.
 #[tokio::test]
 async fn test_read_only_role_applies_to_the_digest_form() {
