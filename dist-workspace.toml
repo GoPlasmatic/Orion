@@ -45,3 +45,8 @@ pkg-config = "*"
 # cmake-less runner image.
 [dist.dependencies.homebrew]
 cmake = "*"
+
+# macOS 14 runners retired on 2026-11-02; dist's default for Apple Silicon
+# still names macos-14. Build on the supported macOS 15 arm64 runner.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
