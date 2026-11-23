@@ -239,7 +239,7 @@ jobs:
         uses: ./.github/actions/apt-build-deps
 
       - name: Install wasm-tools
-        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5 (tool from `with`)
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.5 (tool from `with`)
         with:
           tool: wasm-tools
 
@@ -340,7 +340,7 @@ jobs:
           toolchain: "1.100"
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5 (tool from `with`)
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.5 (tool from `with`)
         with:
           tool: cargo-deny
 
@@ -544,7 +544,7 @@ jobs:
           sudo swapon /swapfile
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5 (tool from `with`)
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.5 (tool from `with`)
         with:
           tool: cargo-llvm-cov
 
@@ -619,7 +619,7 @@ jobs:
         uses: ./.github/actions/apt-build-deps
 
       - name: Install cargo-mutants
-        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5 (tool from `with`)
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.5 (tool from `with`)
         with:
           tool: cargo-mutants
 
